@@ -63,10 +63,30 @@ async fn valid_enterprise_licence_reports_tier_and_flags() {
         days_remaining: None,
         tier: Some("enterprise".to_string()),
         grace: false,
+        legacy_white_label: false,
     });
     let (_, body) = get_status(app).await;
     assert_eq!(body["status"], "Valid");
     assert_eq!(body["tier"], "enterprise");
     assert_eq!(body["feature_flags"]["sso"], true);
     assert_eq!(body["feature_flags"]["cfr_part_11"], true);
+}
+
+#[tokio::test]
+async fn logo_only_white_label_grant_stays_community_with_one_flag() {
+    let app = test_app_with_license_status(crate::license::LicenseStatus::Valid {
+        license_key: "k".to_string(),
+        expires_at: None,
+        days_remaining: None,
+        tier: Some("starter".to_string()),
+        grace: false,
+        legacy_white_label: true,
+    });
+    let (_, body) = get_status(app).await;
+    assert_eq!(body["status"], "Valid");
+    assert_eq!(body["tier"], "community");
+    assert_eq!(body["legacy_white_label"], true);
+    assert_eq!(body["feature_flags"]["white_label"], true);
+    assert_eq!(body["feature_flags"]["theme_full"], false);
+    assert_eq!(body["feature_flags"]["multi_site"], false);
 }

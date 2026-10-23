@@ -20,6 +20,11 @@ pub enum LicenseStatus {
         tier: Option<String>,
         /// True while a lapsed monthly key is inside its 7 day grace period.
         grace: bool,
+        /// An add-on edition grants logo-only white-label branding on top of
+        /// the resolved tier (no theme editor). Used to keep a retired
+        /// entitlement working for existing customers.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        legacy_white_label: bool,
     },
     Unactivated {
         message: String,
@@ -50,7 +55,22 @@ impl LicenseStatus {
         }
     }
 
+    /// Whether white-label branding (logo) is unlocked: by the tier, or by an
+    /// add-on edition's logo-only grant.
+    pub fn white_label(&self) -> bool {
+        self.tier().white_label()
+            || matches!(
+                self,
+                LicenseStatus::Valid {
+                    legacy_white_label: true,
+                    ..
+                }
+            )
+    }
+
     pub fn feature_flags(&self) -> serde_json::Value {
-        self.tier().to_feature_flags()
+        let mut flags = self.tier().to_feature_flags();
+        flags["white_label"] = self.white_label().into();
+        flags
     }
 }

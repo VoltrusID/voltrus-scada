@@ -148,6 +148,15 @@ impl AppState {
             .unwrap_or_else(|e| e.into_inner())
             .tier()
     }
+
+    /// Whether white-label branding is unlocked (tier, or an add-on edition's
+    /// logo-only grant). Read live like [`AppState::tier`].
+    pub fn white_label(&self) -> bool {
+        self.license_status
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .white_label()
+    }
 }
 
 /// Reports the active tier in an `x-license-tier` response header.

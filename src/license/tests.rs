@@ -109,6 +109,7 @@ fn only_a_valid_licence_unlocks_a_tier() {
         days_remaining: None,
         tier: Some("enterprise".into()),
         grace: false,
+        legacy_white_label: false,
     };
     assert_eq!(valid.tier(), LicenseTier::Enterprise);
     assert_eq!(LicenseStatus::Community.tier(), LicenseTier::Community);
@@ -124,4 +125,24 @@ fn only_a_valid_licence_unlocks_a_tier() {
 fn status_json_is_tagged_by_status() {
     let v = serde_json::to_value(LicenseStatus::Community).unwrap();
     assert_eq!(v["status"], "Community");
+}
+
+#[test]
+fn logo_only_white_label_grant_unlocks_only_white_label() {
+    let granted = LicenseStatus::Valid {
+        license_key: "k".into(),
+        expires_at: None,
+        days_remaining: None,
+        tier: Some("starter".into()),
+        grace: false,
+        legacy_white_label: true,
+    };
+    assert_eq!(granted.tier(), LicenseTier::Community);
+    assert!(granted.white_label());
+    let flags = granted.feature_flags();
+    for (key, value) in flags.as_object().unwrap() {
+        assert_eq!(value, &serde_json::json!(key == "white_label"), "{key}");
+    }
+    // The grant only counts on a Valid status.
+    assert!(!LicenseStatus::Community.white_label());
 }
