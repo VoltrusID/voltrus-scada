@@ -12,6 +12,8 @@ protocol fixes, documentation and focused features are all welcome.
   scheduled PDF and SMS reports) are not accepted into this repository, see
   [docs/open-core.md](docs/open-core.md).
 * Security problems: do not open a public issue, see [SECURITY.md](SECURITY.md).
+* Name and logo: the Voltrus trademarks stay with JoyoDigitama, see
+  [TRADEMARKS.md](TRADEMARKS.md). Forks must rename.
 
 ## Development
 

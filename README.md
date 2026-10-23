@@ -167,6 +167,7 @@ License v3.0 or later, see [LICENSE](LICENSE) and [NOTICE](NOTICE). The SDKs in
 network, AGPL section 13 requires you to offer them the source.
 
 "Voltrus" and the Voltrus logo are trademarks of JoyoDigitama. The AGPL does
-not grant trademark rights: forks must use another name. Product and protocol
+not grant trademark rights: forks must use another name, see
+[TRADEMARKS.md](TRADEMARKS.md). Product and protocol
 names (Modbus, Siemens, Allen-Bradley, BACnet and others) are used only to
 describe compatibility and belong to their owners.
