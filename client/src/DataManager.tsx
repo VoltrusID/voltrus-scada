@@ -113,6 +113,26 @@ const GROUP_LABEL: React.CSSProperties = {
   fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.08em',
   color: 'var(--text-muted)', padding: '4px 12px', marginTop: 12, marginBottom: 2,
 }
+const NARROW_QUERY = '(max-width: 720px)'
+const SECTION_SELECT: React.CSSProperties = {
+  width: '100%', padding: '8px 10px',
+  fontSize: 16, fontWeight: 500,
+  border: '1px solid var(--border)', borderRadius: 6,
+  background: 'var(--bg)', color: 'var(--fg)',
+  fontFamily: 'var(--font-ui)',
+}
+
+/** True on phone-width screens, where the section sidebar would take half the screen. */
+function useNarrow(): boolean {
+  const [narrow, setNarrow] = useState(() => window.matchMedia(NARROW_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(NARROW_QUERY);
+    const onChange = () => setNarrow(mq.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+  return narrow;
+}
 
 export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onClose, shortcuts, isAdmin, isStrictAdmin }: {
   sensors: SensorConfig[];
@@ -131,6 +151,7 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
   const setTab = (t: string) => navigate({ to: '/data', search: prev => ({ ...prev, tab: t }) });
   const modalRef = useRef<HTMLDivElement>(null);
   const license = useLicense();
+  const narrow = useNarrow();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -171,6 +192,12 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
   // Find active label
   const extraTab = EXTRA_TABS.find(t => t.id === tab)
   const activeLabel = GROUPS.flatMap(g => g.items).find(i => i.id === tab)?.label ?? 'Data'
+  const visibleGroups = GROUPS
+    .map(group => ({
+      ...group,
+      items: group.items.filter(i => !(i.strictAdmin && !isStrictAdmin) && !(i.admin && !isAdmin)),
+    }))
+    .filter(group => group.items.length > 0)
 
   return (
     <div ref={modalRef} role="dialog" aria-label="Data Manager" aria-modal="true" style={{ position: 'fixed', inset: 0, background: 'var(--bg)', zIndex: 50, display: 'flex', flexDirection: 'column' }}>
@@ -196,27 +223,35 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
         <span style={{ fontSize: 12, color: 'var(--muted)', fontWeight: 500 }}>{activeLabel}</span>
       </div>
 
-      <div style={{ flex: 1, display: 'flex', minHeight: 0 }}>
-        {/* Sidebar */}
-        <nav style={{
-          width: SIDEBAR_WIDTH,
-          flexShrink: 0,
-          borderRight: '1px solid var(--border)',
-          background: 'var(--card)',
-          overflowY: 'auto',
-          padding: '8px 8px',
-        }}>
-          {GROUPS.map(group => {
-            const visibleItems = group.items.filter(i => {
-              if (i.strictAdmin && !isStrictAdmin) return false
-              if (i.admin && !isAdmin) return false
-              return true
-            })
-            if (visibleItems.length === 0) return null
-            return (
+      <div style={{ flex: 1, display: 'flex', flexDirection: narrow ? 'column' : 'row', minHeight: 0 }}>
+        {narrow ? (
+          <nav aria-label="Data sections" style={{
+            flexShrink: 0,
+            borderBottom: '1px solid var(--border)',
+            background: 'var(--card)',
+            padding: '8px 12px',
+          }}>
+            <select aria-label="Section" value={tab} onChange={e => setTab(e.target.value)} style={SECTION_SELECT}>
+              {visibleGroups.map(group => (
+                <optgroup key={group.label} label={group.label}>
+                  {group.items.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </nav>
+        ) : (
+          <nav style={{
+            width: SIDEBAR_WIDTH,
+            flexShrink: 0,
+            borderRight: '1px solid var(--border)',
+            background: 'var(--card)',
+            overflowY: 'auto',
+            padding: '8px 8px',
+          }}>
+            {visibleGroups.map(group => (
               <div key={group.label}>
                 <div style={GROUP_LABEL}>{group.label}</div>
-                {visibleItems.map(item => (
+                {group.items.map(item => (
                   <button
                     key={item.id}
                     onClick={() => setTab(item.id)}
@@ -229,12 +264,12 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
                   </button>
                 ))}
               </div>
-            )
-          })}
-        </nav>
+            ))}
+          </nav>
+        )}
 
         {/* Content */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'auto', padding: 16 }}>
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, overflow: 'auto', padding: narrow ? 12 : 16 }}>
           {tab === 'sources' && (
             <SensorManager
               sensors={sensors} onSave={onSave} onDelete={onDelete}
