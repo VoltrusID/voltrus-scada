@@ -1,0 +1,153 @@
+# Water treatment plant HMI showcase: one Modbus PLC (plant-sim.py) feeding every SCADA screen.
+# ./start.sh runs the plant + server; seed.py then names the tags and builds the screens.
+
+server_port: 3100
+db_path: "wtp-hmi.db"
+cookie_secure: false
+
+devices:
+  - id: "wtp"
+    ip: "127.0.0.1"
+    port: 5030
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "intake_flow"
+        address: 0
+        type: "float32"
+      - name: "raw_tank_level"
+        address: 2
+        type: "float32"
+      - name: "p101a_run"
+        address: 4
+        type: "float32"
+      - name: "p101b_run"
+        address: 6
+        type: "float32"
+      - name: "p101b_fault"
+        address: 8
+        type: "float32"
+      - name: "xv101_open"
+        address: 10
+        type: "float32"
+      - name: "raw_turbidity"
+        address: 12
+        type: "float32"
+      - name: "raw_ph"
+        address: 14
+        type: "float32"
+      - name: "coag_dose"
+        address: 16
+        type: "float32"
+      - name: "coag_pump_run"
+        address: 18
+        type: "float32"
+      - name: "coag_tank_level"
+        address: 20
+        type: "float32"
+      - name: "flash_mixer_run"
+        address: 22
+        type: "float32"
+      - name: "floc_speed"
+        address: 24
+        type: "float32"
+      - name: "clarifier_turbidity"
+        address: 26
+        type: "float32"
+      - name: "sludge_pump_run"
+        address: 28
+        type: "float32"
+      - name: "filter1_headloss"
+        address: 30
+        type: "float32"
+      - name: "filter2_headloss"
+        address: 32
+        type: "float32"
+      - name: "filter3_headloss"
+        address: 34
+        type: "float32"
+      - name: "filter1_turbidity"
+        address: 36
+        type: "float32"
+      - name: "filter2_turbidity"
+        address: 38
+        type: "float32"
+      - name: "filter3_turbidity"
+        address: 40
+        type: "float32"
+      - name: "filter1_backwash"
+        address: 42
+        type: "float32"
+      - name: "filter2_backwash"
+        address: 44
+        type: "float32"
+      - name: "filter3_backwash"
+        address: 46
+        type: "float32"
+      - name: "backwash_pump_run"
+        address: 48
+        type: "float32"
+      - name: "air_blower_run"
+        address: 50
+        type: "float32"
+      - name: "filtered_flow"
+        address: 52
+        type: "float32"
+      - name: "fcv201_pos"
+        address: 54
+        type: "float32"
+      - name: "cl2_dose"
+        address: 56
+        type: "float32"
+      - name: "cl2_pump_run"
+        address: 58
+        type: "float32"
+      - name: "clearwell_level"
+        address: 60
+        type: "float32"
+      - name: "chlorine_residual"
+        address: 62
+        type: "float32"
+      - name: "treated_ph"
+        address: 64
+        type: "float32"
+      - name: "treated_turbidity"
+        address: 66
+        type: "float32"
+      - name: "p301a_run"
+        address: 68
+        type: "float32"
+      - name: "p301b_run"
+        address: 70
+        type: "float32"
+      - name: "p301c_run"
+        address: 72
+        type: "float32"
+      - name: "p301a_speed"
+        address: 74
+        type: "float32"
+      - name: "distribution_pressure"
+        address: 76
+        type: "float32"
+      - name: "output_flow"
+        address: 78
+        type: "float32"
+      - name: "power_kw"
+        address: 80
+        type: "float32"
+      - name: "energy_kwh"
+        address: 82
+        type: "float32"
+      - name: "bus_voltage"
+        address: 84
+        type: "float32"
+      - name: "power_factor"
+        address: 86
+        type: "float32"
+      - name: "flash_mix_level"
+        address: 88
+        type: "float32"
+      - name: "clarifier_rake_run"
+        address: 90
+        type: "float32"

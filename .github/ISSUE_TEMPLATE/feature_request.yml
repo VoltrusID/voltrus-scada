@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest an improvement to Core
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Core covers what one site needs. Single sign-on, 21 CFR Part 11, IEC 62443 audit mode, hot standby,
+        multi-site hub, RTSP video, white-label and scheduled PDF or SMS reports are part of the
+        Enterprise add-on and are not accepted here (see docs/open-core.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to see
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered

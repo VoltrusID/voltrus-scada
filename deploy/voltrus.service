@@ -1,0 +1,26 @@
+[Unit]
+Description=Voltrus Industrial Monitoring Platform
+After=network.target
+
+[Service]
+Type=simple
+User=voltrus
+Group=voltrus
+WorkingDirectory=/opt/voltrus
+ExecStart=/opt/voltrus/voltrus config.yaml
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/voltrus
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,35 @@
+# Factory Floor — Food & Beverage Filling Line
+
+server_port: 3000
+db_path: "factory-floor.db"
+
+devices:
+  # PM5560 — main 400V power inlet
+  - id: "pm5560_main"
+    ip: "127.0.0.1"
+    port: 5020
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "voltage_l1n"
+        address: 0
+        type: "float32"
+      - name: "voltage_l2n"
+        address: 2
+        type: "float32"
+      - name: "voltage_l3n"
+        address: 4
+        type: "float32"
+      - name: "current_l1"
+        address: 6
+        type: "float32"
+      - name: "active_power"
+        address: 12
+        type: "float32"
+      - name: "power_factor"
+        address: 18
+        type: "float32"
+      - name: "frequency"
+        address: 20
+        type: "float32"

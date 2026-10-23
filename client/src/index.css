@@ -1,0 +1,394 @@
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Dark theme (default) ── */
+:root,
+[data-theme="dark"] {
+  --bg: #09090b;
+  --card: #111113;
+  --border: #27272a;
+  --border-light: #3f3f46;
+  --text: #e4e4e7;
+  --text-dim: #a1a1aa;
+  --text-muted: #71717a;
+  --warn: #f59e0b;
+  --crit: #ef4444;
+  --ok: #22c55e;
+  --cyan: #22c55e;
+  --fg: var(--text);
+  --green: #22c55e;
+  --muted: var(--text-muted);
+  --shadow: 0 1px 3px rgba(0,0,0,.4);
+  --input-bg: #09090b;
+  --code-bg: #09090b;
+  --hover-overlay: rgba(255,255,255,.04);
+  /* Typography — system stack, same spec as the native GPUI console:
+     SF Pro Text 13px UI sans, SF Mono 12px data mono. */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', Menlo, monospace;
+  --font-ui-size: 13px;
+  --font-mono-size: 12px;
+  /* HMI palette (ISA-101): grey equipment, colour reserved for state + alarms */
+  --hmi-stage: #15181d;
+  --hmi-area: rgba(255,255,255,.025);
+  --hmi-body-hi: #8b939e;
+  --hmi-body-mid: #5b636e;
+  --hmi-body-lo: #30363e;
+  --hmi-stroke: #a7afb9;
+  --hmi-detail: #1c2026;
+  --hmi-pipe-hi: #9aa2ac;
+  --hmi-pipe-lo: #3c424a;
+  --hmi-run: #34c47a;
+  --hmi-fault: #f04646;
+  --hmi-warn: #f5b21b;
+  --hmi-stale: #d65ce8;
+  --hmi-liquid-hi: #6aa9e6;
+  --hmi-liquid-lo: #1f5fa8;
+  --hmi-bulk-hi: #cdb68a;
+  --hmi-bulk-lo: #8a7148;
+  --hmi-lcd: #0b1610;
+  --hmi-badge: #0d0f12;
+}
+
+/* ── Light theme ── */
+[data-theme="light"] {
+  --bg: #ffffff;
+  --card: #f9fafb;
+  --border: #e5e7eb;
+  --border-light: #d1d5db;
+  --text: #111827;
+  --text-dim: #4b5563;
+  --text-muted: #6b7280;
+  --warn: #d97706;
+  --crit: #dc2626;
+  --ok: #16a34a;
+  --cyan: #16a34a;
+  --fg: var(--text);
+  --green: #16a34a;
+  --muted: var(--text-muted);
+  --shadow: 0 1px 3px rgba(0,0,0,.1);
+  --input-bg: #ffffff;
+  --code-bg: #f3f4f6;
+  --hover-overlay: rgba(0,0,0,.04);
+  --hmi-stage: #dfe2e6;
+  --hmi-area: rgba(255,255,255,.45);
+  --hmi-body-hi: #fbfbfc;
+  --hmi-body-mid: #d5d9de;
+  --hmi-body-lo: #a3a9b1;
+  --hmi-stroke: #4a5059;
+  --hmi-detail: #6b717a;
+  --hmi-pipe-hi: #e9ecef;
+  --hmi-pipe-lo: #8d939b;
+  --hmi-run: #1f9d57;
+  --hmi-fault: #d92d2d;
+  --hmi-warn: #d99000;
+  --hmi-stale: #b936c9;
+  --hmi-liquid-hi: #7db6ea;
+  --hmi-liquid-lo: #2a6bb5;
+  --hmi-bulk-hi: #d9c49b;
+  --hmi-bulk-lo: #9a8056;
+  --hmi-lcd: #102018;
+  --hmi-badge: #1d2127;
+}
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--font-ui-size);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--font-mono-size);
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+}
+
+input, select {
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+input:focus, select:focus {
+  border-color: var(--border-light);
+}
+
+input[type="color"] {
+  padding: 2px 4px;
+  height: 32px;
+  width: 48px;
+}
+
+/* react-grid-layout overrides */
+.react-grid-layout {
+  position: relative;
+  transition: height 200ms ease;
+}
+
+.react-grid-item {
+  transition: all 200ms ease;
+  transition-property: left, top, width, height;
+}
+
+.react-grid-item > div {
+  height: 100%;
+}
+
+.react-grid-item.cssTransforms {
+  transition-property: transform, width, height;
+}
+
+.react-grid-item.resizing {
+  opacity: 0.9;
+  z-index: 10;
+}
+
+.react-grid-item.react-draggable-dragging {
+  transition: none;
+  z-index: 10;
+  opacity: 0.9;
+}
+
+.react-grid-item > .react-resizable-handle {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+}
+
+.react-grid-item > .react-resizable-handle::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid var(--cyan);
+  border-bottom: 2px solid var(--cyan);
+}
+
+.react-grid-placeholder {
+  background: var(--cyan) !important;
+  opacity: 0.15 !important;
+  border-radius: 10px;
+  border: 2px dashed var(--cyan) !important;
+}
+
+.drag-handle {
+  cursor: grab;
+  touch-action: none;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.md-text h1, .md-text h2, .md-text h3 {
+  margin: 0 0 8px;
+  font-weight: 700;
+}
+.md-text h1 { font-size: 1.4em; }
+.md-text h2 { font-size: 1.2em; }
+.md-text h3 { font-size: 1.1em; }
+.md-text p { margin: 0 0 6px; }
+.md-text ul, .md-text ol { margin: 0 0 6px; padding-left: 20px; }
+.md-text li { margin-bottom: 2px; }
+.md-text code {
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+.md-text pre {
+  background: var(--bg);
+  padding: 8px 10px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0 0 6px;
+}
+.md-text pre code {
+  background: none;
+  padding: 0;
+}
+.md-text a {
+  color: var(--cyan);
+  text-decoration: none;
+}
+.md-text a:hover {
+  text-decoration: underline;
+}
+.md-text strong { font-weight: 700; }
+.md-text em { font-style: italic; }
+.md-text blockquote {
+  border-left: 3px solid var(--border);
+  margin: 0 0 6px;
+  padding-left: 10px;
+  color: var(--muted);
+}
+.md-text hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 8px 0;
+}
+.md-text table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0 0 6px;
+}
+.md-text th, .md-text td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.md-text th {
+  background: var(--bg);
+  font-weight: 600;
+}
+
+/* Hide keyboard shortcut badges on mobile/tablet */
+@media (max-width: 1023px) {
+  kbd {
+    display: none !important;
+  }
+}
+
+/* Touch-first improvements */
+button, a, [role="button"] {
+  touch-action: manipulation;
+}
+
+/* Prevent copy-menu on long-press for interactive surfaces */
+.react-grid-item,
+button,
+[role="button"] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Keep text selection on inputs */
+input, textarea, [contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Larger drag handles for touch */
+.react-grid-item > .react-resizable-handle {
+  width: 28px !important;
+  height: 28px !important;
+}
+
+/* Touch device detection — increase spacing */
+@media (pointer: coarse) {
+  button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+/* Focus indicators for accessibility */
+*:focus-visible {
+  outline: 2px solid var(--cyan);
+  outline-offset: 2px;
+}
+
+*:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Skip to content link for keyboard users */
+.skip-to-content {
+  position: absolute;
+  top: -100%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  background: var(--cyan);
+  color: var(--bg);
+  font-weight: 700;
+  z-index: 10000;
+  border-radius: 0 0 8px 8px;
+  text-decoration: none;
+}
+.skip-to-content:focus {
+  top: 0;
+}
+
+/* Navigation header */
+nav[role="navigation"] button:hover {
+  opacity: 0.85;
+}
+
+/* Mobile navigation drawer */
+@media (max-width: 768px) {
+  .header-actions-desktop {
+    display: none !important;
+  }
+}
+@media (min-width: 769px) {
+  .hamburger-menu {
+    display: none !important;
+  }
+}
+
+/* Drawer slide-in animation */
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes toastIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Hide scrollbar on mobile tab scroll */
+.screen-tabs-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* Mobile main content padding */
+@media (max-width: 480px) {
+  .main-content {
+    padding: 0 10px 38px !important;
+  }
+}
+
+/* ── HMI symbol animations ── */
+.hmi-spin { transform-box: fill-box; transform-origin: center; animation: hmi-spin 1.4s linear infinite; }
+.hmi-agitate { transform-box: fill-box; transform-origin: center; animation: hmi-agitate .6s ease-in-out infinite alternate; }
+.hmi-flow { animation: hmi-flow .9s linear infinite; }
+.hmi-blink { animation: hmi-blink 1s steps(2, jump-none) infinite; }
+@keyframes hmi-spin { to { transform: rotate(360deg); } }
+@keyframes hmi-agitate { from { transform: scaleX(1); } to { transform: scaleX(-1); } }
+@keyframes hmi-flow { to { stroke-dashoffset: -24; } }
+@keyframes hmi-blink { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) {
+  .hmi-spin, .hmi-agitate, .hmi-flow { animation: none; }
+}

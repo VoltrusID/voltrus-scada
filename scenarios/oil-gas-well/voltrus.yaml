@@ -1,0 +1,41 @@
+# Oil & Gas Remote Well Pad — Voltrus Configuration
+
+server_port: 3000
+db_path: "oil-gas-well.db"
+
+devices:
+  # Daniel 1000 — gas flow computer (orifice meter)
+  - id: "daniel_fc_1"
+    ip: "127.0.0.1"
+    port: 5020
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "diff_pressure"
+        address: 0
+        type: "float32"
+      - name: "static_pressure"
+        address: 2
+        type: "float32"
+      - name: "temperature"
+        address: 4
+        type: "float32"
+      - name: "flow_rate"
+        address: 6
+        type: "float32"
+      - name: "gas_gravity"
+        address: 12
+        type: "float32"
+      - name: "heating_value"
+        address: 14
+        type: "float32"
+      - name: "ch4_fraction"
+        address: 16
+        type: "float32"
+      - name: "co2_fraction"
+        address: 18
+        type: "float32"
+      - name: "h2s_ppm"
+        address: 20
+        type: "float32"

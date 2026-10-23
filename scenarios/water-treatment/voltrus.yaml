@@ -1,0 +1,83 @@
+# Water Treatment Plant — Voltrus Configuration
+
+server_port: 3000
+db_path: "water-treatment.db"
+
+devices:
+  # E+H Promag 10W — raw water intake flowmeter
+  - id: "eh_flow_raw"
+    ip: "127.0.0.1"
+    port: 5020
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "flow_rate"
+        address: 0
+        type: "float32"
+      - name: "flow_velocity"
+        address: 2
+        type: "float32"
+      - name: "conductivity"
+        address: 6
+        type: "float32"
+      - name: "temperature"
+        address: 8
+        type: "float32"
+
+  # ABB AZL402 — water quality analyzer
+  - id: "abb_analyzer"
+    ip: "127.0.0.1"
+    port: 5021
+    unit_id: 1
+    interval_ms: 2000
+    endianness: "big"
+    registers:
+      - name: "ph"
+        address: 0
+        type: "float32"
+      - name: "orp"
+        address: 2
+        type: "float32"
+      - name: "turbidity"
+        address: 4
+        type: "float32"
+      - name: "dissolved_oxygen"
+        address: 6
+        type: "float32"
+      - name: "chlorine_free"
+        address: 10
+        type: "float32"
+      - name: "water_temp"
+        address: 12
+        type: "float32"
+
+  # PM5560 — main power meter
+  - id: "pm5560_main"
+    ip: "127.0.0.1"
+    port: 5022
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "voltage_l1n"
+        address: 0
+        type: "float32"
+      - name: "voltage_l2n"
+        address: 2
+        type: "float32"
+      - name: "voltage_l3n"
+        address: 4
+        type: "float32"
+      - name: "current_l1"
+        address: 6
+        type: "float32"
+      - name: "active_power"
+        address: 12
+        type: "float32"
+      - name: "power_factor"
+        address: 18
+        type: "float32"
+      - name: "frequency"
+        address: 20
+        type: "float32"

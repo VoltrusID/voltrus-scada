@@ -1,0 +1,74 @@
+# Data Center — Tier-III Voltrus Configuration
+
+server_port: 3000
+db_path: "data-center.db"
+
+devices:
+  # Raritan PX3-5902V — Rack PDU Hall A Row 1
+  - id: "raritan_pdu_r1"
+    ip: "127.0.0.1"
+    port: 5020
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "voltage_l1"
+        address: 0
+        type: "float32"
+      - name: "voltage_l2"
+        address: 2
+        type: "float32"
+      - name: "voltage_l3"
+        address: 4
+        type: "float32"
+      - name: "current_l1"
+        address: 6
+        type: "float32"
+      - name: "current_l2"
+        address: 8
+        type: "float32"
+      - name: "current_l3"
+        address: 10
+        type: "float32"
+      - name: "active_power"
+        address: 12
+        type: "float32"
+      - name: "power_factor"
+        address: 14
+        type: "float32"
+      - name: "temp_inlet"
+        address: 18
+        type: "float32"
+      - name: "temp_outlet"
+        address: 20
+        type: "float32"
+      - name: "humidity"
+        address: 22
+        type: "float32"
+
+  # PM5560 — UPS input/output
+  - id: "pm5560_ups"
+    ip: "127.0.0.1"
+    port: 5021
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "ups_voltage_l1"
+        address: 0
+        type: "float32"
+      - name: "ups_voltage_l2"
+        address: 2
+        type: "float32"
+      - name: "ups_voltage_l3"
+        address: 4
+        type: "float32"
+      - name: "ups_current_l1"
+        address: 6
+        type: "float32"
+      - name: "ups_active_power"
+        address: 12
+        type: "float32"
+      - name: "ups_frequency"
+        address: 20
+        type: "float32"

@@ -1,0 +1,125 @@
+name: Release
+
+# Builds the Core binaries for each tagged version and attaches them to a GitHub
+# release. Push a tag like v0.48.0 (it must match the version in Cargo.toml).
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  client:
+    name: Build web client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - name: Check tag matches Cargo.toml
+        run: |
+          v="v$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
+          [ "$v" = "${GITHUB_REF_NAME}" ] || { echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version $v"; exit 1; }
+      - name: Build
+        run: |
+          cd client
+          npm ci
+          npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static
+          path: static
+          if-no-files-found: error
+
+  build:
+    name: ${{ matrix.name }}
+    needs: client
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            musl: true
+          - name: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            musl: true
+          - name: macos-aarch64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            musl: false
+          - name: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            musl: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools clang
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} --bin voltrus --bin modbus-sim
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: static
+          path: static
+
+      - name: Package
+        run: |
+          name="voltrus-core-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          mkdir -p "dist/$name"
+          cp target/${{ matrix.target }}/release/voltrus target/${{ matrix.target }}/release/modbus-sim "dist/$name/"
+          cp -r static "dist/$name/static"
+          cp config.yaml "dist/$name/config.yaml.example"
+          cp deploy/voltrus.service LICENSE NOTICE THIRD-PARTY-LICENSES.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: "*-*"
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" artifacts/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Voltrus SCADA Core ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --notes "Open-source Core under AGPL-3.0-or-later. These binaries are Core only (no Enterprise add-on, no licence key needed)."

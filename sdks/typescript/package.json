@@ -1,0 +1,52 @@
+{
+  "name": "voltrus",
+  "version": "0.47.1",
+  "description": "Official TypeScript SDK for the Voltrus SCADA server",
+  "license": "MIT",
+  "keywords": [
+    "voltrus",
+    "scada",
+    "industrial",
+    "modbus",
+    "opcua",
+    "s7",
+    "dnp3",
+    "enip"
+  ],
+  "homepage": "https://voltrus.id/voltrus-scada",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VoltrusID/voltrus-scada",
+    "directory": "sdks/typescript"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "typecheck:examples": "tsc -p tsconfig.examples.json --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "axios": "^1.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.0",
+    "typescript": "^5.3.0"
+  }
+}

@@ -1,0 +1,26 @@
+/target
+voltrus-iced/target/
+static/
+client/node_modules/
+client/dist/
+
+# SQLite databases (runtime/dev data, never commit)
+*.db
+*.db-shm
+*.db-wal
+
+# Backup tarballs from restore operations
+voltrus-pre-restore-*.tar.gz
+*-backup-*.tar.gz
+
+# Local config overrides
+config.dev.yaml
+config.dev-2.yaml
+client/.env
+
+# Tooling and OS artifacts
+.wrangler/
+.DS_Store
+__pycache__/
+pki/
+release-artifacts/

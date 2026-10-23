@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in Voltrus SCADA Core does not work as expected
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag or commit, from `GET /api/v1/version` or the release page
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How are you running it
+      options: [Release binary, Built from source, Docker or other]
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and architecture
+      placeholder: Ubuntu 24.04 x86_64
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [Modbus, OPC UA, S7, EtherNet/IP, DNP3, BACnet, MQTT, Alarms, Historian, Dashboards, Flows and scripts, REST API or SDK, Web client, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened and what did you expect
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: A minimal config or simulator setup helps a lot. Remove passwords and keys.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      render: text

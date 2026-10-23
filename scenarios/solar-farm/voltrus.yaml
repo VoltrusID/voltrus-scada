@@ -1,0 +1,113 @@
+# Solar Farm — Voltrus Configuration
+#
+# 100kW Rooftop PV Plant
+# - SMA Sunny Tripower 60TL-US inverter (Modbus :5020)
+# - Schneider PM5560 grid meter (Modbus :5021)
+# - Siemens S7-1200 weather station (S7 :10200)
+# - MQTT weather gateway (:1883)
+
+server_port: 3000
+db_path: "solar-farm.db"
+
+devices:
+  # SMA Inverter — DC strings, AC output, yield
+  - id: "sma_inv_1"
+    ip: "127.0.0.1"
+    port: 5020
+    unit_id: 3          # SMA default Unit ID = 3
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "dc_voltage_a"
+        address: 0       # DC Voltage String A
+        type: "float32"
+      - name: "dc_voltage_b"
+        address: 2       # DC Voltage String B
+        type: "float32"
+      - name: "dc_current_a"
+        address: 4       # DC Current String A
+        type: "float32"
+      - name: "dc_current_b"
+        address: 6       # DC Current String B
+        type: "float32"
+      - name: "dc_power"
+        address: 8       # Total DC Power
+        type: "float32"
+      - name: "ac_voltage_l1"
+        address: 10      # AC Voltage L1-N
+        type: "float32"
+      - name: "ac_voltage_l2"
+        address: 12
+        type: "float32"
+      - name: "ac_voltage_l3"
+        address: 14
+        type: "float32"
+      - name: "ac_current_l1"
+        address: 16      # AC Current L1
+        type: "float32"
+      - name: "ac_current_l2"
+        address: 18
+        type: "float32"
+      - name: "ac_current_l3"
+        address: 20
+        type: "float32"
+      - name: "ac_power"
+        address: 22      # Total AC Active Power
+        type: "float32"
+      - name: "frequency"
+        address: 24
+        type: "float32"
+      - name: "efficiency"
+        address: 26
+        type: "float32"
+      - name: "irradiance"
+        address: 32      # Plane-of-array irradiance
+        type: "float32"
+      - name: "temperature"
+        address: 34      # Heatsink temperature
+        type: "float32"
+
+  # PM5560 Grid Meter — import/export energy, power quality
+  - id: "pm5560_grid"
+    ip: "127.0.0.1"
+    port: 5021
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "voltage_l1n"
+        address: 0
+        type: "float32"
+      - name: "voltage_l2n"
+        address: 2
+        type: "float32"
+      - name: "voltage_l3n"
+        address: 4
+        type: "float32"
+      - name: "current_l1"
+        address: 6
+        type: "float32"
+      - name: "current_l2"
+        address: 8
+        type: "float32"
+      - name: "current_l3"
+        address: 10
+        type: "float32"
+      - name: "active_power"
+        address: 12
+        type: "float32"
+      - name: "reactive_power"
+        address: 14
+        type: "float32"
+      - name: "power_factor"
+        address: 18
+        type: "float32"
+      - name: "frequency"
+        address: 20
+        type: "float32"
+      - name: "thd_voltage"
+        address: 22
+        type: "float32"
+      - name: "thd_current"
+        address: 24
+        type: "float32"

@@ -1,0 +1,11 @@
+[advisories]
+ignore = [
+    "RUSTSEC-2023-0071", # rsa: Marvin Attack — no fix available, transitive dep
+    "RUSTSEC-2023-0089", # atomic-polyfill: unmaintained — transitive via opcua
+    "RUSTSEC-2024-0436", # paste: unmaintained — transitive via boa_engine/utoipa-axum
+    "RUSTSEC-2025-0134", # rustls-pemfile: unmaintained — transitive via reqwest
+    "RUSTSEC-2026-0049", # rustls-webpki: CRLs not authoritative — transitive via rumqttd, no fix upstream
+    "RUSTSEC-2026-0098", # rustls-webpki: wildcard name constraints — transitive via rumqttd, no fix upstream
+    "RUSTSEC-2026-0099", # rustls-webpki: CRLs matching logic — transitive via rumqttd, no fix upstream
+    "RUSTSEC-2026-0104", # rustls-webpki: panic reachable prior to CRL verification — transitive via rumqttd, no fix upstream
+]

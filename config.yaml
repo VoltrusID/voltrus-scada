@@ -1,0 +1,132 @@
+server_port: 3000
+db_path: "data.db"
+persist_interval_secs: 5
+# auth_secret: "change-me-to-a-strong-random-string"
+
+devices:
+  - id: "plts_1"
+    ip: "192.168.1.10"
+    port: 502
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "voltage"
+        address: 40001
+        type: "float32"
+      - name: "current"
+        address: 40003
+        type: "float32"
+      - name: "power"
+        address: 40005
+        type: "float32"
+      - name: "frequency"
+        address: 40007
+        type: "float32"
+      - name: "power_factor"
+        address: 40009
+        type: "float32"
+      - name: "energy_total"
+        address: 40011
+        type: "float32"
+
+  # Data retention - automatic downsampling and archiving
+  # retention:
+  #   enabled: true
+  #   run_interval_secs: 21600  # every 6 hours
+  #   archive_dir: "./archive"
+  #   tiers:
+  #     - name: raw
+  #       keep: 604800           # 7 days (in seconds)
+  #       downsample_to: hourly
+  #       archive: true          # export raw to CSV+gzip before deleting
+  #     - name: hourly
+  #       keep: 7776000          # 90 days
+  #       downsample_to: daily
+  #     - name: daily
+  #       keep: null             # forever
+
+  - id: "plts_2"
+    ip: "192.168.1.11"
+    port: 502
+    unit_id: 1
+    interval_ms: 1000
+    endianness: "big"
+    registers:
+      - name: "voltage"
+        address: 40001
+        type: "float32"
+      - name: "current"
+        address: 40003
+        type: "float32"
+      - name: "power"
+        address: 40005
+        type: "float32"
+      - name: "frequency"
+        address: 40007
+        type: "float32"
+      - name: "power_factor"
+        address: 40009
+        type: "float32"
+      - name: "energy_total"
+        address: 40011
+        type: "float32"
+
+# Data retention - automatic downsampling and archiving
+# retention:
+#   enabled: true
+#   run_interval_secs: 21600  # every 6 hours
+#   archive_dir: "./archive"
+#   tiers:
+#     - name: raw
+#       keep: 604800           # 7 days (in seconds)
+#       downsample_to: hourly
+#       archive: true          # export raw to CSV+gzip before deleting
+#     - name: hourly
+#       keep: 7776000          # 90 days
+#       downsample_to: daily
+#     - name: daily
+#       keep: null             # forever
+
+# SMTP email notifications (optional - uncomment and fill to enable)
+# smtp:
+#   host: "smtp.example.com"
+#   port: 587
+#   username: "your@email.com"
+#   password: "your-app-password"
+#   from_address: "voltrus@example.com"
+#   from_name: "Voltrus"
+#   encryption: "starttls"     # starttls | implicittls | none
+
+# Web Push notifications (optional - uncomment and fill to enable)
+# Requires VAPID keys. Generate with: openssl ecparam -name prime256v1 -genkey -noout | openssl ec -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '='
+# push:
+#   vapid_private_key: "base64url-encoded P-256 private key"
+#   vapid_public_key: "base64url-encoded P-256 public key"
+#   vapid_subject: "mailto:admin@example.com"
+
+# OPC-UA devices (optional - configure via REST API at runtime)
+# opcua:
+#   - name: "PLC-OPC1"
+#     url: "opc.tcp://192.168.1.20:4840"
+#     security_policy: "none"        # none | basic256_sha256
+#     security_mode: "none"          # none | sign | sign_and_encrypt
+#     username: null
+#     password: null
+#     interval_ms: 1000
+#     nodes:
+#       - node_id: "ns=2;s=Temperature"
+#         name: "temperature"
+#         display_name: "Temperature"
+#         data_type: "Float"
+
+# Embedded MQTT broker (optional - uncomment and fill to enable)
+# mqtt_broker:
+#   enabled: true
+#   port: 1883
+#   max_connections: 100
+#   auth:
+#     mode: "none"                    # none | config
+#     users: []                       # when mode = "config":
+#                                     #   - username: "user1"
+#                                     #     password: "pass1"

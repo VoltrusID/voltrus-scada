@@ -1,0 +1,116 @@
+[workspace]
+members = [".", "native"]
+exclude = ["enterprise"]
+resolver = "2"
+
+# GPUI rendering is perf-critical even in dev builds.
+[profile.dev.package.gpui]
+opt-level = 3
+
+[package]
+name = "voltrus"
+version = "0.47.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+publish = false
+default-run = "voltrus"
+description = "Voltrus SCADA: self-hosted industrial monitoring and SCADA runtime (open core)"
+repository = "https://github.com/VoltrusID/voltrus-scada"
+
+[lib]
+name = "voltrus"
+path = "src/lib.rs"
+
+[[bin]]
+name = "voltrus"
+path = "src/main.rs"
+
+[[bin]]
+name = "modbus-sim"
+path = "src/bin/modbus-sim.rs"
+required-features = ["modbus"]
+
+[[bin]]
+name = "s7-sim"
+path = "src/bin/s7-sim.rs"
+required-features = ["s7"]
+
+[[bin]]
+name = "opcua-sim"
+path = "src/bin/opcua-sim.rs"
+required-features = ["opcua"]
+
+[[bin]]
+name = "mqtt-sim"
+path = "src/bin/mqtt-sim.rs"
+required-features = ["mqtt-broker"]
+
+[[bin]]
+name = "dnp3-sim"
+path = "src/bin/dnp3-sim.rs"
+required-features = ["dnp3"]
+
+[[bin]]
+name = "bacnet-sim"
+path = "src/bin/bacnet-sim.rs"
+required-features = ["bacnet"]
+
+[features]
+default = ["snmp_scan", "modbus", "opcua", "mqtt-broker", "bacnet", "dnp3", "ethernet-ip", "s7", "scripts"]
+openapi = []
+snmp_scan = []
+modbus = ["dep:tokio-modbus"]
+opcua = ["dep:async-opcua"]
+mqtt-broker = ["dep:rumqttd"]
+bacnet = ["dep:bacnet-rs"]
+dnp3 = []
+ethernet-ip = []
+s7 = []
+scripts = ["dep:rquickjs"]
+
+[dependencies]
+tokio = { version = "=1.52.1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "time"] }
+bytes = "1"
+tokio-modbus = { version = "=0.16.1", default-features = false, features = ["tcp", "tcp-server"], optional = true }
+axum = { version = "=0.8.9", features = ["ws", "multipart"] }
+csv = "1"
+utoipa = { version = "5", features = ["axum_extras"] }
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.149"
+serde_yaml_neo = "0.11"
+rusqlite = { version = "=0.34.0", features = ["bundled", "backup"] }
+anyhow = "=1.0.104"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
+tower-http = { version = "=0.6.8", features = ["cors", "fs"] }
+axum-extra = { version = "=0.10.3", features = ["cookie"] }
+hmac = "=0.12.1"
+sha2 = "=0.10.9"
+hex = "=0.4.3"
+base64 = "=0.22.1"
+argon2 = "=0.5.3"
+password-hash = "=0.5.0"
+rand = "=0.9.4"
+dashmap = "=6.1.0"
+flate2 = "=1.1.9"
+tar = "=0.4"
+sysinfo = "=0.34.2"
+time = { version = "=0.3.47", features = ["local-offset"] }
+reqwest = { version = "=0.12.15", default-features = false, features = ["json", "rustls-tls", "multipart", "stream"] }
+lettre = { version = "=0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+tempfile = "=3.27.0"
+async-opcua = { version = "=0.18.0", default-features = false, features = ["client", "server"], optional = true }
+rmp-serde = "=1.3.0"
+bacnet-rs = { version = "0.3", optional = true }
+futures-util = "=0.3.31"
+rumqttd = { version = "0.20", optional = true }
+
+rquickjs = { version = "0.12", features = ["bindgen"], optional = true }
+regex = "1"
+zip = "=2.4"
+calamine = "0.34.0"
+snmp = "0.2.2"
+
+[dev-dependencies]
+http = "=1.4.0"
+tower = { version = "=0.5.3", features = ["util"] }
