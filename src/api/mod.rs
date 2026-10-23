@@ -123,13 +123,34 @@ pub struct AppState {
 #[derive(Debug)]
 pub struct AppError(pub anyhow::Error);
 
+/// Marker error for a request the server understood but refuses (answered with 403).
+/// Add-on editions use it for entitlement checks.
+#[derive(Debug)]
+pub struct Forbidden(pub String);
+
+impl std::fmt::Display for Forbidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Forbidden {}
+
+impl AppError {
+    /// An error answered with 403 and `{"error": message}`.
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        AppError(anyhow::Error::new(Forbidden(message.into())))
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": format!("{:#}", self.0)})),
-        )
-            .into_response()
+        let status = if self.0.downcast_ref::<Forbidden>().is_some() {
+            StatusCode::FORBIDDEN
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR
+        };
+        (status, Json(json!({"error": format!("{:#}", self.0)}))).into_response()
     }
 }
 

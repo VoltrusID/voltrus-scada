@@ -90,3 +90,18 @@ async fn logo_only_white_label_grant_stays_community_with_one_flag() {
     assert_eq!(body["feature_flags"]["theme_full"], false);
     assert_eq!(body["feature_flags"]["multi_site"], false);
 }
+
+#[tokio::test]
+async fn forbidden_app_error_answers_403_and_other_errors_500() {
+    use axum::response::IntoResponse;
+    let denied = crate::api::AppError::forbidden("needs an add-on licence").into_response();
+    assert_eq!(denied.status(), http::StatusCode::FORBIDDEN);
+    let body = axum::body::to_bytes(denied.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["error"], "needs an add-on licence");
+
+    let failed = crate::api::AppError(anyhow::anyhow!("boom")).into_response();
+    assert_eq!(failed.status(), http::StatusCode::INTERNAL_SERVER_ERROR);
+}
