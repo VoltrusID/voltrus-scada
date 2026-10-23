@@ -38,13 +38,18 @@ pub(super) fn run_migrations(conn: &Connection) {
         "ALTER TABLE modbus_registers ADD COLUMN zero_based INTEGER NOT NULL DEFAULT 0",
     );
 
-    // Migration: add must_change_password column to users
-    let _ = conn.execute_batch(
-        "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
-    );
-    // Force existing admin users to change password (they likely have the default "admin" password)
-    let _ =
-        conn.execute_batch("UPDATE users SET must_change_password = 1 WHERE username = 'admin'");
+    // Migration: add must_change_password column to users. Only the run that adds the
+    // column flags existing admins (they likely have the default "admin" password);
+    // doing it on every start would force a password change after each restart.
+    if conn
+        .execute_batch(
+            "ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0",
+        )
+        .is_ok()
+    {
+        let _ = conn
+            .execute_batch("UPDATE users SET must_change_password = 1 WHERE username = 'admin'");
+    }
 
     // Migration: add account lockout columns to users
     let _ = conn

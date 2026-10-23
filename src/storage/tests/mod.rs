@@ -8,6 +8,7 @@ mod oee_tests;
 mod security_tests;
 mod tag_tree_tests;
 mod telemetry_tests;
+mod user_tests;
 
 use super::Storage;
 use crate::models::{Command, CommandQuery, DataPoint};
