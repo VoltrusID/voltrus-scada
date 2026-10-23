@@ -12,11 +12,12 @@ use crate::api::AppState;
     security(("api_key" = []), ("cookie_auth" = []))
 )]
 pub async fn get_license_status(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let license_status = state.license_status.read().unwrap();
+    let license_status = state
+        .license_status
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
     let mut status = serde_json::to_value(&*license_status).unwrap();
-    drop(license_status);
-    let tier = state.tier();
-    status["tier"] = serde_json::to_value(tier).unwrap();
-    status["feature_flags"] = tier.to_feature_flags();
+    status["tier"] = serde_json::to_value(license_status.tier()).unwrap();
+    status["feature_flags"] = license_status.feature_flags();
     Json(status)
 }
