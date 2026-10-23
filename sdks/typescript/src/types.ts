@@ -722,33 +722,3 @@ export interface CreateShiftRequest {
   duration_hours: number;
   days_mask: number;
 }
-
-// ── Reports ────────────────────────────────────────────────────
-
-export interface Report {
-  id: number;
-  name: string;
-  schedule: string;
-  enabled: boolean;
-  device_ids: string;
-  email_recipients: string;
-  last_generated?: number;
-  /** unix seconds */
-  created_at: number;
-}
-
-export interface CreateReportRequest {
-  name: string;
-  schedule: string;
-  device_ids?: string;
-  email_recipients: string;
-  enabled?: boolean;
-}
-
-export interface UpdateReportRequest {
-  name?: string;
-  schedule?: string;
-  device_ids?: string;
-  email_recipients?: string;
-  enabled?: boolean;
-}

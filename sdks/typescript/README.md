@@ -1,6 +1,6 @@
 # Voltrus TypeScript SDK
 
-Official TypeScript client for the [Voltrus SCADA](https://voltrus.id/voltrus-scada) server. Drive your plant's live data, alarms, tag writes, devices, OEE and reports from Node.js or the browser — the same API the bundled web UI uses.
+Official TypeScript client for the [Voltrus SCADA](https://voltrus.id/voltrus-scada) server. Drive your plant's live data, alarms, tag writes, devices and OEE from Node.js or the browser — the same API the bundled web UI uses.
 
 ## Install
 
@@ -136,12 +136,9 @@ Writes go through the server's write policy: value range, deadband, rate limit, 
 - `list()`, `create(name)`, `rename(id, name)`, `delete(id)`
 - `listSensors(id)`, `addSensor(id, dataSourceId)`, `updateSensorOrder(id, dataSourceId, sortOrder)`, `removeSensor(id, dataSourceId)`
 
-### Reports
+### Add-on endpoints
 
-`client.reports` — scheduled PDF reports (an Enterprise add-on feature: the endpoints return 404 on a Core-only server).
-
-- `list()`, `create({ name, schedule, email_recipients, device_ids? })`, `update(id, ...)`, `delete(id)`
-- `generate(id)` — run a report now instead of waiting for its schedule
+This SDK covers the open Core only. The Enterprise add-on exposes more endpoints on the official build (scheduled reports, hub, cameras and so on). A Core-only server returns 404 for them and they are not part of this package. `client.http` is the shared HTTP session, so add-on packages reuse your credentials.
 
 ## Interactive API docs
 

@@ -24,3 +24,7 @@ client/.env
 __pycache__/
 pki/
 release-artifacts/
+
+# Reference clients and spec produced by sdks/generate.sh
+sdks/generated/
+sdks/openapi.json

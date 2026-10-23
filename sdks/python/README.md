@@ -197,15 +197,9 @@ client.add_screen_sensor(s.id, data_source_id=17)
 client.create_screen({"name": "Line 1", "type": "process"})
 ```
 
-### Reports
+### Add-on endpoints
 
-```python
-client.list_reports()
-html = client.generate_report(report_id)       # HTML document as text
-with open("report.html", "w") as f:
-    f.write(html)
-client.create_report({"name": "Daily", "schedule": "daily"})
-```
+This SDK covers the open Core only. The Enterprise add-on exposes more endpoints on the official build (scheduled reports, hub, cameras and so on). A Core-only server returns 404 for them and they are not part of this package. Add-on packages subclass `VoltrusClient` and reuse its session; for a one-off call, `client.request(method, path, body=None, params=None)` works for any endpoint.
 
 ### System & analytics
 

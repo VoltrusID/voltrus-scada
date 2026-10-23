@@ -851,28 +851,6 @@ class VoltrusClient:
         """Delete a shift."""
         self._request("DELETE", f"/api/v1/oee/shifts/{shift_id}")
 
-    # ── Reports ─────────────────────────────────────────────
-
-    def list_reports(self) -> List[Dict[str, Any]]:
-        """Configured reports."""
-        return self._request("GET", "/api/v1/reports")
-
-    def create_report(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a report definition."""
-        return self._request("POST", "/api/v1/reports", body=config)
-
-    def update_report(self, report_id: int, config: Dict[str, Any]) -> None:
-        """Update a report definition."""
-        self._request("PUT", f"/api/v1/reports/{report_id}", body=config)
-
-    def delete_report(self, report_id: int) -> None:
-        """Delete a report definition."""
-        self._request("DELETE", f"/api/v1/reports/{report_id}")
-
-    def generate_report(self, report_id: int) -> str:
-        """Generate a report now. Returns the HTML report document."""
-        return self._request("POST", f"/api/v1/reports/{report_id}/generate", raw=True)
-
     # ── Analytics ───────────────────────────────────────────
 
     def get_aggregate(

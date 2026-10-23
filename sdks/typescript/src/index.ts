@@ -4,7 +4,6 @@ import { CommandsApi } from './apis/commands';
 import { DataApi } from './apis/data';
 import { DevicesApi } from './apis/devices';
 import { OeeApi } from './apis/oee';
-import { ReportsApi } from './apis/reports';
 import { ScreensApi } from './apis/screens';
 import { SystemApi } from './apis/system';
 import { Configuration, ConfigurationParameters } from './configuration';
@@ -20,7 +19,6 @@ export { CommandsApi } from './apis/commands';
 export { DataApi } from './apis/data';
 export { DevicesApi } from './apis/devices';
 export { OeeApi } from './apis/oee';
-export { ReportsApi } from './apis/reports';
 export { ScreensApi } from './apis/screens';
 export { SystemApi } from './apis/system';
 export * from './types';
@@ -34,6 +32,11 @@ export * from './types';
  * split credentials across isolated sessions.
  */
 export class VoltrusClient {
+  /**
+   * The HTTP session shared by every API group. Add-on packages build their
+   * own API classes on top of it so they reuse the same credentials.
+   */
+  readonly http: HttpClient;
   readonly auth: AuthApi;
   readonly system: SystemApi;
   readonly data: DataApi;
@@ -42,12 +45,12 @@ export class VoltrusClient {
   readonly devices: DevicesApi;
   readonly screens: ScreensApi;
   readonly oee: OeeApi;
-  readonly reports: ReportsApi;
 
   constructor(configuration: Configuration | ConfigurationParameters = {}) {
     const config =
       configuration instanceof Configuration ? configuration : new Configuration(configuration);
     const http = new HttpClient(config);
+    this.http = http;
 
     this.auth = new AuthApi(http);
     this.system = new SystemApi(http);
@@ -57,7 +60,6 @@ export class VoltrusClient {
     this.devices = new DevicesApi(http);
     this.screens = new ScreensApi(http);
     this.oee = new OeeApi(http);
-    this.reports = new ReportsApi(http);
   }
 }
 
