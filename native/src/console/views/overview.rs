@@ -406,6 +406,18 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         anim::request_frame(window, &console.meter);
     }
     let trend_card = trend_lines.map(|series| profile_card(console, series, now, &theme, cx));
+    let cards = div()
+        .grid()
+        .grid_cols(2)
+        .gap(SPACE_6)
+        .child(attention_card)
+        .child(alarms_card);
+    // The profile shows what moves first: its trend, then the tiles.
+    let (cards_above, cards_below) = if profile {
+        (None, Some(cards))
+    } else {
+        (Some(cards), None)
+    };
 
     div()
         .flex()
@@ -432,14 +444,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                         .p(SPACE_9)
                         .pb(LIST_TAIL)
                         .child(kpis)
-                        .child(
-                            div()
-                                .grid()
-                                .grid_cols(2)
-                                .gap(SPACE_6)
-                                .child(attention_card)
-                                .child(alarms_card),
-                        )
+                        .children(cards_above)
                         .children(trend_card)
                         .child(
                             div()
@@ -476,7 +481,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                     .on_children_prepainted(record_layout)
                                     .children(rows),
                             ),
-                        ),
+                        )
+                        .children(cards_below),
                 ),
         )
         .into_any_element()
@@ -591,7 +597,7 @@ fn profile_card(
         )
     };
     card(theme)
-        .h(px(220.0))
+        .h(px(180.0))
         .child(card_title(
             "Live trend, drawn every frame",
             None,
