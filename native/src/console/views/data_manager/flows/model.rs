@@ -23,6 +23,8 @@ pub(crate) const MAX_ZOOM: f32 = 2.5;
 pub(crate) const ZOOM_STEP: f32 = 1.2;
 /// Room around the steps when the view fits them.
 const FIT_MARGIN: f32 = 48.0;
+/// The least zoom a fit chooses: steps stay legible in a narrow canvas.
+const FIT_LEAST: f32 = 0.7;
 
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct Vec2 {
@@ -178,7 +180,9 @@ impl View {
     }
 
     /// `content` centred in a canvas of `size`, as large as fits up to
-    /// 100 %.
+    /// 100 %, but never smaller than [`FIT_LEAST`] so the steps stay
+    /// readable: a flow wider than that starts at its left edge (the
+    /// trigger), the rest a pan away.
     pub(crate) fn fit(content: Rect, size: Vec2) -> Self {
         let room = Vec2::new(
             (size.x - 2.0 * FIT_MARGIN).max(1.0),
@@ -187,11 +191,16 @@ impl View {
         let zoom = (room.x / content.size.x.max(1.0))
             .min(room.y / content.size.y.max(1.0))
             .min(1.0)
+            .max(FIT_LEAST)
             .clamp(MIN_ZOOM, MAX_ZOOM);
-        Self {
-            pan: size.scale(0.5) - content.center().scale(zoom),
-            zoom,
+        let mut pan = size.scale(0.5) - content.center().scale(zoom);
+        if content.size.x * zoom > room.x {
+            pan.x = FIT_MARGIN - content.origin.x * zoom;
         }
+        if content.size.y * zoom > room.y {
+            pan.y = FIT_MARGIN - content.origin.y * zoom;
+        }
+        Self { pan, zoom }
     }
 
     /// The least pan that brings `rect` (world) into a canvas of `size`.
@@ -514,8 +523,17 @@ mod tests {
         assert!(close(view.to_screen(content.center()), size.scale(0.5)));
         let wide = Rect::new(Vec2::default(), Vec2::new(3500.0, 100.0));
         let view = View::fit(wide, size);
-        assert!(view.zoom < 0.3);
-        assert!(view.to_screen(wide.origin).x >= 47.0);
+        assert!(
+            (view.zoom - FIT_LEAST).abs() < 1e-6,
+            "a wide flow stays readable"
+        );
+        assert!(
+            close(
+                view.to_screen(wide.origin),
+                Vec2::new(FIT_MARGIN, view.to_screen(wide.origin).y)
+            ),
+            "and starts at its left edge"
+        );
     }
 
     #[test]
