@@ -32,7 +32,7 @@ impl Console {
         self.warm = pages::PAGES
             .iter()
             .rev()
-            .filter(|spec| spec.page != self.page && self.allows(spec.role))
+            .filter(|spec| spec.page != self.page && pages::opens(spec, self.role()))
             .map(|spec| spec.page)
             .collect();
         self.meter.borrow_mut().set_warming(!self.warm.is_empty());

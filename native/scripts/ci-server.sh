@@ -29,6 +29,9 @@ json='content-type: application/json'
 {
   cat "$root/scenarios/solar-farm/voltrus.yaml"
   printf '\ncookie_secure: false\nauth_secret: "%s"\n' "$(openssl rand -hex 24)"
+  # SMTP settings for Data Manager › System › SMTP: the e2e changes and
+  # restores them (nothing listens on :2525, so a test email fails).
+  printf 'smtp:\n  host: 127.0.0.1\n  port: 2525\n  username: ci\n  password: ci-smtp-%s\n  from_address: scada@plant.local\n  from_name: Voltrus CI\n  encryption: none\n' "$(openssl rand -hex 4)"
 } > voltrus.yaml
 
 "$bin/voltrus" voltrus.yaml > server.log 2>&1 &
@@ -110,6 +113,17 @@ curl -fsS -b cookies.txt "$url/api/v1/data-sources" | jq -r '.[] | "\(.id) \(.ke
         "$url/api/v1/data-sources/$id" > /dev/null
     fi
   done
+
+# A stopped demo flow and a sample script for the Engineering sections'
+# screenshots (the e2e makes and deletes its own).
+curl -fsS -b cookies.txt -H "$json" -d "$(jq -n '{id: "demo_boiler_power", name: "Boiler power", enabled: false,
+  trigger_config: ({type: "modbus", device_id: "*", metric: "", debounce_ms: 1000, on_change_only: false} | tostring),
+  nodes: ([{id: "n1", type: "filter", condition: "payload.metrics.temp > 0"},
+           {id: "n2", type: "expression", output_field: "payload.power_kw", expr: "payload.metrics.voltage * payload.metrics.current * 0.001"},
+           {id: "n3", type: "alarm_out", severity: "warning", source_key: "flow_alert", message: "Boiler power high"}] | tostring),
+  created_at: 0, updated_at: 0}')" "$url/api/v1/flows" > /dev/null
+curl -fsS -b cookies.txt -H "$json" -X POST "$url/api/v1/scripts" \
+  -d '{"name":"Inverter kW to MW","source":"// Scale an inverter reading\nfunction main(input) {\n  return { mw: input.kw / 1000 };\n}\n","cpu_limit_ms":1000,"memory_limit_bytes":8388608}' > /dev/null
 
 "$bin/modbus-sim" --scenario solar-farm --role inverter --port 5020 > inverter.log 2>&1 &
 echo $! > inverter.pid

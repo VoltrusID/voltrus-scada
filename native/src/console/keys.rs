@@ -88,6 +88,61 @@ actions!(
         DataMoveSourceDown,
         DataSortNext,
         DataReverseSort,
+        EngSystemPreviousTab,
+        EngSystemExportDocs,
+        EngSnapshotsNew,
+        EngSnapshotsRollback,
+        EngSnapshotsDiffFrom,
+        EngSnapshotsDiffTo,
+        EngSnapshotsCompare,
+        EngSnapshotsSortNext,
+        EngMqttNextTab,
+        EngMqttPrevTab,
+        EngMqttStartStop,
+        EngMqttConfigure,
+        EngMqttPublish,
+        EngMqttRefresh,
+        EngEdrNextTab,
+        EngEdrPrevTab,
+        EngEdrRefresh,
+        EngEdrCopy,
+        EngEdrSave,
+        EngImportsOpen,
+        EngImportsSwitch,
+        EngImportsDelimiter,
+        EngFlowsNew,
+        EngFlowsEdit,
+        EngFlowsDelete,
+        EngFlowsRuns,
+        EngFlowsTest,
+        EngFlowsRefresh,
+        EngFlowsSortNext,
+        EngFlowsSortReverse,
+        EngFlowsSave,
+        EngFlowsUndo,
+        EngFlowsDeleteSelection,
+        EngFlowsNudgeLeft,
+        EngFlowsNudgeRight,
+        EngFlowsNudgeUp,
+        EngFlowsNudgeDown,
+        EngFlowsZoomIn,
+        EngFlowsZoomOut,
+        EngFlowsFit,
+        EngFlowsArrange,
+        EngFlowsEarlier,
+        EngFlowsLater,
+        EngFlowsAddStep,
+        EngFlowsInspect,
+        EngScriptsNew,
+        EngScriptsDelete,
+        EngScriptsToggleEnabled,
+        EngScriptsRefresh,
+        EngScriptsSortNext,
+        EngScriptsSortReverse,
+        EngScriptsShowTest,
+        EngScriptsShowHistory,
+        EngScriptsSave,
+        EngScriptsRun,
     ]
 );
 
@@ -115,6 +170,22 @@ pub const OPS_AUDIT: &str = "OpsAudit && !TextInput";
 pub const ALARM_LIST: &str = "AlarmList";
 /// The Data Manager's sources table has focus.
 pub const DATA_SOURCES: &str = "DataSources";
+/// Data Manager › Engineering sections: each section's root carries its
+/// context, and its single-letter keys never fire while typing.
+/// System's root also carries `OpsTabbed OpsRefreshable OpsFiltered`
+/// (t, r, [ ]).
+pub const ENG_SYSTEM: &str = "EngSystem && !TextInput";
+pub const ENG_SNAPSHOTS: &str = "EngSnapshots && !TextInput";
+pub const ENG_MQTT: &str = "EngMqtt && !TextInput";
+pub const ENG_EDR: &str = "EngEdr && !TextInput";
+pub const ENG_IMPORTS: &str = "EngImports && !TextInput";
+/// Flows: the list, the editor (⌘S also while typing) and its canvas.
+pub const ENG_FLOWS: &str = "EngFlows && !TextInput";
+pub const ENG_FLOW_EDITOR: &str = "EngFlowEditor";
+pub const ENG_FLOW_CANVAS: &str = "EngFlowCanvas && !TextInput";
+/// Scripts (⌘S and ⌘↵ work while typing in its editor).
+pub const ENG_SCRIPTS: &str = "EngScripts";
+pub const ENG_SCRIPTS_LIST: &str = "EngScripts && !TextInput";
 
 /// How the help overlay groups the commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1023,6 +1094,522 @@ pub static COMMANDS: &[CommandSpec] = &[
         ["shift-s"],
         DATA_SOURCES,
         DataReverseSort,
+        false
+    ),
+    command!(
+        "System: previous tab",
+        Data,
+        Columns,
+        ["shift-t"],
+        ENG_SYSTEM,
+        EngSystemPreviousTab,
+        false
+    ),
+    command!(
+        "System: export the documentation (HTML)",
+        Data,
+        Download,
+        ["e"],
+        ENG_SYSTEM,
+        EngSystemExportDocs,
+        false
+    ),
+    command!(
+        "New config snapshot",
+        Data,
+        Plus,
+        ["n"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsNew,
+        false
+    ),
+    command!(
+        "Roll back to the snapshot",
+        Data,
+        History,
+        ["r"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsRollback,
+        false
+    ),
+    command!(
+        "Diff from this snapshot",
+        Data,
+        ChevronLeft,
+        ["f"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsDiffFrom,
+        false
+    ),
+    command!(
+        "Diff to this snapshot",
+        Data,
+        ChevronRight,
+        ["t"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsDiffTo,
+        false
+    ),
+    command!(
+        "Compare the two snapshots",
+        Data,
+        Columns,
+        ["c"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsCompare,
+        false
+    ),
+    command!(
+        "Sort snapshots by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsSortNext,
+        false
+    ),
+    command!(
+        "MQTT: next tab",
+        Data,
+        ChevronRight,
+        ["]"],
+        ENG_MQTT,
+        EngMqttNextTab,
+        false
+    ),
+    command!(
+        "MQTT: previous tab",
+        Data,
+        ChevronLeft,
+        ["["],
+        ENG_MQTT,
+        EngMqttPrevTab,
+        false
+    ),
+    command!(
+        "MQTT: start or stop the broker",
+        Data,
+        Play,
+        ["s"],
+        ENG_MQTT,
+        EngMqttStartStop,
+        false
+    ),
+    command!(
+        "MQTT: configure the broker",
+        Data,
+        Settings,
+        ["c"],
+        ENG_MQTT,
+        EngMqttConfigure,
+        false
+    ),
+    command!(
+        "MQTT: publish a message",
+        Data,
+        Send,
+        ["p"],
+        ENG_MQTT,
+        EngMqttPublish,
+        false
+    ),
+    command!(
+        "MQTT: refresh",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_MQTT,
+        EngMqttRefresh,
+        false
+    ),
+    command!(
+        "EDR: next tab",
+        Data,
+        ChevronRight,
+        ["]"],
+        ENG_EDR,
+        EngEdrNextTab,
+        false
+    ),
+    command!(
+        "EDR: previous tab",
+        Data,
+        ChevronLeft,
+        ["["],
+        ENG_EDR,
+        EngEdrPrevTab,
+        false
+    ),
+    command!(
+        "EDR: refresh",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_EDR,
+        EngEdrRefresh,
+        false
+    ),
+    command!(
+        "EDR: copy the script or guide",
+        Data,
+        Copy,
+        ["c"],
+        ENG_EDR,
+        EngEdrCopy,
+        false
+    ),
+    command!(
+        "EDR: save the Defender script",
+        Data,
+        Download,
+        ["s"],
+        ENG_EDR,
+        EngEdrSave,
+        false
+    ),
+    CommandSpec {
+        label: "Import: choose a file",
+        group: Group::Data,
+        icon: Icon::Upload,
+        keys: &["o"],
+        context: ENG_IMPORTS,
+        action: || -> Box<dyn Action> { Box::new(EngImportsOpen) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Import: data file or Node-RED wizard",
+        group: Group::Data,
+        icon: Icon::Waypoints,
+        keys: &["w"],
+        context: ENG_IMPORTS,
+        action: || -> Box<dyn Action> { Box::new(EngImportsSwitch) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Import: next CSV delimiter",
+        group: Group::Data,
+        icon: Icon::Columns,
+        keys: &["d"],
+        context: ENG_IMPORTS,
+        action: || -> Box<dyn Action> { Box::new(EngImportsDelimiter) },
+        palette: false,
+        role: Role::Operator,
+    },
+    command!(
+        "Flows: new flow",
+        Data,
+        Plus,
+        ["n"],
+        ENG_FLOWS,
+        EngFlowsNew,
+        false
+    ),
+    command!(
+        "Flows: rename, enable",
+        Data,
+        Pencil,
+        ["e"],
+        ENG_FLOWS,
+        EngFlowsEdit,
+        false
+    ),
+    command!(
+        "Flows: delete the flow",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        ENG_FLOWS,
+        EngFlowsDelete,
+        false
+    ),
+    command!(
+        "Flows: runs",
+        Data,
+        History,
+        ["h"],
+        ENG_FLOWS,
+        EngFlowsRuns,
+        false
+    ),
+    command!(
+        "Flows: test with a payload",
+        Data,
+        Send,
+        ["t"],
+        ENG_FLOWS,
+        EngFlowsTest,
+        false
+    ),
+    command!(
+        "Flows: refresh",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_FLOWS,
+        EngFlowsRefresh,
+        false
+    ),
+    command!(
+        "Flows: sort by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        ENG_FLOWS,
+        EngFlowsSortNext,
+        false
+    ),
+    command!(
+        "Flows: reverse the sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        ENG_FLOWS,
+        EngFlowsSortReverse,
+        false
+    ),
+    command!(
+        "Flow editor: save",
+        Data,
+        Check,
+        ["secondary-s"],
+        ENG_FLOW_EDITOR,
+        EngFlowsSave,
+        false
+    ),
+    command!(
+        "Flow editor: undo",
+        Data,
+        History,
+        ["secondary-z"],
+        ENG_FLOW_CANVAS,
+        EngFlowsUndo,
+        false
+    ),
+    command!(
+        "Flow editor: remove the step",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        ENG_FLOW_CANVAS,
+        EngFlowsDeleteSelection,
+        false
+    ),
+    command!(
+        "Flow editor: move the step left (⇧ further)",
+        Data,
+        ChevronLeft,
+        ["left", "shift-left"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeLeft,
+        false
+    ),
+    command!(
+        "Flow editor: move the step right (⇧ further)",
+        Data,
+        ChevronRight,
+        ["right", "shift-right"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeRight,
+        false
+    ),
+    command!(
+        "Flow editor: move the step up (⇧ further)",
+        Data,
+        ChevronUp,
+        ["up", "shift-up"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeUp,
+        false
+    ),
+    command!(
+        "Flow editor: move the step down (⇧ further)",
+        Data,
+        ChevronDown,
+        ["down", "shift-down"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeDown,
+        false
+    ),
+    command!(
+        "Flow editor: zoom in",
+        Data,
+        Plus,
+        ["=", "shift-="],
+        ENG_FLOW_CANVAS,
+        EngFlowsZoomIn,
+        false
+    ),
+    command!(
+        "Flow editor: zoom out",
+        Data,
+        Search,
+        ["-"],
+        ENG_FLOW_CANVAS,
+        EngFlowsZoomOut,
+        false
+    ),
+    command!(
+        "Flow editor: fit the flow in view",
+        Data,
+        Square,
+        ["0"],
+        ENG_FLOW_CANVAS,
+        EngFlowsFit,
+        false
+    ),
+    command!(
+        "Flow editor: arrange the steps",
+        Data,
+        Layers,
+        ["a"],
+        ENG_FLOW_CANVAS,
+        EngFlowsArrange,
+        false
+    ),
+    command!(
+        "Flow editor: run the step earlier",
+        Data,
+        ChevronLeft,
+        ["alt-left"],
+        ENG_FLOW_CANVAS,
+        EngFlowsEarlier,
+        false
+    ),
+    command!(
+        "Flow editor: run the step later",
+        Data,
+        ChevronRight,
+        ["alt-right"],
+        ENG_FLOW_CANVAS,
+        EngFlowsLater,
+        false
+    ),
+    command!(
+        "Flow editor: add a step from the palette",
+        Data,
+        Plus,
+        ["n"],
+        ENG_FLOW_CANVAS,
+        EngFlowsAddStep,
+        false
+    ),
+    command!(
+        "Flow editor: edit the step's settings",
+        Data,
+        Settings,
+        ["enter"],
+        ENG_FLOW_CANVAS,
+        EngFlowsInspect,
+        false
+    ),
+    command!(
+        "Flow editor: test",
+        Data,
+        Send,
+        ["t"],
+        ENG_FLOW_CANVAS,
+        EngFlowsTest,
+        false
+    ),
+    command!(
+        "Flow editor: runs",
+        Data,
+        History,
+        ["h"],
+        ENG_FLOW_CANVAS,
+        EngFlowsRuns,
+        false
+    ),
+    command!(
+        "New script",
+        Data,
+        Plus,
+        ["n"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsNew,
+        false
+    ),
+    command!(
+        "Delete the script",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsDelete,
+        false
+    ),
+    command!(
+        "Enable or disable the script",
+        Data,
+        CircleCheck,
+        ["e"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsToggleEnabled,
+        false
+    ),
+    command!(
+        "Refresh the scripts",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsRefresh,
+        false
+    ),
+    command!(
+        "Sort the scripts by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsSortNext,
+        false
+    ),
+    command!(
+        "Reverse the scripts' sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsSortReverse,
+        false
+    ),
+    command!(
+        "Show the script's test panel",
+        Data,
+        Play,
+        ["t"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsShowTest,
+        false
+    ),
+    command!(
+        "Show the script's runs",
+        Data,
+        History,
+        ["h"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsShowHistory,
+        false
+    ),
+    command!(
+        "Save the script",
+        Data,
+        Check,
+        ["secondary-s"],
+        ENG_SCRIPTS,
+        EngScriptsSave,
+        false
+    ),
+    command!(
+        "Run the script's test",
+        Data,
+        Play,
+        ["secondary-enter"],
+        ENG_SCRIPTS,
+        EngScriptsRun,
         false
     ),
 ];

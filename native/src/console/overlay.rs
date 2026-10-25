@@ -92,7 +92,7 @@ pub fn entries(role: Option<Role>) -> Vec<Entry> {
     let allowed = |needed: Role| role.is_some_and(|role| role >= needed);
     let pages = PAGES
         .iter()
-        .filter(|spec| allowed(spec.role))
+        .filter(|spec| super::pages::opens(spec, role))
         .map(|spec| Entry {
             title: format!("Go to {}", spec.title).into(),
             keys: spec
@@ -178,8 +178,7 @@ pub fn more_pages(role: Option<Role>) -> Vec<Page> {
     PAGES
         .iter()
         .filter(|spec| {
-            spec.placement == super::pages::Placement::More
-                && role.is_some_and(|role| role >= spec.role)
+            spec.placement == super::pages::Placement::More && super::pages::opens(spec, role)
         })
         .map(|spec| spec.page)
         .collect()
@@ -223,9 +222,10 @@ mod tests {
         let found = search(&all, "trends");
         assert_eq!(all[found[0]].title.as_ref(), "Go to Trends");
         assert_eq!(search(&all, "").len(), all.len());
+        // The Data Manager has sections open to every user (System, EDR).
         assert_eq!(
             more_pages(Some(Role::Any)),
-            [Page::Performance, Page::Commands]
+            [Page::Performance, Page::DataManager, Page::Commands]
         );
         assert!(more_pages(None).is_empty());
     }

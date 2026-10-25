@@ -14,9 +14,16 @@
 //! section, Esc in the section comes back to the sidebar (and Esc there
 //! goes back in).
 
+pub(crate) mod edr;
+pub(crate) mod flows;
+pub(crate) mod imports;
+pub(crate) mod mqtt;
+pub(crate) mod scripts;
+pub(crate) mod snapshots;
 pub(crate) mod source_form;
 pub(crate) mod source_model;
 pub(crate) mod sources;
+pub(crate) mod system;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Entity, FontWeight, Window, div, px};
@@ -38,10 +45,19 @@ pub enum SectionGroup {
     Protocols,
     Insights,
     Admin,
+    /// The web client's engineering tools (its System panel, the header's
+    /// tool menu, `/flows` and `/scripts`).
+    Engineering,
 }
 
 impl SectionGroup {
-    pub const ALL: [Self; 4] = [Self::Data, Self::Protocols, Self::Insights, Self::Admin];
+    pub const ALL: [Self; 5] = [
+        Self::Data,
+        Self::Protocols,
+        Self::Insights,
+        Self::Admin,
+        Self::Engineering,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -49,6 +65,7 @@ impl SectionGroup {
             Self::Protocols => "Protocols",
             Self::Insights => "Insights",
             Self::Admin => "Admin",
+            Self::Engineering => "Engineering",
         }
     }
 }
@@ -80,18 +97,104 @@ pub struct SectionSpec {
 }
 
 /// Every built section, in sidebar order within its group.
-pub static SECTIONS: &[SectionSpec] = &[SectionSpec {
-    id: "sources",
-    title: "Sources",
-    icon: Icon::Database,
-    group: SectionGroup::Data,
-    role: Role::Operator,
-    render: sources::render,
-    on_open: Some(sources::on_open),
-    focus: Some(sources::focus),
-    on_reply: Some(sources::on_reply),
-    search: Some(sources::search),
-}];
+pub static SECTIONS: &[SectionSpec] = &[
+    SectionSpec {
+        id: "sources",
+        title: "Sources",
+        icon: Icon::Database,
+        group: SectionGroup::Data,
+        role: Role::Operator,
+        render: sources::render,
+        on_open: Some(sources::on_open),
+        focus: Some(sources::focus),
+        on_reply: Some(sources::on_reply),
+        search: Some(sources::search),
+    },
+    SectionSpec {
+        id: "system",
+        title: "System",
+        icon: Icon::Server,
+        group: SectionGroup::Engineering,
+        role: Role::Any,
+        render: system::render,
+        on_open: Some(system::on_open),
+        focus: Some(system::focus),
+        on_reply: Some(system::on_reply),
+        search: Some(system::search),
+    },
+    SectionSpec {
+        id: "snapshots",
+        title: "Config snapshots",
+        icon: Icon::History,
+        group: SectionGroup::Engineering,
+        role: Role::Operator,
+        render: snapshots::render,
+        on_open: Some(snapshots::on_open),
+        focus: Some(snapshots::focus),
+        on_reply: Some(snapshots::on_reply),
+        search: Some(snapshots::search),
+    },
+    SectionSpec {
+        id: "mqtt",
+        title: "MQTT broker",
+        icon: Icon::RadioTower,
+        group: SectionGroup::Engineering,
+        role: Role::Any,
+        render: mqtt::render,
+        on_open: Some(mqtt::on_open),
+        focus: Some(mqtt::focus),
+        on_reply: Some(mqtt::on_reply),
+        search: Some(mqtt::search),
+    },
+    SectionSpec {
+        id: "edr",
+        title: "EDR compatibility",
+        icon: Icon::Lock,
+        group: SectionGroup::Engineering,
+        role: Role::Any,
+        render: edr::render,
+        on_open: Some(edr::on_open),
+        focus: Some(edr::focus),
+        on_reply: Some(edr::on_reply),
+        search: Some(edr::search),
+    },
+    SectionSpec {
+        id: "imports",
+        title: "Import",
+        icon: Icon::Upload,
+        group: SectionGroup::Engineering,
+        role: Role::Operator,
+        render: imports::render,
+        on_open: Some(imports::on_open),
+        focus: Some(imports::focus),
+        on_reply: Some(imports::on_reply),
+        search: Some(imports::search),
+    },
+    SectionSpec {
+        id: "flows",
+        title: "Flows",
+        icon: Icon::Waypoints,
+        group: SectionGroup::Engineering,
+        role: Role::Operator,
+        render: flows::render,
+        on_open: Some(flows::on_open),
+        focus: Some(flows::focus),
+        on_reply: Some(flows::on_reply),
+        search: Some(flows::search),
+    },
+    SectionSpec {
+        id: "scripts",
+        title: "Scripts",
+        icon: Icon::Terminal,
+        group: SectionGroup::Engineering,
+        role: Role::Operator,
+        render: scripts::render,
+        on_open: Some(scripts::on_open),
+        focus: Some(scripts::focus),
+        on_reply: Some(scripts::on_reply),
+        search: Some(scripts::search),
+    },
+];
 
 /// The sidebar's keyboard list.
 pub(crate) const NAV: &str = "data.sections";
@@ -124,6 +227,12 @@ pub fn visible(sections: &'static [SectionSpec], role: Option<Role>) -> Vec<&'st
         .collect()
 }
 
+/// Whether `role` sees any section: the page is offered (More menu,
+/// palette, `--page`) only then, never as an empty page.
+pub fn has_sections(role: Option<Role>) -> bool {
+    !visible(SECTIONS, role).is_empty()
+}
+
 /// The section on screen.
 fn current(console: &Console) -> Option<&'static SectionSpec> {
     let sections = visible(SECTIONS, console.role());
@@ -131,6 +240,20 @@ fn current(console: &Console) -> Option<&'static SectionSpec> {
     chosen
         .and_then(|id| sections.iter().copied().find(|spec| spec.id == id))
         .or_else(|| sections.first().copied())
+}
+
+/// The id of the section on screen (whether or not the page is), for
+/// sections that poll: fetch only while it is the one shown.
+pub(crate) fn current_id(console: &Console) -> Option<&'static str> {
+    current(console).map(|spec| spec.id)
+}
+
+/// `--section <id>`: show that section when the page opens (if the role
+/// allows it; otherwise the first the user may open).
+pub(crate) fn launch(console: &mut Console, id: &str) {
+    if let Some(spec) = SECTIONS.iter().find(|spec| spec.id == id) {
+        console.state::<State>().section = Some(spec.id);
+    }
 }
 
 /// The section a reply belongs to: `data.sources.save` → `sources`.
@@ -226,8 +349,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let Some(spec) = current(console) else {
         return empty_state(
             Icon::Lock,
-            "Nothing to manage",
-            "Managing data needs the admin, demo or integration role.",
+            "No sections for your role",
+            "Ask an administrator for the operator role to manage data.",
             Vec::new(),
             cx,
         )
@@ -428,18 +551,58 @@ mod tests {
     }
 
     #[test]
-    fn the_built_sections_are_listed_once_for_operators() {
+    fn the_built_sections_are_listed_once_and_follow_their_role() {
+        let any: Vec<_> = visible(SECTIONS, Some(Role::Any))
+            .iter()
+            .map(|spec| spec.id)
+            .collect();
+        for id in ["system", "mqtt", "edr"] {
+            assert!(any.contains(&id), "{id} is open to every user");
+        }
+        assert!(!any.contains(&"sources") && !any.contains(&"flows"));
         let operator: Vec<_> = visible(SECTIONS, Some(Role::Operator))
             .iter()
             .map(|spec| spec.id)
             .collect();
-        assert_eq!(operator, ["sources"]);
-        assert!(visible(SECTIONS, Some(Role::Any)).is_empty());
+        for id in ["sources", "snapshots", "imports", "flows", "scripts"] {
+            assert!(operator.contains(&id), "{id} is for operators");
+        }
+        // The Engineering sections come last, in this order.
+        let engineering: Vec<_> = operator
+            .iter()
+            .copied()
+            .filter(|id| {
+                SECTIONS
+                    .iter()
+                    .any(|spec| spec.id == *id && spec.group == SectionGroup::Engineering)
+            })
+            .collect();
+        assert_eq!(
+            engineering,
+            [
+                "system",
+                "snapshots",
+                "mqtt",
+                "edr",
+                "imports",
+                "flows",
+                "scripts"
+            ]
+        );
+        assert_eq!(operator.last(), Some(&"scripts"));
         let mut all: Vec<_> = SECTIONS.iter().map(|spec| spec.id).collect();
         all.sort_unstable();
         all.dedup();
         assert_eq!(all.len(), SECTIONS.len(), "ids are unique");
         assert!(SECTIONS.iter().all(|spec| !spec.id.contains('.')));
+    }
+
+    #[test]
+    fn the_page_is_offered_only_with_a_section_to_show() {
+        assert!(!has_sections(None));
+        for role in [Role::Any, Role::Operator, Role::Admin] {
+            assert!(has_sections(Some(role)), "{role:?} sees a section");
+        }
     }
 
     #[test]

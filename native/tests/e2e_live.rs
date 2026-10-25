@@ -1679,3 +1679,29 @@ async fn live_screens_and_layouts() {
         created.id
     );
 }
+
+mod eng;
+
+/// Data Manager › Engineering against the live plant: every REST path the
+/// System, Config snapshots, MQTT broker, EDR, Import, Flows and Scripts
+/// sections call, with create → read → update → delete round trips that
+/// leave the plant as it was.
+#[tokio::test]
+async fn live_engineering_tools() {
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    let mut api = VoltrusApi::new(&url);
+    api.login(&user, &pass).await.expect("sign in");
+
+    eng::system::round_trip(&api).await;
+    eng::snapshots::round_trip(&api).await;
+    eng::mqtt::round_trip(&api).await;
+    eng::edr::round_trip(&api).await;
+    eng::imports::round_trip(&api).await;
+    eng::flows::round_trip(&api).await;
+    eng::scripts::round_trip(&api).await;
+}

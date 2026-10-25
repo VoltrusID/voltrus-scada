@@ -64,6 +64,16 @@ shots=(
   "dashboard-add-tags|--sign-in --page dashboard --screen 2 --edit --overlay add-tags --appearance dark"
   "dashboard-light|--sign-in --page dashboard --screen 2 --appearance light"
   "stress-dashboard|--stress --stress-switch-ms 0 --page dashboard --hud --appearance dark"
+  "eng-system|--sign-in --page data --section system --appearance dark"
+  "eng-system-light|--sign-in --page data --section system --appearance light"
+  "eng-snapshots|--sign-in --page data --section snapshots --appearance dark"
+  "eng-mqtt|--sign-in --page data --section mqtt --appearance dark"
+  "eng-edr|--sign-in --page data --section edr --appearance dark"
+  "eng-imports|--sign-in --page data --section imports --appearance dark"
+  "eng-flows|--sign-in --page data --section flows --appearance dark"
+  "eng-flows-new|--sign-in --page data --section flows --overlay EngFlowsNew --appearance dark"
+  "eng-scripts|--sign-in --page data --section scripts --appearance dark"
+  "eng-scripts-light|--sign-in --page data --section scripts --appearance light"
 )
 
 status=0

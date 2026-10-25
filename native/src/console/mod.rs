@@ -22,6 +22,13 @@ mod text_area;
 mod views;
 mod warm;
 
+/// Whether `id` names a Data Manager section (`--section`).
+pub fn data_manager_section(id: &str) -> bool {
+    views::data_manager::SECTIONS
+        .iter()
+        .any(|spec| spec.id == id)
+}
+
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, HashMap};
@@ -196,6 +203,9 @@ pub struct Launch {
     pub screen: Option<String>,
     /// Open the dashboard in edit mode (`--edit`).
     pub edit: bool,
+    /// The Data Manager's section to show (`--section`), a
+    /// [`data_manager_section`] id.
+    pub section: Option<String>,
     /// Read before any thread started: `time` cannot ask the system later.
     pub utc_offset: UtcOffset,
     /// `--appearance`: pinned light (false) or dark (true); the server's
@@ -534,6 +544,9 @@ impl Console {
             console.sign_in(window, cx);
         }
         views::dashboard::launch(&mut console, launch.screen, launch.edit);
+        if let Some(section) = launch.section.as_deref() {
+            views::data_manager::launch(&mut console, section);
+        }
         shell::init(&mut console, launch.appearance, window, cx);
         console
     }
@@ -776,7 +789,7 @@ impl Console {
     fn enter_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.phase = Phase::Console;
         let page = self.pending_page.take().unwrap_or(self.page);
-        let page = if self.allows(pages::spec(page).role) {
+        let page = if pages::opens(pages::spec(page), self.role()) {
             page
         } else {
             Page::Overview
@@ -939,7 +952,7 @@ impl Console {
             self.focus_page(window, cx);
             return;
         }
-        if !self.allows(pages::spec(page).role) {
+        if !pages::opens(pages::spec(page), self.role()) {
             self.show_toast(format!("{} needs another role", page.title()), true, cx);
             return;
         }

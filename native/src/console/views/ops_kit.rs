@@ -21,9 +21,10 @@ use vt_ui::theme::*;
 
 use crate::console::{Console, Page, Phase, pages};
 
-/// The pages whose poll runs now.
+/// The polls running now, by page and tick: the Data Manager's sections
+/// each poll on the one page.
 #[derive(Default)]
-struct Polls(HashSet<&'static str>);
+struct Polls(HashSet<(&'static str, usize)>);
 
 /// Run `tick` every `every` while `page` is on screen in a signed-in
 /// console (not in a stress test), from the page's `on_show`. The loop ends
@@ -36,7 +37,7 @@ pub(crate) fn poll_while_shown(
     tick: fn(&mut Console, &mut Context<Console>),
     cx: &mut Context<Console>,
 ) {
-    let id = pages::spec(page).id;
+    let id = (pages::spec(page).id, tick as usize);
     if !console.state::<Polls>().0.insert(id) {
         return;
     }
@@ -50,7 +51,7 @@ pub(crate) fn poll_while_shown(
                 if shown {
                     tick(console, cx);
                 } else {
-                    console.state::<Polls>().0.remove(id);
+                    console.state::<Polls>().0.remove(&id);
                 }
                 shown
             });

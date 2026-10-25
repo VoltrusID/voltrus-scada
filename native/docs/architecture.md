@@ -224,7 +224,8 @@ flash, Trends while live), so its render must not scale with the plant:
 
 The Data Manager (`views/data_manager/`, `--page data`) is one page with a
 sidebar of sections grouped Data, Protocols, Insights and Admin, as the web
-client's `DataManager.tsx`. A section is one module plus one row:
+client's `DataManager.tsx`, then Engineering (the web's System panel, its
+header tools, `/flows` and `/scripts`). A section is one module plus one row:
 
 1. Write `views/data_manager/<section>.rs` with
    `pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement`
@@ -238,7 +239,7 @@ client's `DataManager.tsx`. A section is one module plus one row:
        id: "modbus",                  // calls are named data.modbus.<what>
        title: "Modbus",
        icon: Icon::Cable,
-       group: SectionGroup::Protocols, // Data, Protocols, Insights or Admin
+       group: SectionGroup::Protocols, // Data, Protocols, Insights, Admin or Engineering
        role: Role::Operator,          // web `admin` items; `strictAdmin` is Role::Admin
        render: modbus::render,
        on_open: Some(modbus::on_open), // shown (page opened, sidebar moved): fetch once
@@ -250,12 +251,18 @@ client's `DataManager.tsx`. A section is one module plus one row:
 
 That is all: the sidebar lists the row for users whose role allows it, a
 group appears once it has a row, and nothing is listed for a section that is
-not built. The page routes the answer of every `CallKey` named
+not built. The page itself is open to every role (`Role::Any`), but
+`pages::opens` offers it (More menu, palette, `--page`) only to a role that
+sees at least one section, so nobody gets an empty page. The page routes the
+answer of every `CallKey` named
 `data.<id>.<what>` to that section's `on_reply`, so a section sends
 `console.call(CallKey::new("data.modbus.list"), Call::get::<…>(…))` and
 matches on `key.name` there. Keep the section's state in its module
 (`console.state::<State>()`, and `console.state_ref::<State>()` in hooks
-that get `&Console`).
+that get `&Console`). A section that polls checks
+`data_manager::current_id(console)` in its tick, so it fetches only while it
+is the one on screen. `--page data --section <id>` opens a section from the
+command line (screenshots).
 
 Keys: j/k or ↑↓ in the sidebar switch sections (`on_open` runs), Enter goes
 in (`focus` runs), Esc anywhere in the section comes back to the sidebar
