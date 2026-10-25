@@ -496,9 +496,9 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         "Accounts that sign in to the console and the web client".to_owned()
     } else {
         format!(
-            "{} users · {admins} admin{} · N new · ↵ edit · P password · ⌫ delete",
-            list.len(),
-            if admins == 1 { "" } else { "s" }
+            "{} · {} · N new · ↵ edit · P password · ⌫ delete",
+            kit::count(list.len(), "user"),
+            kit::count(admins, "admin")
         )
     };
     let controls = vec![

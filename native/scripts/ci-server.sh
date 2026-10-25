@@ -132,6 +132,63 @@ for rule in \
   curl -fsS -b cookies.txt -H "$json" -d "$rule" "$url/api/v1/notifications/settings" > /dev/null
 done
 
+# An HMI mimic for the overview (the web client's SCADA view, the console's
+# Mimic page), unless the plant has one: native/scripts/mimic-solar-farm.json
+# names its tags "<device>/<key>"; here they become data source ids. The
+# analog widgets get ranges they can show.
+mimic="$root/native/scripts/mimic-solar-farm.json"
+mimic_ranges() {
+  case "$1" in
+    irradiance) echo "0 1200" ;;
+    efficiency) echo "90 100" ;;
+    power_factor) echo "0.8 1" ;;
+    temperature) echo "0 250" ;;
+    dc_current_a | dc_current_b) echo "0 110" ;;
+    ac_voltage_l1 | ac_voltage_l2 | ac_voltage_l3) echo "200 260" ;;
+    voltage_l1n | voltage_l2n | voltage_l3n) echo "200 260" ;;
+    current_l1 | current_l2 | current_l3) echo "0 600" ;;
+    ac_current_l1 | ac_current_l2 | ac_current_l3) echo "0 110" ;;
+    thd_voltage | thd_current) echo "0 20" ;;
+    active_power) echo "0 200000" ;;
+    *) echo "" ;;
+  esac
+}
+seeded="$(curl -fsS -b cookies.txt "$url/api/v1/screens/__overview/scada-equipment" | jq '.items | length')"
+if [ ! -f "$mimic" ]; then
+  echo "::warning::no $mimic: the overview gets no mimic"
+elif [ "$seeded" -gt 0 ]; then
+  echo "the overview has a mimic already ($seeded widgets)"
+else
+  sources="$(curl -fsS -b cookies.txt "$url/api/v1/data-sources")"
+  echo "$sources" | jq -r '.[] | "\(.id) \(.key)"' |
+    while read -r id key; do
+      range="$(mimic_ranges "$key")"
+      if [ -n "$range" ]; then
+        read -r low high <<< "$range"
+        curl -fsS -b cookies.txt -X PUT -H "$json" \
+          -d "{\"min_val\": $low, \"max_val\": $high}" \
+          "$url/api/v1/data-sources/$id" > /dev/null
+      fi
+    done
+  ids="$(echo "$sources" | jq 'map({key: "\(.device_id)/\(.key)", value: .id}) | from_entries')"
+  jq --argjson ids "$ids" '
+    def tag($name): ($ids[$name] // error("the plant has no tag \($name)"));
+    {items: [.equipment | to_entries[] | .key as $z | .value
+      | .sensor_bindings = ([.tags[] | tag(.)] | tojson)
+      | .rotation = ((.config.rotation // 0) | tonumber)
+      | .config = (.config
+          | with_entries(if (.value | type) == "string" and (.value | startswith("@"))
+                         then .value = tag(.value[1:]) else . end)
+          | .z = $z | tojson)
+      | del(.tags)]}' "$mimic" > mimic-equipment.json
+  jq '{items: [.connections[] | .waypoints = (.waypoints | tojson)]}' "$mimic" > mimic-connections.json
+  curl -fsS -b cookies.txt -X PUT -H "$json" -d @mimic-equipment.json \
+    "$url/api/v1/screens/__overview/scada-equipment" > /dev/null
+  curl -fsS -b cookies.txt -X PUT -H "$json" -d @mimic-connections.json \
+    "$url/api/v1/screens/__overview/scada-connections" > /dev/null
+  echo "seeded the overview's mimic: $(jq '.items | length' mimic-equipment.json) widgets, $(jq '.items | length' mimic-connections.json) connections"
+fi
+
 "$bin/modbus-sim" --scenario solar-farm --role inverter --port 5020 > inverter.log 2>&1 &
 echo $! > inverter.pid
 "$bin/modbus-sim" --scenario solar-farm --role grid-meter --port 5021 > meter.log 2>&1 &

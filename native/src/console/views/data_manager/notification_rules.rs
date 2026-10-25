@@ -611,8 +611,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
 
     let on = list.iter().filter(|rule| rule.enabled).count();
     let subtitle = format!(
-        "{} rules · {on} on · N new · ↵ edit · Space on/off · T test · ⌫ delete",
-        list.len()
+        "{} · {on} on · N new · ↵ edit · Space on/off · T test · ⌫ delete",
+        kit::count(list.len(), "rule")
     );
     let controls = vec![
         kit::search_control(search, &theme),

@@ -69,6 +69,10 @@ shots=(
   "data-api-key-new|--sign-in --page data --overlay DataNewApiKey --appearance dark"
   "data-rule-new|--sign-in --page data --overlay DataNewRule --appearance dark"
   "data-rule-new-light|--sign-in --page data --overlay DataNewRule --appearance light"
+  "mimic|--sign-in --page mimic --appearance dark"
+  "mimic-light|--sign-in --page mimic --appearance light"
+  "mimic-faceplate|--sign-in --page mimic --overlay MimicOpen --appearance dark"
+  "mimic-commands|--sign-in --page mimic --overlay MimicArmOff --appearance dark"
 )
 
 status=0

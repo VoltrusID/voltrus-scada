@@ -547,8 +547,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     };
 
     let subtitle = format!(
-        "{} roles · {} permissions to choose from · N new · ↵ edit · ⌫ delete",
-        list.len(),
+        "{} · {} permissions to choose from · N new · ↵ edit · ⌫ delete",
+        kit::count(list.len(), "role"),
         PERMISSIONS.len()
     );
     let controls = vec![

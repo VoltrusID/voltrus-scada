@@ -2112,3 +2112,152 @@ async fn admin_users_roles_keys_and_notification_rules(url: &str, user: &str, pa
     println!("user {name} deleted");
     handle.send(Command::Shutdown);
 }
+
+/// The HMI mimic against the live plant: the overview's mimic (seeded by
+/// `ci-server.sh`) parses with every widget type and symbol known and every
+/// binding a tag the plant has; its connections route; it saves back to a
+/// screen of its own unchanged; and a faceplate command from an operator
+/// takes the REST write, which a tag that is not writable refuses.
+#[tokio::test]
+async fn live_mimic_screen() {
+    use serde::de::IgnoredAny;
+    use voltrus_scada_native::api::{DataSource, Method};
+    use voltrus_scada_native::mimic::{
+        self, ConnectionRow, EquipmentRow, Items, WidgetKind, connections_path, equipment_path,
+    };
+    use voltrus_scada_native::screens::{OVERVIEW, Screen};
+    use voltrus_scada_native::tag_api::{self, WriteAccepted, WriteMode};
+
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    let mut api = VoltrusApi::new(&url);
+    api.login(&user, &pass).await.expect("sign in");
+
+    let equipment: Items<EquipmentRow> = api
+        .get_json(&equipment_path(OVERVIEW))
+        .await
+        .expect("GET scada-equipment");
+    let connections: Items<ConnectionRow> = api
+        .get_json(&connections_path(OVERVIEW))
+        .await
+        .expect("GET scada-connections");
+    let layout = mimic::parse(&equipment.items, &connections.items);
+    println!(
+        "overview mimic: {} widgets, {} connections",
+        layout.widgets.len(),
+        layout.connections.len()
+    );
+    assert!(
+        layout.widgets.len() >= 40,
+        "the CI plant has its mimic (ci-server.sh seeds it)"
+    );
+    let tags: Vec<DataSource> = api.get_json("/api/v1/data-sources").await.expect("tags");
+    for widget in &layout.widgets {
+        assert!(
+            !matches!(widget.kind, WidgetKind::Other(_)),
+            "{}: a known widget type",
+            widget.id
+        );
+        if let Some(resolved) = mimic::resolve(widget)
+            && widget.kind == WidgetKind::Symbol
+        {
+            assert_eq!(
+                Some(resolved.def.key),
+                widget.text("symbol"),
+                "{}: a library symbol",
+                widget.id
+            );
+        }
+        for tag in &widget.tags {
+            assert!(
+                tags.iter().any(|known| known.id == *tag),
+                "{}: tag {tag} is the plant's",
+                widget.id
+            );
+        }
+    }
+    for connection in &layout.connections {
+        let (Some(a), Some(b)) = (
+            layout.widget(&connection.from),
+            layout.widget(&connection.to),
+        ) else {
+            panic!("{}: joins two widgets", connection.id);
+        };
+        assert!(mimic::route(a, b, &connection.waypoints).len() >= 2);
+    }
+
+    // Editable: the same layout saved to a screen of its own reads back
+    // the same.
+    let name = format!("Native mimic e2e {}", std::process::id());
+    let created: Screen = api
+        .send_json(
+            Method::POST,
+            "/api/v1/screens",
+            &serde_json::json!({ "name": name }),
+        )
+        .await
+        .expect("POST /screens");
+    let (rows, lines) = mimic::to_rows(&layout);
+    api.send_json::<_, IgnoredAny>(
+        Method::PUT,
+        &equipment_path(&created.id),
+        &Items { items: rows },
+    )
+    .await
+    .expect("PUT scada-equipment");
+    api.send_json::<_, IgnoredAny>(
+        Method::PUT,
+        &connections_path(&created.id),
+        &Items { items: lines },
+    )
+    .await
+    .expect("PUT scada-connections");
+    let saved: Items<EquipmentRow> = api
+        .get_json(&equipment_path(&created.id))
+        .await
+        .expect("the saved equipment");
+    let saved_lines: Items<ConnectionRow> = api
+        .get_json(&connections_path(&created.id))
+        .await
+        .expect("the saved connections");
+    assert_eq!(
+        mimic::parse(&saved.items, &saved_lines.items),
+        layout,
+        "a saved mimic reads back unchanged"
+    );
+    api.send_empty::<IgnoredAny>(Method::DELETE, &format!("/api/v1/screens/{}", created.id))
+        .await
+        .expect("DELETE /screens/{id}");
+
+    // A faceplate command: an admin's goes over the WebSocket, an
+    // operator's through the REST write, refused while the tag is locked.
+    assert_eq!(mimic::write_route(true, true), Some(WriteMode::Direct));
+    let route = mimic::write_route(false, true).expect("operators command");
+    let commanded = layout
+        .widgets
+        .iter()
+        .find(|widget| {
+            mimic::resolve(widget).is_some_and(|resolved| {
+                resolved.def.binding == mimic::Binding::State
+                    && widget.flag("writable").unwrap_or(resolved.default_writable)
+            })
+        })
+        .expect("equipment that takes commands");
+    let tag = commanded.tag().expect("its tag");
+    let body = tag_api::write_request(0.0, "", route).expect("a REST write");
+    let refused = api
+        .send_json::<_, WriteAccepted>(Method::POST, &format!("/api/v1/tags/{tag}/write"), &body)
+        .await;
+    assert!(
+        refused.is_err(),
+        "a tag that is not writable refuses the command"
+    );
+    println!(
+        "{} takes commands; locked, the server refused one",
+        commanded.id
+    );
+}

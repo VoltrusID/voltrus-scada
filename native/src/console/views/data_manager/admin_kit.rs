@@ -424,6 +424,15 @@ pub(crate) fn note(text: impl Into<SharedString>, color: Hsla, icon: Option<Icon
         .into_any_element()
 }
 
+/// `1 key`, `3 keys`.
+pub(crate) fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
 /// A permanent line under the header explaining a server rule.
 pub(crate) fn banner(text: impl Into<SharedString>, theme: &Theme) -> AnyElement {
     div()

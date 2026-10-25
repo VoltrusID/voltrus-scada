@@ -520,8 +520,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
 
     let expired = list.iter().filter(|key| key.expired(now)).count();
     let subtitle = format!(
-        "{} keys{} · N new · ⌫ revoke",
-        list.len(),
+        "{}{} · N new · ⌫ revoke",
+        kit::count(list.len(), "key"),
         if expired > 0 {
             format!(" · {expired} expired")
         } else {
