@@ -826,7 +826,7 @@ mod tests {
         type_into(&mut h, |form| form.username.clone(), "ana");
         type_into(&mut h, |form| form.password.clone(), "secret-123");
         type_into(&mut h, |form| form.again.clone(), "secret-124");
-        h.update(|console, window, cx| submit(console, window, cx));
+        h.update(submit);
         assert!(h.calls().is_empty(), "differing passwords are not sent");
         assert!(
             h.update(|console, _, _| {
@@ -840,7 +840,7 @@ mod tests {
         );
 
         type_into(&mut h, |form| form.again.clone(), "secret-123");
-        h.update(|console, window, cx| submit(console, window, cx));
+        h.update(submit);
         assert_eq!(h.calls(), [CallKey::new("data.users.save")]);
         h.reply(
             CallKey::new("data.users.save"),

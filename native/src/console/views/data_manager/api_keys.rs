@@ -796,7 +796,7 @@ mod tests {
             name.expect("the form is open")
                 .update(cx, |field, cx| field.set_text("Grafana", cx));
         });
-        h.update(|console, window, cx| submit(console, window, cx));
+        h.update(submit);
         assert_eq!(h.calls(), [CallKey::new("data.api-keys.create")]);
         h.reply(
             CallKey::new("data.api-keys.create"),
