@@ -4313,7 +4313,8 @@ mod tests {
         let steps = import_plan(DeviceFileKind::Modbus, "plant.json", modbus);
         assert_eq!(
             steps[0],
-            ImportStep::Note("plant.json: m1: w has no address or offset".into())
+            // A nameless device is labelled by its place, as the web does.
+            ImportStep::Note("plant.json: device 1: w has no address or offset".into())
         );
         let ImportStep::Device {
             label,

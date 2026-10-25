@@ -491,9 +491,16 @@ pub fn on_open(console: &mut Console, cx: &mut Context<Console>) {
     );
 }
 
+/// The newest status request's number: an older, slower answer is dropped.
+#[derive(Default)]
+struct StatusSeq(i64);
+
 fn fetch_status(console: &mut Console, _: &mut Context<Console>) {
+    let seq = console.state::<StatusSeq>();
+    seq.0 += 1;
+    let key = CallKey::new(STATUS).with(seq.0);
     console.call(
-        CallKey::new(STATUS),
+        key,
         Call::get::<Vec<PollerStatus>>("/api/v1/modbus-devices/status"),
     );
 }
@@ -501,7 +508,8 @@ fn fetch_status(console: &mut Console, _: &mut Context<Console>) {
 pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Context<Console>) {
     match key.name {
         STATUS => {
-            if let Ok(statuses) = reply.take::<Vec<PollerStatus>>() {
+            let newest = console.state::<StatusSeq>().0 == key.arg;
+            if let (true, Ok(statuses)) = (newest, reply.take::<Vec<PollerStatus>>()) {
                 section(console, &PROTOCOL).status = statuses
                     .into_iter()
                     .map(|status| {
