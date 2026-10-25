@@ -1102,7 +1102,7 @@ mod tests {
             Reply::ok(vec![QueuedCommand::default(); PAGE_SIZE + 1]),
         );
         assert!(h.update(|console, _, _| console.state::<State>().has_next()));
-        h.update(|console, window, cx| next_page(console, window, cx));
+        h.update(next_page);
         let second = history(&mut h);
         h.reply(second, Reply::failed("HTTP 502"));
         let (page, rows, error, next) = h.update(|console, _, _| {

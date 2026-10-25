@@ -814,7 +814,7 @@ mod tests {
     #[gpui::test]
     fn enter_after_a_successful_write_sends_nothing(cx: &mut TestAppContext) {
         let mut h = writing(cx, "demo");
-        h.update(|console, window, cx| open_write(console, window, cx));
+        h.update(open_write);
         type_value(&mut h, "42");
         h.draw();
         h.keys("enter");

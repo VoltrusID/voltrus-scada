@@ -2243,8 +2243,8 @@ mod tests {
         assert_eq!(dashboard_calls(&h.calls()), Vec::<&str>::new());
 
         // The layout is unknown, not a default a save would make permanent.
-        h.update(|console, window, cx| toggle_edit(console, window, cx));
-        h.update(|console, window, cx| arrange(console, window, cx));
+        h.update(toggle_edit);
+        h.update(arrange);
         let (editing, draft) = h.update(|console, _, _| {
             let state = console.state::<State>();
             (state.editing, state.draft.is_some())
