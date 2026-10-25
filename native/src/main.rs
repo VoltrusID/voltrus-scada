@@ -12,7 +12,6 @@ use gpui::{
     px, size,
 };
 use time::UtcOffset;
-use voltrus_scada_native::stress::StressOptions;
 use vt_ui::theme::{self, ThemeCatalog};
 
 use console::{Console, Launch, LaunchOverlay, Page, StressPlan};
@@ -268,6 +267,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use voltrus_scada_native::stress::StressOptions;
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|arg| (*arg).to_owned()).collect()

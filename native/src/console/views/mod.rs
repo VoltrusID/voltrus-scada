@@ -17,7 +17,7 @@ pub(crate) mod tags;
 pub(crate) mod toasts;
 pub(crate) mod trends;
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
 use gpui::{
@@ -265,15 +265,19 @@ pub(crate) fn page(
         .into_any_element()
 }
 
+/// The cursor of a keyboard list moved to a row.
+pub(crate) type OnMove = fn(&mut Console, usize, &mut Window, &mut Context<Console>);
+/// Enter (`toggle` false) or Space (`toggle` true) on a keyboard list's row.
+pub(crate) type OnActivate = fn(&mut Console, usize, bool, &mut Window, &mut Context<Console>);
+
 /// What a keyboard list does with its rows.
 #[derive(Clone, Copy)]
 pub(crate) struct ListKeys {
     /// The list's id, for [`Console::list`].
     pub id: &'static str,
     /// The cursor moved to a row (the Tags page opens its detail).
-    pub on_move: Option<fn(&mut Console, usize, &mut Window, &mut Context<Console>)>,
-    /// Enter (`toggle` false) or Space (`toggle` true) on a row.
-    pub on_activate: fn(&mut Console, usize, bool, &mut Window, &mut Context<Console>),
+    pub on_move: Option<OnMove>,
+    pub on_activate: OnActivate,
 }
 
 fn mover<A: Action>(
@@ -343,16 +347,10 @@ pub(crate) fn focus_ring(theme: &Theme) -> Div {
 }
 
 /// How many rows of `row_height` fit in the window's height, for PgUp/PgDn.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 pub(crate) fn rows_on_screen(window: &Window, row_height: f32) -> usize {
     let height = f32::from(window.viewport_size().height) - 160.0;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let rows = (height / row_height).floor().max(1.0) as usize;
-    rows
-}
-
-/// How long ago, for the toast and flash animations.
-pub(crate) fn elapsed_since(at: Instant) -> Duration {
-    Instant::now().saturating_duration_since(at)
+    (height / row_height).floor().max(1.0) as usize
 }
 
 /// Wall-clock now in milliseconds, the time base of every chart.

@@ -51,6 +51,8 @@ pub type Render = fn(&mut Console, &mut Window, &mut Context<Console>) -> AnyEle
 pub type OnShow = fn(&mut Console, &mut Window, &mut Context<Console>);
 /// Handles the answer to a generic REST call whose key scope is the page id.
 pub type OnReply = fn(&mut Console, CallKey, Reply, &mut Context<Console>);
+/// The page's search field, if it has one.
+pub type Search = fn(&Console) -> Option<Entity<TextInput>>;
 
 pub struct PageSpec {
     pub page: Page,
@@ -68,7 +70,7 @@ pub struct PageSpec {
     pub on_show: Option<OnShow>,
     pub on_reply: Option<OnReply>,
     /// The page's search field, focused by `/`.
-    pub search: Option<fn(&Console) -> Option<Entity<TextInput>>>,
+    pub search: Option<Search>,
     /// The width of a panel along the page's right edge that the toasts
     /// keep clear of.
     pub side_panel: fn(&Console) -> Pixels,
@@ -178,10 +180,6 @@ impl Page {
     pub fn title(self) -> &'static str {
         spec(self).title
     }
-
-    pub fn id(self) -> &'static str {
-        spec(self).id
-    }
 }
 
 /// The page ids, for usage text: `overview|tags|…`.
@@ -207,12 +205,12 @@ mod tests {
             Page::Performance,
         ] {
             assert_eq!(PAGES.iter().filter(|spec| spec.page == page).count(), 1);
-            assert_eq!(Page::parse(page.id()), Some(page));
+            assert_eq!(Page::parse(spec(page).id), Some(page));
         }
-        let mut ids: Vec<_> = PAGES.iter().map(|spec| spec.id).collect();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), PAGES.len(), "ids are unique");
+        let mut all: Vec<_> = PAGES.iter().map(|spec| spec.id).collect();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), PAGES.len(), "ids are unique");
         let mut digits: Vec<u8> = PAGES.iter().filter_map(|spec| spec.digit).collect();
         assert!(digits.iter().all(|digit| (1..=9).contains(digit)));
         digits.sort_unstable();

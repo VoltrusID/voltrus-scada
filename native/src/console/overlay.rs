@@ -129,7 +129,7 @@ pub fn search(entries: &[Entry], query: &str) -> Vec<usize> {
         .filter_map(|(index, entry)| score(query, &entry.title).map(|score| (score, index)))
         .collect();
     // Stable: equal scores keep table order.
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
     scored.into_iter().map(|(_, index)| index).collect()
 }
 

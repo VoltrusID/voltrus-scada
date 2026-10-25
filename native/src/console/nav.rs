@@ -2,7 +2,7 @@
 //! move it, PgUp/PgDn a screenful, Home/End to the ends, Enter and Space act
 //! on the row (see `views::keyboard_list`, which wires the keys).
 
-use gpui::{App, FocusHandle, ScrollStrategy, UniformListScrollHandle, Window};
+use gpui::{App, FocusHandle, ScrollStrategy, UniformListScrollHandle};
 
 /// A cursor move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,12 +82,6 @@ impl ListNav {
     pub fn select(&mut self, row: usize) {
         self.cursor = Some(row);
         self.scroll.scroll_to_item(row, ScrollStrategy::Center);
-    }
-
-    /// Whether `row` gets the focus ring: the cursor's row, while the list
-    /// has focus.
-    pub fn ring(&self, row: usize, window: &Window) -> bool {
-        self.cursor == Some(row) && self.focus.is_focused(window)
     }
 }
 

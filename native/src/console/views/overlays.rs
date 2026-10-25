@@ -78,11 +78,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
 }
 
 /// ⌘K: every page and command, fuzzy-searched as you type.
-pub fn palette(
-    console: &mut Console,
-    window: &mut Window,
-    cx: &mut Context<Console>,
-) -> AnyElement {
+pub fn palette(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
     let Some(palette) = console.palette.as_ref() else {
         return div().into_any_element();

@@ -230,6 +230,7 @@ impl Store {
         self.by_id.get(&id).copied()
     }
 
+    #[cfg(test)]
     pub fn get(&self, id: i64) -> Option<&Tag> {
         self.position(id).map(|index| &self.tags[index])
     }
