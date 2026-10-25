@@ -60,7 +60,7 @@ fn two_and_a_line() -> Layout {
 /// Deterministic ids for tests: `w1`, `c2`, …
 fn counter() -> impl FnMut(&str) -> String {
     let mut next = 0;
-    move |prefix| {
+    move |prefix: &str| {
         next += 1;
         format!("{prefix}{next}")
     }
@@ -450,7 +450,7 @@ fn moves_snap_to_the_grid_line_up_with_others_and_stay_on_the_stage() {
         ],
         connections: Vec::new(),
     };
-    let moving = vec!["a".to_owned()];
+    let moving = ["a".to_owned()];
     let start = Rect::of(&layout.widgets[0]);
     let both = Snapping {
         grid: true,
@@ -584,7 +584,7 @@ fn hits_bands_and_reading_order() {
     assert_eq!(step(&Layout::default(), None, true), None);
 
     // Nudging keeps the group on the stage.
-    let ids = vec!["a".to_owned(), "b".to_owned()];
+    let ids = ["a".to_owned(), "b".to_owned()];
     let Some(Edit::Move(moves)) = nudge(&layout, &ids, -500.0, 10.0) else {
         panic!("a move");
     };
@@ -607,7 +607,7 @@ fn hits_bands_and_reading_order() {
 #[test]
 fn copies_paste_with_fresh_ids_and_their_connections() {
     let layout = two_and_a_line();
-    let ids = vec!["a".to_owned(), "b".to_owned()];
+    let ids = ["a".to_owned(), "b".to_owned()];
     let mut clip = copy(&layout, &ids);
     assert_eq!(clip.widgets.len(), 2);
     assert_eq!(clip.connections.len(), 1);

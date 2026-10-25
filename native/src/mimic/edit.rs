@@ -687,7 +687,7 @@ fn own_fields(key: &str) -> &'static [Field] {
 /// has no value badge and takes commands unless turned off.
 pub fn symbol_fields(def: &SymbolDef, legacy: bool, default_writable: bool) -> Vec<Field> {
     let mut fields = vec![text("label", "Label", "")];
-    if !(legacy && def.binding == Binding::State) {
+    if !legacy || def.binding != Binding::State {
         fields.push(flag(
             "showValue",
             "Show Value",
