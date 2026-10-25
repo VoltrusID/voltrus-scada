@@ -272,7 +272,8 @@ fn pick_device(console: &mut Console, device: Option<SharedString>, cx: &mut Con
 fn step_device(console: &mut Console, forward: bool, cx: &mut Context<Console>) {
     let options = devices(console);
     let current = console.state::<State>().device.clone();
-    if let Some(next) = insights_kit::step(&options, current.as_deref(), forward).cloned() {
+    if let Some(next) = insights_kit::step(&options, insights_kit::text(&current), forward).cloned()
+    {
         pick_device(console, Some(next), cx);
     }
 }
@@ -585,7 +586,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .child(chips(
             "analytics-device",
             &options,
-            device.as_deref(),
+            insights_kit::text(&device),
             None,
             pick_device,
             cx,

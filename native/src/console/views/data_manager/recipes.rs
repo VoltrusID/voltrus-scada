@@ -49,7 +49,7 @@ use crate::console::views::{
     ListKeys, card, focus_ring, keyboard_list, local_time, page_header, rows_on_screen, tail_row,
     tail_rows,
 };
-use crate::console::{Console, Page, time_now_secs};
+use crate::console::{Console, Page};
 
 /// The section's id: its calls are `data.recipes.*`.
 pub(crate) const ID: &str = "recipes";
@@ -198,7 +198,7 @@ fn fetch(console: &mut Console) {
     let state = console.state::<State>();
     state.seq += 1;
     let seq = state.seq;
-    let path = insights::recipes_path(state.device.as_deref());
+    let path = insights::recipes_path(insights_kit::text(&state.device));
     console.call(
         CallKey::new("data.recipes.list").with(seq),
         Call::get::<Vec<Recipe>>(path),
@@ -403,7 +403,8 @@ fn pick_device(console: &mut Console, device: Option<SharedString>, cx: &mut Con
 fn step_device(console: &mut Console, forward: bool, cx: &mut Context<Console>) {
     let options = devices(console);
     let current = console.state::<State>().device.clone();
-    if let Some(next) = insights_kit::step(&options, current.as_deref(), forward).cloned() {
+    if let Some(next) = insights_kit::step(&options, insights_kit::text(&current), forward).cloned()
+    {
         pick_device(console, Some(next), cx);
     }
 }
@@ -486,7 +487,7 @@ fn submit_new(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
     }
     let body = match NewRecipe::new(
         form.name.read(cx).value(),
-        form.device.as_deref().unwrap_or(""),
+        insights_kit::text(&form.device).unwrap_or(""),
         form.category.read(cx).value(),
         form.description.read(cx).value(),
     ) {
@@ -527,7 +528,7 @@ fn new_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         chips(
             "recipe-new-device",
             &options,
-            device.as_deref(),
+            insights_kit::text(&device),
             None,
             |console, device, cx| {
                 if let Some(form) = console.state::<State>().new.as_mut() {
@@ -931,10 +932,12 @@ fn load_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         return div().into_any_element();
     };
     let count = recipe.values().len();
+    let own = focus.clone();
     div()
         .track_focus(&focus)
-        .on_key_down(cx.listener(|console, event: &KeyDownEvent, _, cx| {
-            if event.keystroke.key == "enter" {
+        .on_key_down(cx.listener(move |console, event: &KeyDownEvent, window, cx| {
+            // Enter on the Cancel button is that button's, not a load.
+            if event.keystroke.key == "enter" && own.is_focused(window) {
                 load_confirmed(console, cx);
                 cx.stop_propagation();
             }
@@ -1060,10 +1063,12 @@ fn delete_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
     let Some((recipe, focus)) = console.state::<State>().confirm_delete.clone() else {
         return div().into_any_element();
     };
+    let own = focus.clone();
     div()
         .track_focus(&focus)
-        .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "enter" {
+        .on_key_down(cx.listener(move |console, event: &KeyDownEvent, window, cx| {
+            // Enter on the Keep button is that button's, not a delete.
+            if event.keystroke.key == "enter" && own.is_focused(window) {
                 delete_confirmed(console, window, cx);
                 cx.stop_propagation();
             }
@@ -1188,7 +1193,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .child(chips(
             "recipe-device",
             &options,
-            device.as_deref(),
+            insights_kit::text(&device),
             Some("All devices"),
             pick_device,
             cx,

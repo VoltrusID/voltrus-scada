@@ -3,9 +3,10 @@
 //! a timer that runs only while a section is on screen, and saving a text
 //! file where the operator picks.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use gpui::prelude::*;
@@ -62,6 +63,11 @@ pub(crate) fn device_tags(console: &Console, device: &str) -> Vec<usize> {
         .filter(|(_, tag)| tag.info.device_id == device)
         .map(|(index, _)| index)
         .collect()
+}
+
+/// A chosen device as text.
+pub(crate) fn text(value: &Option<SharedString>) -> Option<&str> {
+    value.as_ref().map(SharedString::as_ref)
 }
 
 /// What a chip row does when a chip is picked: `None` is "All".
@@ -194,9 +200,17 @@ pub(crate) fn figure(label: &'static str, value: String, color: Hsla, theme: &Th
         .into_any_element()
 }
 
-/// The section timers that run now, by section id.
+/// The section timers that run now: section id → the running loop's
+/// number. A loop whose number is gone (the session's state was dropped
+/// at sign-out) ends at its next tick, so a later session never runs two.
 #[derive(Default)]
-struct Timers(HashSet<&'static str>);
+struct Timers {
+    running: HashMap<&'static str, u64>,
+}
+
+/// Numbers the loops across sessions (a session's [`Timers`] starts
+/// empty).
+static NEXT_TIMER: AtomicU64 = AtomicU64::new(1);
 
 /// Run `tick` every `every` while section `id` is on screen in a
 /// signed-in console, until `tick` answers false. Started again by the
@@ -208,19 +222,27 @@ pub(crate) fn every_while_shown(
     tick: fn(&mut Console, &mut Context<Console>) -> bool,
     cx: &mut Context<Console>,
 ) {
-    if console.stress.is_some() || !console.state::<Timers>().0.insert(id) {
+    if console.stress.is_some() {
         return;
     }
+    let timers = console.state::<Timers>();
+    if timers.running.contains_key(id) {
+        return;
+    }
+    let number = NEXT_TIMER.fetch_add(1, Ordering::Relaxed);
+    timers.running.insert(id, number);
     cx.spawn(async move |this, cx| {
         loop {
             cx.background_executor().timer(every).await;
             let going = this.update(cx, |console, cx| {
-                let going = console.phase == Phase::Console
+                let mine = console.state::<Timers>().running.get(id) == Some(&number);
+                let going = mine
+                    && console.phase == Phase::Console
                     && console.stress.is_none()
                     && section_shown(console, id)
                     && tick(console, cx);
-                if !going {
-                    console.state::<Timers>().0.remove(id);
+                if !going && mine {
+                    console.state::<Timers>().running.remove(id);
                 }
                 going
             });

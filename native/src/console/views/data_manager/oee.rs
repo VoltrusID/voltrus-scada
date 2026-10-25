@@ -263,7 +263,11 @@ fn fetch(console: &mut Console) {
     let metrics_seq = state.metrics.seq;
     console.call(
         CallKey::new("data.oee.events").with(events_seq),
-        Call::get::<Vec<DowntimeEvent>>(insights::downtime_path(device.as_deref(), from, to)),
+        Call::get::<Vec<DowntimeEvent>>(insights::downtime_path(
+            insights_kit::text(&device),
+            from,
+            to,
+        )),
     );
     if let Some(device) = device {
         console.call(
@@ -373,7 +377,7 @@ fn pick_device(console: &mut Console, device: Option<SharedString>, cx: &mut Con
 fn step_device(console: &mut Console, forward: bool, cx: &mut Context<Console>) {
     let options = devices(console);
     let current = console.state::<State>().device.clone();
-    let next = insights_kit::step(&options, current.as_deref(), forward).cloned();
+    let next = insights_kit::step(&options, insights_kit::text(&current), forward).cloned();
     if next.is_some() {
         pick_device(console, next, cx);
     }
@@ -468,7 +472,7 @@ fn submit_record(console: &mut Console, _: &mut Window, cx: &mut Context<Console
     if form.sending {
         return;
     }
-    let body = match NewDowntime::new(form.device.as_deref().unwrap_or(""), form.state) {
+    let body = match NewDowntime::new(insights_kit::text(&form.device).unwrap_or(""), form.state) {
         Ok(body) => body,
         Err(error) => {
             form.error = Some(error);
@@ -532,7 +536,7 @@ fn record_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
         chips(
             "oee-record-device",
             &options,
-            device.as_deref(),
+            insights_kit::text(&device),
             None,
             |console, device, cx| {
                 if let Some(form) = console.state::<State>().record.as_mut() {
@@ -860,14 +864,18 @@ fn delete_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
     let Some((shift, focus)) = console.state::<State>().delete.clone() else {
         return div().into_any_element();
     };
+    let own = focus.clone();
     div()
         .track_focus(&focus)
-        .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "enter" {
-                delete_confirmed(console, window, cx);
-                cx.stop_propagation();
-            }
-        }))
+        .on_key_down(
+            cx.listener(move |console, event: &KeyDownEvent, window, cx| {
+                // Enter on the Keep button is that button's, not a delete.
+                if event.keystroke.key == "enter" && own.is_focused(window) {
+                    delete_confirmed(console, window, cx);
+                    cx.stop_propagation();
+                }
+            }),
+        )
         .child(dialog(
             format!("Delete the {} shift?", shift.name),
             format!(
@@ -1025,7 +1033,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .child(chips(
             "oee-device",
             &options,
-            device.as_deref(),
+            insights_kit::text(&device),
             Some("All devices"),
             pick_device,
             cx,
