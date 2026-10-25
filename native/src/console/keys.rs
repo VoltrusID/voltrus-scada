@@ -49,6 +49,10 @@ actions!(
         ListToggle,
         StartStress,
         StopStress,
+        ShellOpenSettings,
+        ShellToggleNotifications,
+        ShellEditShortcuts,
+        ShellPickTheme,
         TagsWrite,
         TagsWritePolicy,
         TagsAddNote,
@@ -490,6 +494,42 @@ pub static COMMANDS: &[CommandSpec] = &[
         [],
         CONSOLE,
         OpsExportData,
+        true
+    ),
+    command!(
+        "Settings",
+        View,
+        Settings,
+        ["secondary-,"],
+        CONSOLE,
+        ShellOpenSettings,
+        true
+    ),
+    command!(
+        "Notifications",
+        View,
+        Inbox,
+        ["secondary-alt-n"],
+        CONSOLE,
+        ShellToggleNotifications,
+        true
+    ),
+    command!(
+        "Edit keyboard shortcuts",
+        View,
+        Keyboard,
+        [],
+        CONSOLE,
+        ShellEditShortcuts,
+        true
+    ),
+    command!(
+        "Pick a theme",
+        View,
+        Palette,
+        [],
+        CONSOLE,
+        ShellPickTheme,
         true
     ),
     command!(

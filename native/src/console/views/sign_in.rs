@@ -16,6 +16,10 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
         .user
         .as_ref()
         .map_or_else(String::new, |(name, _)| name.clone());
+    let methods = (!changing)
+        .then(|| super::edition::sign_in_methods(console, cx))
+        .flatten();
+    let edition = super::edition::sign_in_edition(console, cx);
 
     let (title, subtitle) = if changing {
         (
@@ -132,6 +136,7 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                     ))
                 }),
         )
+        .children(methods)
         .child(
             div()
                 .flex()
@@ -175,7 +180,8 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                         .text_size(FONT_TITLE)
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Voltrus SCADA"),
-                ),
+                )
+                .children(edition),
         )
         .child(card)
         .child(

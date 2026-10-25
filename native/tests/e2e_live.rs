@@ -264,7 +264,311 @@ async fn live_login_sensors_ws_stream() {
     handle.send(Command::Shutdown);
 
     logout_revokes_the_refresh_token(&url, &user, &pass).await;
+
+    shell_preferences_notifications_and_edition(&url, &user, &pass).await;
     operations_pages(&url, &user, &pass).await;
+}
+
+/// The shell's paths (settings sheet, shortcuts, bell, edition, sign-in
+/// methods): each read, each write and back, the role gate on the alarm
+/// cooldown, and user notifications end to end: an operator mentions the
+/// admin and a viewer in a shift handover; the viewer reads, marks read and
+/// dismisses theirs; the admin's stays unread (the bell's screenshot shows
+/// it). Leaves the admin's preferences as it found them, and removes the
+/// two users it makes where the server allows it.
+async fn shell_preferences_notifications_and_edition(url: &str, user: &str, pass: &str) {
+    use serde::de::IgnoredAny;
+    use voltrus_scada_native::api::Method;
+    use voltrus_scada_native::api::shell::{
+        AlarmCooldown, AuthProviders, LicenseStatus, ShortcutMap, SignInMethod, Tier, UiLang,
+        UiTheme, UserNotifications,
+    };
+
+    // Public, before signing in, through the runtime as the sign-in card
+    // asks.
+    let (handle, events) = runtime::start().expect("runtime");
+    let key = CallKey::new("shell.providers").with(1);
+    handle.send(Command::Public {
+        base: url.to_owned(),
+        key,
+        call: Call::new(|api| async move {
+            api.get_public::<AuthProviders>("/api/v1/auth/providers")
+                .await
+        }),
+    });
+    let providers = wait_for(&events, 20, |event| match event {
+        Event::PublicReply { key: got, reply } if got == key => Some(reply.take::<AuthProviders>()),
+        _ => None,
+    })
+    .await
+    .expect("no answer about sign-in methods")
+    .unwrap_or_else(|error| panic!("sign-in methods: {error}"));
+    assert!(
+        providers
+            .providers
+            .iter()
+            .any(|provider| provider.method() == SignInMethod::Password),
+        "the password is a sign-in method"
+    );
+    handle.send(Command::Shutdown);
+    let license: LicenseStatus = VoltrusApi::new(url)
+        .get_public("/api/license/status")
+        .await
+        .expect("licence status");
+    assert!(!license.status.is_empty(), "the licence names its status");
+    println!(
+        "sign-in methods: {}, edition: {} ({})",
+        providers.providers.len(),
+        license.tier().label(),
+        license.status
+    );
+    if license.status == "Community" {
+        assert_eq!(license.tier(), Tier::Community);
+    }
+
+    let mut admin = VoltrusApi::new(url);
+    admin.login(user, pass).await.expect("sign in");
+
+    // Appearance and language: set, read back, restore.
+    let theme: UiTheme = admin
+        .get_json("/api/v1/settings/ui-theme")
+        .await
+        .expect("ui-theme");
+    for value in ["light", theme.theme.as_str()] {
+        let saved: UiTheme = admin
+            .send_json(
+                Method::PUT,
+                "/api/v1/settings/ui-theme",
+                &serde_json::json!({ "theme": value }),
+            )
+            .await
+            .expect("save ui-theme");
+        assert_eq!(saved.theme, value);
+        let read: UiTheme = admin
+            .get_json("/api/v1/settings/ui-theme")
+            .await
+            .expect("ui-theme");
+        assert_eq!(read.theme, value);
+    }
+    let lang: UiLang = admin
+        .get_json("/api/v1/settings/ui-lang")
+        .await
+        .expect("ui-lang");
+    for value in ["id", lang.lang.as_str()] {
+        let saved: UiLang = admin
+            .send_json(
+                Method::PUT,
+                "/api/v1/settings/ui-lang",
+                &serde_json::json!({ "lang": value }),
+            )
+            .await
+            .expect("save ui-lang");
+        assert_eq!(saved.lang, value);
+    }
+    let cooldown: AlarmCooldown = admin
+        .get_json("/api/v1/settings/alarm-cooldown")
+        .await
+        .expect("alarm cooldown");
+    for secs in [cooldown.secs + 30, cooldown.secs] {
+        let saved: AlarmCooldown = admin
+            .send_json(
+                Method::PUT,
+                "/api/v1/settings/alarm-cooldown",
+                &serde_json::json!({ "secs": secs }),
+            )
+            .await
+            .expect("save alarm cooldown");
+        assert_eq!(saved.secs, secs);
+    }
+    println!(
+        "preferences: theme {}, lang {}, cooldown {} s (each set and restored)",
+        theme.theme, lang.lang, cooldown.secs
+    );
+
+    // Shortcuts: a tag's and a navigation target's, set and cleared. The
+    // plant's admin has no shortcuts of its own to keep.
+    let tags: Vec<voltrus_scada_native::api::DataSource> =
+        admin.data_sources().await.expect("tags");
+    let tag = tags.first().expect("a tag").id.to_string();
+    let before: ShortcutMap = admin
+        .get_json("/api/v1/shortcuts")
+        .await
+        .expect("shortcuts");
+    let mut body = serde_json::Map::new();
+    body.insert(tag.clone(), serde_json::Value::from("Alt+F9"));
+    let _: IgnoredAny = admin
+        .send_json(Method::PUT, "/api/v1/shortcuts", &body)
+        .await
+        .expect("save a tag shortcut");
+    let saved: ShortcutMap = admin
+        .get_json("/api/v1/shortcuts")
+        .await
+        .expect("shortcuts");
+    assert_eq!(saved.get(&tag).map(String::as_str), Some("Alt+F9"));
+    let restore: serde_json::Map<String, serde_json::Value> = before
+        .into_iter()
+        .filter(|(_, combo)| !combo.is_empty())
+        .map(|(id, combo)| (id, serde_json::Value::String(combo)))
+        .collect();
+    let _: IgnoredAny = admin
+        .send_json(Method::PUT, "/api/v1/shortcuts", &restore)
+        .await
+        .expect("restore tag shortcuts");
+    let nav: ShortcutMap = admin
+        .get_json("/api/v1/nav-shortcuts")
+        .await
+        .expect("nav shortcuts");
+    assert_eq!(
+        nav.get("screen:all").map(String::as_str),
+        Some("Mod+1"),
+        "the default"
+    );
+    let _: IgnoredAny = admin
+        .send_json(
+            Method::PUT,
+            "/api/v1/nav-shortcuts",
+            &serde_json::json!({ "action:alarms": "F9" }),
+        )
+        .await
+        .expect("save a nav shortcut");
+    let nav: ShortcutMap = admin
+        .get_json("/api/v1/nav-shortcuts")
+        .await
+        .expect("nav shortcuts");
+    assert_eq!(nav.get("action:alarms").map(String::as_str), Some("F9"));
+    let _: IgnoredAny = admin
+        .send_json(Method::PUT, "/api/v1/nav-shortcuts", &serde_json::json!({}))
+        .await
+        .expect("clear nav shortcuts");
+    println!("shortcuts: a tag's and a target's set and cleared");
+
+    // Two users: an operator who writes the handover, a viewer who reads.
+    let suffix = format!("{:x}", std::process::id());
+    let operator = format!("e2e_ops_{suffix}");
+    let viewer = format!("e2e_view_{suffix}");
+    let secret = format!("E2e-{suffix}-notify-pass");
+    let mut made = Vec::new();
+    for (name, role) in [(&operator, "demo"), (&viewer, "viewer")] {
+        let answer: serde_json::Value = admin
+            .send_json(
+                Method::POST,
+                "/api/v1/users",
+                &serde_json::json!({ "username": name, "password": secret, "role": role }),
+            )
+            .await
+            .expect("create a user");
+        made.push(answer["id"].as_i64().expect("the new user's id"));
+    }
+    let mut ops = VoltrusApi::new(url);
+    ops.login(&operator, &secret)
+        .await
+        .expect("the operator signs in");
+    let today = time::OffsetDateTime::now_utc().date();
+    let handover: serde_json::Value = ops
+        .send_json(
+            Method::POST,
+            "/api/v1/shift-handover",
+            &serde_json::json!({
+                "shift_date": format!("{:04}-{:02}-{:02}", today.year(), u8::from(today.month()), today.day()),
+                "shift_period": "morning",
+                "what_happened": format!("Inverter fan noisy, @{user} and @{viewer} please check"),
+                "whats_pending": "Spare fan on order",
+                "what_to_watch": "Inverter temperature",
+            }),
+        )
+        .await
+        .expect("the operator writes a handover");
+    let handover = handover["id"].as_i64().expect("the handover's id");
+
+    let mut view = VoltrusApi::new(url);
+    view.login(&viewer, &secret)
+        .await
+        .expect("the viewer signs in");
+    let unread: UserNotifications = view
+        .get_json("/api/v1/user-notifications?unread_only=true")
+        .await
+        .expect("the viewer's notifications");
+    let mention = unread
+        .notifications
+        .iter()
+        .find(|notification| notification.reference_id == Some(handover))
+        .expect("the viewer was told of the mention")
+        .id;
+    let _: IgnoredAny = view
+        .send_empty(
+            Method::PUT,
+            &format!("/api/v1/user-notifications/{mention}/read"),
+        )
+        .await
+        .expect("mark read");
+    let unread: UserNotifications = view
+        .get_json("/api/v1/user-notifications?unread_only=true")
+        .await
+        .expect("the viewer's notifications");
+    assert!(
+        unread.notifications.iter().all(|n| n.id != mention),
+        "read is not unread"
+    );
+    let all: UserNotifications = view
+        .get_json("/api/v1/user-notifications")
+        .await
+        .expect("the viewer's notifications");
+    assert!(all.notifications.iter().any(|n| n.id == mention && n.read));
+    let _: IgnoredAny = view
+        .send_empty(
+            Method::DELETE,
+            &format!("/api/v1/user-notifications/{mention}"),
+        )
+        .await
+        .expect("dismiss");
+    let all: UserNotifications = view
+        .get_json("/api/v1/user-notifications")
+        .await
+        .expect("the viewer's notifications");
+    assert!(
+        all.notifications.iter().all(|n| n.id != mention),
+        "dismissed is gone"
+    );
+    // A viewer is not an operator: the server refuses the cooldown.
+    let refused = view
+        .send_json::<_, IgnoredAny>(
+            Method::PUT,
+            "/api/v1/settings/alarm-cooldown",
+            &serde_json::json!({ "secs": 60 }),
+        )
+        .await;
+    assert!(
+        refused.is_err(),
+        "a viewer may not change the alarm cooldown"
+    );
+    println!("notifications: read, marked read and dismissed; a viewer cannot set the cooldown");
+
+    let admins: UserNotifications = admin
+        .get_json("/api/v1/user-notifications")
+        .await
+        .expect("the admin's notifications");
+    assert!(
+        admins
+            .notifications
+            .iter()
+            .any(|n| n.reference_id == Some(handover) && !n.read),
+        "the admin was told of the mention too"
+    );
+    // The server cannot delete a user its handovers or notifications still
+    // name (a foreign key, no cascade); such users stay, and the run says so.
+    for id in made {
+        if let Err(error) = admin
+            .send_empty::<IgnoredAny>(Method::DELETE, &format!("/api/v1/users/{id}"))
+            .await
+        {
+            let error = error.to_string();
+            assert!(
+                error.contains("FOREIGN KEY"),
+                "removing test user {id} failed: {error}"
+            );
+            println!("note: test user {id} kept: the server refuses ({error})");
+        }
+    }
 }
 
 /// The operations pages' REST paths as the console builds them: commands

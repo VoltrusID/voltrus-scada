@@ -193,6 +193,37 @@ charts the last ten seconds. `--stress` feeds 10 000 synthetic tags at
 and writes it. CI runs a 20 s pass (`native/scripts/stress-macos.sh`) and
 prints the report in the job log and summary.
 
+## The shell: settings, keymap, notifications, edition
+
+`console/shell.rs` holds what surrounds the pages, in its own state
+(`Console::state::<Shell>()`): the user's server preferences, local
+preferences (`console/prefs.rs`, `preferences.toml`), the bell's
+notifications, the edition and sign-in methods. The console calls its
+hooks: `init` (end of `Console::new`), `signed_in`, `signed_out`, `tick`
+(the one-second ticker), `alarm_raised`, `on_reply` (every `shell.*`
+call key) and `on_public_reply`. Its commands attach to the root with
+`shell::actions`; its views are `views::{settings, notifications,
+edition}`.
+
+- **Public calls** (no session, e.g. the sign-in card's look at the
+  server): `Command::Public { base, key, call }` with
+  `VoltrusApi::get_public`, answered by `Event::PublicReply` even while
+  signed out.
+- **The keymap is rebuilt, not appended**: `shortcuts::rebind` clears
+  GPUI's bindings and binds vt-ui's text field keys, every
+  `keys::key_bindings()` row (less Quit and Sign out under the kiosk lock)
+  and the user's server shortcuts. A new static binding must therefore
+  come from `keys::COMMANDS` or the page registry, never from a separate
+  `cx.bind_keys`. After changing `/shortcuts` or `/nav-shortcuts` on the
+  server, call `shortcuts::reload(console)`.
+- **Kiosk lock**: `Console::kiosk_locked()`; the root captures `Quit` and
+  `SignOut` before their handlers, the menus and keymap drop them, and the
+  window refuses to close.
+- **Themes**: `shell::apply_theme` shows the theme chosen for the wanted
+  brightness (server appearance, unless `--appearance` pinned one); never
+  call `theme::set_theme` directly for the console's own theme.
+- **Launch overlays for screenshots**: `--overlay <ActionName>` runs any
+  `COMMANDS` row once signed in.
 ## Charts that need more than a live trend
 
 `vt_ui::chart::trend_chart` draws live trends ("now" at the right, no

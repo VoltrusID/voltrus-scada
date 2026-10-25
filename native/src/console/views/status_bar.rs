@@ -121,6 +121,12 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         )
         .child(div().flex_1())
         .child(div().text_color(theme.fg_dim).child(theme.name.clone()))
+        .child(
+            div()
+                .font_family(MONO)
+                .text_color(theme.fg)
+                .child(crate::console::shell::clock(console)),
+        )
         .child(concat!("Voltrus SCADA console ", env!("CARGO_PKG_VERSION")))
         .into_any_element()
 }
