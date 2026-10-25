@@ -29,6 +29,8 @@ dirs = "5"
 time = { version = "0.3", features = ["macros", "formatting", "local-offset"] }
 # `getrusage` for the performance HUD's memory figure.
 libc = "0.2"
+# The alarm annunciator's output stream (tones are synthesized; no codecs).
+cpal = "0.17"
 
 [dev-dependencies]
 http = "1"

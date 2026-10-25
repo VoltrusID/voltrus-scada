@@ -22,6 +22,7 @@ fn usage() -> String {
 usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
                       [--hud] [--overlay palette|help|add-tags]
+                      [--alarms history|analytics|audit|detail|shelve|confirm]
                       [--screen N|ID] [--edit]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
@@ -35,6 +36,7 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --hud              show the performance HUD (also ⇧⌘P)
   --overlay          open the command palette, the shortcut help or the dashboard's
                      tag picker once signed in
+  --alarms           open the Alarms page with this view or dialog once signed in
   --screen           the dashboard's screen: its id, or 1 for the overview, 2 for the first
   --edit             open the dashboard in edit mode (operator roles)
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
@@ -127,6 +129,16 @@ fn parse(args: &[String]) -> Result<Options, String> {
                         ));
                     }
                 });
+            }
+            "--alarms" => {
+                let name = args.next().map_or("", String::as_str);
+                let view = console::alarms::Launch::parse(name).ok_or_else(|| {
+                    format!(
+                        "--alarms takes {}, not “{name}”",
+                        console::alarms::Launch::NAMES
+                    )
+                })?;
+                options.overlay = Some(LaunchOverlay::Alarms(view));
             }
             "--screen" => match args.next() {
                 Some(screen) if !screen.is_empty() => options.screen = Some(screen.clone()),
@@ -380,5 +392,15 @@ mod tests {
         );
         assert!(parse(&args(&["--stress", "--stress-rate", "fast"])).is_err());
         assert!(parse(&args(&["--stress", "--sign-in"])).is_err());
+    }
+
+    #[test]
+    fn alarms_views_parse() {
+        assert_eq!(
+            parse(&args(&["--sign-in", "--alarms", "shelve"])).map(|options| options.overlay),
+            Ok(Some(LaunchOverlay::Alarms(console::alarms::Launch::Shelve)))
+        );
+        assert!(parse(&args(&["--alarms", "everything"])).is_err());
+        assert!(parse(&args(&["--alarms"])).is_err());
     }
 }

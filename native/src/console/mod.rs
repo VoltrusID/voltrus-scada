@@ -4,7 +4,9 @@
 //! animation redraws only its part. `native/docs/architecture.md` explains
 //! how to add pages, REST calls, keys, overlays and animations.
 
+pub mod alarms;
 mod anim;
+mod audio;
 mod config;
 pub mod keys;
 mod meter;
@@ -58,13 +60,6 @@ pub enum Phase {
     SignIn,
     ChangePassword,
     Console,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AlarmFilter {
-    Active,
-    Unacknowledged,
-    Shelved,
 }
 
 /// Trend ranges: an id and its label. Five minutes is drawn from the
@@ -131,6 +126,8 @@ pub struct DeviceLink {
 pub enum LaunchOverlay {
     Palette,
     Help,
+    /// A view or dialog of the Alarms page (`--alarms`).
+    Alarms(alarms::Launch),
     /// The dashboard's tag picker, on its `--screen`.
     AddTags,
 }
@@ -229,7 +226,6 @@ pub struct Console {
     /// Tags (data source ids) on the Trends chart.
     pub trend: BTreeSet<i64>,
     pub range: &'static str,
-    pub alarm_filter: AlarmFilter,
     pub inputs: Inputs,
     pub busy: bool,
     pub error: Option<String>,
@@ -456,7 +452,6 @@ impl Console {
             selected: None,
             trend: BTreeSet::new(),
             range: launch.range.unwrap_or("1h"),
-            alarm_filter: AlarmFilter::Active,
             inputs,
             busy: false,
             error: None,
@@ -535,7 +530,7 @@ impl Console {
             .expect("states are keyed by their type")
     }
 
-    /// A page module's state, if it was made; for `&Console` callers.
+    /// A page module's state, if made: for hooks that get `&Console`.
     pub fn state_ref<S: 'static>(&self) -> Option<&S> {
         self.states
             .get(&TypeId::of::<S>())
@@ -669,6 +664,7 @@ impl Console {
             Event::Alarms(alarms) => {
                 self.alarms = alarms;
                 self.alarms_error = None;
+                views::alarms::alarms_changed(self, window, cx);
             }
             Event::AlarmsFailed(error) => self.alarms_error = Some(error),
             Event::AlarmRaised(alarm) => {
@@ -749,6 +745,7 @@ impl Console {
         match self.pending_overlay.take() {
             Some(LaunchOverlay::Palette) => self.open_palette(window, cx),
             Some(LaunchOverlay::Help) => self.open_help(window, cx),
+            Some(LaunchOverlay::Alarms(view)) => views::alarms::launch(self, view, window, cx),
             Some(LaunchOverlay::AddTags) => views::dashboard::launch_picker(self),
             None => {}
         }
@@ -818,6 +815,7 @@ impl Console {
         self.store = Store::default();
         self.alarms.clear();
         self.alarms_error = None;
+        views::alarms::signed_out(self);
         self.devices.clear();
         self.selected = None;
         self.trend.clear();
@@ -1202,8 +1200,13 @@ impl Console {
         self.send(Command::AcknowledgeAll);
     }
 
-    pub fn shelve(&mut self, alarm: i64, seconds: u64) {
-        self.send(Command::Shelve { alarm, seconds });
+    /// Shelve `alarm` for `seconds` with the operator's `reason`.
+    pub fn shelve(&mut self, alarm: i64, seconds: u64, reason: String) {
+        self.send(Command::Shelve {
+            alarm,
+            seconds,
+            reason,
+        });
     }
 
     pub fn unshelve(&mut self, alarm: i64) {
@@ -1409,33 +1412,6 @@ impl Console {
             });
         })
         .detach();
-    }
-
-    /// Positions in `alarms` of the chosen filter's alarms, most severe
-    /// first.
-    pub fn filtered_alarms(&self) -> Vec<usize> {
-        let mut alarms: Vec<usize> = self
-            .alarms
-            .iter()
-            .enumerate()
-            .filter(|(_, alarm)| {
-                let shelved = is_shelved(alarm);
-                match self.alarm_filter {
-                    AlarmFilter::Active => !shelved,
-                    AlarmFilter::Unacknowledged => !shelved && alarm.acknowledged_at.is_none(),
-                    AlarmFilter::Shelved => shelved,
-                }
-            })
-            .map(|(index, _)| index)
-            .collect();
-        alarms.sort_by_key(|index| {
-            let alarm = &self.alarms[*index];
-            (
-                severity_rank(&alarm.severity),
-                std::cmp::Reverse(alarm.triggered_at),
-            )
-        });
-        alarms
     }
 
     /// Open alarms nobody has acknowledged yet: the Alarms tab's badge.
