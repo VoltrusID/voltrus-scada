@@ -34,7 +34,7 @@ const ACTIONS: f32 = 196.0;
 
 /// The alarms the list draws from: the open ones, or the History filter's
 /// own list (`status=all`).
-pub(super) fn source<'a>(console: &'a Console) -> &'a [Alarm] {
+pub(super) fn source(console: &Console) -> &[Alarm] {
     let state = console.state_ref::<State>();
     if state.is_some_and(|state| state.filter == Filter::History) {
         state
