@@ -1145,9 +1145,14 @@ impl Edit {
                     .map(|widget| &widget.id)
                     .ne(before.iter())
             }
-            Self::Many(edits) => edits
-                .iter()
-                .fold(false, |changed, edit| edit.apply(layout) || changed),
+            Self::Many(edits) => {
+                // Every edit applies, whether or not one before changed.
+                let mut changed = false;
+                for edit in edits {
+                    changed |= edit.apply(layout);
+                }
+                changed
+            }
         }
     }
 }
