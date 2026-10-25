@@ -5,13 +5,18 @@
 //! change replays its last frame, so an animating page costs only itself.
 
 pub(crate) mod alarms;
+pub(crate) mod audit;
 pub(crate) mod cached;
+pub(crate) mod commands;
 pub(crate) mod data_manager;
+pub(crate) mod export;
 pub(crate) mod hud;
 pub(crate) mod navbar;
+pub(crate) mod ops_kit;
 pub(crate) mod overlays;
 pub(crate) mod overview;
 pub(crate) mod performance;
+pub(crate) mod shift;
 mod sign_in;
 pub(crate) mod status_bar;
 pub(crate) mod tags;
@@ -36,6 +41,7 @@ use super::keys::{
     Quit, ShowMore, ShowPage, SignOut, StartStress, StopStress, ToggleAppearance, ToggleHelp,
     TogglePalette, TogglePerfHud,
 };
+use super::keys::{OpsExportAudit, OpsExportData, OpsNewHandover};
 use super::nav::Move;
 use super::store::Status;
 use super::{Console, Page, Phase, anim, pages, severity_rank};
@@ -206,6 +212,21 @@ impl Render for Console {
             .on_action(cx.listener(|console, _: &StopStress, window, cx| {
                 if console.stress.is_some() {
                     console.sign_out(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &OpsExportData, window, cx| {
+                if console.phase == Phase::Console {
+                    export::open(console, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &OpsNewHandover, window, cx| {
+                if console.phase == Phase::Console {
+                    shift::new_entry(console, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &OpsExportAudit, window, cx| {
+                if console.phase == Phase::Console {
+                    audit::export_csv(console, window, cx);
                 }
             }))
             .map(|root| alarms::root_actions(root, cx))
