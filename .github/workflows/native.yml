@@ -1,0 +1,143 @@
+# The native operator console (native/): formatting, lints, tests, an
+# end-to-end run against a live server with the solar-farm simulators, an
+# unsigned macOS app bundle, and screenshots of every page. No secrets: safe
+# for forks.
+name: Native console
+
+on:
+  push:
+    branches: [main, native-v2]
+    paths:
+      - native/**
+      - src/**
+      - scenarios/solar-farm/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/native.yml
+  pull_request:
+    paths:
+      - native/**
+      - src/**
+      - scenarios/solar-farm/**
+      - Cargo.toml
+      - Cargo.lock
+      - .github/workflows/native.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Restore and save separately so a failing build still keeps the compiled
+      # dependencies (GPUI and the server's protocol stacks take most of a cold
+      # build).
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: native-macos-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            native-macos-${{ hashFiles('Cargo.lock') }}-
+            native-macos-
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --locked --keep-going -p voltrus-scada-native --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --locked -p voltrus-scada-native
+
+      # One build for the console, the server and the simulator, so shared
+      # dependencies compile once with the same features.
+      - name: Build release
+        run: cargo build --locked --release --workspace --bin voltrus-native --bin voltrus --bin modbus-sim
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Start the solar-farm plant
+        run: native/scripts/ci-server.sh "$RUNNER_TEMP/plant"
+
+      - name: End-to-end against the live server
+        env:
+          VOLTRUS_E2E_EXPECT_UPDATES: "1"
+        run: cargo test --locked -p voltrus-scada-native --test e2e_live -- --nocapture
+
+      - name: Bundle
+        run: native/scripts/bundle-macos.sh target/release/voltrus-native dist
+
+      - name: Screenshots
+        run: native/scripts/screenshots-macos.sh "dist/Voltrus SCADA.app" dist/screenshots
+
+      - name: Stop the plant
+        if: always()
+        run: |
+          for pid in "$RUNNER_TEMP"/plant/*.pid; do
+            [ -f "$pid" ] && kill "$(cat "$pid")" 2>/dev/null || true
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: voltrus-native-screenshots
+          path: dist/screenshots
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: voltrus-native-plant-logs
+          path: ${{ runner.temp }}/plant/*.log
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: voltrus-native-macos-arm64
+          path: dist/Voltrus-SCADA-Console-macos-arm64.zip
+
+      # The demo plant to run on a Mac next to the console: the server, the
+      # simulator, and ci-server.sh with the scenario in their checkout layout.
+      # Tarred so the binaries keep their executable bit.
+      - name: Pack the demo plant
+        run: |
+          tar -czf dist/voltrus-demo-plant.tar.gz \
+            target/release/voltrus target/release/modbus-sim \
+            native/scripts/ci-server.sh scenarios/solar-farm
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: voltrus-native-demo-plant-macos-arm64
+          path: dist/voltrus-demo-plant.tar.gz

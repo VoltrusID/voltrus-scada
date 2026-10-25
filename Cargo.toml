@@ -114,3 +114,9 @@ snmp = "0.2.2"
 [dev-dependencies]
 http = "=1.4.0"
 tower = { version = "=0.5.3", features = ["util"] }
+
+# The native console's GPUI: crates.io 0.2.2 plus Metal memory and
+# frame-pacing fixes, kept in the VoltrusID fork of muxy-app/gpui (Apache-2.0)
+# and pinned by commit. Shared with Voltrus Tools.
+[patch.crates-io]
+gpui = { git = "https://github.com/VoltrusID/gpui", rev = "6c718f33b99b8d27e5987b746fe4b00dc6051a7c" }

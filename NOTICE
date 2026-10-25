@@ -71,16 +71,18 @@ project's own licence text is in its source package.
 
   [Apache-2.0 OR MIT]
     async-channel  https://github.com/smol-rs/async-channel
-    smol  https://github.com/smol-rs/smol
 
   [Apache-2.0]
-    gpui  https://github.com/zed-industries/zed
-    gpui-component  https://github.com/longbridge/gpui-component
-    gpui-component-assets  https://github.com/longbridge/gpui-component
+    gpui  https://github.com/VoltrusID/gpui (rev 6c718f33b99b8d27e5987b746fe4b00dc6051a7c; fork of
+          muxy-app/gpui, derived from zed-industries/zed crates/gpui)
     rumqttd  https://github.com/bytebeamio/rumqtt
 
   [Unlicense OR MIT]
     csv  https://github.com/BurntSushi/rust-csv
+
+  [GPL-3.0-or-later]
+    vt-ui  https://github.com/VoltrusID/voltrus-explorers (apps/voltrus-tools/crates/vt-ui,
+           rev 2d91988da3e69fd7020da579bdf466ef989f5b08)
 
   [MPL-2.0]
     async-opcua  https://github.com/freeopcua/async-opcua
@@ -120,4 +122,19 @@ project's own licence text is in its source package.
   webpki-roots (CDLA-Permissive-2.0)  https://github.com/rustls/webpki-roots
   async-opcua family (MPL-2.0): source at https://github.com/freeopcua/async-opcua (unmodified crates.io releases)
   three (MIT)  https://github.com/mrdoob/three.js
-  gpui, gpui-component, gpui-component-assets (Apache-2.0), native console only
+  gpui (Apache-2.0), native console only: VoltrusID/gpui fork pinned by commit
+
+=== Native console (voltrus-native, Voltrus SCADA.app) ===
+  The app bundle carries these licence texts in Contents/Resources/Licenses/.
+  vt-ui (GPL-3.0-or-later), the Voltrus design system. Complete corresponding source:
+    https://github.com/VoltrusID/voltrus-explorers/tree/2d91988da3e69fd7020da579bdf466ef989f5b08/apps/voltrus-tools/crates/vt-ui
+    Its third-party notices (muxy MIT notice included) are in Licenses/NOTICE-voltrus-tools.md.
+  gpui (Apache-2.0), Zed Industries, via https://github.com/VoltrusID/gpui
+    rev 6c718f33b99b8d27e5987b746fe4b00dc6051a7c (fork of muxy-app/gpui).
+    Licenses/gpui-LICENSE-APACHE.txt
+  JetBrains Mono (SIL OFL 1.1)  https://www.jetbrains.com/lp/mono/  Licenses/OFL-JetBrainsMono.txt
+  Lucide icons (ISC)  https://lucide.dev  Licenses/LICENSE-lucide.txt
+  Bundled Ghostty-format colour schemes (MIT): from muxy (https://github.com/muxy-app/muxy)
+    and iTerm2 Color Schemes (https://github.com/mbadolato/iTerm2-Color-Schemes), as
+    distributed with Ghostty; the Voltrus and Voltrus Light schemes are Voltrus's own.
+    Licenses/muxy-LICENSE.txt, Licenses/iTerm2-Color-Schemes-LICENSE.txt

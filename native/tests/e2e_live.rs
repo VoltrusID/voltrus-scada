@@ -1,6 +1,9 @@
 //! Live end-to-end test against a running voltrus server.
 //! Opt-in: only runs when VOLTRUS_E2E_URL / VOLTRUS_E2E_PASSWORD are set.
 //!
+//! It acknowledges one open alarm and changes the user's password, then
+//! changes it back: the user ends with the password it started with.
+//!
 //!   VOLTRUS_E2E_URL=http://localhost:3100 \
 //!   VOLTRUS_E2E_USERNAME=admin \
 //!   VOLTRUS_E2E_PASSWORD=... \
@@ -8,92 +11,179 @@
 
 use std::time::Duration;
 
-use voltrus_scada_native::runtime::{self, RtEvent, UiCmd};
+use voltrus_scada_native::api::Alarm;
+use voltrus_scada_native::runtime::{self, Command, Event, Link};
+
+async fn next(events: &async_channel::Receiver<Event>) -> Option<Event> {
+    tokio::time::timeout(Duration::from_millis(500), events.recv())
+        .await
+        .ok()
+        .and_then(Result::ok)
+}
+
+/// The first event `pick` takes within `secs` seconds.
+async fn wait_for<T>(
+    events: &async_channel::Receiver<Event>,
+    secs: u64,
+    mut pick: impl FnMut(Event) -> Option<T>,
+) -> Option<T> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    while tokio::time::Instant::now() < deadline {
+        if let Some(found) = next(events).await.and_then(&mut pick) {
+            return Some(found);
+        }
+    }
+    None
+}
 
 #[tokio::test]
 async fn live_login_sensors_ws_stream() {
-    let url = match std::env::var("VOLTRUS_E2E_URL") {
-        Ok(u) => u,
-        Err(_) => {
-            eprintln!("skipping: VOLTRUS_E2E_URL not set");
-            return;
-        }
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
     };
     let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
     let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
 
-    let (handle, mut rx) = runtime::start();
+    let (handle, events) = runtime::start().expect("runtime");
 
-    // Probe: a deliberately bad login must produce a LoginResult event back.
-    // If this hangs, the UI→runtime→UI channel wiring is broken.
-    handle.send(UiCmd::Login {
+    // A wrong password must come back as a failed sign-in, not silence.
+    handle.send(Command::SignIn {
         url: url.clone(),
         username: "no-such-user-probe".into(),
         password: "wrong".into(),
     });
-    let mut probe_done = false;
+    let mut refused = false;
     for _ in 0..30 {
-        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
-            Ok(Some(RtEvent::LoginResult(_))) => {
-                probe_done = true;
-                break;
-            }
-            Ok(Some(_)) => {}
-            Ok(None) => panic!("event channel closed"),
-            Err(_) => {}
+        if let Some(Event::SignInFailed(_)) = next(&events).await {
+            refused = true;
+            break;
         }
     }
-    assert!(
-        probe_done,
-        "probe login produced no event — channel wiring broken"
-    );
+    assert!(refused, "a bad sign-in produced no event");
 
-    handle.send(UiCmd::Login {
+    handle.send(Command::SignIn {
+        url: url.clone(),
+        username: user.clone(),
+        password: pass.clone(),
+    });
+    let mut signed_in = false;
+    let mut tags: Option<Vec<String>> = None;
+    let mut live = false;
+    let mut updates = 0usize;
+    let mut history = false;
+    let mut alarms: Option<Vec<Alarm>> = None;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline
+        && !(signed_in && live && tags.is_some() && history && alarms.is_some() && updates > 0)
+    {
+        match next(&events).await {
+            Some(Event::SignedIn { .. }) => signed_in = true,
+            Some(Event::SignInFailed(error)) => panic!("sign-in failed: {error}"),
+            Some(Event::Tags(list)) => {
+                let keys: Vec<String> = list.iter().map(|tag| tag.key.clone()).collect();
+                handle.send(Command::Subscribe(keys.clone()));
+                handle.send(Command::History("30m".into()));
+                tags = Some(keys);
+            }
+            Some(Event::Link(Link::Live)) => live = true,
+            Some(Event::Updates(batch)) => updates += batch.len(),
+            Some(Event::History { .. }) => history = true,
+            Some(Event::Alarms(list)) => alarms = Some(list),
+            _ => {}
+        }
+    }
+
+    assert!(signed_in, "expected a successful sign-in");
+    let tags = tags.expect("expected the tag list");
+    assert!(!tags.is_empty(), "expected at least one tag");
+    assert!(live, "expected the WebSocket to go live");
+    assert!(history, "expected history for the tags");
+    let alarms = alarms.expect("expected the open alarms");
+    println!(
+        "tags: {}, updates: {updates}, open alarms: {}",
+        tags.len(),
+        alarms.len()
+    );
+    if std::env::var_os("VOLTRUS_E2E_EXPECT_UPDATES").is_some() {
+        assert!(updates > 0, "expected live tag updates from the simulators");
+    } else if updates == 0 {
+        eprintln!("note: no live tag updates; are protocol simulators running?");
+    }
+
+    // Acknowledge one open alarm; a later alarm list shows it acknowledged
+    // (or resolved and gone).
+    if let Some(id) = alarms
+        .iter()
+        .find(|alarm| alarm.acknowledged_at.is_none())
+        .map(|alarm| alarm.id)
+    {
+        handle.send(Command::Acknowledge(id));
+        let action = format!("Acknowledge alarm {id}");
+        let mut done = false;
+        let acknowledged = wait_for(&events, 30, |event| match event {
+            Event::Done {
+                action: finished,
+                result,
+            } if finished == action => {
+                if let Err(error) = result {
+                    panic!("acknowledging alarm {id} failed: {error}");
+                }
+                done = true;
+                None
+            }
+            Event::Alarms(list) if done => list
+                .iter()
+                .find(|alarm| alarm.id == id)
+                .is_none_or(|alarm| alarm.acknowledged_at.is_some())
+                .then_some(()),
+            _ => None,
+        })
+        .await;
+        assert!(
+            acknowledged.is_some(),
+            "alarm {id} never showed as acknowledged"
+        );
+        println!("acknowledged alarm {id}");
+    } else {
+        eprintln!("note: no unacknowledged alarm to acknowledge");
+    }
+
+    // Change the password (the runtime supplies the current one) and back.
+    let temporary = format!("{pass}-e2e-temporary");
+    for new in [temporary, pass.clone()] {
+        handle.send(Command::ChangePassword {
+            current: String::new(),
+            new,
+        });
+        let changed = wait_for(&events, 20, |event| match event {
+            Event::PasswordChanged(result) => Some(result),
+            _ => None,
+        })
+        .await
+        .expect("no answer to the password change");
+        if let Err(error) = changed {
+            panic!("changing the password failed: {error}");
+        }
+    }
+
+    // The original password still signs in.
+    handle.send(Command::SignOut);
+    handle.send(Command::SignIn {
         url,
         username: user,
         password: pass,
     });
-
-    let mut login_ok = false;
-    let mut sensors: Option<usize> = None;
-    let mut live = false;
-    let mut tag_updates = 0usize;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            break;
-        }
-        if login_ok && sensors.is_some() && live && tag_updates > 0 {
-            break;
-        }
-        match tokio::time::timeout(Duration::from_millis(500), rx.recv()).await {
-            Ok(Some(ev)) => match ev {
-                RtEvent::LoginResult(Ok(_)) => login_ok = true,
-                RtEvent::LoginResult(Err(e)) => panic!("login failed: {e}"),
-                RtEvent::Sensors(list) => sensors = Some(list.len()),
-                RtEvent::Conn(ref s) => {
-                    eprintln!("conn: {s}");
-                    if s == "live" {
-                        live = true;
-                    }
-                }
-                RtEvent::Tags(updates) => tag_updates += updates.len(),
-                _ => {}
-            },
-            Ok(None) => break, // channel closed
-            Err(_) => {}       // timeout tick
-        }
+    let signed_in = wait_for(&events, 20, |event| match event {
+        Event::SignedIn { .. } => Some(Ok(())),
+        Event::SignInFailed(error) => Some(Err(error)),
+        _ => None,
+    })
+    .await
+    .expect("no answer to signing in again");
+    if let Err(error) = signed_in {
+        panic!("the original password no longer signs in: {error}");
     }
-
-    assert!(login_ok, "expected successful login");
-    let n = sensors.expect("expected data sources");
-    assert!(n > 0, "expected at least one data source, got 0");
-    assert!(live, "expected WS to reach 'live' state");
-    println!("sensors: {n}, tag_updates: {tag_updates}");
-    if tag_updates == 0 {
-        eprintln!("note: no live tag updates — are protocol simulators running?");
-    }
-
-    handle.send(UiCmd::Shutdown);
+    println!("password changed and restored");
+    handle.send(Command::Shutdown);
 }
