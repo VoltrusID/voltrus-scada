@@ -7,12 +7,18 @@
 //! meter ([`FrameMeter::expect_frame`]): an animation asking for the next
 //! frame, or data that changed what is shown. Only expected frames count
 //! towards drops, so an idle console's long gaps are not drops.
+//!
+//! Each frame is put down to the page on screen, and the page's own render
+//! time is kept beside it, so the report can say where a frame's time goes.
+//! The display's refresh rate comes from the platform when it says (a
+//! ProMotion panel's 120 Hz), else from the intervals between frames.
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use voltrus_scada_native::perf::{Frame, FrameStats, Spread};
+use gpui::{App, Window};
+use voltrus_scada_native::perf::{self, Frame, FrameStats, PageFigures, SlowFrame, Spread};
 use vt_ui::chart::History;
 
 pub type Meter = Rc<RefCell<FrameMeter>>;
@@ -23,6 +29,27 @@ const TIMELINE: usize = 2048;
 /// A due frame this soon after the previous one continues a run of frames
 /// (a busy stream); a longer gap was a pause, not dropped frames.
 const CONTINUOUS_MS: f64 = 100.0;
+
+/// How often the display's refresh rate is asked again (the window may
+/// move to another display).
+const DISPLAY_CHECK: Duration = Duration::from_secs(1);
+
+/// Samples kept per page and for batches: a run of hours stays bounded.
+const SAMPLES: usize = 1 << 16;
+
+/// Slowest frames the report names.
+const SLOWEST: usize = 5;
+
+/// One page's frames over a run.
+#[derive(Default)]
+struct PageLog {
+    id: &'static str,
+    /// Build times of the frames drawn while the page was shown.
+    frames: Vec<f64>,
+    /// Its render function's time, each time it ran on screen.
+    renders: Vec<f64>,
+    first_ms: Option<f64>,
+}
 
 pub struct FrameMeter {
     pub stats: FrameStats,
@@ -45,6 +72,19 @@ pub struct FrameMeter {
     pub switches: Vec<f64>,
     /// Frame starts of the last second, for the frame rate.
     recent: std::collections::VecDeque<Instant>,
+    /// The page on screen, as its view last reported.
+    page: &'static str,
+    /// The frame being built shows its page for the first time.
+    first_show: bool,
+    pages: Vec<PageLog>,
+    slowest: Vec<SlowFrame>,
+    /// Applying a batch of runtime events, in ms.
+    applies: Vec<f64>,
+    /// Pages are being drawn hidden after sign-in: these frames go to
+    /// `warm_up` instead of the figures.
+    warming: bool,
+    warm_up: Vec<f64>,
+    display_checked: Option<Instant>,
 }
 
 impl Default for FrameMeter {
@@ -60,14 +100,28 @@ impl Default for FrameMeter {
             switch: None,
             switches: Vec::new(),
             recent: std::collections::VecDeque::new(),
+            page: "",
+            first_show: false,
+            pages: Vec::new(),
+            slowest: Vec::new(),
+            applies: Vec::new(),
+            warming: false,
+            warm_up: Vec::new(),
+            display_checked: None,
         }
     }
 }
 
 /// Milliseconds from `from` to `to`, to the microsecond.
 #[allow(clippy::cast_precision_loss)]
-fn ms(from: Instant, to: Instant) -> f64 {
+pub fn ms(from: Instant, to: Instant) -> f64 {
     to.saturating_duration_since(from).as_micros() as f64 / 1000.0
+}
+
+fn keep(samples: &mut Vec<f64>, ms: f64) {
+    if samples.len() < SAMPLES {
+        samples.push(ms);
+    }
 }
 
 impl FrameMeter {
@@ -110,6 +164,45 @@ impl FrameMeter {
         }
     }
 
+    fn page_log(&mut self, id: &'static str) -> &mut PageLog {
+        let index = match self.pages.iter().position(|page| page.id == id) {
+            Some(index) => index,
+            None => {
+                self.pages.push(PageLog {
+                    id,
+                    ..PageLog::default()
+                });
+                self.pages.len() - 1
+            }
+        };
+        &mut self.pages[index]
+    }
+
+    /// The page on screen ran its render function in `render_ms`.
+    pub fn page_built(&mut self, id: &'static str, render_ms: f64) {
+        self.page = id;
+        let log = self.page_log(id);
+        if log.first_ms.is_none() && log.frames.is_empty() {
+            self.first_show = true;
+        }
+        if !self.warming {
+            keep(&mut self.page_log(id).renders, render_ms);
+        }
+    }
+
+    /// Drawing the pages hidden after sign-in, so that their first show
+    /// finds fonts, text and views ready.
+    pub fn set_warming(&mut self, warming: bool) {
+        self.warming = warming;
+    }
+
+    /// A batch of runtime events took `ms` to apply.
+    pub fn batch_applied(&mut self, ms: f64) {
+        if !self.warming {
+            keep(&mut self.applies, ms);
+        }
+    }
+
     /// The last element of the frame painted.
     pub fn frame_end(&mut self, now: Instant, wall_ms: f64) {
         let Some(start) = self.building.take() else {
@@ -117,6 +210,15 @@ impl FrameMeter {
         };
         let (delay_ms, interval_ms) = self.current.take().unwrap_or((None, None));
         let cpu_ms = ms(start, now);
+        let first_show = std::mem::take(&mut self.first_show);
+        let switched = self.switch.take();
+        if self.warming {
+            keep(&mut self.warm_up, cpu_ms);
+            if first_show {
+                self.page_log(self.page).first_ms = Some(cpu_ms);
+            }
+            return;
+        }
         self.stats.record(Frame {
             interval_ms,
             delay_ms,
@@ -126,9 +228,44 @@ impl FrameMeter {
         if let Some(interval) = interval_ms {
             self.interval_line.push(wall_ms, interval);
         }
-        if let Some(asked) = self.switch.take() {
+        if let Some(asked) = switched {
             self.switches.push(ms(asked, now));
         }
+        if !self.page.is_empty() {
+            let page = self.page;
+            let log = self.page_log(page);
+            keep(&mut log.frames, cpu_ms);
+            if first_show {
+                log.first_ms = Some(cpu_ms);
+            }
+        }
+        self.note_slow(SlowFrame {
+            cpu_ms,
+            page: self.page,
+            note: if first_show {
+                "first show"
+            } else if switched.is_some() {
+                "page switch"
+            } else {
+                ""
+            },
+        });
+    }
+
+    fn note_slow(&mut self, frame: SlowFrame) {
+        if self.slowest.len() == SLOWEST
+            && self
+                .slowest
+                .last()
+                .is_some_and(|last| last.cpu_ms >= frame.cpu_ms)
+        {
+            return;
+        }
+        let at = self
+            .slowest
+            .partition_point(|kept| kept.cpu_ms >= frame.cpu_ms);
+        self.slowest.insert(at, frame);
+        self.slowest.truncate(SLOWEST);
     }
 
     /// Frames drawn in the last second.
@@ -140,19 +277,65 @@ impl FrameMeter {
         Spread::of(self.switches.iter().copied())
     }
 
+    /// Each page's frames, in the order they were first shown.
+    pub fn page_figures(&self) -> Vec<PageFigures> {
+        self.pages
+            .iter()
+            .filter(|page| !page.frames.is_empty() || page.first_ms.is_some())
+            .map(|page| PageFigures {
+                id: page.id,
+                frames: page.frames.len(),
+                frame: Spread::of(page.frames.iter().copied()),
+                render: Spread::of(page.renders.iter().copied()),
+                first_ms: page.first_ms,
+            })
+            .collect()
+    }
+
+    pub fn slowest(&self) -> Vec<SlowFrame> {
+        self.slowest.clone()
+    }
+
+    pub fn apply_spread(&self) -> Spread {
+        Spread::of(self.applies.iter().copied())
+    }
+
+    /// The warm-up's frames and build times, if there was one.
+    pub fn warm_up(&self) -> Option<(usize, Spread)> {
+        (!self.warm_up.is_empty())
+            .then(|| (self.warm_up.len(), Spread::of(self.warm_up.iter().copied())))
+    }
+
+    /// Ask the platform for the refresh rate of the window's display, at
+    /// most once a second.
+    pub fn sync_display(&mut self, window: &Window, cx: &App, now: Instant) {
+        if self
+            .display_checked
+            .is_some_and(|at| now.saturating_duration_since(at) < DISPLAY_CHECK)
+        {
+            return;
+        }
+        self.display_checked = Some(now);
+        let display = window.display(cx).map(|display| u32::from(display.id()));
+        self.stats.set_display_hz(perf::display_refresh_hz(display));
+    }
+
     /// Start counting afresh (a stress run begins).
     pub fn reset(&mut self) {
         self.stats.reset();
         self.switches.clear();
         self.cpu_line.clear();
         self.interval_line.clear();
+        self.pages.clear();
+        self.slowest.clear();
+        self.applies.clear();
+        self.warm_up.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn animation_frames_measure_intervals_and_data_frames_their_delay() {
@@ -193,5 +376,89 @@ mod tests {
         meter.frame_end(t0 + Duration::from_millis(9), 0.0);
         assert_eq!(meter.switches, [9.0]);
         assert_eq!(meter.stats.expected, 1);
+    }
+
+    /// One frame of `cpu` ms showing `page`, whose render took `render` ms.
+    fn frame(meter: &mut FrameMeter, at: &mut Instant, page: &'static str, render: f64, cpu: u64) {
+        meter.frame_start(*at);
+        meter.page_built(page, render);
+        *at += Duration::from_millis(cpu);
+        meter.frame_end(*at, 0.0);
+        *at += Duration::from_millis(16);
+    }
+
+    #[test]
+    fn frames_are_put_down_to_the_page_on_screen() {
+        let mut meter = FrameMeter::default();
+        let mut at = Instant::now();
+        frame(&mut meter, &mut at, "overview", 1.0, 9);
+        frame(&mut meter, &mut at, "overview", 0.5, 2);
+        meter.page_switch(at);
+        frame(&mut meter, &mut at, "tags", 0.25, 6);
+        // A cached frame: the page did not render, it is still on screen.
+        meter.frame_start(at);
+        at += Duration::from_millis(1);
+        meter.frame_end(at, 0.0);
+        let pages = meter.page_figures();
+        assert_eq!(
+            pages
+                .iter()
+                .map(|page| (page.id, page.frames, page.first_ms))
+                .collect::<Vec<_>>(),
+            [("overview", 2, Some(9.0)), ("tags", 2, Some(6.0))]
+        );
+        assert_eq!(pages[0].render.max, 1.0);
+        assert_eq!(pages[1].render.p50, 0.25, "only frames that rendered it");
+        let slowest = meter.slowest();
+        assert_eq!(
+            slowest
+                .iter()
+                .map(|frame| (frame.cpu_ms, frame.page, frame.note))
+                .collect::<Vec<_>>(),
+            [
+                (9.0, "overview", "first show"),
+                (6.0, "tags", "first show"),
+                (2.0, "overview", ""),
+                (1.0, "tags", ""),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_the_five_slowest_frames_are_named() {
+        let mut meter = FrameMeter::default();
+        let mut at = Instant::now();
+        for cpu in [3, 7, 1, 9, 4, 8, 2, 6] {
+            frame(&mut meter, &mut at, "overview", 0.1, cpu);
+        }
+        let named: Vec<f64> = meter.slowest().iter().map(|frame| frame.cpu_ms).collect();
+        assert_eq!(named, [9.0, 8.0, 7.0, 6.0, 4.0]);
+    }
+
+    #[test]
+    fn warm_up_frames_stay_out_of_the_figures() {
+        let mut meter = FrameMeter::default();
+        let mut at = Instant::now();
+        meter.set_warming(true);
+        frame(&mut meter, &mut at, "overview", 5.0, 40);
+        meter.batch_applied(3.0);
+        meter.set_warming(false);
+        frame(&mut meter, &mut at, "overview", 0.5, 3);
+        meter.batch_applied(0.2);
+        assert_eq!(meter.stats.total, 1);
+        assert_eq!(meter.stats.cpu().max, 3.0);
+        assert_eq!(
+            meter.warm_up().map(|(frames, spread)| (frames, spread.max)),
+            Some((1, 40.0))
+        );
+        assert_eq!(meter.apply_spread().max, 0.2);
+        let overview = &meter.page_figures()[0];
+        assert_eq!(
+            (overview.frames, overview.first_ms, overview.render.max),
+            (1, Some(40.0), 0.5),
+            "its first frame was in the warm-up"
+        );
+        meter.reset();
+        assert!(meter.page_figures().is_empty() && meter.warm_up().is_none());
     }
 }

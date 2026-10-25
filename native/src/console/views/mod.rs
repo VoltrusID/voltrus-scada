@@ -62,8 +62,9 @@ pub(crate) fn tail_row(row_height: f32) -> AnyElement {
 }
 
 impl Render for Console {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.meter.borrow_mut().frame_start(Instant::now());
+        let warm = self.warm_step(window, cx);
         let theme = theme(cx).clone();
         let in_console = self.phase == Phase::Console;
         let body = if in_console {
@@ -207,6 +208,7 @@ impl Render for Console {
                     console.sign_out(window, cx);
                 }
             }))
+            .when_some(warm, |this, view| this.child(super::warm::hidden(view)))
             .child(body)
             .when(!self.toasts.is_empty(), |this| {
                 this.child(
@@ -265,7 +267,16 @@ pub(crate) fn page(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) -> AnyElement {
-    let content = (pages::spec(page).render)(console, window, cx);
+    let started = Instant::now();
+    let spec = pages::spec(page);
+    let content = (spec.render)(console, window, cx);
+    let now = Instant::now();
+    // A page drawn hidden to warm it is not the page on screen.
+    if console.page == page {
+        let mut meter = console.meter.borrow_mut();
+        meter.page_built(spec.id, super::meter::ms(started, now));
+        meter.sync_display(window, cx, now);
+    }
     if anim::progress(console.switched_at, Instant::now(), anim::PAGE_IN).is_some() {
         console.meter.borrow_mut().expect_frame(Instant::now());
     }

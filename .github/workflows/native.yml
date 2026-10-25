@@ -101,9 +101,14 @@ jobs:
 
       # 20 s of the synthetic 10k-tag plant (no server) through the same
       # store path as the WebSocket, switching pages every 2 s; the report
-      # (frames, frame times, drops) lands in the log and as an artifact.
+      # (frames, frame times, drops, per-page build times) lands in the log
+      # and as an artifact, checked against the frame budget. Then 10 s of
+      # the animation showcase (--stress-profile).
       - name: Stress pass
-        run: native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-report.txt
+        run: |
+          native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-report.txt
+          STRESS_PROFILE=1 STRESS_SECONDS=10 \
+            native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-profile-report.txt
 
       - name: Screenshots
         run: native/scripts/screenshots-macos.sh "dist/Voltrus SCADA.app" dist/screenshots
@@ -126,7 +131,9 @@ jobs:
         if: always()
         with:
           name: voltrus-native-stress-report
-          path: dist/stress-report.txt
+          path: |
+            dist/stress-report.txt
+            dist/stress-profile-report.txt
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

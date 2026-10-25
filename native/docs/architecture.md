@@ -182,10 +182,37 @@ state in your page's state; close with `console.close_overlay(window, cx)`.
 ## Measure
 
 ⇧⌘P shows the HUD: frames per second, frame interval and build time p50,
-p95 and max, drops against the measured display refresh, the last frame's
-build time, updates per second, tags and peak memory. The Performance page
-charts the last ten seconds. `--stress` feeds 10 000 synthetic tags at
-20 000 updates/s through the runtime, switching pages every 2 s;
-`--stress-seconds N --stress-report FILE` ends the run, prints the report
-and writes it. CI runs a 20 s pass (`native/scripts/stress-macos.sh`) and
-prints the report in the job log and summary.
+p95 and max, drops against the display's refresh (as the display reports
+it, a ProMotion panel's 120 Hz, else measured from frame intervals), the
+last frame's build time, updates per second, tags and peak memory. The
+Performance page charts the last ten seconds. `--stress` feeds 10 000
+synthetic tags at 20 000 updates/s through the runtime, switching pages
+every 2 s; `--stress-seconds N --stress-report FILE` ends the run, prints
+the report and writes it. The report breaks frames down by page (the whole
+frame's build time while the page is shown, the page's own render
+function, its first frame), names the slowest frames, times each batch of
+events applied to the store, and gives the share of frames built within a
+60 Hz and a 120 Hz frame. `--stress-profile` is the animation showcase
+(tiles flashing in ripples, a trend redrawn every frame). CI runs a 20 s
+pass and a 10 s profile (`native/scripts/stress-macos.sh`), prints both
+reports in the job log and summary, and checks the budget: under 1% of
+vsyncs dropped, frame interval p95 within 17.5 ms, no frame over 50 ms, a
+page's first frame within 34 ms of the switch.
+
+## Keep frames cheap
+
+A page that animates is rebuilt every frame (the Overview while tiles
+flash, Trends while live), so its render must not scale with the plant:
+
+- Ask the store, not every tag: `store.count(status)`,
+  `store.attention_count()`, `store.attention()` (worst first),
+  `store.span_ms(now)` and `store.filter(query)` (cached per query until the
+  tag list changes) are kept up to date as updates arrive.
+- Virtualise lists with `uniform_list`; the Overview's tile rows off screen
+  are drawn as empty rows of their measured height.
+- Use `tag.label` / `tag.key_label` (shared strings) rather than cloning
+  `info.name` / `info.key` into elements.
+- After sign-in every page is drawn once, hidden, one per frame
+  (`console/warm.rs`), so a page's first show costs no more than a later
+  one; the meter keeps those frames out of its figures and reports them as
+  the warm-up.

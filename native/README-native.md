@@ -93,6 +93,7 @@ voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance] [--t
                [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud] [--overlay palette|help]
                [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                          [--stress-seconds N] [--stress-report FILE]]
+               [--stress-profile]
 ```
 
 `--sign-in` signs in at once with `VOLTRUS_NATIVE_URL` (default
@@ -100,7 +101,13 @@ voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance] [--t
 `VOLTRUS_NATIVE_PASSWORD`. `--tag` opens one tag's detail; `--range` picks the Trends range.
 `--stress-seconds 20 --stress-report report.txt` runs the stress test for
 20 seconds, prints the report (frames, frame time p50/p95/max, drops,
-page-switch time, memory), writes it to the file and quits.
+page-switch time, memory, the share of frames built within a 60 Hz and a
+120 Hz frame, event-batch apply time, each page's frame and render times
+and its first frame, the slowest frames, and the post-sign-in warm-up kept
+apart), writes it to the file and quits. `--stress-profile` is the
+animation showcase: the Overview stays put, its tiles flash in ripples and
+a trend card redraws every frame, at 120 fps on a ProMotion display (the
+meter takes the refresh rate from the display).
 
 How the console is built, and how to add a page, a REST call, a key, an
 overlay or an animation: [`docs/architecture.md`](docs/architecture.md).

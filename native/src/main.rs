@@ -24,6 +24,7 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--hud] [--overlay palette|help]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
+                      [--stress-profile]
 
   --sign-in          sign in at once with VOLTRUS_NATIVE_URL (default http://localhost:3000),
                      VOLTRUS_NATIVE_USER (default admin) and VOLTRUS_NATIVE_PASSWORD
@@ -38,7 +39,10 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --stress-rate      synthetic updates per second
   --stress-switch-ms switch to the next page this often (default 2000, 0 stays put)
   --stress-seconds   end the run after this long, print the report and quit
-  --stress-report    write the report to this file too",
+  --stress-report    write the report to this file too
+  --stress-profile   the stress test as an animation showcase: the Overview stays put, its
+                     tiles flash in ripples and a trend moves on every frame (120 fps on
+                     a ProMotion display)",
         pages = console::pages::ids()
     )
 }
@@ -75,6 +79,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
     let mut stress = StressPlan::default();
     let mut stressed = false;
     let mut stress_flags = false;
+    let mut switch_set = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -132,6 +137,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 let ms: u64 = number(arg, args.next())?;
                 stress.switch_every = (ms > 0).then(|| Duration::from_millis(ms));
                 stress_flags = true;
+                switch_set = true;
             }
             "--stress-seconds" => {
                 let seconds: u64 = number(arg, args.next())?;
@@ -145,6 +151,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 }
                 _ => return Err("--stress-report takes a file".into()),
             },
+            "--stress-profile" => {
+                stressed = true;
+                stress.options.profile = true;
+            }
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown argument “{other}”")),
         }
@@ -154,6 +164,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
     }
     if stressed && options.sign_in {
         return Err("--stress runs without a server; leave out --sign-in".into());
+    }
+    if stress.options.profile && !switch_set {
+        stress.switch_every = None;
     }
     options.stress = stressed.then_some(stress);
     Ok(options)
@@ -353,5 +366,29 @@ mod tests {
         );
         assert!(parse(&args(&["--stress", "--stress-rate", "fast"])).is_err());
         assert!(parse(&args(&["--stress", "--sign-in"])).is_err());
+    }
+
+    #[test]
+    fn the_stress_profile_stays_on_one_page_unless_told() {
+        let plan = parse(&args(&["--stress-profile", "--stress-seconds", "10"]))
+            .unwrap()
+            .stress
+            .unwrap();
+        assert!(plan.options.profile);
+        assert_eq!(plan.switch_every, None);
+        assert_eq!(plan.stop_after, Some(Duration::from_secs(10)));
+        let switching = parse(&args(&["--stress-switch-ms", "500", "--stress-profile"]))
+            .unwrap()
+            .stress
+            .unwrap();
+        assert_eq!(switching.switch_every, Some(Duration::from_millis(500)));
+        assert!(
+            !parse(&args(&["--stress"]))
+                .unwrap()
+                .stress
+                .unwrap()
+                .options
+                .profile
+        );
     }
 }

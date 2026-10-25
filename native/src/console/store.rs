@@ -8,13 +8,19 @@
 //! to the n-th tag with that key in the list (`GET /api/v1/data-sources`
 //! has the same order).
 
-use std::collections::{HashMap, VecDeque};
+use std::cell::{Cell, RefCell};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use gpui::SharedString;
 use voltrus_scada_native::api::{DataSource, HistorySeries};
 use voltrus_scada_native::ws_types::TagUpdateEntry;
 use vt_ui::chart::History;
+
+/// Filter results kept at once (the Tags filter, the Trends picker's, and
+/// the queries typed on the way to them).
+const FILTERS: usize = 8;
 
 /// Samples kept per tag at most. Live values arrive about once a second;
 /// thinning them with age (see [`Tag::thin`]) keeps a day within this.
@@ -43,13 +49,19 @@ pub enum Status {
 }
 
 impl Status {
+    /// Without allocating: the stream parses one per update.
     pub fn parse(text: &str) -> Self {
-        match text.to_ascii_lowercase().as_str() {
-            "normal" | "good" | "ok" => Self::Normal,
-            "warning" | "warn" => Self::Warning,
-            "critical" | "alarm" => Self::Critical,
-            "offline" | "stale" | "bad" => Self::Offline,
-            _ => Self::Unknown,
+        let is = |names: &[&str]| names.iter().any(|name| text.eq_ignore_ascii_case(name));
+        if is(&["normal", "good", "ok"]) {
+            Self::Normal
+        } else if is(&["warning", "warn"]) {
+            Self::Warning
+        } else if is(&["critical", "alarm"]) {
+            Self::Critical
+        } else if is(&["offline", "stale", "bad"]) {
+            Self::Offline
+        } else {
+            Self::Unknown
         }
     }
 
@@ -64,17 +76,34 @@ impl Status {
     }
 
     pub fn needs_attention(self) -> bool {
-        matches!(self, Self::Warning | Self::Critical | Self::Offline)
+        self.rank().is_some()
+    }
+
+    /// Where a tag needing attention sorts, worst first: critical, warning,
+    /// offline.
+    pub fn rank(self) -> Option<u8> {
+        match self {
+            Self::Critical => Some(0),
+            Self::Warning => Some(1),
+            Self::Offline => Some(2),
+            Self::Normal | Self::Unknown => None,
+        }
     }
 }
 
 pub struct Tag {
     pub info: DataSource,
+    /// `info.name` and `info.key` as shared strings: views draw them every
+    /// frame without copying.
+    pub label: SharedString,
+    pub key_label: SharedString,
     pub value: f64,
     /// The value before the latest change, for tweens.
     pub previous: f64,
     /// When the value last changed, for the change flash.
     pub changed_at: Option<Instant>,
+    /// Set by the store only: it keeps the status counts and the attention
+    /// list in step.
     pub status: Status,
     /// Unix seconds of the latest value, 0 before the first.
     pub at_secs: i64,
@@ -91,6 +120,8 @@ pub struct Tag {
 impl Tag {
     fn new(info: DataSource) -> Self {
         Self {
+            label: SharedString::from(info.name.clone()),
+            key_label: SharedString::from(info.key.clone()),
             info,
             value: f64::NAN,
             previous: f64::NAN,
@@ -185,6 +216,10 @@ impl Tag {
     }
 }
 
+/// The tag list plus what the views ask of all of it every frame, kept up
+/// to date as updates arrive rather than recounted over every tag: status
+/// counts, the tags needing attention in order, the oldest sample, and
+/// filter results.
 #[derive(Default)]
 pub struct Store {
     pub tags: Vec<Tag>,
@@ -194,6 +229,21 @@ pub struct Store {
     by_key: HashMap<String, Vec<usize>>,
     /// Per batch: how many updates each shared key has had so far.
     shared_seen: HashMap<usize, usize>,
+    /// Tags per status, indexed by `Status as usize`.
+    counts: [usize; 5],
+    /// Tags needing attention as (rank, position): worst first, then in
+    /// list order.
+    attention: BTreeSet<(u8, usize)>,
+    /// Per tag, its name and key lowercased, for filters.
+    haystacks: Vec<String>,
+    /// Every position, the answer to an empty filter.
+    all: Rc<[usize]>,
+    /// Recent filter results by lowercased query, newest last; the tag
+    /// list changing clears them (values and statuses do not matter).
+    filters: RefCell<Vec<(String, Rc<[usize]>)>>,
+    /// The oldest sample of any tag: `None` until worked out again,
+    /// `Some(None)` with no samples at all.
+    earliest: Cell<Option<Option<f64>>>,
 }
 
 impl Store {
@@ -210,6 +260,8 @@ impl Store {
             }
             let tag = match previous.remove(&info.id) {
                 Some(mut kept) => {
+                    kept.label = SharedString::from(info.name.clone());
+                    kept.key_label = SharedString::from(info.key.clone());
                     kept.info = info;
                     kept
                 }
@@ -223,6 +275,22 @@ impl Store {
                 .push(position);
             self.tags.push(tag);
         }
+        self.counts = [0; 5];
+        self.attention.clear();
+        for (position, tag) in self.tags.iter().enumerate() {
+            self.counts[tag.status as usize] += 1;
+            if let Some(rank) = tag.status.rank() {
+                self.attention.insert((rank, position));
+            }
+        }
+        self.haystacks = self
+            .tags
+            .iter()
+            .map(|tag| format!("{}\n{}", tag.info.name, tag.info.key).to_lowercase())
+            .collect();
+        self.all = (0..self.tags.len()).collect();
+        self.filters.borrow_mut().clear();
+        self.earliest.set(None);
     }
 
     /// The position in `tags` of the tag with data source id `id`.
@@ -276,27 +344,63 @@ impl Store {
                     index
                 }
             };
+            let status = Status::parse(&update.quality);
+            self.set_status(index, status);
             let tag = &mut self.tags[index];
             if tag.value.to_bits() != update.value.to_bits() {
                 tag.previous = tag.value;
                 tag.changed_at = Some(now);
             }
             tag.value = update.value;
-            tag.status = Status::parse(&update.quality);
             tag.at_secs = update.ts;
             tag.simulated = update.simulated;
             #[allow(clippy::cast_precision_loss)]
             let at_ms = (update.ts as f64) * 1000.0;
             // An offline value breaks the line rather than drawing it.
-            let value = if tag.status == Status::Offline {
+            let value = if status == Status::Offline {
                 f64::NAN
             } else {
                 update.value
             };
+            let first_before = tag.samples.front().map(|(at, _)| *at);
             tag.record(at_ms, value);
+            let first_after = tag.samples.front().map(|(at, _)| *at);
+            if first_after != first_before {
+                self.first_sample_moved(first_before, first_after);
+            }
             applied += 1;
         }
         applied
+    }
+
+    /// Move tag `index` to `status`, keeping the counts and the attention
+    /// list in step.
+    fn set_status(&mut self, index: usize, status: Status) {
+        let old = self.tags[index].status;
+        if old == status {
+            return;
+        }
+        self.counts[old as usize] -= 1;
+        self.counts[status as usize] += 1;
+        if let Some(rank) = old.rank() {
+            self.attention.remove(&(rank, index));
+        }
+        if let Some(rank) = status.rank() {
+            self.attention.insert((rank, index));
+        }
+        self.tags[index].status = status;
+    }
+
+    /// A tag's oldest sample changed: a first sample can only lower the
+    /// oldest of all; anything else (old samples dropped) works it out
+    /// again when next asked.
+    fn first_sample_moved(&self, before: Option<f64>, after: Option<f64>) {
+        match (before, after, self.earliest.get()) {
+            (None, Some(at), Some(earliest)) => self
+                .earliest
+                .set(Some(Some(earliest.map_or(at, |earliest| earliest.min(at))))),
+            _ => self.earliest.set(None),
+        }
     }
 
     /// Load server history, replacing what each tag had up to its last
@@ -329,10 +433,64 @@ impl Store {
             tag.thinned_to = last_bucket;
             tag.rebuild();
         }
+        self.earliest.set(None);
     }
 
+    /// How many tags have `status`.
     pub fn count(&self, status: Status) -> usize {
-        self.tags.iter().filter(|tag| tag.status == status).count()
+        self.counts[status as usize]
+    }
+
+    /// How many tags need attention (warning, critical or offline).
+    pub fn attention_count(&self) -> usize {
+        self.attention.len()
+    }
+
+    /// The positions of the tags needing attention, worst first (critical,
+    /// warning, offline), then in list order.
+    pub fn attention(&self) -> impl Iterator<Item = usize> + '_ {
+        self.attention.iter().map(|(_, position)| *position)
+    }
+
+    /// How far back the oldest sample of any tag reaches from `now_ms`.
+    pub fn span_ms(&self, now_ms: f64) -> Option<f64> {
+        let earliest = self.earliest.get().unwrap_or_else(|| {
+            let earliest = self
+                .tags
+                .iter()
+                .filter_map(|tag| tag.samples.front().map(|(at, _)| *at))
+                .reduce(f64::min);
+            self.earliest.set(Some(earliest));
+            earliest
+        });
+        earliest.map(|first| (now_ms - first).max(0.0))
+    }
+
+    /// The positions of the tags whose name or key contains `query`
+    /// (trimmed, any case), in list order. The answer is kept until the
+    /// tag list changes, so a view may ask for it every frame.
+    pub fn filter(&self, query: &str) -> Rc<[usize]> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Rc::clone(&self.all);
+        }
+        let query = query.to_lowercase();
+        let mut filters = self.filters.borrow_mut();
+        if let Some((_, rows)) = filters.iter().find(|(kept, _)| *kept == query) {
+            return Rc::clone(rows);
+        }
+        let rows: Rc<[usize]> = self
+            .haystacks
+            .iter()
+            .enumerate()
+            .filter(|(_, haystack)| haystack.contains(&query))
+            .map(|(position, _)| position)
+            .collect();
+        if filters.len() == FILTERS {
+            filters.remove(0);
+        }
+        filters.push((query, Rc::clone(&rows)));
+        rows
     }
 }
 
@@ -656,5 +814,137 @@ mod tests {
         rate.record(5, start + Duration::from_millis(600));
         assert_eq!(rate.per_second(start + Duration::from_millis(900)), 15);
         assert_eq!(rate.per_second(start + Duration::from_millis(1500)), 5);
+    }
+
+    #[test]
+    fn qualities_parse_in_any_case() {
+        assert_eq!(Status::parse("GOOD"), Status::Normal);
+        assert_eq!(Status::parse("Warn"), Status::Warning);
+        assert_eq!(Status::parse("alarm"), Status::Critical);
+        assert_eq!(Status::parse("Stale"), Status::Offline);
+        assert_eq!(Status::parse("normalish"), Status::Unknown);
+        assert_eq!(Status::parse(""), Status::Unknown);
+    }
+
+    /// The counts and the attention list as a full scan works them out.
+    fn scanned(store: &Store) -> ([usize; 5], Vec<usize>) {
+        let mut counts = [0; 5];
+        for tag in &store.tags {
+            counts[tag.status as usize] += 1;
+        }
+        let mut attention: Vec<usize> = (0..store.tags.len())
+            .filter(|index| store.tags[*index].status.needs_attention())
+            .collect();
+        attention.sort_by_key(|index| store.tags[*index].status.rank());
+        (counts, attention)
+    }
+
+    fn kept(store: &Store) -> ([usize; 5], Vec<usize>) {
+        let counts = [
+            Status::Unknown,
+            Status::Normal,
+            Status::Warning,
+            Status::Critical,
+            Status::Offline,
+        ]
+        .map(|status| store.count(status));
+        (counts, store.attention().collect())
+    }
+
+    #[test]
+    fn counts_and_attention_follow_every_update_like_a_full_scan() {
+        let mut store = Store::default();
+        let keys: Vec<String> = (0..40).map(|index| format!("t{index}")).collect();
+        store.replace(keys.iter().map(String::as_str).map(info).collect());
+        assert_eq!(store.count(Status::Unknown), 40);
+        let qualities = ["normal", "warning", "critical", "offline", "bad", "ok"];
+        let mut seed: u64 = 12345;
+        for second in 0..200 {
+            let batch: Vec<TagUpdateEntry> = (0..7)
+                .map(|_| {
+                    seed = seed
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1_442_695_040_888_963_407);
+                    let tag = usize::try_from(seed >> 33).unwrap() % keys.len();
+                    let quality = qualities[usize::try_from(seed >> 20).unwrap() % qualities.len()];
+                    update(&keys[tag], 1.0, second, quality)
+                })
+                .collect();
+            store.apply(&batch);
+            assert_eq!(kept(&store), scanned(&store), "after second {second}");
+        }
+        assert!(store.attention_count() > 0);
+        // A new list keeps surviving statuses and recounts.
+        store.replace(keys[10..].iter().map(String::as_str).map(info).collect());
+        assert_eq!(kept(&store), scanned(&store));
+    }
+
+    #[test]
+    fn attention_is_worst_first_then_in_list_order() {
+        let mut store = Store::default();
+        store.replace(vec![info("a"), info("b"), info("c"), info("d")]);
+        store.apply(&[
+            update("a", 1.0, 1, "offline"),
+            update("b", 1.0, 1, "warning"),
+            update("c", 1.0, 1, "critical"),
+            update("d", 1.0, 1, "warning"),
+        ]);
+        assert_eq!(store.attention().collect::<Vec<_>>(), [2, 1, 3, 0]);
+        store.apply(&[update("c", 1.0, 2, "normal")]);
+        assert_eq!(store.attention().collect::<Vec<_>>(), [1, 3, 0]);
+        assert_eq!(
+            (store.count(Status::Normal), store.attention_count()),
+            (1, 3)
+        );
+    }
+
+    #[test]
+    fn filters_match_name_or_key_in_any_case_and_follow_the_list() {
+        let mut store = Store::default();
+        store.replace(vec![
+            info_with(1, "inv1.power"),
+            DataSource {
+                name: "Grid Frequency".into(),
+                ..info_with(2, "grid.hz")
+            },
+            info_with(3, "meter.energy"),
+        ]);
+        assert_eq!(&*store.filter("  "), [0, 1, 2], "empty is everything");
+        assert_eq!(&*store.filter("FREQ"), [1], "by name, any case");
+        assert_eq!(&*store.filter("grid.h"), [1], "by key");
+        assert_eq!(&*store.filter("power"), [0]);
+        assert!(
+            store.filter("frequencygrid").is_empty(),
+            "never across name and key"
+        );
+        let first = store.filter("e");
+        assert!(Rc::ptr_eq(&first, &store.filter(" E ")), "kept per query");
+        store.replace(vec![info_with(4, "freq.backup")]);
+        assert_eq!(&*store.filter("freq"), [0], "a new list answers afresh");
+    }
+
+    #[test]
+    fn the_overall_span_follows_first_samples_and_backfill() {
+        let mut store = Store::default();
+        store.replace(vec![info("a"), info("b")]);
+        assert_eq!(store.span_ms(1_000_000.0), None);
+        store.apply(&[update("a", 1.0, 500, "normal")]);
+        assert_eq!(store.span_ms(600_000.0), Some(100_000.0));
+        // An older first sample on another tag reaches further back.
+        store.apply(&[update("b", 1.0, 400, "normal")]);
+        assert_eq!(store.span_ms(600_000.0), Some(200_000.0));
+        // Later samples do not move it.
+        store.apply(&[update("a", 2.0, 550, "normal")]);
+        assert_eq!(store.span_ms(600_000.0), Some(200_000.0));
+        let series = HashMap::from([(
+            "a".to_string(),
+            HistorySeries {
+                values: vec![1.0],
+                start: 100_000,
+                interval: 10_000,
+            },
+        )]);
+        store.backfill(&series);
+        assert_eq!(store.span_ms(600_000.0), Some(500_000.0));
     }
 }
