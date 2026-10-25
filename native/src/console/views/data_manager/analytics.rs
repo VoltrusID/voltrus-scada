@@ -54,6 +54,9 @@ const GUTTER: f32 = 56.0;
 const TIME_STRIP: f32 = 18.0;
 const TOP: f32 = 10.0;
 
+/// A device, the tag list it was read from, and its tags' positions.
+type DeviceTags = (SharedString, Rc<[usize]>, Rc<Vec<usize>>);
+
 actions!(
     voltrus_console,
     [
@@ -120,7 +123,7 @@ pub(crate) struct State {
     chart: Option<FocusHandle>,
     plot: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// The chosen device's tags, with the tag list they came from.
-    tags: Option<(SharedString, Rc<[usize]>, Rc<Vec<usize>>)>,
+    tags: Option<DeviceTags>,
 }
 
 fn chart_focus(console: &mut Console, cx: &mut Context<Console>) -> FocusHandle {

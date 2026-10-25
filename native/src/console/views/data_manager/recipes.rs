@@ -63,6 +63,9 @@ const DELETE: &str = "recipe-delete";
 const ROW_HEIGHT_PX: f32 = 34.0;
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 
+/// A tag's unit and live value.
+type Now = (String, f64);
+
 actions!(
     voltrus_console,
     [
@@ -677,13 +680,14 @@ fn sheet_view(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         return div().into_any_element();
     };
     let recipe = sheet.recipe.clone();
-    let live: Vec<(String, f64, Option<(String, f64, i64)>)> = sheet
+    // Per value: its key, the saved value, and the tag's unit and value now.
+    let live: Vec<(String, f64, Option<Now>)> = sheet
         .values
         .iter()
         .map(|(key, value, at)| {
             let now = at.map(|at| {
                 let tag = &console.store.tags[at];
-                (tag.info.unit.clone(), tag.value, tag.info.decimals)
+                (tag.info.unit.clone(), tag.value)
             });
             (key.clone(), *value, now)
         })
@@ -700,7 +704,7 @@ fn sheet_view(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         .enumerate()
         .map(|(row, (key, saved, now))| {
             let (live, differs) = match &now {
-                Some((unit, value, _)) => (
+                Some((unit, value)) => (
                     if unit.is_empty() {
                         format_value(*value)
                     } else {
