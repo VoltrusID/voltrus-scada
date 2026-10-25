@@ -96,7 +96,7 @@ pub(crate) struct Span {
 /// A level drilled out of: what it showed, to come back to at once.
 struct Level {
     span: Span,
-    buckets: Option<Rc<Vec<Bucket>>>,
+    buckets: Rc<Vec<Bucket>>,
     cursor: Option<usize>,
 }
 
@@ -209,8 +209,8 @@ fn fetch(console: &mut Console) {
     state.compare_seq += 1;
     state.buckets = None;
     state.compare = None;
-    let (buckets_seq, compare_seq) = (state.buckets_seq, state.compare_seq);
-    let (current, previous) = halves(span.from, span.to);
+    let buckets_seq = state.buckets_seq;
+    // The comparison follows the buckets (`fetch_compare`).
     console.call(
         CallKey::new("data.analytics.aggregate").with(buckets_seq),
         Call::get::<Vec<Bucket>>(insights::aggregate_path(
@@ -220,10 +220,6 @@ fn fetch(console: &mut Console) {
             span.to,
             span.interval,
         )),
-    );
-    console.call(
-        CallKey::new("data.analytics.compare").with(compare_seq),
-        Call::get::<ComparisonResult>(insights::compare_path(&device, &metric, current, previous)),
     );
 }
 
@@ -240,6 +236,7 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 .filter(|_| len > 0);
             state.hover = None;
             state.buckets = Some(buckets);
+            fetch_compare(console);
         }
         "data.analytics.compare" if key.arg == state.compare_seq => {
             state.compare = Some(reply.take::<ComparisonResult>());
@@ -394,7 +391,7 @@ fn drill_in(console: &mut Console, cx: &mut Context<Console>) {
     };
     state.levels.push(Level {
         span,
-        buckets: Some(buckets),
+        buckets,
         cursor: Some(at),
     });
     state.span = Some(Span { from, to, interval });
@@ -413,30 +410,39 @@ fn drill_out(console: &mut Console, cx: &mut Context<Console>) -> bool {
     state.cursor = level.cursor;
     state.hover = None;
     state.buckets_seq += 1;
-    state.compare_seq += 1;
-    let refetch = level.buckets.is_none();
-    state.buckets = level.buckets.map(Ok);
-    fetch_compare_only(console, refetch);
+    state.buckets = Some(Ok(level.buckets));
+    fetch_compare(console);
     cx.notify();
     true
 }
 
-/// After coming back out: the comparison for that span (and the buckets
-/// when they were not kept).
-fn fetch_compare_only(console: &mut Console, buckets_too: bool) {
-    if buckets_too {
-        fetch(console);
+/// The comparison of the span's halves, once its buckets are in: the span
+/// starts at the first stored value, since the server cannot compare a
+/// half that has none (it answers 500).
+fn fetch_compare(console: &mut Console) {
+    let buckets = buckets_of(console);
+    let state = console.state::<State>();
+    state.compare_seq += 1;
+    if let Some(Err(error)) = &state.buckets {
+        state.compare = Some(Err(error.clone()));
         return;
     }
-    let state = console.state::<State>();
     let (Some(device), Some(metric), Some(span)) =
         (state.device.clone(), state.metric.clone(), state.span)
     else {
         return;
     };
+    let Some((from, to)) = insights::compare_span(span.from, span.to, &buckets) else {
+        // Nothing stored: both halves are empty.
+        state.compare = Some(Ok(ComparisonResult {
+            metric,
+            ..ComparisonResult::default()
+        }));
+        return;
+    };
     state.compare = None;
     let seq = state.compare_seq;
-    let (current, previous) = halves(span.from, span.to);
+    let (current, previous) = halves(from, to);
     console.call(
         CallKey::new("data.analytics.compare").with(seq),
         Call::get::<ComparisonResult>(insights::compare_path(&device, &metric, current, previous)),

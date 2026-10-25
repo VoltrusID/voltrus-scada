@@ -420,6 +420,21 @@ pub fn halves(from: i64, to: i64) -> ((i64, i64), (i64, i64)) {
     ((mid, to), (from, mid))
 }
 
+/// The part of `[from, to]` to compare: from the first stored value on.
+/// The server answers 500 for a period without values
+/// (`aggregate_single_period` reads a NULL `MIN`), so the halves must both
+/// hold some; `None` when nothing is stored.
+pub fn compare_span(from: i64, to: i64, buckets: &[Bucket]) -> Option<(i64, i64)> {
+    let (start, first) = buckets.first()?;
+    let first = if first.first_ts > 0 {
+        first.first_ts
+    } else {
+        *start
+    };
+    let from = from.max(first);
+    (to - from >= 2).then_some((from, to))
+}
+
 /// The whole range's figures from its buckets (the web's stat cards): the
 /// lowest, the highest, the sample-weighted average.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -846,6 +861,25 @@ mod tests {
         assert_eq!(drill(0, 300), Some((0, 300, 60)));
         assert_eq!(drill(0, 60), None, "a minute is the finest bucket");
         assert_eq!(drill(0, 86_400), Some((0, 86_400, 3600)));
+        // The comparison starts at the first stored value.
+        let stored = |first_ts| {
+            vec![(
+                3000,
+                AggregatedMetric {
+                    first_ts,
+                    ..AggregatedMetric::default()
+                },
+            )]
+        };
+        assert_eq!(compare_span(0, 3600, &stored(3010)), Some((3010, 3600)));
+        assert_eq!(compare_span(3050, 3600, &stored(3010)), Some((3050, 3600)));
+        assert_eq!(compare_span(0, 3600, &stored(0)), Some((3000, 3600)));
+        assert_eq!(
+            compare_span(0, 3600, &stored(3599)),
+            None,
+            "too short to halve"
+        );
+        assert_eq!(compare_span(0, 3600, &[]), None);
     }
 
     #[test]
