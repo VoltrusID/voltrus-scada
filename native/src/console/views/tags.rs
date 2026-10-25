@@ -9,7 +9,6 @@ use gpui::{
 };
 use voltrus_scada_native::runtime::{CallKey, Reply};
 use vt_ui::Icon;
-use vt_ui::chart::sparkline;
 use vt_ui::components::{empty_state, pill, status_dot};
 use vt_ui::theme::*;
 
@@ -91,6 +90,8 @@ const VALUE: f32 = 120.0;
 const STATUS: f32 = 84.0;
 const AGE: f32 = 56.0;
 const SPARK: f32 = 110.0;
+/// Columns in a row's sparkline: one per two pixels.
+const SPARK_COLUMNS: usize = 55;
 /// The key follows the name only when the name column has this much room.
 const INLINE_KEY_MIN: f32 = 260.0;
 /// The table's sparklines reach back this far at most; they start where
@@ -427,16 +428,23 @@ fn tag_row(
                 }),
         )
         .when(columns.trend, |this| {
-            this.child(div().w(px(SPARK)).h(px(18.0)).flex_none().child(sparkline(
-                tag.history.clone(),
-                if tag.status == Status::Normal {
-                    theme.accent
-                } else {
-                    color
-                },
-                now,
-                columns.span_ms,
-            )))
+            this.child(
+                div()
+                    .w(px(SPARK))
+                    .h(px(18.0))
+                    .flex_none()
+                    .child(super::spark::spark(
+                        tag,
+                        if tag.status == Status::Normal {
+                            theme.accent
+                        } else {
+                            color
+                        },
+                        now,
+                        columns.span_ms,
+                        SPARK_COLUMNS,
+                    )),
+            )
         })
         .into_any_element()
 }

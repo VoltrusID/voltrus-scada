@@ -18,7 +18,7 @@ use gpui::{
 };
 use voltrus_scada_native::stress::PROFILE_TREND;
 use vt_ui::Icon;
-use vt_ui::chart::{History, Series, format_value, sparkline, trend_chart};
+use vt_ui::chart::{History, Series, format_value, trend_chart};
 use vt_ui::components::{Button, pill, status_dot};
 use vt_ui::theme::*;
 
@@ -43,6 +43,8 @@ const ALARM_ROWS: usize = 6;
 /// does when it is younger.
 const SPARK_MS: f64 = 15.0 * 60_000.0;
 const SHORTEST_MS: f64 = 2.0 * 60_000.0;
+/// Columns in a tile's sparkline: about one per two pixels.
+const SPARK_COLUMNS: usize = 110;
 /// Room kept around a tile the keyboard cursor scrolls into view.
 const SCROLL_MARGIN: f32 = 16.0;
 /// The stress profile's trend: how far back, and samples kept per line.
@@ -409,18 +411,16 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         anim::request_frame(window, &console.meter);
     }
     let trend_card = trend_lines.map(|series| profile_card(console, series, now, &theme, cx));
-    let cards = div()
-        .grid()
-        .grid_cols(2)
-        .gap(SPACE_6)
-        .child(attention_card)
-        .child(alarms_card);
-    // The profile shows what moves first: its trend, then the tiles.
-    let (cards_above, cards_below) = if profile {
-        (None, Some(cards))
-    } else {
-        (Some(cards), None)
-    };
+    // The profile shows what moves, its trend and the tiles, in place of
+    // the attention and alarm cards (the counts above still give them).
+    let cards = (!profile).then(|| {
+        div()
+            .grid()
+            .grid_cols(2)
+            .gap(SPACE_6)
+            .child(attention_card)
+            .child(alarms_card)
+    });
 
     div()
         .flex()
@@ -447,7 +447,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                         .p(SPACE_9)
                         .pb(LIST_TAIL)
                         .child(kpis)
-                        .children(cards_above)
+                        .children(cards)
                         .children(trend_card)
                         .child(
                             div()
@@ -484,8 +484,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                     .on_children_prepainted(record_layout)
                                     .children(rows),
                             ),
-                        )
-                        .children(cards_below),
+                        ),
                 ),
         )
         .into_any_element()
@@ -889,11 +888,13 @@ fn tile(
                     )
                 })
         })
-        .child(
-            div()
-                .h(px(28.0))
-                .child(sparkline(tag.history.clone(), line, now_ms, span_ms)),
-        )
+        .child(div().h(px(28.0)).child(super::spark::spark(
+            tag,
+            line,
+            now_ms,
+            span_ms,
+            SPARK_COLUMNS,
+        )))
         .child(
             div()
                 .flex()

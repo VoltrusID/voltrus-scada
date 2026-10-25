@@ -23,6 +23,7 @@ pub(crate) mod performance;
 pub(crate) mod settings;
 pub(crate) mod shift;
 mod sign_in;
+pub(crate) mod spark;
 pub(crate) mod status_bar;
 pub(crate) mod tag_chart;
 pub(crate) mod tag_detail;

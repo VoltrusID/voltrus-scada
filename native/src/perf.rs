@@ -257,8 +257,12 @@ pub struct PageFigures {
 /// took, over a run.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Phases {
-    /// Rendering the views and laying the element tree out.
+    /// The root: rendering it and laying out the window's frame. Cached
+    /// views take their place in the layout here and are drawn below.
     pub layout: Spread,
+    /// The cached views (navbar, page, status bar, …) that changed:
+    /// rendering, laying out and prepainting each (GPUI does all three for
+    /// a cached view in its prepaint), and prepainting the rest.
     pub prepaint: Spread,
     pub paint: Spread,
     /// From the end of paint until the frame was handed to the GPU
@@ -416,7 +420,7 @@ impl fmt::Display for Report {
         if let Some(phases) = &self.phases {
             writeln!(
                 f,
-                "frame_phases_ms: render+layout {}  |  prepaint {}  |  paint {}  |  present {}",
+                "frame_phases_ms: root layout {}  |  views render+layout+prepaint {}  |  paint {}  |  present {}",
                 phases.layout, phases.prepaint, phases.paint, phases.present
             )?;
         }
@@ -861,7 +865,7 @@ mod tests {
             "warm_up: 5 frames from the start until every page was drawn once",
             "  overview     frames   590  frame p50 2.00  p95 4.00  max 7.00  render p50 0.50  p95 0.90  max 1.50  first 6.50",
             "slowest_frames_ms: 7.00 overview (render 1.50, first show), 6.00 tags (render 0.25)",
-            "frame_phases_ms: render+layout p50 1.00  p95 2.00  max 3.00  |  prepaint p50 0.00",
+            "frame_phases_ms: root layout p50 1.00  p95 2.00  max 3.00  |  views render+layout+prepaint p50 0.00",
             "late_starts: 4 of 100 back-to-back frames started over 1 ms after their vsync slot: previous frame still drawing 1, event batch just applied 2, other (display link, scheduler) 1",
         ] {
             assert!(text.contains(line), "missing “{line}” in\n{text}");
