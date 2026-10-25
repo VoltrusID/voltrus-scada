@@ -918,11 +918,15 @@ impl Scan<'_> {
 
 // ── The canvas ────────────────────────────────────────────────────────────
 
+/// A tessellated shape, in window pixels less the translation.
+type Buffers = Rc<VertexBuffers<lyon::math::Point, u16>>;
+
 /// Tessellations kept between frames, by shape, transform (without its
-/// translation) and style. Entries unused for a while are dropped.
+/// translation) and style, with the frame each was last used in. Entries
+/// unused for a while are dropped.
 #[derive(Default)]
 pub(crate) struct Tessellations {
-    entries: RefCell<HashMap<u64, (u64, Rc<VertexBuffers<lyon::math::Point, u16>>)>>,
+    entries: RefCell<HashMap<u64, (u64, Buffers)>>,
     frame: Cell<u64>,
 }
 
