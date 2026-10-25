@@ -511,10 +511,12 @@ fn shown_rows(
     (shown, layout.row_height)
 }
 
-/// Rows within half a screen of the viewport (`offset_y`, the scroll offset,
-/// is 0 or negative); rows not laid out yet count as on screen.
+/// Rows within a quarter screen of the viewport (`offset_y`, the scroll
+/// offset, is 0 or negative); rows not laid out yet count as on screen.
+/// The offset is the current one (a scroll redraws the page), so the margin
+/// only covers a row growing into view between two frames.
 fn on_screen(laid_out: &[(f32, f32)], rows: usize, offset_y: f32, viewport: f32) -> Vec<bool> {
-    let margin = viewport * 0.5;
+    let margin = viewport * 0.25;
     (0..rows)
         .map(|row| {
             laid_out.get(row).is_none_or(|&(top, bottom)| {
@@ -920,12 +922,12 @@ mod tests {
             })
             .collect();
         let at_top = on_screen(&rows, 12, 0.0, 600.0);
-        // Up to 600 + 300 px down: rows starting at 400, 524, 648, 772, 896.
-        assert_eq!(at_top.iter().filter(|shown| **shown).count(), 5);
-        assert!(at_top[0] && at_top[4] && !at_top[5]);
+        // Up to 600 + 150 px down: rows starting at 400, 524, 648.
+        assert_eq!(at_top.iter().filter(|shown| **shown).count(), 3);
+        assert!(at_top[0] && at_top[2] && !at_top[3]);
         let scrolled = on_screen(&rows, 12, -1200.0, 600.0);
-        assert!(!scrolled[0] && !scrolled[3], "far above");
-        assert!(scrolled[4] && scrolled[11], "near and in view");
+        assert!(!scrolled[0] && !scrolled[4], "far above");
+        assert!(scrolled[5] && scrolled[11], "near and in view");
         // A row not laid out yet (the list grew) is drawn.
         assert!(on_screen(&rows, 14, -2000.0, 600.0)[13]);
     }

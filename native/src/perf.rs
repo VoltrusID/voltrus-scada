@@ -255,6 +255,9 @@ pub struct PageFigures {
 pub struct SlowFrame {
     pub cpu_ms: f64,
     pub page: &'static str,
+    /// The page's render function within it (0 when the page replayed its
+    /// last frame): the rest was layout, paint and the other views.
+    pub render_ms: f64,
     /// What else the frame did: `first show`, `page switch`, or nothing.
     pub note: &'static str,
 }
@@ -353,7 +356,7 @@ impl fmt::Display for Report {
         if let Some((frames, spread)) = &self.warm_up {
             writeln!(
                 f,
-                "warm_up: {frames} frames after sign-in drew every page once, build ms {spread} (not counted above)"
+                "warm_up: {frames} frames from the start until every page was drawn once, build ms {spread} (not counted above)"
             )?;
         }
         if !self.pages.is_empty() {
@@ -378,11 +381,19 @@ impl fmt::Display for Report {
                 .slowest
                 .iter()
                 .map(|frame| {
-                    if frame.note.is_empty() {
-                        format!("{:.2} {}", frame.cpu_ms, frame.page)
+                    let page = if frame.page.is_empty() {
+                        "sign-in"
                     } else {
-                        format!("{:.2} {} ({})", frame.cpu_ms, frame.page, frame.note)
+                        frame.page
+                    };
+                    let mut text =
+                        format!("{:.2} {page} (render {:.2}", frame.cpu_ms, frame.render_ms);
+                    if !frame.note.is_empty() {
+                        text.push_str(", ");
+                        text.push_str(frame.note);
                     }
+                    text.push(')');
+                    text
                 })
                 .collect();
             writeln!(f, "slowest_frames_ms: {}", slowest.join(", "))?;
@@ -732,11 +743,13 @@ mod tests {
                 SlowFrame {
                     cpu_ms: 7.0,
                     page: "overview",
+                    render_ms: 1.5,
                     note: "first show",
                 },
                 SlowFrame {
                     cpu_ms: 6.0,
                     page: "tags",
+                    render_ms: 0.25,
                     note: "",
                 },
             ],
@@ -748,9 +761,9 @@ mod tests {
             "display_refresh: reported by the display",
             "frame_budget: 99.5% of frames built within 16.7 ms (60 Hz), 97.3% within 8.3 ms (120 Hz)",
             "apply_ms per event batch: p50 0.10  p95 0.30  max 1.00",
-            "warm_up: 5 frames after sign-in",
+            "warm_up: 5 frames from the start until every page was drawn once",
             "  overview     frames   590  frame p50 2.00  p95 4.00  max 7.00  render p50 0.50  p95 0.90  max 1.50  first 6.50",
-            "slowest_frames_ms: 7.00 overview (first show), 6.00 tags",
+            "slowest_frames_ms: 7.00 overview (render 1.50, first show), 6.00 tags (render 0.25)",
         ] {
             assert!(text.contains(line), "missing “{line}” in\n{text}");
         }

@@ -3,6 +3,7 @@
 //! way: this module and one row in `pages::PAGES`; its settings live in its
 //! own state type (`Console::state`).
 
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
@@ -57,6 +58,47 @@ const TAG_COUNTS: [usize; 3] = [1_000, 10_000, 25_000];
 const SWITCHES: [u64; 4] = [0, 1, 2, 5];
 /// The frame chart's span.
 const CHART_MS: f64 = 10_000.0;
+/// How often the report's text is made again while a run goes on: working
+/// it out sorts every frame time, and new text is shaped anew.
+const REPORT_REFRESH: Duration = Duration::from_millis(250);
+
+/// The report as shown: its title and lines, and when they were made.
+#[derive(Default)]
+struct ReportText {
+    made: Option<Instant>,
+    shown: Option<(&'static str, Rc<[SharedString]>)>,
+}
+
+/// The running or last report's lines, made again a few times a second.
+fn report_text(console: &mut Console) -> Option<(&'static str, Rc<[SharedString]>)> {
+    let now = Instant::now();
+    if console
+        .state::<ReportText>()
+        .made
+        .is_none_or(|made| now.duration_since(made) >= REPORT_REFRESH)
+    {
+        let report = match console.stress_report() {
+            Some(report) => Some(("Running", report)),
+            None => console
+                .last_report
+                .clone()
+                .map(|report| ("Last run", report)),
+        };
+        let shown = report.map(|(title, report)| {
+            let lines: Rc<[SharedString]> = report
+                .to_string()
+                .lines()
+                .map(|line| SharedString::from(line.to_owned()))
+                .collect();
+            (title, lines)
+        });
+        *console.state::<ReportText>() = ReportText {
+            made: Some(now),
+            shown,
+        };
+    }
+    console.state::<ReportText>().shown.clone()
+}
 
 pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
@@ -123,13 +165,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         },
     ];
     drop(meter);
-    let report = match console.stress_report() {
-        Some(report) => Some(("Running", report)),
-        None => console
-            .last_report
-            .clone()
-            .map(|report| ("Last run", report)),
-    };
+    let report = report_text(console);
     let status = console.stress.as_ref().map_or_else(
         || "Stopped".to_owned(),
         |run| {
@@ -303,13 +339,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
                                         .font_family(MONO)
                                         .text_size(FONT_SMALL)
                                         .map(|this| match report {
-                                            Some((_, report)) => this.children(
-                                                report
-                                                    .to_string()
-                                                    .lines()
-                                                    .map(|line| SharedString::from(line.to_owned()))
-                                                    .collect::<Vec<_>>(),
-                                            ),
+                                            Some((_, lines)) => this.children(lines.iter().cloned()),
                                             None => this
                                                 .text_color(theme.fg_dim)
                                                 .child("No stress run yet. Start one above, from ⌘K, or with --stress."),

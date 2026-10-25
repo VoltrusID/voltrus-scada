@@ -39,19 +39,17 @@ impl Console {
     }
 
     /// The page view to draw hidden in this frame, if any are left; asks
-    /// for the next frame while more wait.
+    /// for the next frame while more wait. Before the console shows (a
+    /// stress run signing in) nothing is warmed and the warm-up goes on.
     pub(crate) fn warm_step(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Entity<CachedView>> {
-        let next = if self.phase == Phase::Console {
-            self.warm.pop()
-        } else {
-            None
-        };
-        let Some(page) = next else {
-            self.warm.clear();
+        if self.phase != Phase::Console {
+            return None;
+        }
+        let Some(page) = self.warm.pop() else {
             self.meter.borrow_mut().set_warming(false);
             return None;
         };

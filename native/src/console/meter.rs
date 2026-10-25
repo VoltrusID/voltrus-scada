@@ -76,6 +76,8 @@ pub struct FrameMeter {
     page: &'static str,
     /// The frame being built shows its page for the first time.
     first_show: bool,
+    /// The page's render time within the frame being built.
+    frame_render: f64,
     pages: Vec<PageLog>,
     slowest: Vec<SlowFrame>,
     /// Applying a batch of runtime events, in ms.
@@ -102,6 +104,7 @@ impl Default for FrameMeter {
             recent: std::collections::VecDeque::new(),
             page: "",
             first_show: false,
+            frame_render: 0.0,
             pages: Vec::new(),
             slowest: Vec::new(),
             applies: Vec::new(),
@@ -181,6 +184,7 @@ impl FrameMeter {
     /// The page on screen ran its render function in `render_ms`.
     pub fn page_built(&mut self, id: &'static str, render_ms: f64) {
         self.page = id;
+        self.frame_render += render_ms;
         let log = self.page_log(id);
         if log.first_ms.is_none() && log.frames.is_empty() {
             self.first_show = true;
@@ -211,6 +215,7 @@ impl FrameMeter {
         let (delay_ms, interval_ms) = self.current.take().unwrap_or((None, None));
         let cpu_ms = ms(start, now);
         let first_show = std::mem::take(&mut self.first_show);
+        let render_ms = std::mem::take(&mut self.frame_render);
         let switched = self.switch.take();
         if self.warming {
             keep(&mut self.warm_up, cpu_ms);
@@ -242,6 +247,7 @@ impl FrameMeter {
         self.note_slow(SlowFrame {
             cpu_ms,
             page: self.page,
+            render_ms,
             note: if first_show {
                 "first show"
             } else if switched.is_some() {
@@ -413,13 +419,13 @@ mod tests {
         assert_eq!(
             slowest
                 .iter()
-                .map(|frame| (frame.cpu_ms, frame.page, frame.note))
+                .map(|frame| (frame.cpu_ms, frame.page, frame.note, frame.render_ms))
                 .collect::<Vec<_>>(),
             [
-                (9.0, "overview", "first show"),
-                (6.0, "tags", "first show"),
-                (2.0, "overview", ""),
-                (1.0, "tags", ""),
+                (9.0, "overview", "first show", 1.0),
+                (6.0, "tags", "first show", 0.25),
+                (2.0, "overview", "", 0.5),
+                (1.0, "tags", "", 0.0),
             ]
         );
     }

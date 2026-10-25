@@ -23,9 +23,19 @@ if [ "${STRESS_PROFILE:-0}" = "1" ]; then
   flags+=(--stress-profile)
   title="Native console stress profile (animation showcase)"
 fi
+if [ -n "${STRESS_SAMPLE:-}" ]; then
+  title="${title}, CPU-sampled (slower, not checked)"
+fi
 
 "$binary" "${flags[@]}" &
 pid=$!
+# STRESS_SAMPLE=<file>: a CPU profile of the run's middle (macOS `sample`),
+# for finding where frame time goes. It slows the run, so such a run's
+# figures are not checked against the budget.
+if [ -n "${STRESS_SAMPLE:-}" ]; then
+  sleep 6
+  sample "$pid" 8 1 -mayDie -file "$STRESS_SAMPLE" >/dev/null 2>&1 || echo "::warning::sampling failed"
+fi
 # The run, plus time to open the window and quit.
 limit=$((seconds + 60))
 for _ in $(seq 1 "$limit"); do
@@ -53,6 +63,10 @@ cat "$report"
   echo '```'
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
+if [ -n "${STRESS_SAMPLE:-}" ]; then
+  echo "sampled run: figures not checked against the budget"
+  exit 0
+fi
 # The budget: under 1% of vsyncs dropped, frame interval p95 within 17.5 ms
 # and no frame over 50 ms (at 60 Hz), a page's first frame within 34 ms of
 # the switch.

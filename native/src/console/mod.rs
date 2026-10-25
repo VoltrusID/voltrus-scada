@@ -1216,7 +1216,12 @@ impl Console {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.meter.borrow_mut().reset();
+        // Counting starts afresh; the frames until the synthetic session
+        // shows and every page is warmed are the warm-up, reported apart.
+        let mut meter = self.meter.borrow_mut();
+        meter.reset();
+        meter.set_warming(true);
+        drop(meter);
         self.send(Command::Stress(plan.options));
         // The ticker's alarm refresh would only report "not signed in".
         self.alarms_error = None;
