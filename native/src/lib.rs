@@ -14,8 +14,12 @@
 //!   convention, annotations and the tag detail's history queries.
 //! - [`device_file`]: Modbus Poll and BACnet Explorer device files, parsed
 //!   for import (a port of the web client's `deviceFileImport.ts`).
+//! - [`mimic`]: HMI mimic screens: the server's SCADA rows, the editable
+//!   screen model, the symbol library's geometry, live states, connection
+//!   routes and the faceplate's command rules.
 pub mod api;
 pub mod device_file;
+pub mod mimic;
 pub mod perf;
 pub mod runtime;
 pub mod screens;

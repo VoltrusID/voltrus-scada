@@ -970,6 +970,164 @@ pub static COMMANDS: &[CommandSpec] = &[
         super::views::dashboard::DashboardScreen(9),
         false
     ),
+    // The HMI mimic (`views::mimic`): its keys act on the focused stage.
+    command!(
+        "Mimic: next equipment",
+        Navigation,
+        ChevronRight,
+        ["tab"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicNext,
+        false
+    ),
+    command!(
+        "Mimic: previous equipment",
+        Navigation,
+        ChevronLeft,
+        ["shift-tab"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicPrevious,
+        false
+    ),
+    command!(
+        "Mimic: equipment above",
+        Navigation,
+        ChevronUp,
+        ["up"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicUp,
+        false
+    ),
+    command!(
+        "Mimic: equipment below",
+        Navigation,
+        ChevronDown,
+        ["down"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicDown,
+        false
+    ),
+    command!(
+        "Mimic: equipment to the left",
+        Navigation,
+        ChevronLeft,
+        ["left"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicLeft,
+        false
+    ),
+    command!(
+        "Mimic: equipment to the right",
+        Navigation,
+        ChevronRight,
+        ["right"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicRight,
+        false
+    ),
+    command!(
+        "Mimic: open the faceplate (armed: confirm)",
+        Navigation,
+        CircleDot,
+        ["enter"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicOpen,
+        false
+    ),
+    command!(
+        "Mimic: zoom in",
+        View,
+        Plus,
+        ["secondary-=", "secondary-+"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicZoomIn,
+        false
+    ),
+    command!(
+        "Mimic: zoom out",
+        View,
+        ChevronDown,
+        ["secondary--"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicZoomOut,
+        false
+    ),
+    command!(
+        "Mimic: fit the stage",
+        View,
+        Square,
+        ["secondary-0"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicFit,
+        false
+    ),
+    CommandSpec {
+        label: "Mimic: arm start / open / on (or the setpoint)",
+        group: Group::View,
+        icon: Icon::Play,
+        keys: &["1"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicArmOn) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: arm stop / close / off",
+        group: Group::View,
+        icon: Icon::Square,
+        keys: &["0"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicArmOff) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: raise the setpoint",
+        group: Group::View,
+        icon: Icon::ChevronUp,
+        keys: &["shift-up"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicStepUp) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: lower the setpoint",
+        group: Group::View,
+        icon: Icon::ChevronDown,
+        keys: &["shift-down"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicStepDown) },
+        palette: false,
+        role: Role::Operator,
+    },
+    command!(
+        "Mimic: next screen",
+        Navigation,
+        ChevronRight,
+        ["]"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicNextScreen,
+        false
+    ),
+    command!(
+        "Mimic: previous screen",
+        Navigation,
+        ChevronLeft,
+        ["["],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicPreviousScreen,
+        false
+    ),
+    command!(
+        "Mimic: reload the screen",
+        View,
+        RefreshCw,
+        ["r"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicReload,
+        false
+    ),
     CommandSpec {
         label: "New data source",
         group: Group::Data,

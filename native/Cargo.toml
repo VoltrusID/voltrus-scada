@@ -31,6 +31,14 @@ time = { version = "0.3", features = ["macros", "formatting", "local-offset"] }
 libc = "0.2"
 # The alarm annunciator's output stream (tones are synthesized; no codecs).
 cpal = "0.17"
+# The mimic's symbols: SVG path data tessellated with GPUI's own lyon, with
+# the caps, joins and dashes the HMI drawings need.
+lyon = "1.0.19"
+
+# The mimic's trackpad pinch: the handler block of an AppKit event monitor
+# for magnify gestures, which GPUI does not surface (GPUI's own crate).
+[target.'cfg(target_os = "macos")'.dependencies]
+block = "0.1"
 
 [dev-dependencies]
 http = "1"

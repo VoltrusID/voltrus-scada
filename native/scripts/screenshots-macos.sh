@@ -79,6 +79,10 @@ shots=(
   "data-bacnet|--sign-in --page data --section bacnet --appearance light"
   "data-bacnet-object|--sign-in --page data --section bacnet --overlay DataAddChild --appearance dark"
   "data-bacnet-discover|--sign-in --page data --section bacnet --overlay DataSectionTool --appearance dark"
+  "mimic|--sign-in --page mimic --appearance dark"
+  "mimic-light|--sign-in --page mimic --appearance light"
+  "mimic-faceplate|--sign-in --page mimic --overlay MimicOpen --appearance dark"
+  "mimic-commands|--sign-in --page mimic --overlay MimicArmOff --appearance dark"
 )
 
 status=0
