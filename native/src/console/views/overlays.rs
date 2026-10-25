@@ -78,7 +78,11 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
 }
 
 /// ⌘K: every page and command, fuzzy-searched as you type.
-pub fn palette(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
+pub fn palette(
+    console: &mut Console,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) -> AnyElement {
     let theme = theme(cx).clone();
     let Some(palette) = console.palette.as_ref() else {
         return div().into_any_element();
@@ -186,8 +190,11 @@ pub fn palette(console: &mut Console, window: &mut Window, cx: &mut Context<Cons
         .into_any_element()
 }
 
-
-fn footer(keys: &[(&'static str, &'static str)], note: String, cx: &Context<Console>) -> impl IntoElement {
+fn footer(
+    keys: &[(&'static str, &'static str)],
+    note: String,
+    cx: &Context<Console>,
+) -> impl IntoElement {
     let theme = theme(cx);
     div()
         .flex()
@@ -273,11 +280,21 @@ pub fn help(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) ->
                 .py(SPACE_7)
                 .children(groups),
         )
-        .child(footer(&[("Esc", "Close"), ("Tab", "Next control")], String::new(), cx))
+        .child(footer(
+            &[("Esc", "Close"), ("Tab", "Next control")],
+            String::new(),
+            cx,
+        ))
         .into_any_element()
 }
 
-fn open_more_row(console: &mut Console, row: usize, _: bool, window: &mut Window, cx: &mut Context<Console>) {
+fn open_more_row(
+    console: &mut Console,
+    row: usize,
+    _: bool,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) {
     if let Some(page) = overlay::more_pages(console.role()).get(row).copied() {
         console.show(page, window, cx);
     }

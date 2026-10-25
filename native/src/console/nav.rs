@@ -107,7 +107,15 @@ mod tests {
         assert_eq!(moved(Some(45), 50, Move::PageDown, 10), Some(49));
         assert_eq!(moved(Some(5), 50, Move::PageUp, 10), Some(0));
         assert_eq!(moved(Some(9), 50, Move::First, 10), Some(0));
-        assert_eq!(moved(Some(9), 3, Move::Up, 10), Some(1), "a stale cursor is clamped first");
-        assert_eq!(moved(Some(3), 9, Move::PageDown, 0), Some(4), "a page is at least a row");
+        assert_eq!(
+            moved(Some(9), 3, Move::Up, 10),
+            Some(1),
+            "a stale cursor is clamped first"
+        );
+        assert_eq!(
+            moved(Some(3), 9, Move::PageDown, 0),
+            Some(4),
+            "a page is at least a row"
+        );
     }
 }

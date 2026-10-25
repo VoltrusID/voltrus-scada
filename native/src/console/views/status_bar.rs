@@ -88,10 +88,14 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
             )
         })
         .when(offline_devices > 0, |this| {
-            this.child(div().text_color(theme.warning).child(match offline_devices {
-                1 => "1 device offline".to_owned(),
-                count => format!("{count} devices offline"),
-            }))
+            this.child(
+                div()
+                    .text_color(theme.warning)
+                    .child(match offline_devices {
+                        1 => "1 device offline".to_owned(),
+                        count => format!("{count} devices offline"),
+                    }),
+            )
         })
         .when_some(console.alarms_error.as_ref(), |this, error| {
             this.child(

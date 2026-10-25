@@ -30,10 +30,10 @@ use vt_ui::chart::format_value;
 use vt_ui::theme::*;
 
 use super::keys::{
-    AcknowledgeAll, Back, CONSOLE, Dismiss, FocusNext, FocusPrevious, FocusSearch, Forward,
-    LIST, ListActivate, ListDown, ListFirst, ListLast, ListPageDown, ListPageUp, ListToggle,
-    ListUp, Quit, ShowMore, ShowPage, SignOut, StartStress, StopStress, ToggleAppearance,
-    ToggleHelp, TogglePalette, TogglePerfHud,
+    AcknowledgeAll, Back, CONSOLE, Dismiss, FocusNext, FocusPrevious, FocusSearch, Forward, LIST,
+    ListActivate, ListDown, ListFirst, ListLast, ListPageDown, ListPageUp, ListToggle, ListUp,
+    Quit, ShowMore, ShowPage, SignOut, StartStress, StopStress, ToggleAppearance, ToggleHelp,
+    TogglePalette, TogglePerfHud,
 };
 use super::nav::Move;
 use super::store::Status;
@@ -65,8 +65,7 @@ impl Render for Console {
                     ),
                 )
                 .child(
-                    AnyView::from(page)
-                        .cached(div().flex_1().w_full().min_h_0().style().clone()),
+                    AnyView::from(page).cached(div().flex_1().w_full().min_h_0().style().clone()),
                 )
                 .child(
                     AnyView::from(self.views.status_bar.clone()).cached(

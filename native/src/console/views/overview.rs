@@ -1,22 +1,31 @@
 //! The plant at a glance: counts, what needs attention, open alarms, and a
-//! tile per tag.
+//! tile per tag. A tile lights up when its value changes and its level bar
+//! glides to the new value; the page asks for frames only while one does.
+
+use std::time::Instant;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, ElementId, FontWeight, Hsla, SharedString, div, px};
+use gpui::{AnyElement, Context, ElementId, FontWeight, Hsla, SharedString, Window, div, px};
 use vt_ui::Icon;
 use vt_ui::chart::{format_value, sparkline};
 use vt_ui::components::{Button, pill, status_dot};
 use vt_ui::theme::*;
 
 use super::{
-    age, alarm_source, alarm_summary, card, card_title, fit_span, local_time, now_ms, page_header,
-    severity_color, span_label, status_color, value_color, value_with_unit,
+    LIST_TAIL, ListKeys, age, alarm_source, alarm_summary, card, card_title, fit_span, focus_ring,
+    keyboard_list, local_time, now_ms, page_header, severity_color, span_label, status_color,
+    value_color, value_with_unit,
 };
+use crate::console::anim;
 use crate::console::store::{Status, Tag};
 use crate::console::{Console, Page, is_shelved, time_now_secs};
 
+/// The tiles' keyboard list.
+pub(crate) const LIST: &str = "overview";
+
 /// Tiles drawn on the overview; the Tags page has the rest.
 const TILES: usize = 48;
+const COLUMNS: usize = 4;
 const ATTENTION_ROWS: usize = 8;
 const ALARM_ROWS: usize = 6;
 /// The sparklines reach back this far at most, and start where the data
@@ -24,13 +33,42 @@ const ALARM_ROWS: usize = 6;
 const SPARK_MS: f64 = 15.0 * 60_000.0;
 const SHORTEST_MS: f64 = 2.0 * 60_000.0;
 
-pub fn render(
-    console: &Console,
-    rate: usize,
-    unacknowledged: usize,
+pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    console.focus_list(LIST, window, cx);
+}
+
+fn open_tile(
+    console: &mut Console,
+    row: usize,
+    _: bool,
+    window: &mut Window,
     cx: &mut Context<Console>,
-) -> AnyElement {
+) {
+    if let Some(id) = console.store.tags.get(row).map(|tag| tag.info.id) {
+        console.open_tag(id, window, cx);
+    }
+}
+
+pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
+    let rate = console.rate.per_second(Instant::now());
+    let unacknowledged = console.unacknowledged();
+    let tile_count = console.store.tags.len().min(TILES);
+    let list = keyboard_list(
+        ListKeys {
+            id: LIST,
+            on_move: None,
+            on_activate: open_tile,
+        },
+        tile_count,
+        COLUMNS * 3,
+        console,
+        cx,
+    );
+    let nav = console.list(LIST, cx);
+    let cursor = nav.cursor;
+    let focused = nav.focus.is_focused(window);
+    let scroll = console.scroll(LIST);
     let store = &console.store;
     let critical = store.count(Status::Critical);
     let warning = store.count(Status::Warning);
@@ -104,7 +142,7 @@ pub fn render(
     let attention_rows: Vec<AnyElement> = attention
         .into_iter()
         .take(ATTENTION_ROWS)
-        .map(|index| attention_row(index, &store.tags[index], &theme, cx))
+        .map(|index| attention_row(&store.tags[index], &theme, cx))
         .collect();
 
     let mut alarms: Vec<_> = console
@@ -197,7 +235,9 @@ pub fn render(
                 Button::new("attention-all", "All tags")
                     .ghost()
                     .compact()
-                    .on_click(cx.listener(|console, _, _, cx| console.show(Page::Tags, cx)))
+                    .on_click(cx.listener(|console, _, window, cx| {
+                        console.show(Page::Tags, window, cx);
+                    }))
                     .into_any_element()
             }),
             &theme,
@@ -226,7 +266,9 @@ pub fn render(
                 Button::new("alarms-all", "View all")
                     .ghost()
                     .compact()
-                    .on_click(cx.listener(|console, _, _, cx| console.show(Page::Alarms, cx)))
+                    .on_click(cx.listener(|console, _, window, cx| {
+                        console.show(Page::Alarms, window, cx);
+                    }))
                     .into_any_element(),
             ),
             &theme,
@@ -244,6 +286,7 @@ pub fn render(
         });
 
     let now = now_ms();
+    let instant = Instant::now();
     let span = fit_span(
         store
             .tags
@@ -253,14 +296,28 @@ pub fn render(
         SHORTEST_MS,
         SPARK_MS,
     );
+    let mut animating = false;
     let tiles: Vec<AnyElement> = store
         .tags
         .iter()
-        .enumerate()
         .take(TILES)
-        .map(|(index, tag)| tile(index, tag, now, span, now_secs, &theme, cx))
+        .enumerate()
+        .map(|(row, tag)| {
+            let look = TileLook::at(tag, instant);
+            animating |= look.flash.is_some() || look.tweening;
+            tile(
+                row,
+                tag,
+                look,
+                (now, span, now_secs),
+                focused && cursor == Some(row),
+                &theme,
+                cx,
+            )
+        })
         .collect();
     let more = store.tags.len().saturating_sub(TILES);
+    let tag_total = store.tags.len();
 
     let header_controls = if unacknowledged > 0 {
         vec![
@@ -273,17 +330,17 @@ pub fn render(
         Vec::new()
     };
 
+    if animating {
+        anim::request_frame(window, &console.meter);
+    }
+
     div()
         .flex()
         .flex_col()
         .size_full()
         .child(page_header(
             "Overview",
-            format!(
-                "{} tags · {} alarms to acknowledge",
-                store.tags.len(),
-                unacknowledged
-            ),
+            format!("{tag_total} tags · {unacknowledged} alarms to acknowledge"),
             header_controls,
             cx,
         ))
@@ -293,12 +350,14 @@ pub fn render(
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .track_scroll(&scroll)
                 .child(
                     div()
                         .flex()
                         .flex_col()
                         .gap(SPACE_8)
                         .p(SPACE_9)
+                        .pb(LIST_TAIL)
                         .child(kpis)
                         .child(
                             div()
@@ -319,28 +378,64 @@ pub fn render(
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .child("Live values"),
                                 )
-                                .child(
-                                    div()
-                                        .text_size(FONT_SMALL)
-                                        .text_color(theme.fg_dim)
-                                        .child(format!("last {}", span_label(span))),
-                                )
+                                .child(div().text_size(FONT_SMALL).text_color(theme.fg_dim).child(
+                                    format!("last {} · ↑↓ or j/k, ↵ opens", span_label(span)),
+                                ))
                                 .child(div().flex_1())
                                 .when(more > 0, |this| {
                                     this.child(
                                         Button::new("tiles-more", format!("{more} more in Tags"))
                                             .ghost()
                                             .compact()
-                                            .on_click(cx.listener(|console, _, _, cx| {
-                                                console.show(Page::Tags, cx);
+                                            .on_click(cx.listener(|console, _, window, cx| {
+                                                console.show(Page::Tags, window, cx);
                                             })),
                                     )
                                 }),
                         )
-                        .child(div().grid().grid_cols(4).gap(SPACE_6).children(tiles)),
+                        .child(
+                            list.grid()
+                                .grid_cols(COLUMNS as u16)
+                                .gap(SPACE_6)
+                                .children(tiles),
+                        ),
                 ),
         )
         .into_any_element()
+}
+
+/// How a tile looks at this instant: a change flash fading out, and its
+/// level bar between the old and the new value.
+struct TileLook {
+    /// 1 right after a change, fading to 0.
+    flash: Option<f32>,
+    /// The bar's fill, 0 to 1, when the tag has a range.
+    level: Option<f64>,
+    tweening: bool,
+}
+
+impl TileLook {
+    fn at(tag: &Tag, now: Instant) -> Self {
+        let level = Tag::level(tag.value, &tag.info);
+        let Some(changed) = tag.changed_at else {
+            return Self {
+                flash: None,
+                level,
+                tweening: false,
+            };
+        };
+        let flash = anim::progress(changed, now, anim::FLASH).map(|t| 1.0 - t);
+        let tween = anim::progress(changed, now, anim::TWEEN);
+        let level = match (tween, Tag::level(tag.previous, &tag.info), level) {
+            (Some(t), Some(from), Some(to)) => Some(anim::lerp(from, to, anim::ease_out(t))),
+            (_, _, level) => level,
+        };
+        Self {
+            flash,
+            level,
+            tweening: tween.is_some(),
+        }
+    }
 }
 
 fn kpi(
@@ -413,13 +508,14 @@ fn all_clear(title: &'static str, body: &'static str, theme: &Theme) -> impl Int
         )
 }
 
-fn attention_row(index: usize, tag: &Tag, theme: &Theme, cx: &Context<Console>) -> AnyElement {
+fn attention_row(tag: &Tag, theme: &Theme, cx: &Context<Console>) -> AnyElement {
     let hover = theme.hover;
     let color = status_color(tag.status, theme);
+    let id = tag.info.id;
     div()
         .id(ElementId::NamedInteger(
             "attention".into(),
-            u64::try_from(index).unwrap_or(0),
+            id.unsigned_abs(),
         ))
         .flex()
         .items_center()
@@ -430,7 +526,7 @@ fn attention_row(index: usize, tag: &Tag, theme: &Theme, cx: &Context<Console>) 
         .border_color(theme.border.alpha(0.6))
         .cursor_pointer()
         .hover(move |style| style.bg(hover))
-        .on_click(cx.listener(move |console, _, _, cx| console.open_tag(index, cx)))
+        .on_click(cx.listener(move |console, _, window, cx| console.open_tag(id, window, cx)))
         .child(status_dot(color))
         .child(
             div()
@@ -483,11 +579,11 @@ fn attention_detail(tag: &Tag) -> String {
 }
 
 fn tile(
-    index: usize,
+    row: usize,
     tag: &Tag,
-    now_ms: f64,
-    span_ms: f64,
-    now_secs: i64,
+    look: TileLook,
+    (now_ms, span_ms, now_secs): (f64, f64, i64),
+    ring: bool,
     theme: &Theme,
     cx: &Context<Console>,
 ) -> AnyElement {
@@ -502,16 +598,19 @@ fn tile(
     } else {
         status_color(tag.status, theme)
     };
+    let background = match look.flash {
+        Some(strength) => anim::mix(theme.surface, theme.accent_soft, strength * 0.9),
+        None => theme.surface,
+    };
     let updated = if tag.at_secs > 0 {
         format!("{} ago", age(now_secs - tag.at_secs))
     } else {
         "no value yet".into()
     };
+    let id = tag.info.id;
     div()
-        .id(ElementId::NamedInteger(
-            "tile".into(),
-            u64::try_from(index).unwrap_or(0),
-        ))
+        .id(ElementId::NamedInteger("tile".into(), id.unsigned_abs()))
+        .relative()
         .flex()
         .flex_col()
         .gap(SPACE_3)
@@ -520,10 +619,13 @@ fn tile(
         .rounded(RADIUS_LG)
         .border_1()
         .border_color(border)
-        .bg(theme.surface)
+        .bg(background)
         .cursor_pointer()
         .hover(move |style| style.border_color(hover))
-        .on_click(cx.listener(move |console, _, _, cx| console.open_tag(index, cx)))
+        .on_click(cx.listener(move |console, _, window, cx| {
+            console.list(LIST, cx).select(row);
+            console.open_tag(id, window, cx);
+        }))
         .child(
             div()
                 .flex()
@@ -547,6 +649,24 @@ fn tile(
             value_color(tag.status, theme),
             theme,
         ))
+        .when_some(look.level, |this, level| {
+            #[allow(clippy::cast_possible_truncation)]
+            let fill = level as f32;
+            this.child(
+                div()
+                    .h(px(3.0))
+                    .w_full()
+                    .rounded_full()
+                    .bg(theme.border)
+                    .child(
+                        div()
+                            .h_full()
+                            .w(gpui::relative(fill))
+                            .rounded_full()
+                            .bg(line),
+                    ),
+            )
+        })
         .child(
             div()
                 .h(px(28.0))
@@ -571,5 +691,6 @@ fn tile(
                 )
                 .child(updated),
         )
+        .when(ring, |this| this.child(focus_ring(theme)))
         .into_any_element()
 }

@@ -128,32 +128,216 @@ macro_rules! command {
 
 /// Every command but the page shortcuts, which come from the page registry.
 pub static COMMANDS: &[CommandSpec] = &[
-    command!("Command palette", Navigation, Search, ["secondary-k"], CONSOLE, TogglePalette, false),
-    command!("Keyboard shortcuts", Navigation, Keyboard, ["?"], NOT_TYPING, ToggleHelp, true),
-    command!("Back", Navigation, ChevronLeft, ["secondary-["], CONSOLE, Back, true),
-    command!("Forward", Navigation, ChevronRight, ["secondary-]"], CONSOLE, Forward, true),
-    command!("More pages", Navigation, Ellipsis, [], CONSOLE, ShowMore, true),
-    command!("Search this page", Navigation, Search, ["/"], NOT_TYPING, FocusSearch, false),
-    command!("Next control", Navigation, ChevronRight, ["tab"], CONSOLE, FocusNext, false),
-    command!("Previous control", Navigation, ChevronLeft, ["shift-tab"], CONSOLE, FocusPrevious, false),
-    command!("Close or go back", Navigation, X, ["escape"], CONSOLE, Dismiss, false),
-    command!("Move down", Lists, ChevronDown, ["down", "j"], LIST, ListDown, false),
-    command!("Move up", Lists, ChevronUp, ["up", "k"], LIST, ListUp, false),
-    command!("Page down", Lists, ChevronDown, ["pagedown"], LIST, ListPageDown, false),
-    command!("Page up", Lists, ChevronUp, ["pageup"], LIST, ListPageUp, false),
-    command!("First row", Lists, ChevronUp, ["home"], LIST, ListFirst, false),
-    command!("Last row", Lists, ChevronDown, ["end"], LIST, ListLast, false),
-    command!("Open the row", Lists, CircleDot, ["enter"], LIST, ListActivate, false),
-    command!("Toggle the row", Lists, Check, ["space"], LIST, ListToggle, false),
+    command!(
+        "Command palette",
+        Navigation,
+        Search,
+        ["secondary-k"],
+        CONSOLE,
+        TogglePalette,
+        false
+    ),
+    command!(
+        "Keyboard shortcuts",
+        Navigation,
+        Keyboard,
+        ["?"],
+        NOT_TYPING,
+        ToggleHelp,
+        true
+    ),
+    command!(
+        "Back",
+        Navigation,
+        ChevronLeft,
+        ["secondary-["],
+        CONSOLE,
+        Back,
+        true
+    ),
+    command!(
+        "Forward",
+        Navigation,
+        ChevronRight,
+        ["secondary-]"],
+        CONSOLE,
+        Forward,
+        true
+    ),
+    command!(
+        "More pages",
+        Navigation,
+        Ellipsis,
+        [],
+        CONSOLE,
+        ShowMore,
+        true
+    ),
+    command!(
+        "Search this page",
+        Navigation,
+        Search,
+        ["/"],
+        NOT_TYPING,
+        FocusSearch,
+        false
+    ),
+    command!(
+        "Next control",
+        Navigation,
+        ChevronRight,
+        ["tab"],
+        CONSOLE,
+        FocusNext,
+        false
+    ),
+    command!(
+        "Previous control",
+        Navigation,
+        ChevronLeft,
+        ["shift-tab"],
+        CONSOLE,
+        FocusPrevious,
+        false
+    ),
+    command!(
+        "Close or go back",
+        Navigation,
+        X,
+        ["escape"],
+        CONSOLE,
+        Dismiss,
+        false
+    ),
+    command!(
+        "Move down",
+        Lists,
+        ChevronDown,
+        ["down", "j"],
+        LIST,
+        ListDown,
+        false
+    ),
+    command!(
+        "Move up",
+        Lists,
+        ChevronUp,
+        ["up", "k"],
+        LIST,
+        ListUp,
+        false
+    ),
+    command!(
+        "Page down",
+        Lists,
+        ChevronDown,
+        ["pagedown"],
+        LIST,
+        ListPageDown,
+        false
+    ),
+    command!(
+        "Page up",
+        Lists,
+        ChevronUp,
+        ["pageup"],
+        LIST,
+        ListPageUp,
+        false
+    ),
+    command!(
+        "First row",
+        Lists,
+        ChevronUp,
+        ["home"],
+        LIST,
+        ListFirst,
+        false
+    ),
+    command!(
+        "Last row",
+        Lists,
+        ChevronDown,
+        ["end"],
+        LIST,
+        ListLast,
+        false
+    ),
+    command!(
+        "Open the row",
+        Lists,
+        CircleDot,
+        ["enter"],
+        LIST,
+        ListActivate,
+        false
+    ),
+    command!(
+        "Toggle the row",
+        Lists,
+        Check,
+        ["space"],
+        LIST,
+        ListToggle,
+        false
+    ),
     // Arrows move a menu's cursor also while its search field has focus
     // (the field takes only left and right); letters type.
-    command!("Move down", Lists, ChevronDown, ["down"], MENU, ListDown, false),
+    command!(
+        "Move down",
+        Lists,
+        ChevronDown,
+        ["down"],
+        MENU,
+        ListDown,
+        false
+    ),
     command!("Move up", Lists, ChevronUp, ["up"], MENU, ListUp, false),
-    command!("Acknowledge all alarms", Alarms, Check, ["secondary-shift-a"], CONSOLE, AcknowledgeAll, true),
-    command!("Light or dark", View, Sun, ["secondary-shift-l"], CONSOLE, ToggleAppearance, true),
-    command!("Performance HUD", View, Activity, ["secondary-shift-p"], CONSOLE, TogglePerfHud, true),
-    command!("Start the stress test", View, Zap, [], CONSOLE, StartStress, true),
-    command!("Stop the stress test", View, Square, [], CONSOLE, StopStress, true),
+    command!(
+        "Acknowledge all alarms",
+        Alarms,
+        Check,
+        ["secondary-shift-a"],
+        CONSOLE,
+        AcknowledgeAll,
+        true
+    ),
+    command!(
+        "Light or dark",
+        View,
+        Sun,
+        ["secondary-shift-l"],
+        CONSOLE,
+        ToggleAppearance,
+        true
+    ),
+    command!(
+        "Performance HUD",
+        View,
+        Activity,
+        ["secondary-shift-p"],
+        CONSOLE,
+        TogglePerfHud,
+        true
+    ),
+    command!(
+        "Start the stress test",
+        View,
+        Zap,
+        [],
+        CONSOLE,
+        StartStress,
+        true
+    ),
+    command!(
+        "Stop the stress test",
+        View,
+        Square,
+        [],
+        CONSOLE,
+        StopStress,
+        true
+    ),
     command!("Sign out", Session, Unplug, [], CONSOLE, SignOut, true),
     command!("Quit", Session, X, ["secondary-q"], CONSOLE, Quit, true),
 ];
@@ -377,10 +561,14 @@ mod tests {
         assert_eq!(down[0].2, ["↓", "J"]);
         assert_eq!(rows[0].0, Group::Pages, "pages first");
         assert!(rows.iter().any(|(_, label, _)| *label == "Performance"));
-        assert!(rows
-            .windows(2)
-            .all(|pair| Group::ALL.iter().position(|g| *g == pair[0].0)
-                <= Group::ALL.iter().position(|g| *g == pair[1].0)));
-        assert_eq!(hint(&TogglePalette).as_deref(), Some(display("secondary-k").as_str()));
+        assert!(
+            rows.windows(2)
+                .all(|pair| Group::ALL.iter().position(|g| *g == pair[0].0)
+                    <= Group::ALL.iter().position(|g| *g == pair[1].0))
+        );
+        assert_eq!(
+            hint(&TogglePalette).as_deref(),
+            Some(display("secondary-k").as_str())
+        );
     }
 }

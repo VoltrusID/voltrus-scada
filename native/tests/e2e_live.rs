@@ -1,8 +1,10 @@
 //! Live end-to-end test against a running voltrus server.
 //! Opt-in: only runs when VOLTRUS_E2E_URL / VOLTRUS_E2E_PASSWORD are set.
 //!
-//! It acknowledges one open alarm and changes the user's password, then
-//! changes it back: the user ends with the password it started with.
+//! It acknowledges one open alarm and then all of them, makes a generic
+//! REST call through the runtime, changes the user's password and changes
+//! it back (the user ends with the password it started with), and checks
+//! that signing out revokes the session's refresh token.
 //!
 //!   VOLTRUS_E2E_URL=http://localhost:3100 \
 //!   VOLTRUS_E2E_USERNAME=admin \
@@ -11,8 +13,41 @@
 
 use std::time::Duration;
 
-use voltrus_scada_native::api::Alarm;
-use voltrus_scada_native::runtime::{self, Command, Event, Link};
+use voltrus_scada_native::api::{Alarm, REFRESH_COOKIE, Version, VoltrusApi};
+use voltrus_scada_native::runtime::{self, Call, CallKey, Command, Event, Link};
+
+/// `POST /api/v1/auth/refresh` with a refresh token: its status.
+async fn refresh_status(base: &str, refresh: &str) -> reqwest::StatusCode {
+    reqwest::Client::new()
+        .post(format!("{base}/api/v1/auth/refresh"))
+        .header("Cookie", format!("{REFRESH_COOKIE}={refresh}"))
+        .send()
+        .await
+        .expect("the server answers refresh")
+        .status()
+}
+
+/// Sign-out revokes the refresh token: a session that signed out cannot
+/// refresh, while one that did not still can.
+async fn logout_revokes_the_refresh_token(url: &str, user: &str, pass: &str) {
+    let mut kept = VoltrusApi::new(url);
+    kept.login(user, pass).await.expect("sign in");
+    let mut left = VoltrusApi::new(url);
+    left.login(user, pass).await.expect("sign in");
+    let kept_refresh = kept.refresh.clone().expect("a refresh cookie");
+    let left_refresh = left.refresh.clone().expect("a refresh cookie");
+    left.logout().await.expect("sign out");
+    assert_eq!(
+        refresh_status(url, &left_refresh).await,
+        reqwest::StatusCode::UNAUTHORIZED,
+        "a signed-out session's refresh token is revoked"
+    );
+    assert!(
+        refresh_status(url, &kept_refresh).await.is_success(),
+        "a live session's refresh token still works"
+    );
+    println!("sign-out revoked the refresh token");
+}
 
 async fn next(events: &async_channel::Receiver<Event>) -> Option<Event> {
     tokio::time::timeout(Duration::from_millis(500), events.recv())
@@ -149,6 +184,38 @@ async fn live_login_sensors_ws_stream() {
         eprintln!("note: no unacknowledged alarm to acknowledge");
     }
 
+    // Acknowledge all: `POST /api/v1/alarms` (the old native path got 405).
+    handle.send(Command::AcknowledgeAll);
+    let acknowledged_all = wait_for(&events, 20, |event| match event {
+        Event::Done { action, result } if action == "Acknowledge all alarms" => Some(result),
+        _ => None,
+    })
+    .await
+    .expect("no answer to acknowledge all");
+    if let Err(error) = acknowledged_all {
+        panic!("acknowledging all alarms failed: {error}");
+    }
+    println!("acknowledged all alarms");
+
+    // A generic REST call answers under its key, decoded off the UI thread.
+    let key = CallKey::new("shell.version");
+    handle.send(Command::Call {
+        key,
+        call: Call::get::<Version>("/api/v1/version"),
+    });
+    let version = wait_for(&events, 20, |event| match event {
+        Event::Reply {
+            key: answered,
+            reply,
+        } if answered == key => Some(reply.take::<Version>()),
+        _ => None,
+    })
+    .await
+    .expect("no reply to the version call");
+    let version = version.unwrap_or_else(|error| panic!("the version call failed: {error}"));
+    assert!(!version.version.is_empty(), "the server names its version");
+    println!("server version {}", version.version);
+
     // Change the password (the runtime supplies the current one) and back.
     let temporary = format!("{pass}-e2e-temporary");
     for new in [temporary, pass.clone()] {
@@ -170,9 +237,9 @@ async fn live_login_sensors_ws_stream() {
     // The original password still signs in.
     handle.send(Command::SignOut);
     handle.send(Command::SignIn {
-        url,
-        username: user,
-        password: pass,
+        url: url.clone(),
+        username: user.clone(),
+        password: pass.clone(),
     });
     let signed_in = wait_for(&events, 20, |event| match event {
         Event::SignedIn { .. } => Some(Ok(())),
@@ -186,4 +253,6 @@ async fn live_login_sensors_ws_stream() {
     }
     println!("password changed and restored");
     handle.send(Command::Shutdown);
+
+    logout_revokes_the_refresh_token(&url, &user, &pass).await;
 }

@@ -195,7 +195,11 @@ mod tests {
         assert!(score("ack", "Acknowledge all alarms").is_some());
         assert!(score("gtr", "Go to Trends").is_some());
         assert_eq!(score("xyz", "Go to Trends"), None);
-        assert_eq!(score("trendsx", "Go to Trends"), None, "every character must match");
+        assert_eq!(
+            score("trendsx", "Go to Trends"),
+            None,
+            "every character must match"
+        );
         // "al" at the start of "alarms" beats the scattered a…l.
         assert!(score("al", "Go to Alarms") > score("al", "Toggle a fill"));
         assert!(score("TRE", "go to trends").is_some(), "case-insensitive");
@@ -207,9 +211,13 @@ mod tests {
         assert!(none.is_empty(), "nothing before signing in");
         let all = entries(Some(Role::Any));
         assert_eq!(all[0].title.as_ref(), "Go to Overview");
-        assert!(all.iter().any(|entry| entry.title.as_ref() == "Acknowledge all alarms"));
         assert!(
-            !all.iter().any(|entry| entry.title.as_ref() == "Command palette"),
+            all.iter()
+                .any(|entry| entry.title.as_ref() == "Acknowledge all alarms")
+        );
+        assert!(
+            !all.iter()
+                .any(|entry| entry.title.as_ref() == "Command palette"),
             "the palette does not list itself"
         );
         let found = search(&all, "trends");

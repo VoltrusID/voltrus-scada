@@ -81,11 +81,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
             },
         ),
         ("Events", format!("{rate} updates/s"), theme.fg),
-        (
-            "Tags",
-            console.store.tags.len().to_string(),
-            theme.fg,
-        ),
+        ("Tags", console.store.tags.len().to_string(), theme.fg),
         ("Memory", memory, theme.fg),
     ];
     let stress = console.stress.as_ref().map(|run| {
@@ -138,7 +134,14 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
                         .text_color(theme.fg_dim)
                         .child(label),
                 )
-                .child(div().flex_1().min_w_0().truncate().text_color(color).child(value))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(color)
+                        .child(value),
+                )
         }))
         .into_any_element()
 }

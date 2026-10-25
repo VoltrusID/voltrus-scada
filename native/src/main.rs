@@ -2,28 +2,47 @@
 
 mod console;
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui::{
     App, AppContext as _, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point,
     px, size,
 };
 use time::UtcOffset;
+use voltrus_scada_native::stress::StressOptions;
 use vt_ui::theme::{self, ThemeCatalog};
 
-use console::{Console, Launch, Page};
+use console::{Console, Launch, LaunchOverlay, Page, StressPlan};
 
-const USAGE: &str = "\
-usage: voltrus-native [--sign-in] [--page overview|tags|alarms|trends] [--tag <key>]
+fn usage() -> String {
+    format!(
+        "\
+usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
+                      [--hud] [--overlay palette|help]
+                      [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
+                                [--stress-seconds N] [--stress-report FILE]]
 
-  --sign-in      sign in at once with VOLTRUS_NATIVE_URL (default http://localhost:3000),
-                 VOLTRUS_NATIVE_USER (default admin) and VOLTRUS_NATIVE_PASSWORD
-  --page         the page to open after signing in
-  --tag          a tag key to open on the Tags page
-  --range        the Trends range to start with (default 1h)
-  --appearance   dark or light instead of following the system";
+  --sign-in          sign in at once with VOLTRUS_NATIVE_URL (default http://localhost:3000),
+                     VOLTRUS_NATIVE_USER (default admin) and VOLTRUS_NATIVE_PASSWORD
+  --page             the page to open after signing in
+  --tag              a tag key to open on the Tags page
+  --range            the Trends range to start with (default 1h)
+  --appearance       dark or light instead of following the system
+  --hud              show the performance HUD (also ⇧⌘P)
+  --overlay          open the command palette or the shortcut help once signed in
+  --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
+  --stress-tags      how many synthetic tags
+  --stress-rate      synthetic updates per second
+  --stress-switch-ms switch to the next page this often (default 2000, 0 stays put)
+  --stress-seconds   end the run after this long, print the report and quit
+  --stress-report    write the report to this file too",
+        pages = console::pages::ids()
+    )
+}
 
 /// What the command line asks for.
 #[derive(Debug, PartialEq)]
@@ -33,6 +52,14 @@ struct Options {
     tag: Option<String>,
     range: Option<&'static str>,
     dark: Option<bool>,
+    hud: bool,
+    overlay: Option<LaunchOverlay>,
+    stress: Option<StressPlan>,
+}
+
+fn number<T: std::str::FromStr>(flag: &str, text: Option<&String>) -> Result<T, String> {
+    text.and_then(|text| text.parse().ok())
+        .ok_or_else(|| format!("{flag} takes a number"))
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -42,7 +69,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
         tag: None,
         range: None,
         dark: None,
+        hud: false,
+        overlay: None,
+        stress: None,
     };
+    let mut stress = StressPlan::default();
+    let mut stressed = false;
+    let mut stress_flags = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -74,10 +107,56 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     }
                 });
             }
+            "--hud" => options.hud = true,
+            "--overlay" => {
+                options.overlay = Some(match args.next().map(String::as_str) {
+                    Some("palette") => LaunchOverlay::Palette,
+                    Some("help") => LaunchOverlay::Help,
+                    other => {
+                        return Err(format!(
+                            "--overlay takes palette or help, not “{}”",
+                            other.unwrap_or("")
+                        ));
+                    }
+                });
+            }
+            "--stress" => stressed = true,
+            "--stress-tags" => {
+                stress.options.tags = number(arg, args.next())?;
+                stress_flags = true;
+            }
+            "--stress-rate" => {
+                stress.options.rate = number(arg, args.next())?;
+                stress_flags = true;
+            }
+            "--stress-switch-ms" => {
+                let ms: u64 = number(arg, args.next())?;
+                stress.switch_every = (ms > 0).then(|| Duration::from_millis(ms));
+                stress_flags = true;
+            }
+            "--stress-seconds" => {
+                let seconds: u64 = number(arg, args.next())?;
+                stress.stop_after = Some(Duration::from_secs(seconds));
+                stress_flags = true;
+            }
+            "--stress-report" => match args.next() {
+                Some(path) if !path.is_empty() => {
+                    stress.report = Some(PathBuf::from(path));
+                    stress_flags = true;
+                }
+                _ => return Err("--stress-report takes a file".into()),
+            },
             "--help" | "-h" => return Err(String::new()),
             other => return Err(format!("unknown argument “{other}”")),
         }
     }
+    if stress_flags && !stressed {
+        return Err("the --stress-… options need --stress".into());
+    }
+    if stressed && options.sign_in {
+        return Err("--stress runs without a server; leave out --sign-in".into());
+    }
+    options.stress = stressed.then_some(stress);
     Ok(options)
 }
 
@@ -93,7 +172,7 @@ fn main() -> ExitCode {
             if !error.is_empty() {
                 eprintln!("voltrus-native: {error}");
             }
-            eprintln!("{USAGE}");
+            eprintln!("{}", usage());
             return if error.is_empty() {
                 ExitCode::SUCCESS
             } else {
@@ -119,6 +198,9 @@ fn main() -> ExitCode {
         page: options.page,
         tag: options.tag,
         range: options.range,
+        hud: options.hud,
+        overlay: options.overlay,
+        stress: options.stress,
         utc_offset,
     };
     let appearance = options.dark;
@@ -199,7 +281,10 @@ mod tests {
                 "--page",
                 "alarms",
                 "--appearance",
-                "light"
+                "light",
+                "--hud",
+                "--overlay",
+                "help"
             ])),
             Ok(Options {
                 sign_in: true,
@@ -207,15 +292,66 @@ mod tests {
                 tag: None,
                 range: None,
                 dark: Some(false),
+                hud: true,
+                overlay: Some(LaunchOverlay::Help),
+                stress: None,
             })
         );
         assert_eq!(
             parse(&args(&["--tag", "ac_current_l1"])).map(|options| options.tag),
             Ok(Some("ac_current_l1".to_owned()))
         );
+        assert_eq!(
+            parse(&args(&["--page", "performance"])).map(|options| options.page),
+            Ok(Some(Page::Performance))
+        );
         assert!(parse(&args(&["--tag"])).is_err());
         assert!(parse(&args(&["--page", "nowhere"])).is_err());
         assert!(parse(&args(&["--appearance"])).is_err());
+        assert!(parse(&args(&["--overlay", "menu"])).is_err());
         assert!(parse(&args(&["--bogus"])).is_err());
+    }
+
+    #[test]
+    fn stress_options_parse_and_need_stress() {
+        let plan = parse(&args(&[
+            "--stress",
+            "--stress-tags",
+            "500",
+            "--stress-rate",
+            "1000",
+            "--stress-switch-ms",
+            "0",
+            "--stress-seconds",
+            "20",
+            "--stress-report",
+            "/tmp/report.txt",
+        ]))
+        .unwrap()
+        .stress
+        .unwrap();
+        assert_eq!(
+            plan,
+            StressPlan {
+                options: StressOptions {
+                    tags: 500,
+                    rate: 1000,
+                    ..StressOptions::default()
+                },
+                switch_every: None,
+                stop_after: Some(Duration::from_secs(20)),
+                report: Some(PathBuf::from("/tmp/report.txt")),
+            }
+        );
+        assert_eq!(
+            parse(&args(&["--stress"])).unwrap().stress,
+            Some(StressPlan::default())
+        );
+        assert!(
+            parse(&args(&["--stress-rate", "5"])).is_err(),
+            "needs --stress"
+        );
+        assert!(parse(&args(&["--stress", "--stress-rate", "fast"])).is_err());
+        assert!(parse(&args(&["--stress", "--sign-in"])).is_err());
     }
 }

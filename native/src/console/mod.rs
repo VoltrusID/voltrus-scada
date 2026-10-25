@@ -616,7 +616,13 @@ impl Console {
                 self.store.replace(list);
                 self.trend.retain(|id| self.store.position(*id).is_some());
                 if self.trend.is_empty() {
-                    self.trend = self.store.tags.iter().take(4).map(|tag| tag.info.id).collect();
+                    self.trend = self
+                        .store
+                        .tags
+                        .iter()
+                        .take(4)
+                        .map(|tag| tag.info.id)
+                        .collect();
                 }
                 if self
                     .selected
@@ -854,11 +860,7 @@ impl Console {
             return;
         }
         if !self.allows(pages::spec(page).role) {
-            self.show_toast(
-                format!("{} needs another role", page.title()),
-                true,
-                cx,
-            );
+            self.show_toast(format!("{} needs another role", page.title()), true, cx);
             return;
         }
         self.back.push(self.page);
@@ -944,7 +946,12 @@ impl Console {
     }
 
     /// Move the cursor of keyboard list `id`; the new row.
-    pub fn list_move(&mut self, id: &'static str, step: Move, cx: &mut Context<Self>) -> Option<usize> {
+    pub fn list_move(
+        &mut self,
+        id: &'static str,
+        step: Move,
+        cx: &mut Context<Self>,
+    ) -> Option<usize> {
         let row = self.list(id, cx).step(step);
         cx.notify();
         row
@@ -1012,7 +1019,9 @@ impl Console {
     }
 
     pub fn overlay_is(&self, id: &str) -> bool {
-        self.overlay.as_ref().is_some_and(|overlay| overlay.id == id)
+        self.overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.id == id)
     }
 
     pub fn open_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1214,7 +1223,8 @@ impl Console {
                 cx.background_executor()
                     .timer(Duration::from_millis(100))
                     .await;
-                let alive = this.update_in(cx, |console, window, cx| console.stress_tick(window, cx));
+                let alive =
+                    this.update_in(cx, |console, window, cx| console.stress_tick(window, cx));
                 if alive.is_err() {
                     break;
                 }
@@ -1293,7 +1303,11 @@ impl Console {
     }
 
     fn write_report(&self, report: &Report) {
-        let Some(path) = self.stress.as_ref().and_then(|run| run.plan.report.as_ref()) else {
+        let Some(path) = self
+            .stress
+            .as_ref()
+            .and_then(|run| run.plan.report.as_ref())
+        else {
             return;
         };
         if let Err(error) = std::fs::write(path, report.to_string()) {

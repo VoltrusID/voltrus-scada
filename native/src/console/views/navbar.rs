@@ -3,7 +3,6 @@
 //! tabs get one (icons only when the window is narrow), the rest sit in the
 //! More menu at the end.
 
-
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, SharedString, Window, canvas, div, px};
 use vt_ui::Icon;
@@ -12,7 +11,7 @@ use vt_ui::theme::*;
 
 use super::{capitalized, host};
 use crate::console::keys::{
-    ShowMore, TogglePalette, ToggleAppearance, TogglePerfHud, display, hint, page_keys,
+    ShowMore, ToggleAppearance, TogglePalette, TogglePerfHud, display, hint, page_keys,
 };
 use crate::console::pages::{PAGES, PageSpec, Placement};
 use crate::console::{Console, overlay};
@@ -69,7 +68,11 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                     .border_1()
                     .border_color(gpui::transparent_black())
                     .focus(move |style| style.border_color(accent))
-                    .text_color(if more_active { theme.fg } else { theme.fg_muted })
+                    .text_color(if more_active {
+                        theme.fg
+                    } else {
+                        theme.fg_muted
+                    })
                     .when(more_active || more_open, |this| this.bg(theme.selected))
                     .when(!more_active, |this| {
                         this.hover(move |style| style.bg(hover).text_color(hover_fg))
@@ -81,7 +84,11 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                     .child(vt_ui::icon(
                         Icon::Ellipsis,
                         ICON_MD,
-                        if more_active { theme.accent } else { theme.fg_dim },
+                        if more_active {
+                            theme.accent
+                        } else {
+                            theme.fg_dim
+                        },
                     ))
                     .when(!compact, |this| {
                         this.child(if more_active {
@@ -241,7 +248,12 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .into_any_element()
 }
 
-fn tab(console: &Console, spec: &'static PageSpec, compact: bool, cx: &mut Context<Console>) -> AnyElement {
+fn tab(
+    console: &Console,
+    spec: &'static PageSpec,
+    compact: bool,
+    cx: &mut Context<Console>,
+) -> AnyElement {
     let theme = theme(cx).clone();
     let page = spec.page;
     let active = console.page == page;

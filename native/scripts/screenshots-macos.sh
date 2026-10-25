@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Capture the console's window on each page, signed in to a live server.
+# Capture the console's window on each page, signed in to a live server,
+# with the palette, the shortcut help and the HUD open, and in stress mode.
 # Usage: native/scripts/screenshots-macos.sh <app bundle> <output dir>
 # Needs VOLTRUS_NATIVE_URL, VOLTRUS_NATIVE_USER and VOLTRUS_NATIVE_PASSWORD.
 set -euo pipefail
@@ -21,6 +22,11 @@ shots=(
   "trends|--sign-in --page trends --range 5m --appearance dark"
   "overview-light|--sign-in --page overview --appearance light"
   "sign-in|--appearance dark"
+  "palette|--sign-in --page overview --overlay palette --appearance dark"
+  "help|--sign-in --page tags --overlay help --appearance dark"
+  "trends-hud|--sign-in --page trends --range 5m --hud --appearance dark"
+  "stress-performance|--stress --stress-switch-ms 0 --page performance --appearance dark"
+  "stress-overview|--stress --stress-switch-ms 0 --page overview --hud --appearance dark"
 )
 
 status=0

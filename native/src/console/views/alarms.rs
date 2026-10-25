@@ -4,15 +4,53 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, ElementId, FontWeight, div, px, uniform_list};
+use gpui::{AnyElement, Context, ElementId, FontWeight, Window, div, px, uniform_list};
 use voltrus_scada_native::api::Alarm;
 use vt_ui::Icon;
 use vt_ui::chart::format_value;
 use vt_ui::components::{Button, Segment, empty_state, pill, segmented};
 use vt_ui::theme::*;
 
-use super::{age, alarm_source, local_time, page_header, severity_color, value_with_unit};
+use super::{
+    LIST_TAIL, ListKeys, age, alarm_source, focus_ring, keyboard_list, local_time, page_header,
+    rows_on_screen, severity_color, value_with_unit,
+};
+use crate::console::keys::{AcknowledgeAll, hint};
 use crate::console::{AlarmFilter, Console, is_shelved, time_now_secs};
+
+/// The alarm list's keyboard list.
+pub(crate) const LIST: &str = "alarms";
+const ROW_HEIGHT_PX: f32 = 54.0;
+
+pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    console.focus_list(LIST, window, cx);
+}
+
+/// Enter acknowledges the row's alarm; Space shelves it for an hour (or
+/// takes it off the shelf), for the roles the server lets shelve.
+fn activate_row(
+    console: &mut Console,
+    row: usize,
+    toggle: bool,
+    _: &mut Window,
+    _: &mut Context<Console>,
+) {
+    let Some(alarm) = console
+        .filtered_alarms()
+        .get(row)
+        .and_then(|index| console.alarms.get(*index))
+    else {
+        return;
+    };
+    let (id, shelved, acknowledged) =
+        (alarm.id, is_shelved(alarm), alarm.acknowledged_at.is_some());
+    match (toggle, shelved) {
+        (false, false) if !acknowledged => console.acknowledge(id),
+        (true, false) if console.is_operator() => console.shelve(id, SHELVE_SECS),
+        (true, true) if console.is_operator() => console.unshelve(id),
+        _ => {}
+    }
+}
 
 const SEVERITY: f32 = 96.0;
 const VALUE: f32 = 104.0;
@@ -20,7 +58,8 @@ const RAISED: f32 = 88.0;
 const ACTIONS: f32 = 172.0;
 const SHELVE_SECS: u64 = 3600;
 
-pub fn render(console: &Console, unacknowledged: usize, cx: &mut Context<Console>) -> AnyElement {
+pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
+    let unacknowledged = console.unacknowledged();
     let theme = theme(cx).clone();
     let shelved = console
         .alarms
@@ -60,7 +99,7 @@ pub fn render(console: &Console, unacknowledged: usize, cx: &mut Context<Console
         Button::new("ack-all", "Acknowledge all")
             .icon(Icon::Check)
             .disabled(unacknowledged == 0)
-            .tooltip("⇧⌘A")
+            .tooltip(hint(&AcknowledgeAll).unwrap_or_default())
             .on_click(cx.listener(|console, _, _, _| console.acknowledge_all()))
             .into_any_element(),
     ];
@@ -84,6 +123,21 @@ pub fn render(console: &Console, unacknowledged: usize, cx: &mut Context<Console
         .child(div().w(px(RAISED)).flex_none().child("RAISED"))
         .child(div().w(px(ACTIONS)).flex_none());
 
+    let list = keyboard_list(
+        ListKeys {
+            id: LIST,
+            on_move: None,
+            on_activate: activate_row,
+        },
+        shown,
+        rows_on_screen(window, ROW_HEIGHT_PX),
+        console,
+        cx,
+    );
+    let nav = console.list(LIST, cx);
+    let cursor = nav.cursor;
+    let focused = nav.focus.is_focused(window);
+    let scroll = nav.scroll.clone();
     let body = if shown == 0 {
         let (title, text) = match filter {
             AlarmFilter::Active => (
@@ -108,17 +162,20 @@ pub fn render(console: &Console, unacknowledged: usize, cx: &mut Context<Console
                 move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
                     let now = time_now_secs();
-                    let can_shelve = console.can_shelve();
+                    let can_shelve = console.is_operator();
                     range
-                        .filter_map(|row| rows.get(row).copied())
-                        .filter_map(|index| console.alarms.get(index))
-                        .map(|alarm| alarm_row(console, alarm, now, can_shelve, &theme, cx))
+                        .filter_map(|row| Some((row, console.alarms.get(*rows.get(row)?)?)))
+                        .map(|(row, alarm)| {
+                            let ring = focused && cursor == Some(row);
+                            alarm_row(console, alarm, (now, can_shelve, ring), &theme, cx)
+                        })
                         .collect::<Vec<_>>()
                 },
             ),
         )
-        .track_scroll(console.alarms_scroll.clone())
-        .flex_1()
+        .track_scroll(scroll)
+        .pb(LIST_TAIL)
+        .size_full()
         .into_any_element()
     };
 
@@ -128,20 +185,21 @@ pub fn render(console: &Console, unacknowledged: usize, cx: &mut Context<Console
         .size_full()
         .child(page_header(
             "Alarms",
-            format!("{unacknowledged} to acknowledge · {open} open · {shelved} shelved"),
+            format!(
+                "{unacknowledged} to acknowledge · {open} open · {shelved} shelved · ↵ acknowledges, Space shelves"
+            ),
             controls,
             cx,
         ))
         .child(header)
-        .child(body)
+        .child(list.flex_1().min_h_0().child(body))
         .into_any_element()
 }
 
 fn alarm_row(
     console: &Console,
     alarm: &Alarm,
-    now: i64,
-    can_shelve: bool,
+    (now, can_shelve, ring): (i64, bool, bool),
     theme: &Theme,
     cx: &Context<Console>,
 ) -> AnyElement {
@@ -152,7 +210,7 @@ fn alarm_row(
     let acknowledged = alarm.acknowledged_at.is_some();
     let unit = console
         .store
-        .position(&alarm.source_key)
+        .by_key(&alarm.source_key)
         .map(|index| console.store.tags[index].info.unit.clone())
         .unwrap_or_default();
     let source = alarm_source(console, alarm);
@@ -214,6 +272,8 @@ fn alarm_row(
 
     div()
         .id(ElementId::NamedInteger("alarm".into(), key))
+        .relative()
+        .when(ring, |this| this.child(focus_ring(theme)))
         .w_full()
         .flex()
         .items_center()

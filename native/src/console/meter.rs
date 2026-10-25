@@ -170,7 +170,10 @@ mod tests {
         assert_eq!(meter.stats.expected, 2);
         assert_eq!(meter.stats.dropped, 0);
         let intervals = meter.stats.intervals();
-        assert_eq!(intervals.max, 8.0, "only the back-to-back frame has an interval");
+        assert_eq!(
+            intervals.max, 8.0,
+            "only the back-to-back frame has an interval"
+        );
         assert_eq!(meter.stats.cpu().max, 3.0);
         assert_eq!(meter.interval_line.len(), 1);
         assert_eq!(meter.fps(), 3);

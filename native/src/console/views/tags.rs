@@ -4,18 +4,80 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, ElementId, FontWeight, SharedString, div, px, uniform_list};
+use gpui::{
+    AnyElement, Context, ElementId, Entity, FontWeight, Pixels, SharedString, Window, div, px,
+    uniform_list,
+};
 use vt_ui::Icon;
 use vt_ui::chart::{Series, format_value, sparkline, trend_chart};
 use vt_ui::components::{Button, IconButton, empty_state, field, pill, section_label, status_dot};
 use vt_ui::theme::*;
 
 use super::{
-    age, card, fit_span, now_ms, page_header, span_label, status_color, value_color,
-    value_with_unit,
+    LIST_TAIL, ListKeys, age, card, fit_span, focus_ring, keyboard_list, now_ms, page_header,
+    rows_on_screen, span_label, status_color, value_color, value_with_unit,
 };
 use crate::console::store::Status;
 use crate::console::{Console, time_now_secs};
+use vt_ui::text_input::TextInput;
+
+/// The table's keyboard list.
+pub(crate) const LIST: &str = "tags";
+const ROW_HEIGHT_PX: f32 = 34.0;
+
+pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    console.focus_list(LIST, window, cx);
+}
+
+pub fn search(console: &Console) -> Option<Entity<TextInput>> {
+    Some(console.inputs.filter.clone())
+}
+
+pub fn side_panel(console: &Console) -> Pixels {
+    if console.selected.is_some() {
+        px(PANEL)
+    } else {
+        px(0.0)
+    }
+}
+
+/// The tag on table row `row`, with the filter as it is.
+fn row_tag(console: &Console, row: usize, cx: &gpui::App) -> Option<i64> {
+    let index = *console.visible_tags(cx).get(row)?;
+    Some(console.store.tags[index].info.id)
+}
+
+/// Moving the cursor opens its tag in the detail panel.
+fn follow_cursor(console: &mut Console, row: usize, _: &mut Window, cx: &mut Context<Console>) {
+    if let Some(id) = row_tag(console, row, cx) {
+        console.select(id, cx);
+    }
+}
+
+/// Enter opens the row's tag (and its write field, for an admin); Space
+/// puts it on Trends or takes it off.
+fn activate_row(
+    console: &mut Console,
+    row: usize,
+    toggle: bool,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) {
+    let Some(id) = row_tag(console, row, cx) else {
+        return;
+    };
+    if toggle {
+        console.toggle_trend(id, cx);
+    } else {
+        console.select(id, cx);
+        if console.is_admin() {
+            console
+                .inputs
+                .write
+                .update(cx, |field, _| field.focus(window));
+        }
+    }
+}
 
 const KEY: f32 = 180.0;
 const VALUE: f32 = 120.0;
@@ -71,7 +133,8 @@ impl Columns {
 }
 
 /// `width` is the window's width: the page spans it.
-pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>) -> AnyElement {
+pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
+    let width = window.viewport_size().width;
     let theme = theme(cx).clone();
     // Filtered once per render; the list's rows index into it.
     let rows = Rc::new(console.visible_tags(cx));
@@ -84,9 +147,7 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
         .filter(|tag| tag.status.needs_attention())
         .count();
     let filtered = visible != total;
-    let selected = console
-        .selected
-        .filter(|index| *index < console.store.tags.len());
+    let selected = console.selected.and_then(|id| console.store.position(id));
 
     let table_width = if selected.is_some() {
         width - px(PANEL)
@@ -143,6 +204,21 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
             )))
         });
 
+    let list = keyboard_list(
+        ListKeys {
+            id: LIST,
+            on_move: Some(follow_cursor),
+            on_activate: activate_row,
+        },
+        visible,
+        rows_on_screen(window, ROW_HEIGHT_PX),
+        console,
+        cx,
+    );
+    let nav = console.list(LIST, cx);
+    let cursor = nav.cursor;
+    let focused = nav.focus.is_focused(window);
+    let scroll = nav.scroll.clone();
     let table = if visible == 0 {
         empty_state(
             Icon::Search,
@@ -167,17 +243,20 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
             cx.processor(
                 move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
-                    let now = now_ms();
-                    let now_secs = time_now_secs();
+                    let clock = (now_ms(), time_now_secs());
                     range
-                        .filter_map(|row| rows.get(row).copied())
-                        .map(|index| tag_row(console, index, columns, now, now_secs, &theme, cx))
+                        .filter_map(|row| Some((row, rows.get(row).copied()?)))
+                        .map(|(row, index)| {
+                            let ring = focused && cursor == Some(row);
+                            tag_row(console, index, row, columns, clock, ring, &theme, cx)
+                        })
                         .collect::<Vec<_>>()
                 },
             ),
         )
-        .track_scroll(console.tags_scroll.clone())
-        .flex_1()
+        .track_scroll(scroll)
+        .pb(LIST_TAIL)
+        .size_full()
         .into_any_element()
     };
 
@@ -190,7 +269,9 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
             if filtered {
                 format!("{visible} of {total} tags match")
             } else {
-                format!("{total} tags · {attention} need attention · ↑↓ to move")
+                format!(
+                    "{total} tags · {attention} need attention · j/k or ↑↓ to move, / to filter"
+                )
             },
             vec![filter.into_any_element()],
             cx,
@@ -207,7 +288,7 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
                         .flex_1()
                         .min_w_0()
                         .child(header)
-                        .child(table),
+                        .child(list.flex_1().min_h_0().child(table)),
                 )
                 .when_some(selected, |this, index| {
                     this.child(detail(console, index, cx))
@@ -216,20 +297,23 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tag_row(
     console: &Console,
     index: usize,
+    row: usize,
     columns: Columns,
-    now: f64,
-    now_secs: i64,
+    (now, now_secs): (f64, i64),
+    ring: bool,
     theme: &Theme,
     cx: &Context<Console>,
 ) -> AnyElement {
     let tag = &console.store.tags[index];
-    let selected = console.selected == Some(index);
+    let id = tag.info.id;
+    let selected = console.selected == Some(id);
     let hover = theme.hover;
     let color = status_color(tag.status, theme);
-    let trended = console.trend.contains(&index);
+    let trended = console.trend.contains(&id);
     // Without its own column the key follows the name, unless they match.
     let inline_key = !columns.key && tag.info.key != tag.info.name;
     div()
@@ -248,7 +332,12 @@ fn tag_row(
         .cursor_pointer()
         .when(selected, |this| this.bg(theme.selected))
         .when(!selected, |this| this.hover(move |style| style.bg(hover)))
-        .on_click(cx.listener(move |console, _, _, cx| console.select(index, cx)))
+        .relative()
+        .on_click(cx.listener(move |console, _, _, cx| {
+            console.list(LIST, cx).select(row);
+            console.select(id, cx);
+        }))
+        .when(ring, |this| this.child(focus_ring(theme)))
         .child({
             let gap = f32::from(SPACE_4);
             let room = columns.name
@@ -359,8 +448,9 @@ fn tag_row(
 fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl IntoElement {
     let theme = theme(cx).clone();
     let tag = &console.store.tags[index];
+    let id = tag.info.id;
     let color = status_color(tag.status, &theme);
-    let trended = console.trend.contains(&index);
+    let trended = console.trend.contains(&id);
     let now = now_ms();
     let span = fit_span(tag.span_ms(now), 5.0 * 60_000.0, DETAIL_MS);
     let span_text = span_label(span);
@@ -390,13 +480,25 @@ fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl In
     } else {
         "No value yet".to_owned()
     };
-    let admin = console.can_write();
-    let writing = console.writing == Some(index);
+    let admin = console.is_admin();
+    let writing = console.writing == Some(id);
     let result = console
         .write_result
         .as_ref()
-        .filter(|(at, _)| *at == index)
+        .filter(|(at, _)| *at == id)
         .map(|(_, result)| result.clone());
+    let device = if tag.info.device_id.is_empty() {
+        "—".to_owned()
+    } else {
+        match console.devices.get(&tag.info.device_id) {
+            Some(link) if link.online => match link.latency_ms {
+                Some(ms) => format!("{} · online, {ms} ms", tag.info.device_id),
+                None => format!("{} · online", tag.info.device_id),
+            },
+            Some(_) => format!("{} · offline", tag.info.device_id),
+            None => tag.info.device_id.clone(),
+        }
+    };
 
     let facts = [
         ("Warning at".to_owned(), threshold(tag.info.warn_val)),
@@ -420,6 +522,14 @@ fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl In
             } else {
                 tag.info.source_type.clone()
             },
+        ),
+        ("Device".to_owned(), device),
+        (
+            "Alarm delays".to_owned(),
+            format!(
+                "on {} s · off {} s",
+                tag.info.on_delay_secs, tag.info.off_delay_secs
+            ),
         ),
     ];
 
@@ -566,7 +676,7 @@ fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl In
                     )
                     .icon(Icon::ChartLine)
                     .on_click(cx.listener(move |console, _, _, cx| {
-                        console.toggle_trend(index, cx);
+                        console.toggle_trend(id, cx);
                     })),
                 ),
         )

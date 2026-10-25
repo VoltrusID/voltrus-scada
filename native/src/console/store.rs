@@ -236,7 +236,9 @@ impl Store {
 
     /// The first tag with this key (alarms and `--tag` name tags by key).
     pub fn by_key(&self, key: &str) -> Option<usize> {
-        self.by_key.get(key).and_then(|positions| positions.first().copied())
+        self.by_key
+            .get(key)
+            .and_then(|positions| positions.first().copied())
     }
 
     /// Every key once, in list order: what the WebSocket subscribes to.
@@ -463,13 +465,21 @@ mod tests {
         store.apply_at(&[update("a", 50.0, 1, "normal")], t0);
         let later = t0 + Duration::from_secs(1);
         store.apply_at(&[update("a", 50.0, 2, "normal")], later);
-        assert_eq!(store.tags[0].changed_at, Some(t0), "the same value is no change");
+        assert_eq!(
+            store.tags[0].changed_at,
+            Some(t0),
+            "the same value is no change"
+        );
         store.apply_at(&[update("a", 150.0, 3, "normal")], later);
         let tag = &store.tags[0];
         assert_eq!((tag.previous, tag.changed_at), (50.0, Some(later)));
         assert_eq!(Tag::level(tag.value, &tag.info), Some(0.75));
         assert_eq!(Tag::level(f64::NAN, &tag.info), None);
-        assert_eq!(Tag::level(1.0, &DataSource::default()), None, "no range set");
+        assert_eq!(
+            Tag::level(1.0, &DataSource::default()),
+            None,
+            "no range set"
+        );
     }
 
     #[test]
