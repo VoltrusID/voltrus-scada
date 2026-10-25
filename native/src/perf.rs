@@ -211,6 +211,12 @@ impl FrameStats {
         )
     }
 
+    /// Share of the back-to-back frames since the start that came one
+    /// vsync after the previous (interval under 1.5 refreshes), in percent.
+    pub fn on_next_vsync(&self) -> f64 {
+        within_percent(&self.all_intervals, self.refresh_ms() * 1.5)
+    }
+
     /// Share of the frames since the start built within `budget_ms`, in
     /// percent.
     pub fn built_within(&self, budget_ms: f64) -> f64 {
@@ -283,9 +289,21 @@ pub struct LateStarts {
     pub event_batch: u64,
     /// Neither: the display link or the scheduler woke the frame late.
     pub other: u64,
+    /// Frames after a pause in the data past a vsync: nothing was due at
+    /// that vsync, so these are neither late nor drops (counted apart, not
+    /// in `frames`).
+    pub nothing_due: u64,
 }
 
 impl LateStarts {
+    /// A frame `gap_ms` after the previous one, for data that came after
+    /// the vsync it would otherwise have been owed at.
+    pub fn record_unowed(&mut self, gap_ms: f64, refresh_ms: f64) {
+        if gap_ms > refresh_ms + 1.0 {
+            self.nothing_due += 1;
+        }
+    }
+
     /// Classify a back-to-back frame that started `interval_ms` after the
     /// previous one: `previous_ms`, the previous frame's build and
     /// present; `batch_before_ms`, how long before this start the last
@@ -359,6 +377,9 @@ pub struct Report {
     pub pages: Vec<PageFigures>,
     pub phases: Option<Phases>,
     pub late: LateStarts,
+    /// Share of back-to-back frames that started one vsync after the
+    /// previous, in percent.
+    pub on_next_vsync: f64,
     /// Slowest first.
     pub slowest: Vec<SlowFrame>,
 }
@@ -427,12 +448,18 @@ impl fmt::Display for Report {
         if self.late.frames > 0 {
             writeln!(
                 f,
-                "late_starts: {} of {} back-to-back frames started over 1 ms after their vsync slot: previous frame still drawing {}, event batch just applied {}, other (display link, scheduler) {}",
+                "late_starts: {} of {} back-to-back frames started over 1 ms after their vsync slot: previous frame still drawing {}, event batch just applied {}, other (display link, scheduler) {}; {} more after a pause in the data with nothing due at the vsync",
                 self.late.late,
                 self.late.frames,
                 self.late.previous_frame,
                 self.late.event_batch,
-                self.late.other
+                self.late.other,
+                self.late.nothing_due
+            )?;
+            writeln!(
+                f,
+                "frame_pacing: {:.1}% of back-to-back frames came one vsync after the previous (interval under 1.5 refreshes); the rest started late or skipped vsyncs",
+                self.on_next_vsync
             )?;
         }
         if let Some((frames, spread)) = &self.warm_up {
@@ -839,7 +866,9 @@ mod tests {
                 previous_frame: 1,
                 event_batch: 2,
                 other: 1,
+                nothing_due: 3,
             },
+            on_next_vsync: 97.5,
             slowest: vec![
                 SlowFrame {
                     cpu_ms: 7.0,
@@ -866,7 +895,8 @@ mod tests {
             "  overview     frames   590  frame p50 2.00  p95 4.00  max 7.00  render p50 0.50  p95 0.90  max 1.50  first 6.50",
             "slowest_frames_ms: 7.00 overview (render 1.50, first show), 6.00 tags (render 0.25)",
             "frame_phases_ms: root layout p50 1.00  p95 2.00  max 3.00  |  views render+layout+prepaint p50 0.00",
-            "late_starts: 4 of 100 back-to-back frames started over 1 ms after their vsync slot: previous frame still drawing 1, event batch just applied 2, other (display link, scheduler) 1",
+            "late_starts: 4 of 100 back-to-back frames started over 1 ms after their vsync slot: previous frame still drawing 1, event batch just applied 2, other (display link, scheduler) 1; 3 more after a pause in the data",
+            "frame_pacing: 97.5% of back-to-back frames came one vsync after the previous",
         ] {
             assert!(text.contains(line), "missing “{line}” in\n{text}");
         }
@@ -894,7 +924,11 @@ mod tests {
                 previous_frame: 1,
                 event_batch: 1,
                 other: 2,
+                nothing_due: 0,
             }
         );
+        late.record_unowed(33.3, refresh);
+        late.record_unowed(16.9, refresh);
+        assert_eq!((late.frames, late.nothing_due), (5, 1));
     }
 }

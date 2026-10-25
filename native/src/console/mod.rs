@@ -1385,6 +1385,7 @@ impl Console {
             pages: meter.page_figures(),
             phases: meter.phases(),
             late: meter.late_starts(),
+            on_next_vsync: meter.stats.on_next_vsync(),
             slowest: meter.slowest(),
         })
     }

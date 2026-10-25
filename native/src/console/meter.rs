@@ -39,6 +39,11 @@ const DISPLAY_CHECK: Duration = Duration::from_secs(1);
 /// Samples kept per page and for batches: a run of hours stays bounded.
 const SAMPLES: usize = 1 << 16;
 
+/// New data owes a frame at the vsync after the previous frame when it
+/// came within this share of a refresh after that frame started (later,
+/// it may have missed the vsync without any fault of the console's).
+const OWED_WITHIN: f64 = 0.75;
+
 /// Slowest frames the report names.
 const SLOWEST: usize = 5;
 
@@ -182,7 +187,21 @@ impl FrameMeter {
             // or while frames follow each other (a busy stream): the gap
             // between the two frames is the frame interval.
             (Some((_, true)), Some(gap)) => (Some(gap), Some(gap)),
-            (Some(_), Some(gap)) if gap < CONTINUOUS_MS => (Some(gap), Some(gap)),
+            // New data while frames follow each other: it was owed at the
+            // vsync after the previous frame only if it came in time for
+            // it. Data that came later (the feed paused past a vsync) was
+            // owed one vsync later: that is not a drop.
+            (Some((at, false)), Some(gap)) if gap < CONTINUOUS_MS => {
+                let last = self.last_start.unwrap_or(now);
+                if ms(last, at) < self.stats.refresh_ms() * OWED_WITHIN {
+                    (Some(gap), Some(gap))
+                } else {
+                    if !self.warming {
+                        self.late.record_unowed(gap, self.stats.refresh_ms());
+                    }
+                    (Some(ms(at, now)), None)
+                }
+            }
             // The first frame after a pause: how long it took to come.
             (Some((at, _)), _) => (Some(ms(at, now)), None),
             (None, _) => (None, None),
@@ -652,5 +671,32 @@ mod tests {
         let late = meter.late_starts();
         assert_eq!((late.frames, late.late, late.previous_frame), (2, 2, 1));
         assert_eq!(late.event_batch + late.other, 1);
+    }
+
+    #[test]
+    fn data_after_a_pause_past_a_vsync_is_not_a_drop() {
+        let mut meter = FrameMeter::default();
+        meter.stats.set_display_hz(Some(60.0));
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        meter.frame_start(at(0));
+        meter.frame_end(at(3), 0.0);
+        // Data in time for the next vsync, drawn two vsyncs later: a drop.
+        meter.expect_frame(at(5));
+        meter.frame_start(at(33));
+        meter.frame_end(at(36), 0.0);
+        assert_eq!(meter.stats.dropped, 1);
+        // The feed paused: data came only after the next vsync and was
+        // drawn at the one after it.
+        meter.expect_frame(at(53));
+        meter.frame_start(at(67));
+        meter.frame_end(at(70), 0.0);
+        assert_eq!((meter.stats.dropped, meter.stats.expected), (1, 2));
+        assert_eq!(meter.late_starts().nothing_due, 1);
+        assert_eq!(
+            meter.stats.intervals().max,
+            33.0,
+            "the pause is no interval"
+        );
     }
 }
