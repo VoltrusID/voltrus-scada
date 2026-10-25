@@ -95,9 +95,10 @@ curl -fsS -b cookies.txt "$url/api/v1/data-sources" | jq -r '.[] | "\(.id) \(.ke
 # sparklines, the gauges with a range they can show.
 card() {
   case "$1" in
+    dc_voltage_a | dc_voltage_b) echo '{"chart_type": "gauge", "min_val": 0, "max_val": 800}' ;;
     ac_power) echo '{"chart_type": "gauge", "min_val": 0, "max_val": 62000}' ;;
     frequency) echo '{"chart_type": "gauge", "min_val": 49.5, "max_val": 50.5}' ;;
-    dc_power | efficiency) echo '{"chart_type": "bignumber"}' ;;
+    dc_current_b | dc_power | efficiency) echo '{"chart_type": "bignumber"}' ;;
     *) echo "" ;;
   esac
 }

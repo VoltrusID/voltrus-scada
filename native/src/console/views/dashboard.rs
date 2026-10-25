@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Context, DispatchPhase, Div, ElementId, Entity, FocusHandle, FontWeight,
+    AnyElement, App, Context, DispatchPhase, Div, ElementId, Entity, FocusHandle, FontWeight, Hsla,
     Image, ImageFormat, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     Point, SharedString, Stateful, Subscription, Window, actions, canvas, div, point, px,
     uniform_list,
@@ -1065,6 +1065,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             editing,
             can,
             card_count,
+            f32::from(window.viewport_size().width) >= WIDE,
             &theme,
             cx,
         ))
@@ -1139,9 +1140,7 @@ fn card_element(
     let hover = theme.border_strong;
     let (body, animating) = cards::body(tag, kind, look.picture, look.now, rect.h - HEADER, theme);
     let header = (kind.shows_status() || look.editing).then(|| {
-        let grip = look
-            .editing
-            .then(|| vt_ui::icon(Icon::Rows, ICON_SM, theme.fg_dim));
+        let grip = look.editing.then(|| grip(theme.fg_dim));
         let remove = look.removable.then(|| {
             let id = id.clone();
             div()
@@ -1304,6 +1303,20 @@ fn fetch_image(console: &mut Console, url: String) {
     );
 }
 
+/// The drag handle: two columns of three dots.
+fn grip(color: Hsla) -> Div {
+    let dot = || div().size(px(3.0)).rounded_full().bg(color);
+    div()
+        .flex()
+        .flex_none()
+        .flex_col()
+        .gap(px(2.0))
+        .children((0..3).map(|_| div().flex().gap(px(2.0)).child(dot()).child(dot())))
+}
+
+/// From this window width the edit bar has room for its key hints.
+const WIDE: f32 = 1280.0;
+
 #[allow(clippy::too_many_arguments)]
 fn sub_bar(
     tabs: &[String],
@@ -1312,6 +1325,7 @@ fn sub_bar(
     editing: bool,
     can: Rights,
     count: usize,
+    wide: bool,
     theme: &Theme,
     cx: &mut Context<Console>,
 ) -> Div {
@@ -1385,14 +1399,17 @@ fn sub_bar(
         })
         .collect();
     let controls: Vec<AnyElement> = if editing {
-        let mut controls = vec![
-            div()
-                .text_size(FONT_CAPTION)
-                .text_color(theme.fg_dim)
-                .whitespace_nowrap()
-                .child("Drag to move · corner resizes · ←↑↓→ move · ⇧ resize")
-                .into_any_element(),
-        ];
+        let mut controls: Vec<AnyElement> = Vec::new();
+        if wide {
+            controls.push(
+                div()
+                    .text_size(FONT_CAPTION)
+                    .text_color(theme.fg_dim)
+                    .whitespace_nowrap()
+                    .child("Drag to move · corner resizes · ←↑↓→ move · ⇧ resize")
+                    .into_any_element(),
+            );
+        }
         if can.tags {
             controls.push(
                 Button::new("dashboard-add", "Add tags")
