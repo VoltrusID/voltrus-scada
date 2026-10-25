@@ -20,6 +20,10 @@ pub type Meter = Rc<RefCell<FrameMeter>>;
 /// Frame samples the HUD's charts keep.
 const TIMELINE: usize = 2048;
 
+/// A due frame this soon after the previous one continues a run of frames
+/// (a busy stream); a longer gap was a pause, not dropped frames.
+const CONTINUOUS_MS: f64 = 100.0;
+
 pub struct FrameMeter {
     pub stats: FrameStats,
     /// Build time per frame and back-to-back intervals over wall time, for
@@ -82,13 +86,14 @@ impl FrameMeter {
 
     /// The root view starts building a frame.
     pub fn frame_start(&mut self, now: Instant) {
-        let (delay, interval) = match (self.due.take(), self.last_start) {
-            // Asked for while the previous frame was built: the gap
-            // between the two frames is the animation's frame interval.
-            (Some((_, true)), Some(last)) => {
-                let interval = ms(last, now);
-                (Some(interval), Some(interval))
-            }
+        let gap = self.last_start.map(|last| ms(last, now));
+        let (delay, interval) = match (self.due.take(), gap) {
+            // Asked for while the previous frame was built (an animation),
+            // or while frames follow each other (a busy stream): the gap
+            // between the two frames is the frame interval.
+            (Some((_, true)), Some(gap)) => (Some(gap), Some(gap)),
+            (Some(_), Some(gap)) if gap < CONTINUOUS_MS => (Some(gap), Some(gap)),
+            // The first frame after a pause: how long it took to come.
             (Some((at, _)), _) => (Some(ms(at, now)), None),
             (None, _) => (None, None),
         };

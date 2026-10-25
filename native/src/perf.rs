@@ -72,14 +72,40 @@ pub fn dropped(delay_ms: f64, refresh_ms: f64) -> u64 {
     frames.saturating_sub(1)
 }
 
-/// The display's refresh interval: the shortest interval between frames
-/// drawn back to back, which the display cannot beat, within 30–240 Hz.
+/// Display refresh rates the estimate snaps to.
+const RATES_HZ: [f64; 11] = [
+    30.0, 48.0, 50.0, 60.0, 75.0, 90.0, 100.0, 120.0, 144.0, 165.0, 240.0,
+];
+
+/// The display's refresh interval: the lower quartile of the intervals
+/// between frames drawn back to back (most land on consecutive vsyncs; a
+/// few come early, outside the display link, or late), snapped to the
+/// nearest common refresh rate.
 pub fn refresh_interval(intervals: impl IntoIterator<Item = f64>) -> Option<f64> {
-    intervals
+    let mut sorted: Vec<f64> = intervals
         .into_iter()
         .filter(|ms| ms.is_finite() && *ms > 0.0)
-        .reduce(f64::min)
-        .map(|ms| ms.clamp(1000.0 / 240.0, 1000.0 / 30.0))
+        .collect();
+    if sorted.is_empty() {
+        return None;
+    }
+    sorted.sort_by(f64::total_cmp);
+    let quartile = sorted[sorted.len().div_ceil(4) - 1];
+    RATES_HZ
+        .iter()
+        .map(|hz| 1000.0 / hz)
+        .min_by(|a, b| (a - quartile).abs().total_cmp(&(b - quartile).abs()))
+}
+
+/// Share of vsyncs missed while frames were due, in percent.
+#[allow(clippy::cast_precision_loss)]
+pub fn drop_percent(dropped: u64, expected: u64) -> f64 {
+    let vsyncs = expected + dropped;
+    if vsyncs == 0 {
+        0.0
+    } else {
+        dropped as f64 * 100.0 / vsyncs as f64
+    }
 }
 
 /// One drawn frame.
@@ -182,11 +208,7 @@ impl fmt::Display for Report {
     #[allow(clippy::cast_precision_loss)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let seconds = self.duration.as_secs_f64().max(f64::EPSILON);
-        let percent = if self.expected == 0 {
-            0.0
-        } else {
-            self.dropped as f64 * 100.0 / self.expected as f64
-        };
+        let percent = drop_percent(self.dropped, self.expected);
         writeln!(f, "voltrus-native stress report")?;
         writeln!(f, "duration_s: {seconds:.1}")?;
         writeln!(
@@ -207,8 +229,9 @@ impl fmt::Display for Report {
         writeln!(f, "frame_cpu_ms: {}", self.cpu)?;
         writeln!(
             f,
-            "dropped_frames: {} of {} expected ({percent:.2}%)",
-            self.dropped, self.expected
+            "dropped_frames: {} ({percent:.2}% of {} vsyncs while frames were due)",
+            self.dropped,
+            self.expected + self.dropped
         )?;
         writeln!(
             f,
@@ -272,10 +295,22 @@ mod tests {
     }
 
     #[test]
-    fn the_refresh_rate_is_the_shortest_back_to_back_interval() {
-        assert_eq!(refresh_interval([16.9, 8.4, 25.0]), Some(8.4));
+    fn the_refresh_rate_is_the_typical_interval_snapped_to_a_real_rate() {
+        // 60 Hz with one early frame (outside the display link) and late ones.
+        let sixty = [16.7, 16.6, 5.1, 16.7, 33.4, 16.6, 16.8, 50.0];
+        assert_eq!(refresh_interval(sixty), Some(1000.0 / 60.0));
+        assert_eq!(
+            refresh_interval([8.4, 8.3, 8.3, 16.7]),
+            Some(1000.0 / 120.0)
+        );
         assert_eq!(refresh_interval([]), None);
-        assert_eq!(refresh_interval([0.5]), Some(1000.0 / 240.0), "clamped");
+        assert_eq!(
+            refresh_interval([0.5]),
+            Some(1000.0 / 240.0),
+            "the fastest rate"
+        );
+        assert_eq!(drop_percent(20, 1980), 1.0);
+        assert_eq!(drop_percent(0, 0), 0.0);
     }
 
     #[test]
@@ -298,7 +333,7 @@ mod tests {
         assert_eq!(stats.total, 5);
         assert_eq!(stats.expected, 4);
         assert_eq!(stats.dropped, 2);
-        assert!((stats.refresh_ms() - 8.33).abs() < 1e-9);
+        assert!((stats.refresh_ms() - 1000.0 / 120.0).abs() < 1e-9);
         assert_eq!(stats.intervals().max, 25.0);
         assert_eq!(stats.last_cpu_ms(), Some(1.0));
         let (interval, cpu) = stats.whole_run();
@@ -313,7 +348,7 @@ mod tests {
             rate: 20_000,
             applied: 400_000,
             frames: 2_400,
-            expected: 2_000,
+            expected: 1_980,
             dropped: 20,
             refresh_ms: 1000.0 / 120.0,
             interval: Spread {
@@ -334,7 +369,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("dropped_frames: 20 of 2000 expected (1.00%)"),
+            text.contains("dropped_frames: 20 (1.00% of 2000 vsyncs while frames were due)"),
             "{text}"
         );
     }

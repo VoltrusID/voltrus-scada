@@ -89,12 +89,15 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         (
             "Dropped frames",
             stats.dropped.to_string(),
-            format!("of {} expected", stats.expected),
+            format!(
+                "{:.1}% of vsyncs while due",
+                perf::drop_percent(stats.dropped, stats.expected)
+            ),
         ),
         (
-            "Page switches",
-            format!("{:.1} ms p95", meter.switch_spread().p95),
-            format!("{} to first frame", meter.switches.len()),
+            "Page switch p95",
+            format!("{:.1} ms", meter.switch_spread().p95),
+            format!("{} switches, to first frame", meter.switches.len()),
         ),
         (
             "Memory",
@@ -228,7 +231,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
                 .gap(SPACE_8)
                 .p(SPACE_9)
                 .pb(LIST_TAIL)
-                .child(div().grid().grid_cols(6).gap(SPACE_6).children(figures.into_iter().map(
+                .child(div().grid().grid_cols(3).gap(SPACE_6).children(figures.into_iter().map(
                     |(label, value, detail)| {
                         card(&theme)
                             .gap(SPACE_2)

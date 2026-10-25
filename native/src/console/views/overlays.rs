@@ -45,15 +45,12 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         // Clicks inside stay inside; the backdrop's close is for outside.
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(content);
-    let backdrop = div()
-        .id("overlay")
-        .absolute()
-        .inset_0()
-        .occlude()
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(|console, _, window, cx| console.close_overlay(window, cx)),
-        );
+    // The root of the overlay's cached view, which spans the window: it
+    // fills its view (insets mean nothing to a view's root).
+    let backdrop = div().id("overlay").size_full().occlude().on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|console, _, window, cx| console.close_overlay(window, cx)),
+    );
     match kind {
         OverlayKind::Modal { width } => backdrop
             .bg(dim)
@@ -66,7 +63,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             .bg(dim)
             .flex()
             .justify_end()
-            .child(card.w(width).h_full().border_l_1()),
+            .pt(TITLE_BAR_HEIGHT)
+            .child(card.w(width).h_full().border_l_1().border_t_1()),
         OverlayKind::Popover { width, at } => backdrop.child(
             anchored()
                 .position(at)

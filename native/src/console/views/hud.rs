@@ -13,7 +13,7 @@ use vt_ui::theme::*;
 use crate::console::Console;
 use crate::console::keys::{TogglePerfHud, hint};
 
-pub(crate) const WIDTH: Pixels = px(300.0);
+pub(crate) const WIDTH: Pixels = px(350.0);
 pub(crate) const HEIGHT: Pixels = px(232.0);
 
 pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> AnyElement {
@@ -24,11 +24,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
     let refresh = stats.refresh_ms();
     let intervals = stats.intervals();
     let cpu = stats.cpu();
-    let percent = if stats.expected == 0 {
-        0.0
-    } else {
-        stats.dropped as f64 * 100.0 / stats.expected as f64
-    };
+    let percent = perf::drop_percent(stats.dropped, stats.expected);
     let memory = perf::peak_rss_bytes().map_or_else(
         || "—".to_owned(),
         |bytes| format!("{:.0} MB peak", bytes as f64 / 1_048_576.0),
@@ -73,7 +69,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         ),
         (
             "Dropped",
-            format!("{} of {} ({percent:.1}%)", stats.dropped, stats.expected),
+            format!("{} ({percent:.1}% of vsyncs)", stats.dropped),
             if stats.dropped == 0 {
                 theme.fg
             } else {
