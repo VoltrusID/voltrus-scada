@@ -9,13 +9,16 @@ pub(crate) mod audit;
 pub(crate) mod cached;
 pub(crate) mod commands;
 pub(crate) mod data_manager;
+pub(crate) mod edition;
 pub(crate) mod export;
 pub(crate) mod hud;
 pub(crate) mod navbar;
+pub(crate) mod notifications;
 pub(crate) mod ops_kit;
 pub(crate) mod overlays;
 pub(crate) mod overview;
 pub(crate) mod performance;
+pub(crate) mod settings;
 pub(crate) mod shift;
 mod sign_in;
 pub(crate) mod status_bar;
@@ -222,6 +225,7 @@ impl Render for Console {
                     console.sign_out(window, cx);
                 }
             }))
+            .map(|root| super::shell::actions(root, cx))
             .on_action(cx.listener(|console, _: &TagsWrite, window, cx| {
                 if console.phase == Phase::Console {
                     tag_detail::open_dialog(console, tag_detail::TagDialog::Write, window, cx);

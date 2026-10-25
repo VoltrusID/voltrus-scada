@@ -113,11 +113,11 @@ fn fetch_shortcuts(console: &mut Console, again: bool) {
     );
 }
 
-/// After a shortcut was saved: fetch the map again for the table.
-// Integration note: the shell's global shortcut loader
-// (`console::shortcuts::reload`) is to be called here too.
+/// After a shortcut was saved: fetch the map again for the table, and
+/// have the shell rebind every shortcut so the new combo opens the tag.
 pub(crate) fn shortcuts_saved(console: &mut Console) {
     fetch_shortcuts(console, true);
+    crate::console::shortcuts::reload(console);
 }
 
 fn ensure_search(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {

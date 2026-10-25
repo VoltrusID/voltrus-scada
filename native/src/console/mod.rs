@@ -13,6 +13,9 @@ mod meter;
 mod nav;
 pub mod overlay;
 pub mod pages;
+mod prefs;
+mod shell;
+pub mod shortcuts;
 pub mod store;
 mod text_area;
 mod views;
@@ -186,6 +189,9 @@ pub struct Launch {
     pub stress: Option<StressPlan>,
     /// Read before any thread started: `time` cannot ask the system later.
     pub utc_offset: UtcOffset,
+    /// `--appearance`: pinned light (false) or dark (true); the server's
+    /// theme preference is then not applied.
+    pub appearance: Option<bool>,
 }
 
 /// The cached views that draw the window's parts.
@@ -413,6 +419,7 @@ impl Console {
                         if tick.is_multiple_of(ALARM_REFRESH_SECS) {
                             console.send(Command::RefreshAlarms);
                         }
+                        shell::tick(console, tick, cx);
                         cx.notify();
                     }
                 });
@@ -507,6 +514,7 @@ impl Console {
                 .update(cx, |field, cx| field.set_text(password, cx));
             console.sign_in(window, cx);
         }
+        shell::init(&mut console, launch.appearance, window, cx);
         console
     }
 
@@ -565,6 +573,7 @@ impl Console {
                 | Event::SignedIn { .. }
                 | Event::SignInFailed(_)
                 | Event::PasswordChanged(_)
+                | Event::PublicReply { .. }
         );
         if session_data && self.user.is_none() {
             return;
@@ -610,6 +619,7 @@ impl Console {
                 } else {
                     self.enter_console(window, cx);
                 }
+                shell::signed_in(self, cx);
             }
             Event::SignInFailed(error) => {
                 self.busy = false;
@@ -683,6 +693,7 @@ impl Console {
                 let severity = views::capitalized(&alarm.severity);
                 let value = vt_ui::chart::format_value(alarm.value);
                 self.show_toast(format!("{severity} alarm: {name} at {value}"), true, cx);
+                shell::alarm_raised(self, &alarm, cx);
             }
             Event::History { range, series } => {
                 if range == history_range(self.range) {
@@ -714,6 +725,7 @@ impl Console {
                 self.devices
                     .insert(device_id, DeviceLink { online, latency_ms });
             }
+            Event::PublicReply { key, reply } => shell::on_public_reply(self, key, reply, cx),
         }
     }
 
@@ -725,6 +737,10 @@ impl Console {
                 .take::<voltrus_scada_native::api::Version>()
                 .ok()
                 .map(|answer| answer.version);
+            return;
+        }
+        if key.scope() == "shell" {
+            shell::on_reply(self, key, reply, cx);
             return;
         }
         match pages::by_id(key.scope()).and_then(|spec| spec.on_reply) {
@@ -856,6 +872,7 @@ impl Console {
         self.inputs
             .password
             .update(cx, |field, _| field.focus(window));
+        shell::signed_out(self, window, cx);
         cx.notify();
     }
 
@@ -1365,17 +1382,10 @@ impl Console {
 
     // ── Appearance, HUD and toasts ────────────────────────────────────────
 
+    /// ⇧⌘L: the other brightness, in the theme chosen for it, kept on the
+    /// server (see `shell::toggle_appearance`).
     pub fn toggle_appearance(&mut self, cx: &mut Context<Self>) {
-        let dark = theme::theme(cx).dark;
-        let next = self.catalog.resolve(
-            if dark {
-                theme::DEFAULT_LIGHT
-            } else {
-                theme::DEFAULT_DARK
-            },
-            !dark,
-        );
-        theme::set_theme(next, cx);
+        shell::toggle_appearance(self, cx);
     }
 
     /// Show or hide the performance HUD. While shown it redraws its own
