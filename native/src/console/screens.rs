@@ -7,9 +7,10 @@
 //! - Read it with `console.state_ref::<Screens>()` (`None` before anything
 //!   asked for it); [`Screens::active`] is the screen on show,
 //!   [`OVERVIEW`] for the overview, which has every tag.
-//! - Call [`sync`] when the page shows or draws: it fetches what is missing
-//!   for the active screen (the list, its tags, its layouts) once per
-//!   session, and does nothing when everything is there.
+//! - Call [`sync`] when the page shows: it fetches what is missing for the
+//!   active screen (the list, its tags, its layouts) once per session, and
+//!   does nothing when everything is there. A fetch that failed is not
+//!   asked again until [`reload`].
 //! - [`select`] shows another screen; [`reload`] forgets everything and
 //!   fetches again.
 //! - [`Screens::tag_ids`] gives a screen's tags in the screen's order,
@@ -60,7 +61,9 @@ pub struct Screens {
     /// Each screen's tags (data source ids) in the screen's order; the
     /// overview's are the store's.
     pub tags: HashMap<String, Vec<i64>>,
-    /// Each screen's saved layouts, the overview's under [`OVERVIEW`].
+    /// Each screen's saved layouts, the overview's under [`OVERVIEW`];
+    /// none for a screen whose layouts did not load (see
+    /// [`Screens::layout_known`]).
     pub layouts: HashMap<String, ScreenLayouts>,
     /// Why the last fetch failed, until one succeeds.
     pub error: Option<String>,
@@ -68,8 +71,11 @@ pub struct Screens {
     pub generation: u64,
     /// Calls in flight, by their key's argument.
     asks: HashMap<i64, Ask>,
-    /// What is being fetched, so a redraw does not ask twice.
+    /// What is being fetched, so a second show does not ask twice.
     fetching: HashSet<String>,
+    /// What failed to load: not asked again until [`reload`], so an error
+    /// does not turn into a stream of requests.
+    failed: HashSet<String>,
     next_ask: i64,
     /// The server and user the model belongs to.
     session: Option<(String, String)>,
@@ -87,6 +93,7 @@ impl Default for Screens {
             generation: 0,
             asks: HashMap::new(),
             fetching: HashSet::new(),
+            failed: HashSet::new(),
             next_ask: 0,
             session: None,
         }
@@ -123,6 +130,13 @@ impl Screens {
         (id == OVERVIEW || self.tags.contains_key(id)) && self.layouts.contains_key(id)
     }
 
+    /// Whether screen `id`'s saved layouts are in. Editing starts from
+    /// them, so a screen whose layouts did not load cannot be edited or
+    /// arranged: saving would replace the stored layouts with a default.
+    pub fn layout_known(&self, id: &str) -> bool {
+        self.layouts.contains_key(id)
+    }
+
     /// Screen `id`'s tags that the store knows, in the screen's order: every
     /// tag for the overview.
     pub fn tag_ids(&self, store: &Store, id: &str) -> Vec<i64> {
@@ -135,6 +149,20 @@ impl Screens {
                 .filter(|tag| store.position(*tag).is_some())
                 .collect()
         })
+    }
+
+    /// Whether to fetch `what` now: not when it is in flight already or
+    /// failed (until [`reload`]); it counts as in flight from here.
+    fn want(&mut self, what: String) -> bool {
+        !self.failed.contains(&what) && self.fetching.insert(what)
+    }
+
+    /// A fetch of `what` is over; a failed one is not asked again.
+    fn fetched(&mut self, what: &str, ok: bool) {
+        self.fetching.remove(what);
+        if !ok {
+            self.failed.insert(what.to_owned());
+        }
     }
 
     fn ask(&mut self, ask: Ask) -> i64 {
@@ -205,12 +233,12 @@ pub fn sync(console: &mut Console) {
         return;
     }
     let active = screens.active.clone();
-    let list = !screens.listed && screens.fetching.insert("list".to_owned());
+    let list = !screens.listed && screens.want("list".to_owned());
     let tags = active != OVERVIEW
         && !screens.tags.contains_key(&active)
-        && screens.fetching.insert(format!("tags {active}"));
-    let layouts = !screens.layouts.contains_key(&active)
-        && screens.fetching.insert(format!("layouts {active}"));
+        && screens.want(format!("tags {active}"));
+    let layouts =
+        !screens.layouts.contains_key(&active) && screens.want(format!("layouts {active}"));
     if list {
         call(
             console,
@@ -255,6 +283,7 @@ pub fn reload(console: &mut Console) {
     screens.tags.clear();
     screens.layouts.clear();
     screens.fetching.clear();
+    screens.failed.clear();
     screens.error = None;
     screens.changed();
     sync(console);
@@ -309,6 +338,7 @@ pub fn delete(console: &mut Console, id: &str) {
         Ask::Delete(id.to_owned()),
         Call::send_empty::<IgnoredAny>(Method::DELETE, format!("/api/v1/screens/{id}")),
     );
+    sync(console);
 }
 
 /// `POST /screens/{screen}/data-sources {data_source_id}`.
@@ -409,8 +439,9 @@ pub fn on_reply(
     match ask {
         Ask::List => {
             let screens = console.state::<Screens>();
-            screens.fetching.remove("list");
-            match reply.take::<Vec<Screen>>() {
+            let result = reply.take::<Vec<Screen>>();
+            screens.fetched("list", result.is_ok());
+            match result {
                 Ok(mut list) => {
                     list.sort_by_key(|screen| screen.sort_order);
                     screens.list = list;
@@ -432,8 +463,9 @@ pub fn on_reply(
         }
         Ask::Tags(id) => {
             let screens = console.state::<Screens>();
-            screens.fetching.remove(&format!("tags {id}"));
-            match reply.take::<Vec<DataSource>>() {
+            let result = reply.take::<Vec<DataSource>>();
+            screens.fetched(&format!("tags {id}"), result.is_ok());
+            match result {
                 Ok(rows) => {
                     screens
                         .tags
@@ -448,16 +480,18 @@ pub fn on_reply(
         }
         Ask::Layouts(id) => {
             let screens = console.state::<Screens>();
-            screens.fetching.remove(&format!("layouts {id}"));
-            match reply.take::<ScreenLayouts>() {
+            let result = reply.take::<ScreenLayouts>();
+            screens.fetched(&format!("layouts {id}"), result.is_ok());
+            match result {
                 Ok(layouts) => {
                     screens.layouts.entry(id).or_insert(layouts);
                     screens.error = None;
                     screens.changed();
                 }
                 Err(error) => {
-                    // Lay the screen out by default rather than not at all.
-                    screens.layouts.entry(id).or_default();
+                    // Left unknown, not a default that a save would make
+                    // permanent: the grid lays the cards out by default
+                    // meanwhile, and editing waits for a reload.
                     screens.error = Some(format!("The screen's layout did not load: {error}"));
                     screens.changed();
                 }
@@ -572,5 +606,23 @@ mod tests {
             first,
             "each call has its own ticket"
         );
+    }
+
+    #[test]
+    fn a_failed_fetch_is_not_asked_again_until_a_reload() {
+        let mut screens = Screens::default();
+        assert!(screens.want("list".into()));
+        assert!(!screens.want("list".into()), "already in flight");
+        screens.fetched("list", false);
+        assert!(
+            !screens.want("list".into()),
+            "an error does not become a stream of requests"
+        );
+        assert!(screens.want("layouts all".into()));
+        screens.fetched("layouts all", false);
+        assert!(!screens.layout_known(OVERVIEW), "unknown, not a default");
+        assert!(screens.want("tags grid".into()));
+        screens.fetched("tags grid", true);
+        assert!(screens.want("tags grid".into()), "only failures are kept");
     }
 }

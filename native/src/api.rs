@@ -2,8 +2,8 @@
 //!
 //! Auth: login sets httpOnly `voltrus_token` and `voltrus_refresh` cookies,
 //! not returned in the body, so we parse them from `Set-Cookie` and replay
-//! the token as a Cookie header (the refresh cookie only on sign-out, so the
-//! server can revoke it).
+//! the token as a Cookie header (the refresh cookie only to renew the
+//! session and to sign out, so the server can revoke it).
 //!
 //! Every call goes through three generic helpers: [`VoltrusApi::get_json`],
 //! [`VoltrusApi::send_json`] and [`VoltrusApi::send_empty`]. A new endpoint
@@ -320,8 +320,8 @@ pub struct VoltrusApi {
     /// Base URL without trailing slash, e.g. `http://localhost:3000`.
     pub base: String,
     pub token: Option<String>,
-    /// The refresh token of the last sign-in, sent only to sign out so the
-    /// server revokes it.
+    /// The refresh token of the last sign-in or renewal, sent only to renew
+    /// the session and to sign out (the server then revokes it).
     pub refresh: Option<String>,
 }
 
@@ -428,6 +428,41 @@ impl VoltrusApi {
             .send()
             .await?;
         Self::decode::<IgnoredAny>(resp).await?;
+        Ok(())
+    }
+
+    /// POST /api/v1/auth/refresh with the refresh cookie: the server
+    /// revokes that refresh token and sets a new token and refresh token,
+    /// which replace these. Renews a session without its password and
+    /// without signing the user's other sessions out, as a new sign-in does.
+    pub async fn refresh_session(&mut self) -> Result<()> {
+        let Some(refresh) = self.refresh.as_deref() else {
+            return Err(ServerError::new(
+                reqwest::StatusCode::UNAUTHORIZED,
+                "The session has no refresh token",
+            )
+            .into());
+        };
+        let resp = self
+            .http
+            .post(format!("{}/api/v1/auth/refresh", self.base))
+            .header("Cookie", format!("{REFRESH_COOKIE}={refresh}"))
+            .send()
+            .await
+            .map_err(|e| anyhow!("connect failed: {e}"))?;
+        let set_cookies: Vec<String> = resp
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(str::to_owned))
+            .collect();
+        Self::decode::<IgnoredAny>(resp).await?;
+        let token = parse_cookie(&set_cookies, TOKEN_COOKIE)
+            .ok_or_else(|| anyhow!("refresh ok but no {TOKEN_COOKIE} cookie set"))?;
+        let refresh = parse_cookie(&set_cookies, REFRESH_COOKIE)
+            .ok_or_else(|| anyhow!("refresh ok but no {REFRESH_COOKIE} cookie set"))?;
+        self.token = Some(token);
+        self.refresh = Some(refresh);
         Ok(())
     }
 
@@ -633,6 +668,64 @@ mod tests {
             true
         );
         assert!(parse_body::<Vec<i64>>("").is_err(), "a list needs a body");
+    }
+
+    /// Answers one HTTP request with `answer`; the request's head.
+    fn answer_once(answer: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let base = format!("http://{}", listener.local_addr().expect("address"));
+        let server = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().expect("a request");
+            let mut head = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && connection.read(&mut byte).unwrap_or(0) == 1 {
+                head.push(byte[0]);
+            }
+            let _ = connection.write_all(answer.as_bytes());
+            String::from_utf8_lossy(&head).into_owned()
+        });
+        (base, server)
+    }
+
+    #[test]
+    fn a_refresh_sends_the_refresh_token_and_keeps_both_new_ones() {
+        let (base, server) = answer_once(
+            "HTTP/1.1 200 OK\r\n\
+             Set-Cookie: voltrus_token=t2; HttpOnly; Path=/\r\n\
+             Set-Cookie: voltrus_refresh=r2; HttpOnly; Path=/\r\n\
+             Content-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n\
+             {\"ok\":true}",
+        );
+        let mut api = VoltrusApi::new(&base);
+        api.token = Some("t1".into());
+        api.refresh = Some("r1".into());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(api.refresh_session()).expect("renewed");
+        let head = server.join().expect("the server ran");
+        assert!(head.starts_with("POST /api/v1/auth/refresh "), "{head}");
+        assert!(head.contains("voltrus_refresh=r1"), "{head}");
+        assert_eq!(api.token.as_deref(), Some("t2"));
+        assert_eq!(
+            api.refresh.as_deref(),
+            Some("r2"),
+            "the old refresh token is revoked by the renewal"
+        );
+
+        let (base, server) = answer_once(
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 24\r\nConnection: close\r\n\r\n\
+             {\"error\":\"unauthorized\"}",
+        );
+        let mut api = VoltrusApi::new(&base);
+        api.refresh = Some("revoked".into());
+        let error = runtime
+            .block_on(api.refresh_session())
+            .expect_err("refused");
+        server.join().expect("the server ran");
+        assert!(refused(&error), "a refused renewal ends the session");
     }
 
     #[test]

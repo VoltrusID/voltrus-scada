@@ -258,6 +258,8 @@ pub struct Store {
     /// The oldest sample of any tag: `None` until worked out again,
     /// `Some(None)` with no samples at all.
     earliest: Cell<Option<Option<f64>>>,
+    /// Counts tag list changes ([`Store::replace`]), for view caches.
+    generation: u64,
 }
 
 impl Store {
@@ -266,6 +268,7 @@ impl Store {
     pub fn replace(&mut self, list: Vec<DataSource>) {
         let mut previous: HashMap<i64, Tag> =
             self.tags.drain(..).map(|tag| (tag.info.id, tag)).collect();
+        self.generation += 1;
         self.by_id.clear();
         self.by_key.clear();
         for info in list {
@@ -305,6 +308,11 @@ impl Store {
         self.all = (0..self.tags.len()).collect();
         self.filters.borrow_mut().clear();
         self.earliest.set(None);
+    }
+
+    /// Counts tag list changes, for view caches keyed on the tag list.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The position in `tags` of the tag with data source id `id`.

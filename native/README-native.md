@@ -150,16 +150,20 @@ JetBrains Mono for values.
   language (`settings/ui-lang`, kept for the web client; this console's
   text stays English); the alarm cooldown (operators save it, others read
   it); the history aggregation default; system notifications for new
-  critical alarms (macOS); the kiosk lock (no Quit, Sign out or window
-  close); and the edition, versions and add-on features. ⇧⌘L and the
+  critical alarms (macOS; during a flood at most one every 2 s, counting
+  the alarms raised meanwhile); the kiosk lock (in the console: no Quit,
+  Sign out, window close or stress test; the sign-in card can be quit); and
+  the edition, versions and add-on features. ⇧⌘L and the
   navbar's sun and moon also keep the choice on the server. Local choices
   sit in `<config dir>/voltrus-native/preferences.toml`.
 - **Keyboard shortcuts from the server**: the user's `nav-shortcuts`
   (Overview, Alarms) and per-tag `shortcuts`, shared with the web client,
   become key bindings at sign-in. The shortcut editor (in Settings or the
   palette) lists every target and tag: Enter records new keys, Space
-  clears; shortcuts that only mean something in the web client, or that
-  take a built-in key, are kept but say why they are not bound here.
+  clears; shortcuts that only mean something in the web client, that take
+  a built-in key, or that are a key without ⌘, ⌥ or ⇧ (other than a
+  function key; Enter, Space and the arrows belong to lists and dialogs)
+  are kept but say why they are not bound here.
 - **Notifications**: the navbar's bell counts unread user notifications
   (mentions in shift handovers and annotations, fetched every 30 s); its
   popover (⌥⌘N) shows the alarms to acknowledge and the notifications,
@@ -187,16 +191,23 @@ JetBrains Mono for values.
   pick.
 
 The network side runs on its own tokio thread: it signs in, keeps the
-WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s) signing in
-again each time, and renews the 15-minute session token every 10 minutes
-(30 seconds after a renewal the server did not answer) so REST calls keep
-working. Only the operator's own sign-in waits for the server; every other
-REST call (tags, alarms, history, alarm actions, password changes, renewals,
-the sign-in before a reconnect) runs on its own and never holds up the tag
-stream. Answers that arrive after the session ended are dropped. When the
-server refuses the stored password (changed elsewhere, account locked) the
-session ends with "Not authorised" instead of trying again, since every
-wrong password counts towards locking the account.
+WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s), and
+renews the 15-minute session token with the session's refresh token
+(`POST /auth/refresh`) every 10 minutes and before each reconnect (30
+seconds after a renewal the server did not answer), so REST calls keep
+working. It does not keep the password (only while the server wants it
+changed), and a renewal leaves the user's other sessions alone, where a
+new sign-in would revoke their refresh tokens. Only the operator's own
+sign-in waits for the server; every other REST call (tags, alarms,
+history, alarm actions, password changes, renewals) runs on its own and
+never holds up the tag stream. Answers that arrive after the session ended
+are dropped. When the server refuses a renewal (the refresh token revoked
+or expired, for instance by the same user signing in elsewhere) the session
+ends with "Not authorised". Signing out, quitting and starting a stress
+test all sign the session out of the server, which revokes its refresh
+token. When a session ends (sign-out, a refused renewal, or before the next
+sign-in) every page's state goes with it; only the operator's own
+preferences stay.
 
 ## Build and run
 
@@ -348,6 +359,15 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 
 ## Server behaviour to know
 
+- The web client's alarm-flood banner (`client/src/AlarmPanel.tsx`,
+  `recentTotal`) sums the analytics' 24-hour `trigger_count` while it says
+  "in the last 5 minutes", so it overstates the count. The console counts
+  the history rows raised in the last 5 minutes instead; the web client
+  should do the same.
+- A sign-in revokes every refresh token of the user, so the same user
+  signing in elsewhere (web or another console) ends this console's session
+  at its next renewal; renewing with the refresh token never does that to
+  the others.
 - The login token comes only in the `Set-Cookie` header, with the JWT's
   base64 padding percent-encoded (`%3D`). The console decodes it
   (`api.rs:percent_decode`); the WebSocket refuses the encoded form.
@@ -392,12 +412,15 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - There is no route that reads a tag's write policy back (only `PATCH
   /api/v1/data-sources/{id}/write-policy`), so the console checks limits and
   the reason only for a policy it saved itself; otherwise the server's
-  answer to the write says why it refused. Saving the policy sets all six
-  settings at once.
+  answer to the write says why it refused. Saving the policy sends only what
+  changed: against a policy saved this session, each setting that differs;
+  with none known, the choices made and the limits typed, leaving the rest as
+  stored.
 - `GET /api/v1/history` answers every tag (only a `screen` filter), so the
-  detail chart asks once per span and setting and keeps the answer for every
-  tag's overlays. `agg=minmax` answers the bucket average (no low/high
-  band), and for Modbus tags the aggregation does not change the answer.
+  detail chart asks once per span, setting and set of charted tags, and keeps
+  only the open tag's and its overlays' samples. `agg=minmax` answers the
+  bucket average (no low/high band), and for Modbus tags the aggregation
+  does not change the answer.
 - A REST write records a command for the device (`pending`); the command
   queue sends it. A Modbus device defined in the configuration file gets
   device id 0 in the command.

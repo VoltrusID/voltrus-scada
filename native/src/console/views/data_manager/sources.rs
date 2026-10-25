@@ -17,7 +17,7 @@ use gpui::{
 use serde::de::IgnoredAny;
 use serde_json::json;
 use voltrus_scada_native::api::{
-    Created, DataSource, Method, ModbusDevice, ModbusRegister, TagShortcuts,
+    Created, DataSource, Method, ModbusDevice, ModbusRegister, TagShortcuts, VoltrusApi,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use vt_ui::Icon;
@@ -79,6 +79,8 @@ pub(crate) struct State {
     confirm_focus: Option<FocusHandle>,
     /// The window, for closing the form once the server has saved it.
     pub window: Option<AnyWindowHandle>,
+    /// How many forms were opened: each form's number, its save's key.
+    pub form_seq: i64,
     pub form: Option<source_form::Form>,
     pub devices: Option<Result<Vec<ModbusDevice>, String>>,
     pub devices_asked: bool,
@@ -284,6 +286,9 @@ fn open_edit(console: &mut Console, id: i64, window: &mut Window, cx: &mut Conte
     }
 }
 
+/// Enter on a row edits it, only when the list itself has focus: on a
+/// focused button in the row, Enter is that button's (its click comes with
+/// the key's release).
 fn activate_row(
     console: &mut Console,
     row: usize,
@@ -291,9 +296,38 @@ fn activate_row(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
+    if !console.list(LIST, cx).focus.is_focused(window) {
+        return;
+    }
     if let Some(id) = row_id(console, row, cx) {
         open_edit(console, id, window, cx);
     }
+}
+
+/// Create a source, then `PUT` the alarm delays its create body cannot
+/// carry. The row exists once the `POST` succeeds, so a failed `PUT` is not
+/// a failed create: its error comes back beside the new id.
+pub(super) async fn create(
+    api: &VoltrusApi,
+    body: &serde_json::Value,
+    delays: Option<&serde_json::Value>,
+) -> anyhow::Result<(i64, Option<String>)> {
+    let created: Created = api
+        .send_json(Method::POST, "/api/v1/data-sources", body)
+        .await?;
+    let mut failed = None;
+    if let Some(delays) = delays {
+        failed = api
+            .send_json::<_, IgnoredAny>(
+                Method::PUT,
+                &format!("/api/v1/data-sources/{}", created.id),
+                delays,
+            )
+            .await
+            .err()
+            .map(|error| error.to_string());
+    }
+    Ok((created.id, failed))
 }
 
 fn duplicate(console: &mut Console, id: i64, cx: &mut Context<Console>) {
@@ -306,18 +340,8 @@ fn duplicate(console: &mut Console, id: i64, cx: &mut Context<Console>) {
     console.call(
         CallKey::new("data.sources.duplicate"),
         Call::new(move |api| async move {
-            let created: Created = api
-                .send_json(Method::POST, "/api/v1/data-sources", &body)
-                .await?;
-            if let Some(delays) = delays {
-                api.send_json::<_, IgnoredAny>(
-                    Method::PUT,
-                    &format!("/api/v1/data-sources/{}", created.id),
-                    &delays,
-                )
-                .await?;
-            }
-            anyhow::Ok((created.id, key))
+            let (id, failed) = create(&api, &body, delays.as_ref()).await?;
+            anyhow::Ok((id, key, failed))
         }),
     );
     cx.notify();
@@ -431,11 +455,21 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 console.show_toast(format!("Reorder failed: {error}"), true, cx);
             }
         },
-        "data.sources.duplicate" => match reply.take::<(i64, String)>() {
-            Ok((id, key)) => {
+        "data.sources.duplicate" => match reply.take::<(i64, String, Option<String>)>() {
+            // The copy exists even when its delays did not follow.
+            Ok((id, key, failed)) => {
                 console.state::<State>().focus_id = Some(id);
                 console.refresh_tags();
-                console.show_toast(format!("Duplicated as {key}"), false, cx);
+                match failed {
+                    None => console.show_toast(format!("Duplicated as {key}"), false, cx),
+                    Some(error) => console.show_toast(
+                        format!(
+                            "Duplicated as {key}, but its alarm delays were not copied: {error}"
+                        ),
+                        true,
+                        cx,
+                    ),
+                }
             }
             Err(error) => console.show_toast(format!("Duplicate failed: {error}"), true, cx),
         },
@@ -1067,13 +1101,19 @@ fn confirm_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
     };
     let focus = state.confirm_focus.clone();
     div()
-        .when_some(focus, |this, focus| this.track_focus(&focus))
-        .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "enter" {
-                delete_confirmed(console, window, cx);
-                cx.stop_propagation();
-            }
-        }))
+        .when_some(focus.as_ref(), |this, focus| this.track_focus(focus))
+        // Enter deletes only from the dialog itself: on a focused Keep it
+        // is that button's (its click comes with the key's release).
+        .on_key_down(
+            cx.listener(move |console, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.key == "enter"
+                    && focus.as_ref().is_some_and(|focus| focus.is_focused(window))
+                {
+                    delete_confirmed(console, window, cx);
+                    cx.stop_propagation();
+                }
+            }),
+        )
         .flex()
         .flex_col()
         .gap(SPACE_6)
@@ -1134,7 +1174,174 @@ fn confirm_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
 
 #[cfg(test)]
 mod tests {
+    use voltrus_scada_native::runtime::{Command, Event};
+
     use super::*;
+    use crate::console::testing::Harness;
+
+    /// Answers one HTTP request per entry of `answers`, in order, each on
+    /// its own connection; the requests' first lines.
+    fn serve(answers: Vec<&'static str>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let base = format!("http://{}", listener.local_addr().expect("address"));
+        let server = std::thread::spawn(move || {
+            answers
+                .into_iter()
+                .map(|answer| {
+                    let (mut connection, _) = listener.accept().expect("a request");
+                    let mut head = Vec::new();
+                    let mut byte = [0_u8; 1];
+                    while !head.ends_with(b"\r\n\r\n")
+                        && connection.read(&mut byte).unwrap_or(0) == 1
+                    {
+                        head.push(byte[0]);
+                    }
+                    let head = String::from_utf8_lossy(&head).into_owned();
+                    let length = head
+                        .lines()
+                        .filter_map(|line| line.split_once(':'))
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    let mut body = vec![0_u8; length];
+                    let _ = connection.read_exact(&mut body);
+                    let _ = connection.write_all(answer.as_bytes());
+                    head.lines().next().unwrap_or_default().to_owned()
+                })
+                .collect()
+        });
+        (base, server)
+    }
+
+    #[test]
+    fn a_failed_delays_put_after_creating_is_not_a_failed_create() {
+        let (base, server) = serve(vec![
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n\
+             Content-Length: 8\r\nConnection: close\r\n\r\n{\"id\":7}",
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\
+             Content-Length: 16\r\nConnection: close\r\n\r\n{\"error\":\"boom\"}",
+        ]);
+        let mut api = VoltrusApi::new(&base);
+        api.token = Some("t".into());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let body = json!({ "key": "line1_temp" });
+        let delays = json!({ "on_delay_secs": 5, "off_delay_secs": 0 });
+        let (id, failed) = runtime
+            .block_on(create(&api, &body, Some(&delays)))
+            .expect("the row was created");
+        assert_eq!(id, 7);
+        assert!(
+            failed.is_some_and(|error| !error.is_empty()),
+            "the PUT's error"
+        );
+        let requests = server.join().expect("the server ran");
+        assert!(
+            requests[0].starts_with("POST /api/v1/data-sources "),
+            "{requests:?}"
+        );
+        assert!(
+            requests[1].starts_with("PUT /api/v1/data-sources/7 "),
+            "{requests:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn a_duplicate_whose_delays_failed_still_lists_the_copy(cx: &mut gpui::TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.reply(
+            CallKey::new("data.sources.duplicate"),
+            Reply::ok((
+                8_i64,
+                "plts_1.p_copy".to_owned(),
+                Some("HTTP 500".to_owned()),
+            )),
+        );
+        assert!(
+            h.commands()
+                .iter()
+                .any(|command| matches!(command, Command::RefreshTags))
+        );
+        assert_eq!(
+            h.update(|console, _, _| console.state::<State>().focus_id),
+            Some(8)
+        );
+    }
+
+    /// Signed in as an admin with one source, on the Sources table.
+    fn on_sources(cx: &mut gpui::TestAppContext) -> Harness {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.event(Event::Tags(vec![Harness::tag(7, "plts_1.p")]));
+        h.update(|console, window, cx| console.show(Page::DataManager, window, cx));
+        h.draw();
+        h.commands();
+        h
+    }
+
+    fn deleted(h: &mut Harness) -> bool {
+        h.calls()
+            .iter()
+            .any(|key| key.name == "data.sources.delete" && key.arg == 7)
+    }
+
+    #[gpui::test]
+    fn enter_on_the_focused_keep_deletes_nothing(cx: &mut gpui::TestAppContext) {
+        let mut h = on_sources(cx);
+        h.update(|console, window, cx| ask_delete(console, 7, window, cx));
+        h.draw();
+        h.keys("tab");
+        let on_dialog = h.update(|console, window, _| {
+            console
+                .state::<State>()
+                .confirm_focus
+                .as_ref()
+                .is_some_and(|focus| focus.is_focused(window))
+        });
+        assert!(!on_dialog, "Tab moved to a button");
+        h.keys("enter");
+        assert!(!deleted(&mut h));
+    }
+
+    #[gpui::test]
+    fn enter_on_the_delete_dialog_deletes(cx: &mut gpui::TestAppContext) {
+        let mut h = on_sources(cx);
+        h.update(|console, window, cx| ask_delete(console, 7, window, cx));
+        h.draw();
+        h.keys("enter");
+        assert!(deleted(&mut h));
+    }
+
+    #[gpui::test]
+    fn enter_on_a_rows_button_does_not_also_edit_the_row(cx: &mut gpui::TestAppContext) {
+        let mut h = on_sources(cx);
+        h.update(|console, _, cx| console.list(LIST, cx).select(0));
+        h.draw();
+        // Walk the tab stops to a button inside the table's row.
+        let on_button = h.update(|console, window, cx| {
+            let list = console.list(LIST, cx).focus.clone();
+            (0..64).any(|_| {
+                window.focus_next();
+                list.contains_focused(window, cx) && !list.is_focused(window)
+            })
+        });
+        assert!(on_button, "a row's button takes focus");
+        h.draw();
+        h.keys("enter");
+        assert!(
+            h.update(|console, _, _| console.state::<State>().form.is_none()),
+            "the row's edit form stays closed"
+        );
+        // From the list itself, Enter edits the row.
+        h.update(|console, window, cx| console.focus_list(LIST, window, cx));
+        h.draw();
+        h.keys("enter");
+        assert!(h.update(|console, _, _| console.state::<State>().form.is_some()));
+    }
 
     #[test]
     fn columns_drop_the_least_useful_first_and_keep_the_name_readable() {
