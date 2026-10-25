@@ -1047,7 +1047,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             .state_ref::<State>()
             .is_some_and(|state| state.layouts.contains_key(&active(console)))
     {
-        cx.defer(|console, _| sync(console));
+        cx.defer_in(window, |console, _, _| sync(console));
     }
     let theme = theme(cx).clone();
     let hmi = Hmi::new(&theme);
