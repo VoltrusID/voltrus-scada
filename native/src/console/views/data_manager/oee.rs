@@ -205,6 +205,9 @@ pub(crate) struct State {
     shift: Option<ShiftForm>,
     delete: Option<(ShiftConfig, FocusHandle)>,
     window: Option<AnyWindowHandle>,
+    /// The open dialog's number: its call carries it, and an answer for an
+    /// earlier dialog is dropped.
+    dialog: i64,
 }
 
 fn cards_focus(console: &mut Console, cx: &mut Context<Console>) -> FocusHandle {
@@ -299,7 +302,7 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
         "data.oee.shifts" if key.arg == state.shifts.seq => {
             state.shifts.value = Some(reply.take::<Vec<ShiftConfig>>().map(Rc::new));
         }
-        "data.oee.record" => match reply.take::<DowntimeEvent>() {
+        "data.oee.record" if key.arg == state.dialog => match reply.take::<DowntimeEvent>() {
             Ok(event) => {
                 state.record = None;
                 close_dialog(console, RECORD, cx);
@@ -317,7 +320,7 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 }
             }
         },
-        "data.oee.close" => match reply.take::<IgnoredAny>() {
+        "data.oee.close" if key.arg == state.dialog => match reply.take::<IgnoredAny>() {
             Ok(_) => {
                 state.close = None;
                 close_dialog(console, CLOSE, cx);
@@ -331,7 +334,7 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 }
             }
         },
-        "data.oee.shift_new" => match reply.take::<ShiftConfig>() {
+        "data.oee.shift_new" if key.arg == state.dialog => match reply.take::<ShiftConfig>() {
             Ok(shift) => {
                 state.shift = None;
                 close_dialog(console, NEW_SHIFT, cx);
@@ -352,6 +355,10 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             }
             fetch_shifts(console);
         }
+        // An earlier dialog's answer (closed while it was on its way): the
+        // lists still show what it changed.
+        "data.oee.record" | "data.oee.close" if reply.error().is_none() => fetch(console),
+        "data.oee.shift_new" if reply.error().is_none() => fetch_shifts(console),
         _ => return,
     }
     cx.notify();
@@ -453,6 +460,7 @@ fn open_record(console: &mut Console, window: &mut Window, cx: &mut Context<Cons
         .or_else(|| devices(console).first().cloned());
     let state = console.state::<State>();
     state.window = Some(window.window_handle());
+    state.dialog += 1;
     state.record = Some(RecordForm {
         device,
         state: "idle",
@@ -466,6 +474,7 @@ fn open_record(console: &mut Console, window: &mut Window, cx: &mut Context<Cons
 }
 
 fn submit_record(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
+    let seq = console.state::<State>().dialog;
     let Some(form) = console.state::<State>().record.as_mut() else {
         return;
     };
@@ -483,7 +492,7 @@ fn submit_record(console: &mut Console, _: &mut Window, cx: &mut Context<Console
     form.sending = true;
     form.error = None;
     console.call(
-        CallKey::new("data.oee.record"),
+        CallKey::new("data.oee.record").with(seq),
         Call::new(move |api| async move {
             api.send_json::<_, DowntimeEvent>(Method::POST, DOWNTIME_PATH, &body)
                 .await
@@ -613,6 +622,7 @@ fn ask_close(
     let subscription = on_field(&reason, submit_close, window, cx);
     let state = console.state::<State>();
     state.window = Some(window.window_handle());
+    state.dialog += 1;
     state.close = Some(CloseForm {
         event,
         reason: reason.clone(),
@@ -626,6 +636,7 @@ fn ask_close(
 }
 
 fn submit_close(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
+    let seq = console.state::<State>().dialog;
     let Some(form) = console.state::<State>().close.as_mut() else {
         return;
     };
@@ -637,7 +648,7 @@ fn submit_close(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
     let body = CloseDowntime::new(form.reason.read(cx).value());
     let path = insights::close_downtime_path(form.event.id);
     console.call(
-        CallKey::new("data.oee.close"),
+        CallKey::new("data.oee.close").with(seq),
         Call::new(move |api| async move {
             api.send_json::<_, IgnoredAny>(Method::PUT, &path, &body)
                 .await
@@ -714,6 +725,7 @@ fn open_new_shift(console: &mut Console, window: &mut Window, cx: &mut Context<C
         .collect();
     let state = console.state::<State>();
     state.window = Some(window.window_handle());
+    state.dialog += 1;
     state.shift = Some(ShiftForm {
         name: name.clone(),
         start,
@@ -729,6 +741,7 @@ fn open_new_shift(console: &mut Console, window: &mut Window, cx: &mut Context<C
 }
 
 fn submit_shift(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
+    let seq = console.state::<State>().dialog;
     let Some(form) = console.state::<State>().shift.as_mut() else {
         return;
     };
@@ -752,7 +765,7 @@ fn submit_shift(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
     form.sending = true;
     form.error = None;
     console.call(
-        CallKey::new("data.oee.shift_new"),
+        CallKey::new("data.oee.shift_new").with(seq),
         Call::new(move |api| async move {
             api.send_json::<_, ShiftConfig>(Method::POST, SHIFTS_PATH, &body)
                 .await
