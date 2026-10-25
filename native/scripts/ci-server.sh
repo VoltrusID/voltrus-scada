@@ -124,6 +124,38 @@ curl -fsS -b cookies.txt -H "$json" -d "$(jq -n '{id: "demo_boiler_power", name:
   created_at: 0, updated_at: 0}')" "$url/api/v1/flows" > /dev/null
 curl -fsS -b cookies.txt -H "$json" -X POST "$url/api/v1/scripts" \
   -d '{"name":"Inverter kW to MW","source":"// Scale an inverter reading\nfunction main(input) {\n  return { mw: input.kw / 1000 };\n}\n","cpu_limit_ms":1000,"memory_limit_bytes":8388608}' > /dev/null
+# A command target for the mimic's faceplate: the inverter's run register,
+# `remote_run` (1 running, 0 stopped), which INV-1 binds. The scenario has
+# no writable register the simulator keeps (it redraws every value each
+# second, and the server writes one 16-bit word), but the inverter's
+# operating-hours counter (a u64 in registers 42-45) takes a written word
+# as its value and then only creeps up by 1/3600 per second: its low word,
+# 45, holds a written 0 or 1 for an hour. A uint16 register polls it, and a
+# data source whose source_config gives the address lets the WebSocket and
+# REST writes reach it. It starts at 1 (running) further down, written
+# while its write policy allows it, then locked again.
+inverter="sma_inv_1"
+run_address=45
+device="$(curl -fsS -b cookies.txt "$url/api/v1/modbus-devices/$inverter")"
+if ! echo "$device" | jq -e '.registers | any(.name == "remote_run")' > /dev/null; then
+  echo "$device" | jq --argjson address "$run_address" '{registers: ([.registers[]
+      | {name, address, zero_based, register_type, register_area, scale}]
+      + [{name: "remote_run", address: $address, register_type: "uint16", register_area: "holding", scale: 1}])}' \
+    > registers.json
+  curl -fsS -b cookies.txt -X PUT -H "$json" -d @registers.json \
+    "$url/api/v1/modbus-devices/$inverter/registers" > /dev/null
+fi
+run_id="$(curl -fsS -b cookies.txt "$url/api/v1/data-sources" |
+  jq --arg device "$inverter" 'first(.[] | select(.device_id == $device and .key == "remote_run") | .id) // empty')"
+if [ -z "$run_id" ]; then
+  run_id="$(curl -fsS -b cookies.txt -H "$json" \
+    -d "$(jq -n --arg device "$inverter" --argjson address "$run_address" '{key: "remote_run",
+      name: "Remote run", unit: "", min_val: 0, max_val: 1, warn_val: 0, crit_val: 0,
+      base_val: 0, decimals: 0, source_type: "modbus", source_config: {address: $address},
+      device_id: $device, chart_type: "sparkline"}')" \
+    "$url/api/v1/data-sources" | jq .id)"
+fi
+echo "inverter run register: data source $run_id, register $run_address"
 # An HMI mimic for the overview (the web client's SCADA view, the console's
 # Mimic page), unless the plant has one: native/scripts/mimic-solar-farm.json
 # names its tags "<device>/<key>"; here they become data source ids. The
@@ -195,6 +227,25 @@ done
 echo "history samples: $stored"
 [ "$stored" -gt 0 ] || { echo "::error::no values reached the server"; tail -50 server.log; exit 1; }
 echo "open alarms: $(curl -fsS -b cookies.txt "$url/api/v1/alarms?status=active&limit=100" | jq length)"
+
+# The inverter runs: remote_run = 1, through the REST write while its write
+# policy allows it; locked again once the simulator reads it back.
+policy="$url/api/v1/data-sources/$run_id/write-policy"
+curl -fsS -b cookies.txt -X PATCH -H "$json" -d '{"writable": true}' "$policy" > /dev/null
+curl -fsS -b cookies.txt -H "$json" -d '{"value": 1, "policy": "immediate"}' \
+  "$url/api/v1/tags/$run_id/write" > /dev/null
+running=false
+for _ in $(seq 1 30); do
+  if curl -fsS -b cookies.txt "$url/api/v1/data" |
+    jq -e --argjson id "$run_id" 'any(.[]; .id == $id and .value == 1)' > /dev/null; then
+    running=true
+    break
+  fi
+  sleep 1
+done
+curl -fsS -b cookies.txt -X PATCH -H "$json" -d '{"writable": false}' "$policy" > /dev/null
+$running || { echo "::error::the inverter's run register did not take 1"; tail -50 server.log; exit 1; }
+echo "inverter run register: 1 (running)"
 
 echo "server: $url"
 if [ -n "${GITHUB_ENV:-}" ]; then

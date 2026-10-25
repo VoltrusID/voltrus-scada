@@ -320,6 +320,7 @@ impl Render for Console {
                 }),
             )
             .map(|this| dashboard::actions(this, cx))
+            .map(|this| mimic::editor::actions(this, cx))
             .child(body)
             .when(!self.toasts.is_empty(), |this| {
                 this.child(

@@ -582,6 +582,10 @@ impl Console {
         if let Some(section) = launch.section.as_deref() {
             views::data_manager::launch(&mut console, section);
         }
+        views::mimic::editor::launch(
+            &mut console,
+            launch.edit && launch.page == Some(Page::Mimic),
+        );
         shell::init(&mut console, launch.appearance, window, cx);
         console
     }
@@ -931,6 +935,10 @@ impl Console {
     }
 
     pub fn sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Unsaved mimic edits ask first (Save, Discard, Cancel).
+        if views::mimic::editor::holds(self, views::mimic::editor::Leave::SignOut, window, cx) {
+            return;
+        }
         if self.stress.is_some() {
             self.finish_stress(cx);
         }
@@ -1036,6 +1044,9 @@ impl Console {
             self.show_toast(format!("{} needs another role", page.title()), true, cx);
             return;
         }
+        if views::mimic::editor::holds(self, views::mimic::editor::Leave::Page(page), window, cx) {
+            return;
+        }
         self.back.push(self.page);
         if self.back.len() > HISTORY_DEPTH {
             self.back.remove(0);
@@ -1046,6 +1057,14 @@ impl Console {
 
     /// ⌘[ and ⌘]: back or forward through the pages shown.
     pub fn history_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if views::mimic::editor::holds(
+            self,
+            views::mimic::editor::Leave::History(forward),
+            window,
+            cx,
+        ) {
+            return;
+        }
         let (from, to) = if forward {
             (&mut self.forward, &mut self.back)
         } else {

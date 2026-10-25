@@ -522,7 +522,42 @@ let (equipment, connections) = mimic::to_rows(&layout);   // the PUT bodies: Ite
   for an admin (`Command::Write`, answered by `Event::Written`) and the
   REST write (`POST /tags/{id}/write`, `tag_api::write_request`) for other
   operators; viewers see no commands. An armed command lapses after
-  `ARM_TIMEOUT`.
+  `ARM_TIMEOUT`. An arm key that comes before its screen and values
+  (`--overlay MimicArmOn`/`MimicArmOff` at launch) waits for the first
+  equipment whose asked-for choice is enabled (else its other choice),
+  opens its faceplate and arms it, and holds it armed for `LAUNCH_HOLD`
+  (20 s) so a launch's screenshot catches it; any arm, confirm, dismiss or
+  other faceplate ends the hold, and the usual lapse follows.
 - **CI plant.** `native/scripts/ci-server.sh` seeds the overview's mimic
   from `native/scripts/mimic-solar-farm.json` (tags by `device/key`) when
-  the plant has none.
+  the plant has none. Its command target is INV-1 on `sma_inv_1/remote_run`,
+  a uint16 register the script adds at 45, the low word of the inverter
+  simulator's operating-hours counter: the simulator keeps a written word
+  there (the counter creeps by 1/3600 a second), the data source's
+  `source_config` address lets both writes reach it, and the script starts
+  it at 1 and leaves it locked (the e2e `live_mimic_command` unlocks it,
+  commands STOP/START over both routes and restores both).
+- **Editing.** `voltrus_scada_native::mimic::edit` holds the editor's
+  rules with no UI: the widget manifests (`MANIFESTS`, the web's
+  `registry.ts`) and the inspector's schemas (`schema`, `symbol_fields`),
+  `Edit` (the reducer's actions) applied through `History` (undo, redo,
+  coalescing by key, `dirty`, `mark_saved`), the grid and stage rules
+  (`snap`, `clamp_pos`, `place_at`, `drop_at`), `snap_move` /
+  `snap_resize` with their `Guide`s, hit tests (`hit_widget`,
+  `hit_handle`, `hit_connection`), the rubber band (`enclosed`), `Clip`
+  copy and paste with `fresh_id`s, `rotate` / `mirror`, and `named` for the
+  rows' `equipment_name`. `views/mimic/editor/` draws it: the page's
+  render hands over to `editor::render` in edit mode (the viewer's own
+  `Frame` and `paint_frame`, with the grid, then the marks of
+  `editor/stage.rs` in window pixels); the palette and the inspector are
+  cached views, so a drag redraws only the stage. A drag applies its move
+  as one coalesced history step per frame from window-wide pointer
+  listeners; nothing else asks for frames. The editor's actions sit on the
+  window's root (`editor::actions`), so the palette and `--overlay` reach
+  them; keys bind in `editor::KEYS` (`MimicEdit && !TextInput`) and ⌘S in
+  `KEYS_ANYWHERE`. `--edit` with `--page mimic` enters edit mode once the
+  screen is in (commands sent meanwhile wait for it). Leaving with unsaved
+  edits goes through `editor::holds` (called by `Console::show`,
+  `history_step`, `sign_out` and the mimic's screen switch): the dialog
+  answers Save (the leave runs once the server has the rows), Discard or
+  Cancel.
