@@ -156,9 +156,9 @@ impl Render for Console {
                     console.history_step(true, window, cx);
                 }
             }))
-            .on_action(cx.listener(|console, _: &AcknowledgeAll, _, _| {
+            .on_action(cx.listener(|console, _: &AcknowledgeAll, window, cx| {
                 if console.phase == Phase::Console && console.is_signed_in() {
-                    console.acknowledge_all();
+                    alarms::confirm_acknowledge_all(console, window, cx);
                 }
             }))
             .on_action(cx.listener(|console, _: &ToggleAppearance, _, cx| {
@@ -228,6 +228,7 @@ impl Render for Console {
                     audit::export_csv(console, window, cx);
                 }
             }))
+            .map(|root| alarms::root_actions(root, cx))
             .child(body)
             .when(!self.toasts.is_empty(), |this| {
                 this.child(

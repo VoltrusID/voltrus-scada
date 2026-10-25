@@ -203,6 +203,60 @@ fn default_alarm_type() -> String {
     "high".to_string()
 }
 
+/// `GET /api/v1/alarms/summary` (operator): open alarms nobody has
+/// acknowledged by priority, shelved alarms, alarms raised in the last 24 h
+/// and the mean time to acknowledge them. Mirrors `models::AlarmSummary`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct AlarmSummary {
+    pub active_critical: i64,
+    pub active_warning: i64,
+    pub active_info: i64,
+    pub shelved: i64,
+    pub recent_24h: i64,
+    pub avg_ack_time_secs: f64,
+}
+
+/// A row of `GET /api/v1/alarms/analytics?from=&to=` (operator): how often
+/// a source alarmed in the window, most often first. Mirrors
+/// `models::AlarmAnalyticsEntry`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct AlarmAnalyticsEntry {
+    pub source_key: String,
+    pub source_name: String,
+    pub trigger_count: i64,
+    pub avg_time_to_ack_secs: f64,
+    pub last_triggered_at: i64,
+}
+
+/// A row of `GET /api/v1/alarms/audit` (operator), newest first. `details`
+/// is free text, or JSON (`{"reason":…,"until":…}`) for a shelve. Mirrors
+/// `models::AlarmAuditEntry`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct AlarmAuditEntry {
+    pub id: i64,
+    pub alarm_id: i64,
+    pub action: String,
+    pub performed_by: String,
+    pub details: String,
+    pub created_at: i64,
+}
+
+/// A row of `GET /api/v1/alarms/{id}/journal` (operator): one ISA-18.2
+/// lifecycle event (triggered, acknowledged, shelved, unshelved, resolved),
+/// oldest first. Mirrors `models::AlarmJournalEntry`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct AlarmJournalEntry {
+    pub id: i64,
+    pub alarm_id: i64,
+    pub event: String,
+    pub at: i64,
+    pub actor: Option<String>,
+}
+
 /// Percent-decode a cookie value: the server's `Set-Cookie` percent-encodes
 /// the base64 `=` padding of the JWT payload as `%3D`, but the WebSocket
 /// auth path expects the raw token. Browsers' cookie jars decode this

@@ -34,10 +34,27 @@ JetBrains Mono for values.
   and critical limits, the last hour's lowest/highest/average and trend, a
   field to write a value (admin role, and the server's write policy must
   allow it), and Add to Trends.
-- **Alarms**: open, to-acknowledge and shelved alarms, worst first, with
-  Acknowledge, Acknowledge all (⇧⌘A), and for the admin, demo and integration
-  roles (the ones the server lets shelve) Shelve for one hour and Unshelve.
+- **Alarms**: a summary strip (critical, warning and info alarms waiting,
+  shelved, raised in the last 24 h, mean time to acknowledge: the server's
+  summary for the admin, demo and integration roles, counted from the open
+  alarms for others); the list filtered to open, to acknowledge,
+  acknowledged, shelved or the whole history (resolved alarms too), searched
+  with `/` (source, key, message, priority, `#id`) and sorted by priority,
+  newest or source; a priority pill and HI/LO per row. Keys on the list:
+  Enter opens the detail sheet (every fact, the actions and the ISA-18.2
+  lifecycle journal, j/k to step through the list), `a` acknowledges, `s`
+  or Space shelves (a dialog: 15 min to 8 h and a reason) or unshelves,
+  ⇧A or ⇧⌘A acknowledges all after a confirmation, ←/→ switch the filter
+  and `o` the order. The same roles get the Analytics view (the ten most
+  frequent sources of the last 24 h, an alarm-flood warning) and the Audit
+  trail (every acknowledge, shelve and unshelve, with the shelve's reason).
   Alarm times show on the computer's clock.
+- **Alarm sound**: while an open alarm waits for acknowledgement a tone
+  loops, set by the worst one's priority (a fast two-tone warble for
+  critical, a double beep every 2.5 s for warning, a chime every 5 s for
+  info). The tones are synthesized, so no sound file ships. The navbar's
+  speaker, the palette and ⇧⌘M mute it; the choice is remembered per user
+  and server in `<config dir>/voltrus-native/alarm-sound.toml`.
 - **Trends**: the chosen tags on one time axis over 5 min, 30 min, 1 h, 6 h or 24 h,
   filled from the server's history and extended by live values. While the
   link is live the chart moves on once a second. Each tag keeps a day of
@@ -104,6 +121,7 @@ Options, mainly for kiosks and screenshots:
 ```
 voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance|commands|shift|audit] [--tag <key>]
                [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud] [--overlay palette|help|<action>]
+               [--alarms history|analytics|audit|detail|shelve|confirm]
                [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                          [--stress-seconds N] [--stress-report FILE]]
 ```
@@ -114,6 +132,9 @@ voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance|comma
 `--overlay` also runs a palette command by its action name once signed in,
 e.g. `--overlay OpsExportData` (the data export dialog) or
 `--overlay OpsNewHandover` (a new shift handover entry).
+`--alarms` opens the Alarms page on a view (history, analytics, audit) or
+with a dialog open on its worst alarm (detail, shelve) or the
+acknowledge-all confirmation.
 `--stress-seconds 20 --stress-report report.txt` runs the stress test for
 20 seconds, prints the report (frames, frame time p50/p95/max, drops,
 page-switch time, memory), writes it to the file and quits.
@@ -140,6 +161,8 @@ native/src/
   main.rs           command line, window, theme, menus
   console/
     mod.rs          the Console model: phases, navigation, overlays, stress run
+    alarms.rs       alarm filters, sort, search, summary counts, shelve durations
+    audio.rs        the alarm annunciator: synthesized tones, mute per user
     pages.rs        the page registry
     keys.rs         actions, key bindings, menus, the command table
     nav.rs          keyboard lists
@@ -172,16 +195,19 @@ server and the Modbus simulator. `native/scripts/ci-server.sh` starts the
 solar-farm scenario, resets the admin password with
 `voltrus --reset-admin-password`, replaces it through the API, and sets
 plant-like alarm limits. The end-to-end test runs against that server
-(signing in, tags, history, live values, acknowledging an open alarm, and
-changing the admin password and back), and
+(signing in, tags, history, live values, acknowledging an open alarm, the
+alarm summary, history and analytics, shelving an alarm with a reason and
+finding it on the shelf, in its journal and in the audit trail, unshelving
+it, and changing the admin password and back), and
 `native/scripts/screenshots-macos.sh` captures the signed-in console:
 `overview`, `tags` (with a tag's detail open), `alarms`, `trends` (5 min) and
-`overview-light`, plus the `sign-in` screen, and the operations pages
-(`ops-commands`, `ops-shift`, `ops-shift-new`, `ops-audit`,
-`ops-audit-light`, `ops-export`). The end-to-end test also writes a
-scheduled command and cancels it, writes a handover entry and reads it back
-by date and shift, pages, filters, sorts and exports the audit log, and saves
-a telemetry export. The screenshots, a zipped,
+`overview-light`, the Alarms page's views and dialogs (`alarms-history`,
+`-analytics`, `-audit`, `-detail`, `-shelve`, `-confirm`, `alarms-light`),
+the operations pages (`ops-commands`, `ops-shift`, `ops-shift-new`,
+`ops-audit`, `ops-audit-light`, `ops-export`), plus the `sign-in` screen.
+The end-to-end test also writes a scheduled command and cancels it, writes
+a handover entry and reads it back by date and shift, pages, filters, sorts
+and exports the audit log, and saves a telemetry export. The screenshots, a zipped,
 ad-hoc signed `Voltrus SCADA.app`, and the demo plant
 (`voltrus-demo-plant.tar.gz`: the server, the Modbus simulator,
 `ci-server.sh` and the scenario) are the workflow's artifacts; tagged
@@ -221,6 +247,12 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   console also fetches the acknowledged and shelved lists and drops resolved
   ones. Alarms resolve without a WebSocket message; the list is fetched again
   every 10 seconds.
+- The alarm summary counts waiting alarms whose priority is exactly
+  `critical`, `warning` or `info`; the console's local count for other roles
+  ranks any priority (high and medium count as warning). Acknowledging takes
+  no comment (`POST /alarms/{id}/acknowledge` has no body); a shelve's reason
+  is kept on the alarm and in the audit trail. Alarm sound needs an audio
+  output device; without one the speaker's tooltip says why.
 - Tag keys are register names, so two devices may share one (solar-farm has
   `frequency` twice). The console shows the first; keying by device is future
   work.
