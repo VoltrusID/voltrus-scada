@@ -41,7 +41,8 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                      (e.g. ShellOpenSettings) once signed in; tag-… opens a
                      dialog of the --tag tag's detail (tag-expand widens the detail)
   --alarms           open the Alarms page with this view or dialog once signed in
-  --screen           the dashboard's screen: its id, or 1 for the overview, 2 for the first
+  --screen           the dashboard's and the mimic's screen: its id, or 1 for the overview,
+                     2 for the first
   --edit             open the dashboard in edit mode (operator roles)
   --section          the Data Manager's section to show (with --page data), e.g. flows
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
