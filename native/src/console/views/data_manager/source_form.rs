@@ -19,9 +19,8 @@ use gpui::{
     AnyElement, App, Context, Entity, FontWeight, Keystroke, SharedString, Subscription, Window,
     div, px, uniform_list,
 };
-use serde::de::IgnoredAny;
 use voltrus_scada_native::api::{
-    Created, DataSource, Method, ModbusDevice, ModbusDeviceDetail, ModbusRegister, TagShortcuts,
+    DataSource, Method, ModbusDevice, ModbusDeviceDetail, ModbusRegister, TagShortcuts,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use vt_ui::Icon;
@@ -36,6 +35,7 @@ use super::source_model::{
 use super::sources::{self, State, category_color, tag_color};
 use crate::console::Console;
 use crate::console::overlay::Overlay;
+use crate::console::shortcuts;
 use crate::console::views::{ListKeys, OnActivate, focus_ring, keyboard_list};
 
 /// The overlay's id.
@@ -71,6 +71,9 @@ pub(crate) struct Form {
     op: char,
     error: Option<String>,
     saving: bool,
+    /// This form among the ones opened, the save's key argument: a late
+    /// answer for an earlier form leaves this one alone.
+    seq: i64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -248,6 +251,8 @@ pub(crate) fn open(
         }
     }));
     let state = console.state::<State>();
+    state.form_seq += 1;
+    let seq = state.form_seq;
     let shortcut = original.as_ref().and_then(|source| {
         state
             .shortcuts
@@ -270,6 +275,7 @@ pub(crate) fn open(
         op: '+',
         error: None,
         saving: false,
+        seq,
         _subscriptions: subscriptions,
     });
     if modbus {
@@ -321,15 +327,7 @@ fn record(console: &mut Console, keystroke: &Keystroke, cx: &mut Context<Console
         cx.notify();
         return true;
     }
-    let modifiers = &keystroke.modifiers;
-    match model::combo(
-        &keystroke.key,
-        keystroke.key_char.as_deref(),
-        modifiers.control,
-        modifiers.alt,
-        modifiers.shift,
-        modifiers.platform,
-    ) {
+    match shortcuts::from_keystroke(keystroke) {
         Some(combo) => {
             form.shortcut = Some(combo);
             form.recording = false;
@@ -416,7 +414,8 @@ fn save(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
     };
     form.saving = true;
     form.error = None;
-    console.call(CallKey::new("data.sources.save"), call);
+    let seq = form.seq;
+    console.call(CallKey::new("data.sources.save").with(seq), call);
     cx.notify();
 }
 
@@ -427,21 +426,16 @@ fn build_save(form: &Form) -> Result<Call, String> {
         let body = form.draft.create_body()?;
         let delays = form.draft.delays_body()?;
         return Ok(Call::new(move |api| async move {
-            let created: Created = api
-                .send_json(Method::POST, "/api/v1/data-sources", &body)
-                .await?;
-            if let Some(delays) = delays {
-                api.send_json::<_, IgnoredAny>(
-                    Method::PUT,
-                    &format!("/api/v1/data-sources/{}", created.id),
-                    &delays,
-                )
-                .await?;
-            }
+            // The row exists once created: a failed delays PUT is a
+            // warning, never a failure that would invite creating it again.
+            let (id, failed) = sources::create(&api, &body, delays.as_ref()).await?;
+            let warning = failed.map(|error| {
+                format!("Created {key}, but its alarm delays were not saved: {error}")
+            });
             anyhow::Ok(Saved {
-                id: created.id,
+                id,
                 key,
-                warning: None,
+                warning,
                 shortcut_changed: false,
             })
         }));
@@ -506,27 +500,33 @@ pub(crate) fn on_reply(
     cx: &mut Context<Console>,
 ) {
     match key.name {
-        "data.sources.save" => match reply.take::<Saved>() {
-            Ok(saved) => {
-                console.state::<State>().focus_id = Some(saved.id);
-                console.refresh_tags();
-                if saved.shortcut_changed {
-                    sources::shortcuts_saved(console);
+        "data.sources.save" => {
+            let current = form_mut(console).is_some_and(|form| form.seq == key.arg);
+            match reply.take::<Saved>() {
+                Ok(saved) => {
+                    console.state::<State>().focus_id = Some(saved.id);
+                    console.refresh_tags();
+                    if saved.shortcut_changed {
+                        sources::shortcuts_saved(console);
+                    }
+                    match saved.warning {
+                        Some(warning) => console.show_toast(warning, true, cx),
+                        None => console.show_toast(format!("Saved {}", saved.key), false, cx),
+                    }
+                    // A form opened since then keeps its edits.
+                    if current {
+                        close_later(console, cx);
+                    }
                 }
-                match saved.warning {
-                    Some(warning) => console.show_toast(warning, true, cx),
-                    None => console.show_toast(format!("Saved {}", saved.key), false, cx),
-                }
-                close_later(console, cx);
+                Err(error) => match form_mut(console).filter(|_| current) {
+                    Some(form) => {
+                        form.saving = false;
+                        form.error = Some(error);
+                    }
+                    None => console.show_toast(format!("Saving failed: {error}"), true, cx),
+                },
             }
-            Err(error) => match form_mut(console) {
-                Some(form) => {
-                    form.saving = false;
-                    form.error = Some(error);
-                }
-                None => console.show_toast(format!("Saving failed: {error}"), true, cx),
-            },
-        },
+        }
         "data.sources.devices" => {
             console.state::<State>().devices = Some(reply.take::<Vec<ModbusDevice>>());
         }
@@ -1409,6 +1409,78 @@ fn modbus(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::console::testing::Harness;
+
+    fn saved(id: i64) -> Saved {
+        Saved {
+            id,
+            key: "line1_temp".into(),
+            warning: None,
+            shortcut_changed: false,
+        }
+    }
+
+    fn form_seq(h: &mut Harness) -> Option<i64> {
+        h.update(|console, _, _| console.state::<State>().form.as_ref().map(|form| form.seq))
+    }
+
+    #[gpui::test]
+    fn a_late_save_answer_leaves_a_newer_form_open(cx: &mut gpui::TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| open(console, None, window, cx));
+        let first = form_seq(&mut h).expect("the first form");
+        // Esc while it saves, then another form.
+        h.update(|console, window, cx| {
+            console.close_overlay(window, cx);
+            open(console, None, window, cx);
+        });
+        let second = form_seq(&mut h).expect("the second form");
+        assert_ne!(first, second);
+        h.reply(
+            CallKey::new("data.sources.save").with(first),
+            Reply::ok(saved(7)),
+        );
+        h.draw();
+        assert!(
+            h.update(|console, _, _| console.overlay_is(FORM)),
+            "still open"
+        );
+        assert_eq!(form_seq(&mut h), Some(second), "with its edits");
+        // Its own answer closes it.
+        h.reply(
+            CallKey::new("data.sources.save").with(second),
+            Reply::ok(saved(8)),
+        );
+        h.draw();
+        assert_eq!(form_seq(&mut h), None);
+    }
+
+    #[gpui::test]
+    fn a_recorded_shortcut_reads_back_as_the_same_keys(cx: &mut gpui::TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| {
+            open(console, Some(Harness::tag(7, "plts_1.p")), window, cx);
+        });
+        h.draw();
+        h.update(|console, _, _| {
+            if let Some(form) = form_mut(console) {
+                form.recording = true;
+            }
+        });
+        h.keys("cmd-shift-up");
+        let recorded =
+            h.update(|console, _, _| form_mut(console).and_then(|form| form.shortcut.clone()));
+        assert_eq!(recorded.as_deref(), Some("Mod+Shift+ArrowUp"));
+        assert_eq!(
+            recorded
+                .as_deref()
+                .and_then(shortcuts::to_keystroke)
+                .as_deref(),
+            Some("secondary-shift-up")
+        );
+    }
 
     #[test]
     fn every_text_field_round_trips_through_the_draft() {

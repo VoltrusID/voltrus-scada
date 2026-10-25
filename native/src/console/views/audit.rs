@@ -268,6 +268,7 @@ pub fn export_csv(console: &mut Console, window: &mut Window, cx: &mut Context<C
             .date(),
     );
     save_download(
+        console,
         CallKey::new("audit.export"),
         query.export_path(),
         format!("audit-log-{today}.csv"),

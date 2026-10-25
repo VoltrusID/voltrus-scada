@@ -269,7 +269,13 @@ impl Annunciator {
     fn apply(&mut self) {
         let tone = self.sounding();
         if tone.is_some() && self.output.is_none() && self.failed.is_none() {
-            match Output::open() {
+            // Tests of the console never open the sound device.
+            let opened = if cfg!(test) {
+                Err("no sound device in tests".to_owned())
+            } else {
+                Output::open()
+            };
+            match opened {
                 Ok(output) => self.output = Some(output),
                 Err(error) => {
                     eprintln!("voltrus-native: no alarm sound: {error}");

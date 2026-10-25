@@ -4,7 +4,7 @@
 //! shelve durations, the audit trail's details and alarm-flood detection.
 //! Pure functions over the server's rows, so they are tested here.
 
-use voltrus_scada_native::api::{Alarm, AlarmAnalyticsEntry, AlarmSummary};
+use voltrus_scada_native::api::{Alarm, AlarmSummary};
 
 use super::pages::Role;
 use super::{is_shelved, severity_rank};
@@ -334,18 +334,19 @@ pub fn readable_details(details: &str) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
-/// Triggers in the last five minutes when they make a flood (more than ten,
-/// the web console's rule), counted over the ranked sources last raised in
-/// that window.
-pub fn flood(entries: &[AlarmAnalyticsEntry], now: i64) -> Option<i64> {
+/// Alarms raised in the last five minutes when they make a flood (more
+/// than ten, the web console's rule), counted over the history's rows
+/// (`status=all`, [`HISTORY_LIMIT`] newest). The web client, the parity
+/// source, instead sums the 24-hour trigger counts of the ranked sources
+/// last raised in that window, which overstates the figure; this counts the
+/// raises themselves.
+pub fn flood(history: &[Alarm], now: i64) -> Option<usize> {
     let since = now - 300;
-    let total: i64 = entries
+    let raised = history
         .iter()
-        .take(TOP)
-        .filter(|entry| entry.last_triggered_at > since)
-        .map(|entry| entry.trigger_count)
-        .sum();
-    (total > 10).then_some(total)
+        .filter(|alarm| alarm.triggered_at > since)
+        .count();
+    (raised > 10).then_some(raised)
 }
 
 /// `45 s`, `12 min`, `1 h 5 min`: how long acknowledging takes.
@@ -456,20 +457,24 @@ mod tests {
 
     #[test]
     fn sorting_puts_the_worst_first_then_the_newest() {
-        let alarms = plant();
+        // An old critical alarm and a newer info one: priority and recency
+        // disagree, so only a priority sort puts the critical first.
+        let mut alarms = plant();
+        alarms.push(alarm(7, "critical", 50));
+        alarms.push(alarm(8, "info", 500));
         let order = |sort| {
             ids(
                 &alarms,
                 &arrange(&alarms, Filter::Open, sort, "", |a| a.source_key.clone()),
             )
         };
-        assert_eq!(order(Sort::Priority), [3, 2, 1, 6]);
-        assert_eq!(order(Sort::Newest), [3, 2, 1, 6]);
+        assert_eq!(order(Sort::Priority), [3, 2, 7, 1, 8, 6]);
+        assert_eq!(order(Sort::Newest), [8, 3, 2, 1, 6, 7]);
         // By name: the names here reverse the ids.
         let by_name = arrange(&alarms, Filter::Open, Sort::Source, "", |a| {
             format!("{}", 10 - a.id)
         });
-        assert_eq!(ids(&alarms, &by_name), [6, 3, 2, 1]);
+        assert_eq!(ids(&alarms, &by_name), [8, 7, 6, 3, 2, 1]);
         assert_eq!(Sort::Source.next(), Sort::Priority);
     }
 
@@ -588,19 +593,19 @@ mod tests {
     }
 
     #[test]
-    fn a_flood_is_more_than_ten_triggers_in_five_minutes() {
-        let entry = |count, last| AlarmAnalyticsEntry {
-            trigger_count: count,
-            last_triggered_at: last,
-            ..AlarmAnalyticsEntry::default()
-        };
+    fn a_flood_counts_the_alarms_raised_in_the_last_five_minutes() {
         let now = 10_000;
-        assert_eq!(
-            flood(&[entry(6, now - 10), entry(5, now - 60)], now),
-            Some(11)
-        );
-        assert_eq!(flood(&[entry(10, now - 10)], now), None);
-        assert_eq!(flood(&[entry(50, now - 301)], now), None, "older");
+        // A source that alarmed all day: 40 raises earlier in the 24 hours
+        // (its trigger count) and `recent` of them in the window.
+        let day = |recent: i64| -> Vec<Alarm> {
+            (0..recent)
+                .map(|i| alarm(i, "warning", now - 10 - i))
+                .chain((0..40).map(|i| alarm(100 + i, "warning", now - 300 - i * 600)))
+                .collect()
+        };
+        assert_eq!(flood(&day(12), now), Some(12), "only the window counts");
+        assert_eq!(flood(&day(10), now), None, "ten is not a flood");
+        assert_eq!(flood(&day(0), now), None, "busy all day, quiet now");
     }
 
     #[test]

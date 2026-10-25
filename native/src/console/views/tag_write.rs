@@ -13,7 +13,7 @@ use gpui::{AnyElement, ClipboardItem, Context, Entity, Subscription, Window, div
 use reqwest::Method;
 use serde::de::IgnoredAny;
 use voltrus_scada_native::runtime::{Call, CallKey, Command, Reply};
-use voltrus_scada_native::tag_api::{self, WriteAccepted, WriteMode, WritePolicy};
+use voltrus_scada_native::tag_api::{self, PolicyPatch, WriteAccepted, WriteMode, WritePolicy};
 use vt_ui::Icon;
 use vt_ui::chart::format_value;
 use vt_ui::components::{Button, IconButton, Segment, field, kbd, section_label, segmented};
@@ -41,11 +41,13 @@ pub(crate) struct WriteState {
     max: Option<Entity<TextInput>>,
     rate: Option<Entity<TextInput>>,
     deadband: Option<Entity<TextInput>>,
-    writable: bool,
-    requires_reason: bool,
+    /// The editor's choices; `None` while unmade, for a policy the console
+    /// does not know.
+    writable: Option<bool>,
+    requires_reason: Option<bool>,
     policy_error: Option<String>,
-    /// The policy on its way to the server, and for which tag.
-    saving: Option<(i64, WritePolicy)>,
+    /// The change on its way to the server, and for which tag.
+    saving: Option<(i64, PolicyPatch)>,
     saved: Option<i64>,
     subscriptions: Vec<Subscription>,
 }
@@ -89,10 +91,9 @@ pub(crate) fn open_write(console: &mut Console, window: &mut Window, cx: &mut Co
         state.reason = Some(reason);
     }
     let state = console.state::<WriteState>();
-    // The policy-checked, recorded write unless the operator chose another.
-    if !state.mode.is_some_and(|mode| modes.contains(&mode)) {
-        state.mode = Some(WriteMode::Immediate);
-    }
+    // Each opening starts afresh: the policy-checked, recorded write and an
+    // empty value, never a mode or value an earlier write left behind.
+    state.mode = Some(WriteMode::Immediate);
     state.error = None;
     // A REST answer about another tag no longer applies.
     let id = console.selected;
@@ -100,6 +101,10 @@ pub(crate) fn open_write(console: &mut Console, window: &mut Window, cx: &mut Co
     if state.result.as_ref().is_some_and(|(at, _)| Some(*at) != id) {
         state.result = None;
     }
+    console
+        .inputs
+        .write
+        .update(cx, |field, cx| field.set_text("", cx));
     let overlay = Overlay::modal("tag-write", px(460.0), write_dialog, cx);
     console.open_overlay(overlay, window, cx);
     console
@@ -190,10 +195,11 @@ pub(crate) fn open_policy(console: &mut Console, window: &mut Window, cx: &mut C
         state.rate = Some(rate);
         state.deadband = Some(deadband);
     }
-    let policy = known_policy(console, id).unwrap_or_default();
+    let known = known_policy(console, id);
+    let policy = known.clone().unwrap_or_default();
     let state = console.state::<WriteState>();
-    state.writable = policy.writable;
-    state.requires_reason = policy.write_requires_reason;
+    state.writable = known.as_ref().map(|policy| policy.writable);
+    state.requires_reason = known.as_ref().map(|policy| policy.write_requires_reason);
     state.policy_error = None;
     state.saved = None;
     let (Some(min), Some(max), Some(rate), Some(deadband)) = (
@@ -230,6 +236,7 @@ fn save_policy(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         return;
     };
     let id = console.store.tags[index].info.id;
+    let known = known_policy(console, id);
     let state = console.state::<WriteState>();
     if state.saving.is_some() {
         return;
@@ -240,7 +247,8 @@ fn save_policy(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
             .map(|field| field.read(cx).value().to_owned())
             .unwrap_or_default()
     };
-    let parsed = tag_api::parse_policy(
+    let parsed = tag_api::policy_patch(
+        known.as_ref(),
         state.writable,
         state.requires_reason,
         &text(&state.min),
@@ -249,15 +257,18 @@ fn save_policy(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         &text(&state.deadband),
     );
     match parsed {
-        Ok(policy) => {
+        Ok(patch) if patch.is_empty() => {
+            state.policy_error = Some("Nothing to change".to_owned());
+        }
+        Ok(patch) => {
             state.policy_error = None;
             state.saved = None;
-            state.saving = Some((id, policy.clone()));
+            state.saving = Some((id, patch.clone()));
             let path = format!("/api/v1/data-sources/{id}/write-policy");
             console.call(
                 CallKey::new("tags.policy").with(id),
                 Call::new(move |api| async move {
-                    api.send_json::<_, IgnoredAny>(Method::PATCH, &path, &policy)
+                    api.send_json::<_, IgnoredAny>(Method::PATCH, &path, &patch)
                         .await
                 }),
             );
@@ -265,6 +276,17 @@ fn save_policy(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         Err(error) => state.policy_error = Some(error),
     }
     cx.notify();
+}
+
+/// A direct write of tag `tag` landed: its value leaves the dialog, so a
+/// repeated Enter cannot send it again.
+pub(crate) fn written(console: &mut Console, tag: i64, cx: &mut Context<Console>) {
+    if console.selected == Some(tag) {
+        console
+            .inputs
+            .write
+            .update(cx, |field, cx| field.set_text("", cx));
+    }
 }
 
 pub(crate) fn on_reply(
@@ -280,6 +302,10 @@ pub(crate) fn on_reply(
             let state = console.state::<WriteState>();
             state.sending = None;
             state.result = Some((key.arg, result.clone()));
+            // The value went: Enter again must not send it a second time.
+            if result.is_ok() {
+                written(console, key.arg, cx);
+            }
             // With the dialog closed, the answer still shows.
             if !open {
                 match result {
@@ -293,15 +319,22 @@ pub(crate) fn on_reply(
             }
         }
         "tags.policy" => {
-            let state = console.state::<WriteState>();
-            let saving = state.saving.take();
+            let saving = console.state::<WriteState>().saving.take();
             match (reply.error(), saving) {
-                (None, Some((id, policy))) => {
-                    state.policies.insert(id, policy);
+                (None, Some((id, patch))) => {
+                    let known = known_policy(console, id);
+                    let state = console.state::<WriteState>();
+                    // Known from here on only when the patch and what was
+                    // known before make up the whole policy.
+                    if let Some(policy) = patch.applied(known.as_ref()) {
+                        state.policies.insert(id, policy);
+                    }
                     state.saved = Some(id);
                     console.show_toast("Write policy saved", false, cx);
                 }
-                (Some(error), _) => state.policy_error = Some(error.to_owned()),
+                (Some(error), _) => {
+                    console.state::<WriteState>().policy_error = Some(error.to_owned());
+                }
                 (None, None) => {}
             }
         }
@@ -645,6 +678,7 @@ fn policy_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
         let tag = &console.store.tags[index];
         (tag.info.id, tag.info.name.clone())
     };
+    let known = known_policy(console, id).is_some();
     let state = console.state::<WriteState>();
     let (Some(min), Some(max), Some(rate), Some(deadband)) = (
         state.min.clone(),
@@ -670,15 +704,19 @@ fn policy_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
         )
     };
     let writable_segments = vec![
-        choice("Locked", !writable, |state| state.writable = false),
-        choice("Writable", writable, |state| state.writable = true),
+        choice("Locked", writable == Some(false), |state| {
+            state.writable = Some(false);
+        }),
+        choice("Writable", writable == Some(true), |state| {
+            state.writable = Some(true);
+        }),
     ];
     let reason_segments = vec![
-        choice("Optional", !requires_reason, |state| {
-            state.requires_reason = false;
+        choice("Optional", requires_reason == Some(false), |state| {
+            state.requires_reason = Some(false);
         }),
-        choice("Required", requires_reason, |state| {
-            state.requires_reason = true;
+        choice("Required", requires_reason == Some(true), |state| {
+            state.requires_reason = Some(true);
         }),
     ];
     let pair = |left: AnyElement, right: AnyElement| {
@@ -706,8 +744,12 @@ fn policy_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
         ),
         note_line(
             Icon::Info,
-            "The server cannot be asked for the current policy: saving sets all six settings, empty fields clear their limit."
-                .to_owned(),
+            if known {
+                "Saving sends the settings changed here; an emptied field clears its limit."
+            } else {
+                "The server cannot be asked for the current policy: saving sends only the choices made and the limits typed, and leaves the rest as stored."
+            }
+            .to_owned(),
             theme.fg_dim,
         )
         .into_any_element(),
@@ -745,6 +787,96 @@ fn policy_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::console::testing::Harness;
+    use gpui::TestAppContext;
+    use voltrus_scada_native::runtime::Event;
+
+    /// Signed in as `role` with tag 7 open on the Tags page.
+    fn writing(cx: &mut TestAppContext, role: &str) -> Harness {
+        let mut h = Harness::new(cx);
+        h.sign_in(role);
+        h.event(Event::Tags(vec![Harness::tag(7, "plts_1.p")]));
+        h.update(|console, window, cx| console.open_tag(7, window, cx));
+        h.commands();
+        h
+    }
+
+    fn type_value(h: &mut Harness, text: &str) {
+        let text = text.to_owned();
+        h.update(|console, _, cx| {
+            console
+                .inputs
+                .write
+                .update(cx, |field, cx| field.set_text(text, cx));
+        });
+    }
+
+    #[gpui::test]
+    fn enter_after_a_successful_write_sends_nothing(cx: &mut TestAppContext) {
+        let mut h = writing(cx, "demo");
+        h.update(|console, window, cx| open_write(console, window, cx));
+        type_value(&mut h, "42");
+        h.draw();
+        h.keys("enter");
+        assert_eq!(h.calls(), vec![CallKey::new("tags.write").with(7)]);
+        let accepted = WriteAccepted {
+            command_id: "c1".into(),
+            status: "pending".into(),
+            data_source_id: 7,
+            value: 42.0,
+            created_at: 0,
+        };
+        h.reply(CallKey::new("tags.write").with(7), Reply::ok(accepted));
+        h.draw();
+        h.keys("enter");
+        assert!(h.commands().is_empty());
+    }
+
+    #[gpui::test]
+    fn enter_after_a_direct_write_landed_sends_nothing(cx: &mut TestAppContext) {
+        let mut h = writing(cx, "admin");
+        h.update(|console, window, cx| {
+            open_write(console, window, cx);
+            console.state::<WriteState>().mode = Some(WriteMode::Direct);
+        });
+        type_value(&mut h, "5");
+        h.draw();
+        h.keys("enter");
+        let sent = h.commands();
+        assert!(
+            matches!(sent.as_slice(), [Command::Write { id: 7, .. }]),
+            "{sent:?}"
+        );
+        h.event(Event::Written {
+            tag: 7,
+            result: Ok("5".into()),
+            late: false,
+        });
+        h.draw();
+        h.keys("enter");
+        assert!(h.commands().is_empty());
+    }
+
+    /// An earlier write's mode and value never carry into the next opening.
+    #[gpui::test]
+    fn the_write_dialog_opens_empty_and_immediate(cx: &mut TestAppContext) {
+        let mut h = writing(cx, "admin");
+        h.update(|console, window, cx| {
+            open_write(console, window, cx);
+            console.state::<WriteState>().mode = Some(WriteMode::Direct);
+        });
+        type_value(&mut h, "5");
+        h.update(|console, window, cx| {
+            console.close_overlay(window, cx);
+            open_write(console, window, cx);
+        });
+        let (text, mode) = h.update(|console, _, cx| {
+            let text = console.inputs.write.read(cx).value().to_owned();
+            (text, console.state::<WriteState>().mode)
+        });
+        assert_eq!(text, "");
+        assert_eq!(mode, Some(WriteMode::Immediate));
+    }
 
     #[test]
     fn a_policy_reads_as_one_line() {

@@ -83,13 +83,16 @@ impl TagDialog {
 #[derive(Default)]
 pub(crate) struct DetailState {
     query: tag_api::HistoryQuery,
-    /// The answer to `fetched_for`, by tag id.
+    /// The answer to `fetched_for`, by tag id: only the lines it was asked
+    /// for (the open tag and its overlays), not every tag of the answer.
     fetched: HashMap<i64, Samples>,
-    fetched_for: Option<tag_api::HistoryQuery>,
+    /// The query `fetched` answers, and the lines it was asked for.
+    fetched_for: Option<(tag_api::HistoryQuery, Vec<i64>)>,
     /// The server's bucket for `fetched_for`, ms.
     interval: u64,
-    /// The query in flight and its number; older answers are dropped.
-    asked: Option<tag_api::HistoryQuery>,
+    /// The query in flight, its lines and its number; older answers are
+    /// dropped.
+    asked: Option<(tag_api::HistoryQuery, Vec<i64>)>,
     seq: i64,
     history_error: Option<String>,
     /// Each line's samples (fetched, then live), rebuilt only when either
@@ -102,6 +105,8 @@ pub(crate) struct DetailState {
     /// Annotations of the tag with this key, newest first.
     notes: Option<(String, Vec<Annotation>)>,
     notes_asked: Option<String>,
+    /// The number of the newest notes call; older answers are dropped.
+    notes_seq: i64,
     notes_error: Option<String>,
     launch: Option<TagDialog>,
     // Dialog fields, made on first use.
@@ -169,17 +174,40 @@ fn bounds_of(span: Span, now: f64) -> (f64, f64) {
     }
 }
 
-/// Ask for the detail's history unless it is there or on its way.
+/// Ask for what the open tag's panel shows (its history and notes): on
+/// selection and when the Tags page shows, never from render, which the
+/// warm-up runs for every page.
+pub(crate) fn fetch_open(console: &mut Console) {
+    let Some(index) = open_index(console) else {
+        return;
+    };
+    let key = console.store.tags[index].info.key.clone();
+    ensure_history(console);
+    ensure_notes(console, &key);
+}
+
+/// Ask for the history of the open tag and its overlays unless it is there
+/// or on its way.
 fn ensure_history(console: &mut Console) {
     if console.stress.is_some() {
         return;
     }
+    let Some(index) = open_index(console) else {
+        return;
+    };
+    let open = console.store.tags[index].info.id;
+    let ids = line_ids(console, open);
     let state = console.state::<DetailState>();
     let query = state.query;
-    if state.fetched_for == Some(query) || state.asked == Some(query) {
+    let covers = |asked: &Option<(tag_api::HistoryQuery, Vec<i64>)>| {
+        asked
+            .as_ref()
+            .is_some_and(|(of, lines)| *of == query && ids.iter().all(|id| lines.contains(id)))
+    };
+    if covers(&state.fetched_for) || covers(&state.asked) {
         return;
     }
-    state.asked = Some(query);
+    state.asked = Some((query, ids));
     state.seq += 1;
     let seq = state.seq;
     let path = query.path();
@@ -195,6 +223,26 @@ fn ensure_history(console: &mut Console) {
             Ok::<_, anyhow::Error>((series, answer.interval))
         }),
     );
+}
+
+/// The samples of the lines `wanted` (tag id, key) out of a history answer
+/// by key; the answer's other tags are dropped. Tags sharing a key share
+/// its samples.
+fn wanted_lines(
+    mut series: HashMap<String, Vec<(f64, f64)>>,
+    wanted: &[(i64, &str)],
+) -> HashMap<i64, Samples> {
+    let mut lines: HashMap<i64, Samples> = HashMap::new();
+    for (position, &(id, key)) in wanted.iter().enumerate() {
+        let shared = wanted[..position]
+            .iter()
+            .find(|(_, other)| *other == key)
+            .and_then(|(other, _)| lines.get(other).cloned());
+        if let Some(samples) = shared.or_else(|| series.remove(key).map(Rc::new)) {
+            lines.insert(id, samples);
+        }
+    }
+    lines
 }
 
 /// Ask for the open tag's annotations (operators: the server's route is
@@ -213,8 +261,14 @@ fn ensure_notes(console: &mut Console, key: &str) {
 
 fn fetch_notes(console: &mut Console, key: String) {
     let path = tag_api::annotations_path(&key);
-    console.state::<DetailState>().notes_asked = Some(key);
-    console.call(CallKey::new("tags.notes"), Call::get::<Annotations>(path));
+    let state = console.state::<DetailState>();
+    state.notes_asked = Some(key);
+    state.notes_seq += 1;
+    let seq = state.notes_seq;
+    console.call(
+        CallKey::new("tags.notes").with(seq),
+        Call::get::<Annotations>(path),
+    );
 }
 
 /// The samples of tag `id`'s line: the fetched history, then the live
@@ -268,21 +322,26 @@ pub(crate) fn on_reply(
 ) {
     match key.name {
         "tags.history" => {
-            if key.arg != console.state::<DetailState>().seq {
+            let state = console.state::<DetailState>();
+            if key.arg != state.seq {
                 return;
             }
+            let asked = state.asked.take();
             match reply.take::<(HashMap<String, Vec<(f64, f64)>>, u64)>() {
                 Ok((series, interval)) => {
-                    let mut fetched = HashMap::new();
-                    for (key, samples) in series {
-                        let samples = Rc::new(samples);
-                        for tag in console.store.tags.iter().filter(|tag| tag.info.key == key) {
-                            fetched.insert(tag.info.id, Rc::clone(&samples));
-                        }
-                    }
+                    let store = &console.store;
+                    let wanted: Vec<(i64, &str)> = asked
+                        .iter()
+                        .flat_map(|(_, ids)| ids)
+                        .filter_map(move |id| {
+                            let index = store.position(*id)?;
+                            Some((*id, store.tags[index].info.key.as_str()))
+                        })
+                        .collect();
+                    let fetched = wanted_lines(series, &wanted);
                     let state = console.state::<DetailState>();
                     state.fetched = fetched;
-                    state.fetched_for = state.asked.take();
+                    state.fetched_for = asked;
                     state.interval = interval;
                     state.history_error = None;
                     state.lines.clear();
@@ -290,7 +349,7 @@ pub(crate) fn on_reply(
                 Err(error) => {
                     let state = console.state::<DetailState>();
                     // Asked again only when the span or a setting changes.
-                    state.fetched_for = state.asked.take();
+                    state.fetched_for = asked;
                     state.fetched.clear();
                     state.lines.clear();
                     state.history_error = Some(error);
@@ -299,6 +358,10 @@ pub(crate) fn on_reply(
         }
         "tags.notes" => {
             let state = console.state::<DetailState>();
+            // An answer for a tag opened before is not this tag's.
+            if key.arg != state.notes_seq {
+                return;
+            }
             let Some(of) = state.notes_asked.clone() else {
                 return;
             };
@@ -359,6 +422,7 @@ fn set_span(console: &mut Console, span: Span, cx: &mut Context<Console>) {
         state.query.detail = Detail::Auto;
     }
     state.cursor = None;
+    ensure_history(console);
     cx.notify();
 }
 
@@ -369,11 +433,13 @@ fn set_detail(console: &mut Console, detail: Detail, cx: &mut Context<Console>) 
         return;
     }
     state.query.detail = detail;
+    ensure_history(console);
     cx.notify();
 }
 
 fn set_agg(console: &mut Console, agg: Aggregation, cx: &mut Context<Console>) {
     console.state::<DetailState>().query.agg = agg;
+    ensure_history(console);
     cx.notify();
 }
 
@@ -390,6 +456,7 @@ fn toggle_overlay(console: &mut Console, id: i64, cx: &mut Context<Console>) {
             cx,
         );
     }
+    ensure_history(console);
     cx.notify();
 }
 
@@ -570,7 +637,20 @@ fn save_note(console: &mut Console, window: &mut Window, cx: &mut Context<Consol
     cx.notify();
 }
 
+/// Delete note `id` when it is one of the open tag's notes as shown.
 fn delete_note(console: &mut Console, id: i64) {
+    let Some(index) = open_index(console) else {
+        return;
+    };
+    let key = console.store.tags[index].info.key.clone();
+    let state = console.state::<DetailState>();
+    let shown = state
+        .notes
+        .as_ref()
+        .is_some_and(|(of, notes)| *of == key && notes.iter().any(|note| note.id == id));
+    if !shown {
+        return;
+    }
     console.call(
         CallKey::new("tags.note_delete").with(id),
         Call::send_empty::<IgnoredAny>(Method::DELETE, format!("/api/v1/annotations/{id}")),
@@ -723,8 +803,6 @@ pub(crate) fn panel(
     let theme = theme(cx).clone();
     let id = console.store.tags[index].info.id;
     let key = console.store.tags[index].info.key.clone();
-    ensure_history(console);
-    ensure_notes(console, &key);
     if let Some(dialog) = console.state::<DetailState>().launch.take() {
         cx.defer_in(window, move |console, window, cx| {
             open_dialog(console, dialog, window, cx);
@@ -1338,6 +1416,7 @@ fn show_note(
         state.query.detail = Detail::Auto;
     }
     state.cursor = Some(at_ms);
+    ensure_history(console);
     cx.notify();
 }
 
@@ -1805,4 +1884,162 @@ fn compare_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
 /// The write hint for the panel, e.g. `⇧⌘W`.
 pub(crate) fn write_keys() -> String {
     hint(&TagsWrite).unwrap_or_else(|| display("secondary-shift-w"))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use gpui::TestAppContext;
+    use voltrus_scada_native::runtime::{CallKey, Event, Reply};
+    use voltrus_scada_native::tag_api::{Annotation, Annotations};
+
+    use super::{DetailState, delete_note, toggle_overlay, wanted_lines};
+    use crate::console::Page;
+    use crate::console::testing::Harness;
+
+    type Series = HashMap<String, Vec<(f64, f64)>>;
+
+    /// The argument of the one call named `name` among `calls`.
+    fn arg(calls: &[CallKey], name: &str) -> i64 {
+        let found: Vec<i64> = calls
+            .iter()
+            .filter(|key| key.name == name)
+            .map(|key| key.arg)
+            .collect();
+        assert_eq!(found.len(), 1, "one {name} call in {calls:?}");
+        found[0]
+    }
+
+    fn signed_in(cx: &mut TestAppContext) -> Harness {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.event(Event::Tags(vec![
+            Harness::tag(7, "a.p"),
+            Harness::tag(8, "b.p"),
+            Harness::tag(9, "c.p"),
+        ]));
+        h.calls();
+        h
+    }
+
+    fn series(keys: &[&str]) -> Series {
+        keys.iter()
+            .map(|key| ((*key).to_owned(), vec![(1000.0, 1.0)]))
+            .collect()
+    }
+
+    /// The tag ids the detail keeps fetched history for.
+    fn kept(h: &mut Harness) -> Vec<i64> {
+        let mut ids: Vec<i64> = h.update(|console, _, _| {
+            console
+                .state::<DetailState>()
+                .fetched
+                .keys()
+                .copied()
+                .collect()
+        });
+        ids.sort_unstable();
+        ids
+    }
+
+    fn note(id: i64, key: &str) -> Annotation {
+        Annotation {
+            id,
+            tag_id: key.into(),
+            annotation_text: format!("note {id}"),
+            ..Annotation::default()
+        }
+    }
+
+    #[gpui::test]
+    fn a_late_notes_answer_for_another_tag_is_dropped(cx: &mut TestAppContext) {
+        let mut h = signed_in(cx);
+        h.update(|console, window, cx| console.open_tag(7, window, cx));
+        let first = arg(&h.calls(), "tags.notes");
+        h.update(|console, window, cx| console.open_tag(8, window, cx));
+        let second = arg(&h.calls(), "tags.notes");
+        // Tag a's answer arrives after tag b was opened.
+        let late = Annotations {
+            annotations: vec![note(1, "a.p")],
+            count: 1,
+        };
+        h.reply(CallKey::new("tags.notes").with(first), Reply::ok(late));
+        let shown = h.update(|console, _, _| console.state::<DetailState>().notes.clone());
+        assert_eq!(shown, None, "tag b shows nothing of tag a's notes");
+        let own = Annotations {
+            annotations: vec![note(2, "b.p")],
+            count: 1,
+        };
+        h.reply(CallKey::new("tags.notes").with(second), Reply::ok(own));
+        let shown = h.update(|console, _, _| console.state::<DetailState>().notes.clone());
+        assert_eq!(shown, Some(("b.p".to_owned(), vec![note(2, "b.p")])));
+        // Delete acts on the open tag's notes only.
+        h.update(|console, _, _| delete_note(console, 1));
+        assert!(h.calls().is_empty());
+        h.update(|console, _, _| delete_note(console, 2));
+        assert_eq!(h.calls(), vec![CallKey::new("tags.note_delete").with(2)]);
+    }
+
+    /// The warm-up draws every page; drawing the detail panel must not ask
+    /// the server for anything. Selecting a tag does.
+    #[gpui::test]
+    fn drawing_the_panel_asks_the_server_nothing(cx: &mut TestAppContext) {
+        let mut h = signed_in(cx);
+        h.draw();
+        assert!(h.calls().is_empty());
+        h.update(|console, window, cx| console.show(Page::Tags, window, cx));
+        // An open tag the draw finds without a selection having asked.
+        h.update(|console, _, _| console.selected = Some(7));
+        h.calls();
+        h.draw();
+        h.draw();
+        let calls = h.calls();
+        assert!(
+            !calls.iter().any(|key| key.name.starts_with("tags.")),
+            "render asked {calls:?}"
+        );
+        h.update(|console, _, cx| console.select(8, cx));
+        let mut names: Vec<&str> = h.calls().into_iter().map(|key| key.name).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["tags.history", "tags.notes"]);
+        h.draw();
+        assert!(h.calls().is_empty());
+    }
+
+    #[gpui::test]
+    fn the_history_answer_keeps_only_the_charted_tags(cx: &mut TestAppContext) {
+        let mut h = signed_in(cx);
+        h.update(|console, window, cx| console.open_tag(7, window, cx));
+        let seq = arg(&h.calls(), "tags.history");
+        h.reply(
+            CallKey::new("tags.history").with(seq),
+            Reply::ok((series(&["a.p", "b.p", "c.p"]), 1000_u64)),
+        );
+        assert_eq!(kept(&mut h), vec![7]);
+        // An overlay the answer did not keep is asked for.
+        h.update(|console, _, cx| toggle_overlay(console, 9, cx));
+        let seq = arg(&h.calls(), "tags.history");
+        h.reply(
+            CallKey::new("tags.history").with(seq),
+            Reply::ok((series(&["a.p", "b.p", "c.p"]), 1000_u64)),
+        );
+        assert_eq!(kept(&mut h), vec![7, 9]);
+        // Taking it off again needs nothing new.
+        h.update(|console, _, cx| toggle_overlay(console, 9, cx));
+        assert!(h.calls().is_empty());
+    }
+
+    #[test]
+    fn wanted_lines_drop_the_rest_and_share_a_key() {
+        let lines = wanted_lines(
+            series(&["a.p", "b.p", "c.p"]),
+            &[(7, "a.p"), (8, "a.p"), (9, "x.p")],
+        );
+        let mut ids: Vec<i64> = lines.keys().copied().collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec![7, 8]);
+        assert!(Rc::ptr_eq(&lines[&7], &lines[&8]));
+    }
 }

@@ -220,11 +220,20 @@ impl Render for Console {
                 }
             }))
             .on_action(cx.listener(|console, _: &StartStress, window, cx| {
-                let plan = performance::plan(console);
-                console.start_stress(plan, false, window, cx);
+                if console.may_start_stress() {
+                    let plan = performance::plan(console);
+                    console.start_stress(plan, false, window, cx);
+                } else {
+                    console.show_toast(
+                        "A stress test replaces the session: an admin's, without the kiosk lock",
+                        true,
+                        cx,
+                    );
+                }
             }))
             .on_action(cx.listener(|console, _: &StopStress, window, cx| {
-                if console.stress.is_some() {
+                // Stopping signs out: not under the kiosk lock.
+                if console.stress.is_some() && !console.kiosk_locked() {
                     console.sign_out(window, cx);
                 }
             }))
