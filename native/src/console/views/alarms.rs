@@ -212,6 +212,7 @@ fn alarm_row(
 
     div()
         .id(ElementId::NamedInteger("alarm".into(), key))
+        .w_full()
         .flex()
         .items_center()
         .gap(SPACE_5)

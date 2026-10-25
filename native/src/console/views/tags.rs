@@ -205,6 +205,7 @@ fn tag_row(
             "tag".into(),
             u64::try_from(index).unwrap_or(0),
         ))
+        .w_full()
         .flex()
         .items_center()
         .gap(SPACE_5)
@@ -278,6 +279,7 @@ fn tag_row(
             div()
                 .w(px(STATUS))
                 .flex_none()
+                .flex()
                 .child(pill(tag.status.label(), color)),
         )
         .child(
