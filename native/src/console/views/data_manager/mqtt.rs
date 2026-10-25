@@ -122,6 +122,10 @@ struct State {
     topics_seq: i64,
     messages_seq: i64,
     topic_seq: i64,
+    /// The newest start/stop, config save and publish.
+    busy_seq: i64,
+    config_seq: i64,
+    publish_seq: i64,
     asked: bool,
     /// Start or stop on its way.
     busy: bool,
@@ -335,14 +339,16 @@ fn start_stop(console: &mut Console, cx: &mut Context<Console>) {
     }
     let running = state.running();
     state.busy = true;
+    state.busy_seq += 1;
+    let seq = state.busy_seq;
     if running {
         console.call(
-            CallKey::new("data.mqtt.stop"),
+            CallKey::new("data.mqtt.stop").with(seq),
             Call::new(|api| async move { api.mqtt_stop().await }),
         );
     } else {
         console.call(
-            CallKey::new("data.mqtt.start"),
+            CallKey::new("data.mqtt.start").with(seq),
             Call::new(|api| async move { api.mqtt_start().await }),
         );
     }
@@ -459,8 +465,11 @@ fn save_config(console: &mut Console, cx: &mut Context<Console>) {
     };
     form.saving = true;
     form.error = None;
+    let state = console.state::<State>();
+    state.config_seq += 1;
+    let seq = state.config_seq;
     console.call(
-        CallKey::new("data.mqtt.config"),
+        CallKey::new("data.mqtt.config").with(seq),
         Call::new(move |api| async move { api.mqtt_update_config(&body).await }),
     );
     cx.notify();
@@ -541,8 +550,10 @@ fn publish(console: &mut Console, cx: &mut Context<Console>) {
     };
     state.publishing = true;
     state.publish_error = None;
+    state.publish_seq += 1;
+    let seq = state.publish_seq;
     console.call(
-        CallKey::new("data.mqtt.publish"),
+        CallKey::new("data.mqtt.publish").with(seq),
         Call::new(move |api| async move { api.mqtt_publish(&body).await }),
     );
     cx.notify();
@@ -715,14 +726,18 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             }
         }
         "data.mqtt.start" | "data.mqtt.stop" => {
-            state.busy = false;
+            // The broker acted whichever request it was; only the newest
+            // frees the button.
+            if key.arg == state.busy_seq {
+                state.busy = false;
+            }
             match reply.take::<ActionStatus>() {
                 Ok(done) => console.show_toast(done.message, false, cx),
                 Err(error) => console.show_toast(format!("Broker: {error}"), true, cx),
             }
             fetch_status(console);
         }
-        "data.mqtt.config" => match reply.take::<ConfigUpdated>() {
+        "data.mqtt.config" if key.arg == state.config_seq => match reply.take::<ConfigUpdated>() {
             Ok(updated) => {
                 state.form = None;
                 if let Some(window) = state.window {
@@ -739,7 +754,7 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 None => console.show_toast(format!("Broker config: {error}"), true, cx),
             },
         },
-        "data.mqtt.publish" => {
+        "data.mqtt.publish" if key.arg == state.publish_seq => {
             state.publishing = false;
             match reply.take::<Published>() {
                 Ok(published) => {

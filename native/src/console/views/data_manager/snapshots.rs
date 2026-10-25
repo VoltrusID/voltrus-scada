@@ -74,6 +74,9 @@ struct State {
     to: Option<i64>,
     diff: Option<Result<DiffSummary, String>>,
     comparing: bool,
+    /// The newest diff and create requests; older answers are dropped.
+    diff_seq: i64,
+    create_seq: i64,
     // One snapshot opened.
     detail_id: Option<i64>,
     detail: Option<Result<SnapshotDetail, String>>,
@@ -246,6 +249,8 @@ fn pick(console: &mut Console, id: i64, from: bool, cx: &mut Context<Console>) {
     }
     state.diff = None;
     state.comparing = false;
+    // A diff on its way is for the old pair.
+    state.diff_seq += 1;
     cx.notify();
 }
 
@@ -263,8 +268,10 @@ fn compare(console: &mut Console, window: &mut Window, cx: &mut Context<Console>
     };
     state.diff = None;
     state.comparing = true;
+    state.diff_seq += 1;
+    let seq = state.diff_seq;
     console.call(
-        CallKey::new("data.snapshots.diff").with(from),
+        CallKey::new("data.snapshots.diff").with(seq),
         Call::new(move |api| async move { api.diff_config_snapshots(from, to).await }),
     );
     console.list(DIFF_LIST, cx).cursor = None;
@@ -321,8 +328,10 @@ fn create(console: &mut Console, cx: &mut Context<Console>) {
         .unwrap_or_default();
     state.creating = true;
     state.create_error = None;
+    state.create_seq += 1;
+    let seq = state.create_seq;
     console.call(
-        CallKey::new("data.snapshots.create"),
+        CallKey::new("data.snapshots.create").with(seq),
         Call::new(move |api| async move { api.create_config_snapshot(&label).await }),
     );
     cx.notify();
@@ -387,13 +396,17 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
         }
         "data.snapshots.diff" => {
             let state = console.state::<State>();
-            if state.from == Some(key.arg) {
+            if key.arg == state.diff_seq {
                 state.comparing = false;
                 state.diff = Some(reply.take::<DiffSummary>());
             }
         }
         "data.snapshots.create" => {
             let state = console.state::<State>();
+            if key.arg != state.create_seq {
+                cx.notify();
+                return;
+            }
             state.creating = false;
             match reply.take::<SnapshotSummary>() {
                 Ok(created) => {
@@ -1353,8 +1366,12 @@ fn rollback_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Conso
     let rolling = state.rolling;
     div()
         .when_some(focus, |this, focus| this.track_focus(&focus))
-        .on_key_down(cx.listener(|console, event: &KeyDownEvent, _, cx| {
-            if event.keystroke.key == "enter" {
+        .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
+            let ours = console
+                .state_ref::<State>()
+                .and_then(|state| state.confirm_focus.as_ref())
+                .is_some_and(|focus| focus.is_focused(window));
+            if ours && event.keystroke.key == "enter" {
                 rollback_confirmed(console, cx);
                 cx.stop_propagation();
             }

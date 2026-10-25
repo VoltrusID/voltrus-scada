@@ -80,6 +80,7 @@ struct State {
     /// The instance waiting for the confirmation.
     pending: Option<InstantiateBody>,
     instantiating: bool,
+    instantiate_seq: i64,
     confirm_focus: Option<FocusHandle>,
 }
 
@@ -398,9 +399,11 @@ fn instantiate_confirmed(console: &mut Console, window: &mut Window, cx: &mut Co
     console.close_overlay(window, cx);
     let state = console.state::<State>();
     state.instantiating = true;
+    state.instantiate_seq += 1;
+    let seq = state.instantiate_seq;
     let path = instantiate_path(&body.template_id);
     console.call(
-        CallKey::new("data.system.templates.instantiate"),
+        CallKey::new("data.system.templates.instantiate").with(seq),
         Call::send::<Instantiated>(
             Method::POST,
             path,
@@ -440,6 +443,9 @@ pub(super) fn on_reply(
             }
         }
         "data.system.templates.instantiate" => {
+            if key.arg != state.instantiate_seq {
+                return;
+            }
             state.instantiating = false;
             match reply.take::<Instantiated>() {
                 Ok(done) => {

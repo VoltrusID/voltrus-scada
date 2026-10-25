@@ -133,6 +133,7 @@ actions!(
         EngFlowsLater,
         EngFlowsAddStep,
         EngFlowsInspect,
+        EngFlowsOpen,
         EngScriptsNew,
         EngScriptsDelete,
         EngScriptsToggleEnabled,
@@ -1349,6 +1350,15 @@ pub static COMMANDS: &[CommandSpec] = &[
         ["r"],
         ENG_FLOWS,
         EngFlowsRefresh,
+        false
+    ),
+    command!(
+        "Flows: open the editor",
+        Data,
+        Waypoints,
+        ["o"],
+        ENG_FLOWS,
+        EngFlowsOpen,
         false
     ),
     command!(

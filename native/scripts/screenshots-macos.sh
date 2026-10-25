@@ -72,6 +72,7 @@ shots=(
   "eng-imports|--sign-in --page data --section imports --appearance dark"
   "eng-flows|--sign-in --page data --section flows --appearance dark"
   "eng-flows-new|--sign-in --page data --section flows --overlay EngFlowsNew --appearance dark"
+  "eng-flows-editor|--sign-in --page data --section flows --overlay EngFlowsOpen --appearance dark"
   "eng-scripts|--sign-in --page data --section scripts --appearance dark"
   "eng-scripts-light|--sign-in --page data --section scripts --appearance light"
 )

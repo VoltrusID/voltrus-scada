@@ -67,6 +67,7 @@ struct State {
     /// The last refresh; older answers are dropped.
     seq: i64,
     exporting: bool,
+    export_seq: i64,
 }
 
 /// The list the view on screen shows.
@@ -154,8 +155,10 @@ pub(super) fn export(console: &mut Console, cx: &mut Context<Console>) {
         return;
     }
     state.exporting = true;
+    state.export_seq += 1;
+    let seq = state.export_seq;
     save_download(
-        CallKey::new("data.system.docs.export"),
+        CallKey::new("data.system.docs.export").with(seq),
         DOCS_EXPORT_PATH.to_owned(),
         DOCS_EXPORT_FILE.to_owned(),
         Format::Csv,
@@ -194,10 +197,14 @@ pub(super) fn on_reply(
     reply: Reply,
     cx: &mut Context<Console>,
 ) {
-    let stale = key.name != "data.system.docs.export"
-        && console
-            .state_ref::<State>()
-            .is_some_and(|state| key.arg != state.seq);
+    let stale = console.state_ref::<State>().is_some_and(|state| {
+        let current = if key.name == "data.system.docs.export" {
+            state.export_seq
+        } else {
+            state.seq
+        };
+        key.arg != current
+    });
     if stale {
         return;
     }

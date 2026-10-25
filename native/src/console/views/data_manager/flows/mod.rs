@@ -34,8 +34,8 @@ use vt_ui::theme::*;
 
 use crate::console::Console;
 use crate::console::keys::{
-    EngFlowsDelete, EngFlowsEdit, EngFlowsNew, EngFlowsRefresh, EngFlowsRuns, EngFlowsSortNext,
-    EngFlowsSortReverse, EngFlowsTest,
+    EngFlowsDelete, EngFlowsEdit, EngFlowsNew, EngFlowsOpen, EngFlowsRefresh, EngFlowsRuns,
+    EngFlowsSortNext, EngFlowsSortReverse, EngFlowsTest,
 };
 use crate::console::nav::Move;
 use crate::console::overlay::Overlay;
@@ -129,6 +129,8 @@ pub(crate) struct State {
     /// The last test payload typed, offered again.
     test_payload: Option<String>,
     editor: Option<editor::Editor>,
+    /// O came before the list: open its first flow when it arrives.
+    open_pending: bool,
 }
 
 pub fn on_open(console: &mut Console, _: &mut Context<Console>) {
@@ -375,6 +377,28 @@ fn open_new(console: &mut Console, window: &mut Window, cx: &mut Context<Console
     forms::open_meta(console, None, window, cx);
 }
 
+/// O: open the cursor's flow (or the first) on the canvas; before the list
+/// has come, once it comes.
+fn open_cursor(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    let state = console.state::<State>();
+    if state.editor.is_some() {
+        return;
+    }
+    if !matches!(state.flows, Some(Ok(_))) {
+        state.open_pending = true;
+        state.window = Some(window.window_handle());
+        return;
+    }
+    let flow = match cursor_flow(console, cx) {
+        Some(flow) => Some(flow),
+        None => table(console, cx).first().cloned(),
+    };
+    match flow {
+        Some(flow) => editor::open(console, flow, window, cx),
+        None => console.show_toast("No flow to open yet: N makes one", false, cx),
+    }
+}
+
 pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Context<Console>) {
     match key.name {
         "data.flows.list" => {
@@ -383,7 +407,13 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             let shown = matches!(state.flows, Some(Ok(_)));
             if !stale {
                 match reply.take::<Vec<Flow>>() {
-                    Ok(flows) => console.state::<State>().flows = Some(Ok(flows)),
+                    Ok(flows) => {
+                        let state = console.state::<State>();
+                        state.flows = Some(Ok(flows));
+                        if std::mem::take(&mut state.open_pending) {
+                            with_window(console, cx, open_cursor);
+                        }
+                    }
                     // Keep a list already shown; say why it is not fresh.
                     Err(error) if shown => {
                         console.show_toast(format!("Flows: {error}"), true, cx);
@@ -611,7 +641,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         format!("{shown} of {total} flows match")
     } else {
         format!(
-            "{total} flows · {active} running · sorted by {}{arrow} · ↵ edit · Space start/stop · N new · E settings · T test · H runs · ⌫ delete · S sort",
+            "{total} flows · {active} running · sorted by {}{arrow} · ↵/O edit · Space start/stop · N new · E settings · T test · H runs · ⌫ delete · S sort",
             sort.label()
         )
     };
@@ -646,6 +676,9 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 .flex_col()
                 .flex_1()
                 .min_h_0()
+                .on_action(cx.listener(|console, _: &EngFlowsOpen, window, cx| {
+                    open_cursor(console, window, cx);
+                }))
                 .on_action(cx.listener(|console, _: &EngFlowsNew, window, cx| {
                     open_new(console, window, cx);
                 }))

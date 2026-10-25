@@ -45,6 +45,8 @@ struct State {
     settings: Option<Result<SmtpSettings, String>>,
     asked: bool,
     get_seq: i64,
+    save_seq: i64,
+    test_seq: i64,
     fields: Option<Fields>,
     encryption: Encryption,
     saving: bool,
@@ -163,9 +165,11 @@ fn save(console: &mut Console, cx: &mut Context<Console>) {
         Ok(body) => {
             state.saving = true;
             state.save_note = None;
+            state.save_seq += 1;
+            let seq = state.save_seq;
             let body = serde_json::to_value(body).unwrap_or_default();
             console.call(
-                CallKey::new("data.system.smtp.save"),
+                CallKey::new("data.system.smtp.save").with(seq),
                 Call::send::<IgnoredAny>(Method::PUT, SMTP_PATH, body),
             );
         }
@@ -193,9 +197,11 @@ fn send_test(console: &mut Console, cx: &mut Context<Console>) {
         Ok(body) => {
             state.testing = true;
             state.test_note = None;
+            state.test_seq += 1;
+            let seq = state.test_seq;
             let body = serde_json::to_value(body).unwrap_or_default();
             console.call(
-                CallKey::new("data.system.smtp.test"),
+                CallKey::new("data.system.smtp.test").with(seq),
                 Call::send::<SmtpTestAnswer>(Method::POST, SMTP_TEST_PATH, body),
             );
         }
@@ -210,8 +216,17 @@ pub(super) fn on_reply(
     reply: Reply,
     cx: &mut Context<Console>,
 ) {
+    let state = console.state::<State>();
+    let current = match key.name {
+        "data.system.smtp.get" => state.get_seq,
+        "data.system.smtp.save" => state.save_seq,
+        "data.system.smtp.test" => state.test_seq,
+        _ => return,
+    };
+    if key.arg != current {
+        return;
+    }
     match key.name {
-        "data.system.smtp.get" if key.arg != console.state::<State>().get_seq => {}
         "data.system.smtp.get" => match reply.take::<SmtpSettings>() {
             Ok(settings) => {
                 fill(console, &settings, cx);

@@ -98,6 +98,9 @@ struct State {
     script_asked: bool,
     guide_asked: bool,
     saving: bool,
+    /// The newest request of each kind (`REPORT`, `IO`, …); older answers
+    /// are dropped.
+    latest: [i64; SLOTS],
     search: Option<Entity<TextInput>>,
     _search: Option<Subscription>,
 }
@@ -118,13 +121,36 @@ pub fn search(console: &Console) -> Option<Entity<TextInput>> {
     console.state_ref::<State>()?.search.clone()
 }
 
+/// The kinds of request, each numbered on its own.
+const REPORT: usize = 0;
+const IO: usize = 1;
+const EXCLUSIONS: usize = 2;
+const SCRIPT: usize = 3;
+const GUIDE: usize = 4;
+const SAVE: usize = 5;
+const SLOTS: usize = 6;
+
+/// The number of a new request of kind `slot`.
+fn next(console: &mut Console, slot: usize) -> i64 {
+    let latest = &mut console.state::<State>().latest[slot];
+    *latest += 1;
+    *latest
+}
+
+/// Whether an answer of kind `slot` is the newest asked for.
+fn newest(state: &State, slot: usize, key: CallKey) -> bool {
+    state.latest[slot] == key.arg
+}
+
 fn fetch_report(console: &mut Console) {
+    let seq = next(console, REPORT);
     console.call(
-        CallKey::new("data.edr.report"),
+        CallKey::new("data.edr.report").with(seq),
         Call::new(|api| async move { api.edr_report().await }),
     );
+    let seq = next(console, IO);
     console.call(
-        CallKey::new("data.edr.io"),
+        CallKey::new("data.edr.io").with(seq),
         Call::new(|api| async move { api.edr_io_status().await }),
     );
 }
@@ -145,8 +171,9 @@ fn fetch_tab(console: &mut Console, tab: Tab, again: bool) {
         Tab::Exclusions => {
             if !state.exclusions_asked || again {
                 state.exclusions_asked = true;
+                let seq = next(console, EXCLUSIONS);
                 console.call(
-                    CallKey::new("data.edr.exclusions"),
+                    CallKey::new("data.edr.exclusions").with(seq),
                     Call::new(|api| async move { api.edr_exclusions().await }),
                 );
             }
@@ -154,8 +181,9 @@ fn fetch_tab(console: &mut Console, tab: Tab, again: bool) {
         Tab::Script => {
             if operator && (!state.script_asked || again) {
                 state.script_asked = true;
+                let seq = next(console, SCRIPT);
                 console.call(
-                    CallKey::new("data.edr.script"),
+                    CallKey::new("data.edr.script").with(seq),
                     Call::new(|api| async move { api.edr_defender_ps1().await }),
                 );
             }
@@ -163,8 +191,9 @@ fn fetch_tab(console: &mut Console, tab: Tab, again: bool) {
         Tab::Guide => {
             if !state.guide_asked || again {
                 state.guide_asked = true;
+                let seq = next(console, GUIDE);
                 console.call(
-                    CallKey::new("data.edr.guide"),
+                    CallKey::new("data.edr.guide").with(seq),
                     Call::new(|api| async move { api.edr_gpo_guide().await }),
                 );
             }
@@ -240,10 +269,12 @@ fn save_script(console: &mut Console, cx: &mut Context<Console>) {
         return;
     }
     state.saving = true;
+    let seq = next(console, SAVE);
     // `Format` only decides how rows are counted; the text is written as
-    // the server sent it.
+    // the server sent it. The save panel answers later: the cancel hook
+    // and the reply look the state up again (it is new after a sign-out).
     ops_kit::save_download(
-        CallKey::new("data.edr.save"),
+        CallKey::new("data.edr.save").with(seq),
         PS1.to_owned(),
         PS1_FILE.to_owned(),
         Format::Csv,
@@ -259,17 +290,29 @@ fn save_script(console: &mut Console, cx: &mut Context<Console>) {
 pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Context<Console>) {
     let state = console.state::<State>();
     match key.name {
-        "data.edr.report" => state.report = Some(reply.take::<EdrReport>()),
-        "data.edr.io" => {
+        "data.edr.report" if newest(state, REPORT, key) => {
+            state.report = Some(reply.take::<EdrReport>());
+        }
+        "data.edr.io" if newest(state, IO, key) => {
             if let Ok(io) = reply.take::<IoStatus>() {
                 state.io = Some(io);
             }
         }
-        "data.edr.exclusions" => state.exclusions = Some(reply.take::<Exclusions>()),
-        "data.edr.script" => state.script = Some(reply.take::<String>().map(Text::new)),
-        "data.edr.guide" => state.guide = Some(reply.take::<String>().map(Text::new)),
+        "data.edr.exclusions" if newest(state, EXCLUSIONS, key) => {
+            state.exclusions = Some(reply.take::<Exclusions>());
+        }
+        "data.edr.script" if newest(state, SCRIPT, key) => {
+            state.script = Some(reply.take::<String>().map(Text::new));
+        }
+        "data.edr.guide" if newest(state, GUIDE, key) => {
+            state.guide = Some(reply.take::<String>().map(Text::new));
+        }
+        // A file was written (or not) whichever save it was; only the
+        // newest clears the busy button.
         "data.edr.save" => {
-            state.saving = false;
+            if newest(state, SAVE, key) {
+                state.saving = false;
+            }
             match reply.take::<Saved>() {
                 Ok(saved) => {
                     let name = saved.file.file_name().map_or_else(

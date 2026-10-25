@@ -86,6 +86,8 @@ struct State {
     result: Option<WizardResult>,
     quick_result: Option<WizardResult>,
     asked: bool,
+    /// The last ask for the template lists; older answers are dropped.
+    lists_seq: i64,
     verticals: Option<Result<Vec<TemplateSummary>, String>>,
     feeds: Option<Result<Vec<FeedTemplateSummary>, String>>,
     feed: Option<Result<FeedTemplate, String>>,
@@ -121,16 +123,19 @@ pub(super) fn refresh(console: &mut Console) {
     if console.stress.is_some() {
         return;
     }
-    console.state::<State>().asked = true;
+    let state = console.state::<State>();
+    state.asked = true;
+    state.lists_seq += 1;
+    let seq = state.lists_seq;
     console.call(
-        CallKey::new("data.system.wizard.verticals"),
+        CallKey::new("data.system.wizard.verticals").with(seq),
         Call::new(|api| async move {
             let list: TemplateList = api.get_json(&templates_path(None)).await?;
             anyhow::Ok(list.templates)
         }),
     );
     console.call(
-        CallKey::new("data.system.wizard.feeds"),
+        CallKey::new("data.system.wizard.feeds").with(seq),
         Call::get::<FeedTemplateList>(FEED_TEMPLATES_PATH),
     );
     let state = console.state::<State>();
@@ -164,10 +169,14 @@ pub(super) fn on_reply(
     let state = console.state::<State>();
     match key.name {
         "data.system.wizard.verticals" => {
-            state.verticals = Some(reply.take::<Vec<TemplateSummary>>());
+            if key.arg == state.lists_seq {
+                state.verticals = Some(reply.take::<Vec<TemplateSummary>>());
+            }
         }
         "data.system.wizard.feeds" => {
-            state.feeds = Some(reply.take::<FeedTemplateList>().map(|list| list.templates));
+            if key.arg == state.lists_seq {
+                state.feeds = Some(reply.take::<FeedTemplateList>().map(|list| list.templates));
+            }
         }
         "data.system.wizard.feed" => {
             if key.arg == state.feed_seq {

@@ -738,8 +738,12 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             }
         }
         "data.scripts.create" => {
-            let answer = reply.take::<Script>();
             let state = console.state::<State>();
+            // Not asked by this session's state (a sign-out came between).
+            if !state.saving {
+                return;
+            }
+            let answer = reply.take::<Script>();
             state.saving = false;
             match answer {
                 Ok(created) => {
@@ -774,8 +778,11 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             }
         }
         "data.scripts.save" => {
-            let answer = reply.take::<Script>();
             let state = console.state::<State>();
+            if !state.saving {
+                return;
+            }
+            let answer = reply.take::<Script>();
             state.saving = false;
             match answer {
                 Ok(saved) => {
@@ -840,8 +847,11 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             }
         }
         "data.scripts.test" => {
-            let answer = reply.take::<(TestResult, bool)>();
             let state = console.state::<State>();
+            if !state.testing {
+                return;
+            }
+            let answer = reply.take::<(TestResult, bool)>();
             state.testing = false;
             match answer {
                 Ok((result, dirty)) => {
