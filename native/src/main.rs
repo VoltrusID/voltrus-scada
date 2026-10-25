@@ -21,7 +21,7 @@ fn usage() -> String {
         "\
 usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
-                      [--hud] [--overlay palette|help]
+                      [--hud] [--overlay palette|help|<action>]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
 
@@ -30,9 +30,10 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --page             the page to open after signing in
   --tag              a tag key to open on the Tags page
   --range            the Trends range to start with (default 1h)
-  --appearance       dark or light instead of following the system
+  --appearance       dark or light instead of the server's preference or the system
   --hud              show the performance HUD (also ⇧⌘P)
-  --overlay          open the command palette or the shortcut help once signed in
+  --overlay          open the command palette, the shortcut help, or run a command by its
+                     action name (e.g. ShellOpenSettings) once signed in
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
   --stress-tags      how many synthetic tags
   --stress-rate      synthetic updates per second
@@ -112,10 +113,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     Some("palette") => LaunchOverlay::Palette,
                     Some("help") => LaunchOverlay::Help,
                     other => {
-                        return Err(format!(
-                            "--overlay takes palette or help, not “{}”",
-                            other.unwrap_or("")
-                        ));
+                        let name = other.unwrap_or("");
+                        match console::keys::COMMANDS
+                            .iter()
+                            .map(|command| (command.action)().name())
+                            .find(|action| action.rsplit("::").next() == Some(name))
+                        {
+                            Some(action) => LaunchOverlay::Action(action),
+                            None => {
+                                return Err(format!(
+                                    "--overlay takes palette, help or a command's action name, not “{name}”"
+                                ));
+                            }
+                        }
                     }
                 });
             }
@@ -201,6 +211,7 @@ fn main() -> ExitCode {
         overlay: options.overlay,
         stress: options.stress,
         utc_offset,
+        appearance: options.dark,
     };
     let appearance = options.dark;
 
@@ -248,6 +259,23 @@ fn main() -> ExitCode {
                     cx.new(|cx| Console::new(runtime, events, catalog, launch, window, cx));
                 let weak = console.downgrade();
                 window.on_window_should_close(cx, move |_, cx| {
+                    // The kiosk lock keeps the window open.
+                    let locked = weak
+                        .update(cx, |console, cx| {
+                            let locked = console.kiosk_locked();
+                            if locked {
+                                console.show_toast(
+                                    "The kiosk lock keeps this window open",
+                                    true,
+                                    cx,
+                                );
+                            }
+                            locked
+                        })
+                        .unwrap_or(false);
+                    if locked {
+                        return false;
+                    }
                     let _ = weak.update(cx, |console, _| console.shutdown());
                     cx.quit();
                     true
@@ -353,5 +381,16 @@ mod tests {
         );
         assert!(parse(&args(&["--stress", "--stress-rate", "fast"])).is_err());
         assert!(parse(&args(&["--stress", "--sign-in"])).is_err());
+    }
+
+    #[test]
+    fn an_overlay_names_a_command_by_its_action() {
+        assert_eq!(
+            parse(&args(&["--overlay", "ShellOpenSettings"])).map(|options| options.overlay),
+            Ok(Some(LaunchOverlay::Action(
+                "voltrus_console::ShellOpenSettings"
+            )))
+        );
+        assert!(parse(&args(&["--overlay", "voltrus_console::Nowhere"])).is_err());
     }
 }

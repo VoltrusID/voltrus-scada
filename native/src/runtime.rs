@@ -198,6 +198,14 @@ pub enum Command {
     /// [`crate::stress`]); `SignOut` stops it.
     Stress(StressOptions),
     Shutdown,
+    /// A call to a public endpoint of the server at `base`, without a
+    /// session (the sign-in card's sign-in methods and edition): answered
+    /// by [`Event::PublicReply`] under the same key, signed in or not.
+    Public {
+        base: String,
+        key: CallKey,
+        call: Call,
+    },
 }
 
 /// Passwords stay out of logs.
@@ -233,6 +241,11 @@ impl fmt::Debug for Command {
                 .finish_non_exhaustive(),
             Self::Stress(options) => f.debug_tuple("Stress").field(options).finish(),
             Self::Shutdown => f.write_str("Shutdown"),
+            Self::Public { base, key, .. } => f
+                .debug_struct("Public")
+                .field("base", base)
+                .field("key", key)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -319,6 +332,11 @@ pub enum Event {
         device_id: String,
         online: bool,
         latency_ms: Option<u64>,
+    },
+    /// The answer to a [`Command::Public`].
+    PublicReply {
+        key: CallKey,
+        reply: Reply,
     },
 }
 
@@ -854,6 +872,14 @@ impl Actor {
                 self.stress = Some(spawn_stress(self.out.clone(), options));
             }
             Command::Shutdown => return false,
+            Command::Public { base, key, call } => {
+                let out = self.out.clone();
+                let api = VoltrusApi::new(&base);
+                tokio::spawn(async move {
+                    let reply = Reply((call.0)(api).await);
+                    out.send(Event::PublicReply { key, reply });
+                });
+            }
         }
         true
     }
@@ -1946,5 +1972,32 @@ mod tests {
         h.events();
         h.run_for(Duration::from_millis(100));
         assert!(h.events().is_empty(), "signing out stops the feed");
+    }
+
+    #[test]
+    fn a_public_call_answers_without_a_session() {
+        let mut h = Harness::new();
+        let key = CallKey::new("shell.providers");
+        h.feed(Input::Command(Command::Public {
+            base: "http://plant.local:3000/".into(),
+            key,
+            call: Call::new(|api| async move { Ok((api.base.clone(), api.token.is_none())) }),
+        }));
+        let mut answer = None;
+        for _ in 0..100 {
+            h.run_for(Duration::from_millis(10));
+            if let Some(Event::PublicReply { key: got, reply }) = h.events().pop() {
+                answer = Some((got, reply));
+                break;
+            }
+        }
+        let (got, reply) = answer.expect("the public call answered");
+        assert_eq!(got, key);
+        assert_eq!(
+            reply.take::<(String, bool)>(),
+            Ok(("http://plant.local:3000".to_owned(), true)),
+            "the server's base without a trailing slash, and no token"
+        );
+        assert!(h.actor.session.is_none(), "no session was started");
     }
 }

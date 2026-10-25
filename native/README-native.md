@@ -66,6 +66,36 @@ JetBrains Mono for values.
   refresh, events per second, tags and peak memory. `--stress` feeds a
   deterministic 10 000-tag synthetic plant through the same store path as
   the WebSocket, without a server, and prints a report when it ends.
+- **Settings** (⌘,, or the gear in the navbar): the appearance (light,
+  dark or system), kept on the server per user (`settings/ui-theme`) and
+  applied at sign-in unless `--appearance` pins it; any of vt-ui's bundled
+  themes for dark and for light, picked from a searchable list that shows
+  each theme as the cursor moves (Enter keeps it, Esc goes back); the
+  language (`settings/ui-lang`, kept for the web client; this console's
+  text stays English); the alarm cooldown (operators save it, others read
+  it); the history aggregation default; system notifications for new
+  critical alarms (macOS); the kiosk lock (no Quit, Sign out or window
+  close); and the edition, versions and add-on features. ⇧⌘L and the
+  navbar's sun and moon also keep the choice on the server. Local choices
+  sit in `<config dir>/voltrus-native/preferences.toml`.
+- **Keyboard shortcuts from the server**: the user's `nav-shortcuts`
+  (Overview, Alarms) and per-tag `shortcuts`, shared with the web client,
+  become key bindings at sign-in. The shortcut editor (in Settings or the
+  palette) lists every target and tag: Enter records new keys, Space
+  clears; shortcuts that only mean something in the web client, or that
+  take a built-in key, are kept but say why they are not bound here.
+- **Notifications**: the navbar's bell counts unread user notifications
+  (mentions in shift handovers and annotations, fetched every 30 s); its
+  popover (⌥⌘N) shows the alarms to acknowledge and the notifications,
+  Enter marks one read, Space dismisses it.
+- **Edition**: the licence tier as a badge in the navbar and on the
+  sign-in card (`/api/license/status`), and the server's sign-in methods
+  (`/api/v1/auth/providers`) under the sign-in form. Single sign-on is
+  listed but not usable here: the server has no hand-off that gives a
+  desktop client the session, so the card says so and offers the web
+  sign-in.
+- **Status bar clock** on the computer's time, beside the server's version
+  and the console's.
 
 The network side runs on its own tokio thread: it signs in, keeps the
 WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s) signing in
@@ -90,7 +120,7 @@ Options, mainly for kiosks and screenshots:
 
 ```
 voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance] [--tag <key>]
-               [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud] [--overlay palette|help]
+               [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud] [--overlay palette|help|<action>]
                [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                          [--stress-seconds N] [--stress-report FILE]]
 ```
@@ -98,6 +128,8 @@ voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance] [--t
 `--sign-in` signs in at once with `VOLTRUS_NATIVE_URL` (default
 `http://localhost:3000`), `VOLTRUS_NATIVE_USER` (default `admin`) and
 `VOLTRUS_NATIVE_PASSWORD`. `--tag` opens one tag's detail; `--range` picks the Trends range.
+`--overlay` also runs a command by its action name once signed in, e.g.
+`--overlay ShellOpenSettings` (screenshots of dialogs).
 `--stress-seconds 20 --stress-report report.txt` runs the stress test for
 20 seconds, prints the report (frames, frame time p50/p95/max, drops,
 page-switch time, memory), writes it to the file and quits.
@@ -130,6 +162,9 @@ native/src/
     store.rs        tags, values, statuses and history; update rate
     config.rs       remembered address and username
     views/          one cached view per window part, one module per page
+    shell.rs        settings, notifications, edition, kiosk lock (state and server calls)
+    shortcuts.rs    server-kept shortcuts as live key bindings
+    prefs.rs        workstation preferences (themes per brightness, kiosk, …)
 native/scripts/     CI: the solar-farm plant, app bundle, screenshots
 ```
 
@@ -200,3 +235,11 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - Tag keys are register names, so two devices may share one (solar-farm has
   `frequency` twice). The console shows the first; keying by device is future
   work.
+- `settings/ui-theme` accepts only `light`, `dark` or `system`, so the
+  bundled theme chosen for each brightness is kept on the workstation.
+- `PUT /nav-shortcuts` and `PUT /shortcuts` replace the user's whole map,
+  and `GET /nav-shortcuts` answers the defaults merged with the user's
+  choices; the editor sends every entry each time, as the web client does.
+- Single sign-on providers (`auth/providers`, from an add-on edition)
+  finish in a browser; there is no loopback redirect or device code that
+  would hand the session to a desktop client.

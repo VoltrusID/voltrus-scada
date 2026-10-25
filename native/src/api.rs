@@ -11,6 +11,8 @@
 //! console reaches it through the runtime's generic `Command::Call` (see
 //! `runtime::Call`) without a new command or event.
 
+pub mod shell;
+
 use std::fmt;
 
 use anyhow::{Result, anyhow};

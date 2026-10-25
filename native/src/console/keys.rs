@@ -49,6 +49,10 @@ actions!(
         ListToggle,
         StartStress,
         StopStress,
+        ShellOpenSettings,
+        ShellToggleNotifications,
+        ShellEditShortcuts,
+        ShellPickTheme,
     ]
 );
 
@@ -340,6 +344,42 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     command!("Sign out", Session, Unplug, [], CONSOLE, SignOut, true),
     command!("Quit", Session, X, ["secondary-q"], CONSOLE, Quit, true),
+    command!(
+        "Settings",
+        View,
+        Settings,
+        ["secondary-,"],
+        CONSOLE,
+        ShellOpenSettings,
+        true
+    ),
+    command!(
+        "Notifications",
+        View,
+        Inbox,
+        ["secondary-alt-n"],
+        CONSOLE,
+        ShellToggleNotifications,
+        true
+    ),
+    command!(
+        "Edit keyboard shortcuts",
+        View,
+        Keyboard,
+        [],
+        CONSOLE,
+        ShellEditShortcuts,
+        true
+    ),
+    command!(
+        "Pick a theme",
+        View,
+        Palette,
+        [],
+        CONSOLE,
+        ShellPickTheme,
+        true
+    ),
 ];
 
 /// A binding from table data; panics on a bad keystroke or context, which

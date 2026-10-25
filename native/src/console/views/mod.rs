@@ -6,11 +6,14 @@
 
 pub(crate) mod alarms;
 pub(crate) mod cached;
+pub(crate) mod edition;
 pub(crate) mod hud;
 pub(crate) mod navbar;
+pub(crate) mod notifications;
 pub(crate) mod overlays;
 pub(crate) mod overview;
 pub(crate) mod performance;
+pub(crate) mod settings;
 mod sign_in;
 pub(crate) mod status_bar;
 pub(crate) mod tags;
@@ -207,6 +210,7 @@ impl Render for Console {
                     console.sign_out(window, cx);
                 }
             }))
+            .map(|root| super::shell::actions(root, cx))
             .child(body)
             .when(!self.toasts.is_empty(), |this| {
                 this.child(

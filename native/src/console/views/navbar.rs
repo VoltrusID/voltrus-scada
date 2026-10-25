@@ -11,7 +11,8 @@ use vt_ui::theme::*;
 
 use super::{capitalized, host};
 use crate::console::keys::{
-    ShowMore, ToggleAppearance, TogglePalette, TogglePerfHud, display, hint, page_keys,
+    ShellOpenSettings, ShowMore, ToggleAppearance, TogglePalette, TogglePerfHud, display, hint,
+    page_keys,
 };
 use crate::console::pages::{PAGES, PageSpec, Placement};
 use crate::console::{Console, overlay};
@@ -113,6 +114,9 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let separator = || div().flex_none().w(px(1.0)).h(px(18.0)).bg(theme.border);
     let dark = theme.dark;
     let palette_keys = hint(&TogglePalette).unwrap_or_default();
+    let edition_badge = super::edition::badge(console, cx);
+    let bell = super::notifications::bell(console, cx);
+    let kiosk = console.kiosk_locked();
     div()
         .size_full()
         .flex()
@@ -150,6 +154,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 .text_color(theme.fg_dim)
                 .child(host(&console.server).to_owned()),
         )
+        .children(edition_badge)
         .child(separator())
         .child(
             div()
@@ -186,6 +191,18 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 .child(vt_ui::icon(Icon::Search, ICON_SM, theme.fg_dim))
                 .when(!compact, |this| this.child("Search"))
                 .child(kbd(palette_keys, cx)),
+        )
+        .child(bell)
+        .child(
+            IconButton::new("settings", Icon::Settings)
+                .active(console.overlay_is("settings"))
+                .tooltip(format!(
+                    "Settings  {}",
+                    hint(&ShellOpenSettings).unwrap_or_default()
+                ))
+                .on_click(cx.listener(|_, _, window, cx| {
+                    window.dispatch_action(Box::new(ShellOpenSettings), cx);
+                })),
         )
         .child(
             IconButton::new("perf-hud", Icon::Activity)
@@ -238,13 +255,16 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                     )
                 }),
         )
-        .child(
-            IconButton::new("sign-out", Icon::Unplug)
-                .tooltip("Sign out")
-                .on_click(cx.listener(|console, _, window, cx| {
-                    console.sign_out(window, cx);
-                })),
-        )
+        // The kiosk lock keeps the operator signed in.
+        .when(!kiosk, |this| {
+            this.child(
+                IconButton::new("sign-out", Icon::Unplug)
+                    .tooltip("Sign out")
+                    .on_click(cx.listener(|console, _, window, cx| {
+                        console.sign_out(window, cx);
+                    })),
+            )
+        })
         .into_any_element()
 }
 
