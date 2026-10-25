@@ -223,9 +223,14 @@ fn ids(console: &Console, screen: &str) -> Vec<i64> {
         .map_or_else(Vec::new, |screens| screens.tag_ids(&console.store, screen))
 }
 
+/// The tag with data source id `id`.
+fn tag_of(store: &Store, id: i64) -> Option<&Tag> {
+    store.position(id).map(|index| &store.tags[index])
+}
+
 fn cards_of<'a>(store: &'a Store, ids: &[i64]) -> Vec<Card<'a>> {
     ids.iter()
-        .filter_map(|id| store.get(*id))
+        .filter_map(|id| tag_of(store, *id))
         .map(|tag| Card {
             id: tag.info.id,
             device: &tag.info.device_id,
@@ -264,7 +269,7 @@ fn laid(console: &mut Console, screen: &str, bp: Breakpoint, ids: &[i64]) -> Rc<
     (screen, bp, generation, revision).hash(&mut hasher);
     for id in ids {
         id.hash(&mut hasher);
-        if let Some(tag) = console.store.get(*id) {
+        if let Some(tag) = tag_of(&console.store, *id) {
             tag.info.device_id.hash(&mut hasher);
             tag.info.chart_type.hash(&mut hasher);
         }
@@ -877,7 +882,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             .id
             .parse::<i64>()
             .ok()
-            .and_then(|id| console.store.get(id))
+            .and_then(|id| tag_of(&console.store, id))
         else {
             continue;
         };
@@ -921,7 +926,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             .id
             .parse::<i64>()
             .ok()
-            .and_then(|id| console.store.get(id))
+            .and_then(|id| tag_of(&console.store, id))
         else {
             continue;
         };
@@ -1807,7 +1812,7 @@ fn picker(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
             range
                 .filter_map(|row| {
                     let id = *rows.get(row)?;
-                    let tag = console.store.get(id)?;
+                    let tag = tag_of(&console.store, id)?;
                     let active = cursor == Some(row);
                     let hover = theme.hover;
                     let color = cards::tag_color(&tag.info.color, theme.accent);

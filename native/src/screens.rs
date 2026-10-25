@@ -867,7 +867,7 @@ mod tests {
             .iter()
             .map(|(id, device, kind)| Card {
                 id: *id,
-                device: *device,
+                device,
                 kind: *kind,
             })
             .collect()
