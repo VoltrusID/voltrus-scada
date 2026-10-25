@@ -18,7 +18,8 @@ use crate::console::{Console, time_now_secs};
 
 pub(crate) const LIST: &str = "notifications";
 pub(crate) const WIDTH: Pixels = px(380.0);
-const ROW: f32 = 58.0;
+/// Room for the type and age line and two lines of the message.
+const ROW: f32 = 68.0;
 /// Notifications shown before the list scrolls.
 const VISIBLE: usize = 6;
 

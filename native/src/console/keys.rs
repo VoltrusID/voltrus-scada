@@ -53,6 +53,13 @@ actions!(
         ShellToggleNotifications,
         ShellEditShortcuts,
         ShellPickTheme,
+        TagsWrite,
+        TagsWritePolicy,
+        TagsAddNote,
+        TagsCompare,
+        TagsCustomRange,
+        TagsExportCsv,
+        TagsExpandDetail,
         OpsPreviousPage,
         OpsNextPage,
         OpsNextTab,
@@ -523,6 +530,69 @@ pub static COMMANDS: &[CommandSpec] = &[
         [],
         CONSOLE,
         ShellPickTheme,
+        true
+    ),
+    command!(
+        "Write to the tag…",
+        View,
+        Send,
+        ["secondary-shift-w"],
+        CONSOLE,
+        TagsWrite,
+        true
+    ),
+    command!(
+        "Edit the tag's write policy…",
+        View,
+        Settings,
+        [],
+        CONSOLE,
+        TagsWritePolicy,
+        true
+    ),
+    command!(
+        "Add a note to the tag's chart…",
+        View,
+        Pencil,
+        ["secondary-shift-n"],
+        CONSOLE,
+        TagsAddNote,
+        true
+    ),
+    command!(
+        "Compare the tag with another…",
+        View,
+        Layers,
+        [],
+        CONSOLE,
+        TagsCompare,
+        true
+    ),
+    command!(
+        "Show a custom span on the tag's chart…",
+        View,
+        Clock,
+        [],
+        CONSOLE,
+        TagsCustomRange,
+        true
+    ),
+    command!(
+        "Save the tag's chart as CSV…",
+        View,
+        Download,
+        ["secondary-shift-s"],
+        CONSOLE,
+        TagsExportCsv,
+        true
+    ),
+    command!(
+        "Widen or narrow the tag detail",
+        View,
+        PanelLeft,
+        [],
+        CONSOLE,
+        TagsExpandDetail,
         true
     ),
     command!(

@@ -365,6 +365,7 @@ pub fn kiosk_blocks(action: &dyn Action) -> bool {
 /// kiosk-blocked ones) and the planned shortcuts, outside text fields.
 pub fn key_bindings(plan: &Plan, kiosk: bool) -> Vec<KeyBinding> {
     let mut bindings = vt_ui::text_input::key_bindings();
+    bindings.extend(super::text_area::key_bindings());
     bindings.extend(
         keys::key_bindings()
             .into_iter()
@@ -608,7 +609,9 @@ mod tests {
     fn the_keymap_carries_every_command_plus_shortcuts_and_the_kiosk_drops_quit() {
         let plan = plan(&map(&[("action:alarms", "F9")]), &map(&[("12", "Alt+F2")]));
         assert_eq!(plan.bound.len(), 2);
-        let base = vt_ui::text_input::key_bindings().len() + keys::key_bindings().len();
+        let base = vt_ui::text_input::key_bindings().len()
+            + super::super::text_area::key_bindings().len()
+            + keys::key_bindings().len();
         let open = key_bindings(&plan, false);
         assert_eq!(open.len(), base + 2);
         assert!(
