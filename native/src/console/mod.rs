@@ -39,6 +39,7 @@ use vt_ui::theme::{self, ThemeCatalog};
 
 pub use keys::{Quit, key_bindings, menus};
 pub use pages::Page;
+pub use views::tag_detail::TagDialog;
 
 use meter::Meter;
 use nav::{ListNav, Move};
@@ -127,6 +128,8 @@ pub struct DeviceLink {
 pub enum LaunchOverlay {
     Palette,
     Help,
+    /// A dialog of the Tags page's detail, once `--tag` opened a tag.
+    Tags(TagDialog),
     /// Run a command of [`keys::COMMANDS`] by its action's name
     /// (`--overlay ShellOpenSettings`).
     Action(&'static str),
@@ -752,6 +755,7 @@ impl Console {
         match self.pending_overlay.take() {
             Some(LaunchOverlay::Palette) => self.open_palette(window, cx),
             Some(LaunchOverlay::Help) => self.open_help(window, cx),
+            Some(LaunchOverlay::Tags(dialog)) => views::tag_detail::launch(self, dialog),
             Some(LaunchOverlay::Action(name)) => {
                 if let Some(command) = keys::COMMANDS
                     .iter()
@@ -1186,23 +1190,10 @@ impl Console {
 
     // ── Commands to the server ────────────────────────────────────────────
 
+    /// Enter in the write field: the write dialog's mode decides how the
+    /// value goes (`views::tag_write`).
     pub fn write_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Enter in the field is not disabled like the button: one write at
-        // a time.
-        let Some(id) = self.selected.filter(|_| self.writing.is_none()) else {
-            return;
-        };
-        let text = self.inputs.write.read(cx).value().trim().to_owned();
-        match text.parse::<f64>() {
-            Ok(value) if value.is_finite() => {
-                self.write_result = None;
-                self.writing = Some(id);
-                self.send(Command::Write { id, value });
-                self.focus_page(window, cx);
-            }
-            _ => self.write_result = Some((id, Err(format!("“{text}” is not a number")))),
-        }
-        cx.notify();
+        views::tag_write::submit(self, window, cx);
     }
 
     pub fn acknowledge(&mut self, alarm: i64) {

@@ -8,8 +8,11 @@
 //!   including generic REST calls tied to the session.
 //! - [`stress`]: a deterministic synthetic plant for stress tests.
 //! - [`perf`]: frame statistics for the HUD and the stress report.
+//! - [`tag_api`]: tag writes and write policies, the tag tree, naming
+//!   convention, annotations and the tag detail's history queries.
 pub mod api;
 pub mod perf;
 pub mod runtime;
 pub mod stress;
+pub mod tag_api;
 pub mod ws_types;

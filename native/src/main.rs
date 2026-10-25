@@ -14,14 +14,14 @@ use gpui::{
 use time::UtcOffset;
 use vt_ui::theme::{self, ThemeCatalog};
 
-use console::{Console, Launch, LaunchOverlay, Page, StressPlan};
+use console::{Console, Launch, LaunchOverlay, Page, StressPlan, TagDialog};
 
 fn usage() -> String {
     format!(
         "\
 usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
-                      [--hud] [--overlay palette|help|<action>]
+                      [--hud] [--overlay palette|help|<action>|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
                       [--alarms history|analytics|audit|detail|shelve|confirm]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
@@ -35,7 +35,8 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --appearance       dark or light instead of following the system
   --hud              show the performance HUD (also ⇧⌘P)
   --overlay          open the command palette, the shortcut help, or run a command by its
-                     action name (e.g. ShellOpenSettings) once signed in
+                     action name (e.g. ShellOpenSettings) once signed in; tag-… opens a
+                     dialog of the --tag tag's detail (tag-expand widens the detail)
   --alarms           open the Alarms page with this view or dialog once signed in
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
   --stress-tags      how many synthetic tags
@@ -121,16 +122,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     Some("help") => LaunchOverlay::Help,
                     other => {
                         let name = other.unwrap_or("");
-                        match console::keys::COMMANDS
-                            .iter()
-                            .map(|command| (command.action)().name())
-                            .find(|action| action.rsplit("::").next() == Some(name))
-                        {
-                            Some(action) => LaunchOverlay::Action(action),
-                            None => {
-                                return Err(format!(
-                                    "--overlay takes palette, help or a command's action name, not “{name}”"
-                                ));
+                        if let Some(dialog) = TagDialog::parse(name) {
+                            LaunchOverlay::Tags(dialog)
+                        } else {
+                            match console::keys::COMMANDS
+                                .iter()
+                                .map(|command| (command.action)().name())
+                                .find(|action| action.rsplit("::").next() == Some(name))
+                            {
+                                Some(action) => LaunchOverlay::Action(action),
+                                None => {
+                                    return Err(format!(
+                                        "--overlay takes palette, help, a tag-… dialog or a command's action name, not “{name}”"
+                                    ));
+                                }
                             }
                         }
                     }
@@ -345,6 +350,14 @@ mod tests {
         assert!(parse(&args(&["--appearance"])).is_err());
         assert!(parse(&args(&["--overlay", "menu"])).is_err());
         assert!(parse(&args(&["--bogus"])).is_err());
+        assert_eq!(
+            parse(&args(&["--overlay", "tag-write"])).map(|options| options.overlay),
+            Ok(Some(LaunchOverlay::Tags(TagDialog::Write)))
+        );
+        assert_eq!(
+            parse(&args(&["--page", "tagtree"])).map(|options| options.page),
+            Ok(Some(Page::TagTree))
+        );
     }
 
     #[test]

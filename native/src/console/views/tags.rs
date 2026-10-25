@@ -1,20 +1,22 @@
-//! Every tag in a virtualised table, and the chosen one in detail.
+//! Every tag in a virtualised table, and the chosen one in detail
+//! (`tag_detail`, across the page when widened).
 
 use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, ElementId, Entity, FontWeight, Pixels, SharedString, Window, div, px,
-    uniform_list,
+    AnyElement, Context, ElementId, Entity, FontWeight, Pixels, Window, div, px, uniform_list,
 };
+use voltrus_scada_native::runtime::{CallKey, Reply};
 use vt_ui::Icon;
-use vt_ui::chart::{Series, format_value, sparkline, trend_chart};
-use vt_ui::components::{Button, IconButton, empty_state, field, pill, section_label, status_dot};
+use vt_ui::chart::sparkline;
+use vt_ui::components::{empty_state, pill, status_dot};
 use vt_ui::theme::*;
 
+use super::tag_detail::{DetailState, PANEL, TagDialog};
 use super::{
-    ListKeys, age, card, fit_span, focus_ring, keyboard_list, now_ms, page_header, rows_on_screen,
+    ListKeys, age, fit_span, focus_ring, keyboard_list, now_ms, page_header, rows_on_screen,
     span_label, status_color, tail_row, tail_rows, value_color, value_with_unit,
 };
 use crate::console::store::Status;
@@ -41,6 +43,15 @@ pub fn side_panel(console: &Console) -> Pixels {
     }
 }
 
+/// The answers to the detail panel's calls (history, notes, writes,
+/// policies).
+pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Context<Console>) {
+    match key.name {
+        "tags.write" | "tags.policy" => super::tag_write::on_reply(console, key, reply, cx),
+        _ => super::tag_detail::on_reply(console, key, reply, cx),
+    }
+}
+
 /// The tag on table row `row`, with the filter as it is.
 fn row_tag(console: &Console, row: usize, cx: &gpui::App) -> Option<i64> {
     let index = *console.visible_tags(cx).get(row)?;
@@ -54,8 +65,8 @@ fn follow_cursor(console: &mut Console, row: usize, _: &mut Window, cx: &mut Con
     }
 }
 
-/// Enter opens the row's tag (and its write field, for an admin); Space
-/// puts it on Trends or takes it off.
+/// Enter opens the row's tag (and the write dialog, for an operator);
+/// Space puts it on Trends or takes it off.
 fn activate_row(
     console: &mut Console,
     row: usize,
@@ -70,11 +81,8 @@ fn activate_row(
         console.toggle_trend(id, cx);
     } else {
         console.select(id, cx);
-        if console.is_admin() {
-            console
-                .inputs
-                .write
-                .update(cx, |field, _| field.focus(window));
+        if console.is_operator() {
+            super::tag_detail::open_dialog(console, TagDialog::Write, window, cx);
         }
     }
 }
@@ -84,13 +92,11 @@ const VALUE: f32 = 120.0;
 const STATUS: f32 = 84.0;
 const AGE: f32 = 56.0;
 const SPARK: f32 = 110.0;
-pub(crate) const PANEL: f32 = 340.0;
 /// The key follows the name only when the name column has this much room.
 const INLINE_KEY_MIN: f32 = 260.0;
-/// The table's sparklines reach back this far at most, the panel's trend
-/// an hour; both start where the data does when it is younger.
+/// The table's sparklines reach back this far at most; they start where
+/// the data does when it is younger.
 const SPARK_MS: f64 = 15.0 * 60_000.0;
-const DETAIL_MS: f64 = 60.0 * 60_000.0;
 const SHORTEST_MS: f64 = 2.0 * 60_000.0;
 
 /// Which optional columns fit the table's width, and how wide the name is:
@@ -144,6 +150,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let attention = console.store.attention_count();
     let filtered = visible != total;
     let selected = console.selected.and_then(|id| console.store.position(id));
+    // Widened, the detail takes the page and the table steps aside.
+    let expanded = selected.is_some() && console.state::<DetailState>().expanded;
 
     let table_width = if selected.is_some() {
         width - px(PANEL)
@@ -247,6 +255,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .size_full()
         .into_any_element()
     };
+    let detail = selected.map(|index| super::tag_detail::panel(console, index, window, cx));
 
     div()
         .flex()
@@ -269,18 +278,18 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(header)
-                        .child(list.flex_1().min_h_0().child(table)),
-                )
-                .when_some(selected, |this, index| {
-                    this.child(detail(console, index, cx))
-                }),
+                .when(!expanded, |this| {
+                    this.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(header)
+                            .child(list.flex_1().min_h_0().child(table)),
+                    )
+                })
+                .children(detail),
         )
         .into_any_element()
 }
@@ -431,304 +440,4 @@ fn tag_row(
             )))
         })
         .into_any_element()
-}
-
-fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl IntoElement {
-    let theme = theme(cx).clone();
-    let tag = &console.store.tags[index];
-    let id = tag.info.id;
-    let color = status_color(tag.status, &theme);
-    let trended = console.trend.contains(&id);
-    let now = now_ms();
-    let span = fit_span(tag.span_ms(now), 5.0 * 60_000.0, DETAIL_MS);
-    let span_text = span_label(span);
-    let summary = tag.history.summary(now - span);
-    let unit = tag.info.unit.clone();
-    let threshold = |value: f64| {
-        if value > 0.0 {
-            format!("{} {unit}", format_value(value))
-                .trim_end()
-                .to_owned()
-        } else {
-            "Off".to_owned()
-        }
-    };
-    let stat = |value: Option<f64>| {
-        value.map_or_else(
-            || "—".to_owned(),
-            |value| {
-                format!("{} {unit}", format_value(value))
-                    .trim_end()
-                    .to_owned()
-            },
-        )
-    };
-    let updated = if tag.at_secs > 0 {
-        format!("Updated {} ago", age(time_now_secs() - tag.at_secs))
-    } else {
-        "No value yet".to_owned()
-    };
-    let admin = console.is_admin();
-    let writing = console.writing == Some(id);
-    let result = console
-        .write_result
-        .as_ref()
-        .filter(|(at, _)| *at == id)
-        .map(|(_, result)| result.clone());
-    let device = if tag.info.device_id.is_empty() {
-        "—".to_owned()
-    } else {
-        match console.devices.get(&tag.info.device_id) {
-            Some(link) if link.online => match link.latency_ms {
-                Some(ms) => format!("{} · online, {ms} ms", tag.info.device_id),
-                None => format!("{} · online", tag.info.device_id),
-            },
-            Some(_) => format!("{} · offline", tag.info.device_id),
-            None => tag.info.device_id.clone(),
-        }
-    };
-
-    let facts = [
-        ("Warning at".to_owned(), threshold(tag.info.warn_val)),
-        ("Critical at".to_owned(), threshold(tag.info.crit_val)),
-        (
-            format!("Lowest, {span_text}"),
-            stat(summary.map(|summary| summary.min)),
-        ),
-        (
-            format!("Highest, {span_text}"),
-            stat(summary.map(|summary| summary.max)),
-        ),
-        (
-            format!("Average, {span_text}"),
-            stat(summary.map(|summary| summary.mean)),
-        ),
-        (
-            "Source".to_owned(),
-            if tag.info.source_type.is_empty() {
-                "—".to_owned()
-            } else {
-                tag.info.source_type.clone()
-            },
-        ),
-        ("Device".to_owned(), device),
-        (
-            "Alarm delays".to_owned(),
-            format!(
-                "on {} s · off {} s",
-                tag.info.on_delay_secs, tag.info.off_delay_secs
-            ),
-        ),
-    ];
-
-    let trend_color = if tag.status == Status::Normal {
-        theme.accent
-    } else {
-        color
-    };
-    let series = vec![Series {
-        label: SharedString::from(tag.info.name.clone()),
-        color: trend_color,
-        history: Rc::clone(&tag.history),
-        stepped: false,
-    }];
-
-    div()
-        .id("tag-detail")
-        .flex()
-        .flex_col()
-        .flex_none()
-        .w(px(PANEL))
-        .h_full()
-        .overflow_y_scroll()
-        .bg(theme.chrome)
-        .border_l_1()
-        .border_color(theme.border)
-        .child(
-            div()
-                .flex()
-                .items_start()
-                .gap(SPACE_4)
-                .px(SPACE_8)
-                .pt(SPACE_8)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(SPACE_1)
-                        .child(
-                            div()
-                                .text_size(FONT_TITLE)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(tag.info.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .font_family(MONO)
-                                .text_size(FONT_SMALL)
-                                .text_color(theme.fg_dim)
-                                .child(tag.info.key.clone()),
-                        ),
-                )
-                .child(
-                    IconButton::new("close-detail", Icon::X)
-                        .tooltip("Close")
-                        .on_click(cx.listener(|console, _, _, cx| {
-                            console.selected = None;
-                            cx.notify();
-                        })),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(SPACE_3)
-                .px(SPACE_8)
-                .py(SPACE_7)
-                .child(value_with_unit(
-                    tag.display(),
-                    &tag.info.unit,
-                    px(34.0),
-                    value_color(tag.status, &theme),
-                    &theme,
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_4)
-                        .child(pill(tag.status.label(), color))
-                        .when(tag.simulated, |this| this.child(pill("SIMULATED", theme.info)))
-                        .child(
-                            div()
-                                .text_size(FONT_SMALL)
-                                .text_color(theme.fg_dim)
-                                .child(updated),
-                        ),
-                ),
-        )
-        .child(
-            div()
-                .grid()
-                .grid_cols(2)
-                .gap(SPACE_5)
-                .px(SPACE_8)
-                .pb(SPACE_7)
-                .children(facts.into_iter().map(|(label, value)| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(SPACE_1)
-                        .min_w_0()
-                        .child(
-                            div()
-                                .text_size(FONT_CAPTION)
-                                .text_color(theme.fg_dim)
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .font_family(MONO)
-                                .text_size(FONT_SMALL)
-                                .child(value),
-                        )
-                })),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(SPACE_4)
-                .px(SPACE_8)
-                .pb(SPACE_8)
-                .child(section_label(format!("Last {span_text}"), cx))
-                .child(
-                    card(&theme)
-                        .h(px(180.0))
-                        .p(SPACE_4)
-                        .child(trend_chart(series, now, span, cx)),
-                )
-                .child(
-                    Button::new(
-                        "toggle-trend",
-                        if trended {
-                            "Remove from Trends"
-                        } else {
-                            "Add to Trends"
-                        },
-                    )
-                    .icon(Icon::ChartLine)
-                    .on_click(cx.listener(move |console, _, _, cx| {
-                        console.toggle_trend(id, cx);
-                    })),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(SPACE_4)
-                .px(SPACE_8)
-                .py(SPACE_8)
-                .border_t_1()
-                .border_color(theme.border)
-                .child(section_label("Write", cx))
-                .map(|this| {
-                    if admin {
-                        this.child(field(
-                            "New value",
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(SPACE_3)
-                                .child(div().flex_1().child(console.inputs.write.clone()))
-                                .child(
-                                    Button::new("write", if writing { "Writing…" } else { "Write" })
-                                        .primary()
-                                        .icon(Icon::Send)
-                                        .disabled(writing)
-                                        .on_click(cx.listener(|console, _, window, cx| {
-                                            console.write_selected(window, cx);
-                                        })),
-                                ),
-                            cx,
-                        ))
-                        .child(match result {
-                            Some(Ok(detail)) => write_note(
-                                Icon::CircleCheck,
-                                format!("Written: {detail}"),
-                                theme.success,
-                            ),
-                            Some(Err(error)) => write_note(Icon::CircleAlert, error, theme.danger),
-                            None => write_note(
-                                Icon::Info,
-                                "Sent to the device through the server; the server must allow writes to this tag.".to_owned(),
-                                theme.fg_dim,
-                            ),
-                        })
-                    } else {
-                        this.child(write_note(
-                            Icon::Lock,
-                            "Writing values needs the admin role.".to_owned(),
-                            theme.fg_dim,
-                        ))
-                    }
-                }),
-        )
-}
-
-fn write_note(glyph: Icon, text: String, color: gpui::Hsla) -> impl IntoElement {
-    div()
-        .flex()
-        .items_start()
-        .gap(SPACE_3)
-        .text_size(FONT_SMALL)
-        .text_color(color)
-        .child(div().pt(px(2.0)).child(vt_ui::icon(glyph, ICON_SM, color)))
-        .child(div().flex_1().min_w_0().child(text))
 }

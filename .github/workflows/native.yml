@@ -91,10 +91,12 @@ jobs:
       - name: Start the solar-farm plant
         run: native/scripts/ci-server.sh "$RUNNER_TEMP/plant"
 
+      # One test at a time: each signs in, and a sign-in revokes the user's
+      # older refresh tokens, which the sign-out check relies on.
       - name: End-to-end against the live server
         env:
           VOLTRUS_E2E_EXPECT_UPDATES: "1"
-        run: cargo test --locked -p voltrus-scada-native --test e2e_live -- --nocapture
+        run: cargo test --locked -p voltrus-scada-native --test e2e_live -- --nocapture --test-threads=1
 
       - name: Bundle
         run: native/scripts/bundle-macos.sh target/release/voltrus-native dist

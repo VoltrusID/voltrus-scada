@@ -214,6 +214,11 @@ impl Tag {
             self.history.push(at, value);
         }
     }
+
+    /// The plotted samples, oldest first: `(Unix ms, value)`.
+    pub fn samples(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        self.samples.iter().copied()
+    }
 }
 
 /// The tag list plus what the views ask of all of it every frame, kept up
