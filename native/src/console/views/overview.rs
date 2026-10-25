@@ -323,7 +323,10 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         vec![
             Button::new("overview-ack-all", "Acknowledge all")
                 .icon(Icon::Check)
-                .on_click(cx.listener(|console, _, _, _| console.acknowledge_all()))
+                // The same action as ⇧⌘A: it asks before acknowledging.
+                .on_click(cx.listener(|_, _, window, cx| {
+                    window.dispatch_action(Box::new(crate::console::keys::AcknowledgeAll), cx);
+                }))
                 .into_any_element(),
         ]
     } else {
