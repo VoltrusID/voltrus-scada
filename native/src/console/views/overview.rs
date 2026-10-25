@@ -24,14 +24,18 @@ const ALARM_ROWS: usize = 6;
 const SPARK_MS: f64 = 15.0 * 60_000.0;
 const SHORTEST_MS: f64 = 2.0 * 60_000.0;
 
-pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> AnyElement {
+pub fn render(
+    console: &Console,
+    rate: usize,
+    unacknowledged: usize,
+    cx: &mut Context<Console>,
+) -> AnyElement {
     let theme = theme(cx).clone();
     let store = &console.store;
     let critical = store.count(Status::Critical);
     let warning = store.count(Status::Warning);
     let offline = store.count(Status::Offline);
     let normal = store.count(Status::Normal);
-    let unacknowledged = console.unacknowledged();
     let shelved = console
         .alarms
         .iter()

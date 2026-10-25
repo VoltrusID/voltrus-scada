@@ -1,6 +1,7 @@
 //! Open alarms: acknowledge, shelve for an hour, or bring back from the shelf.
 
 use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, ElementId, FontWeight, div, px, uniform_list};
@@ -19,7 +20,7 @@ const RAISED: f32 = 88.0;
 const ACTIONS: f32 = 172.0;
 const SHELVE_SECS: u64 = 3600;
 
-pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
+pub fn render(console: &Console, unacknowledged: usize, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
     let shelved = console
         .alarms
@@ -27,8 +28,9 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
         .filter(|alarm| is_shelved(alarm))
         .count();
     let open = console.alarms.len() - shelved;
-    let unacknowledged = console.unacknowledged();
-    let shown = console.filtered_alarms().len();
+    // Filtered and sorted once per render; the list's rows index into it.
+    let rows = Rc::new(console.filtered_alarms());
+    let shown = rows.len();
     let filter = console.alarm_filter;
 
     let segments = [
@@ -103,19 +105,14 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
             "alarms",
             shown,
             cx.processor(
-                |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
+                move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
                     let now = time_now_secs();
-                    let alarms: Vec<Alarm> = console
-                        .filtered_alarms()
-                        .into_iter()
-                        .skip(range.start)
-                        .take(range.len())
-                        .cloned()
-                        .collect();
-                    alarms
-                        .iter()
-                        .map(|alarm| alarm_row(console, alarm, now, &theme, cx))
+                    let can_shelve = console.can_shelve();
+                    range
+                        .filter_map(|row| rows.get(row).copied())
+                        .filter_map(|index| console.alarms.get(index))
+                        .map(|alarm| alarm_row(console, alarm, now, can_shelve, &theme, cx))
                         .collect::<Vec<_>>()
                 },
             ),
@@ -144,6 +141,7 @@ fn alarm_row(
     console: &Console,
     alarm: &Alarm,
     now: i64,
+    can_shelve: bool,
     theme: &Theme,
     cx: &Context<Console>,
 ) -> AnyElement {
@@ -182,15 +180,17 @@ fn alarm_row(
         (Icon::CircleAlert, "Unacknowledged".to_owned(), theme.danger)
     };
 
+    // The server's shelf routes refuse other roles, so their buttons stay
+    // hidden like the write panel.
     let mut actions: Vec<AnyElement> = Vec::new();
-    if shelved {
+    if shelved && can_shelve {
         actions.push(
             Button::new(ElementId::NamedInteger("unshelve".into(), key), "Unshelve")
                 .compact()
                 .on_click(cx.listener(move |console, _, _, _| console.unshelve(id)))
                 .into_any_element(),
         );
-    } else {
+    } else if !shelved {
         if !acknowledged {
             actions.push(
                 Button::new(ElementId::NamedInteger("ack".into(), key), "Ack")
@@ -200,14 +200,16 @@ fn alarm_row(
                     .into_any_element(),
             );
         }
-        actions.push(
-            Button::new(ElementId::NamedInteger("shelve".into(), key), "Shelve 1 h")
-                .compact()
-                .ghost()
-                .icon(Icon::Clock)
-                .on_click(cx.listener(move |console, _, _, _| console.shelve(id, SHELVE_SECS)))
-                .into_any_element(),
-        );
+        if can_shelve {
+            actions.push(
+                Button::new(ElementId::NamedInteger("shelve".into(), key), "Shelve 1 h")
+                    .compact()
+                    .ghost()
+                    .icon(Icon::Clock)
+                    .on_click(cx.listener(move |console, _, _, _| console.shelve(id, SHELVE_SECS)))
+                    .into_any_element(),
+            );
+        }
     }
 
     div()

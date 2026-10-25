@@ -31,14 +31,16 @@ impl Render for Console {
             Phase::SignIn | Phase::ChangePassword => sign_in::render(self, cx),
             Phase::Console => {
                 let rate = self.rate.per_second(Instant::now());
+                // Counted once: the sidebar, status bar and page all show it.
+                let unacknowledged = self.unacknowledged();
                 let page = match self.page {
-                    Page::Overview => overview::render(self, rate, cx),
+                    Page::Overview => overview::render(self, rate, unacknowledged, cx),
                     Page::Tags => {
                         let width = window.viewport_size().width - px(sidebar::WIDTH);
                         tags::render(self, width, cx)
                     }
-                    Page::Alarms => alarms::render(self, cx),
-                    Page::Trends => trends::render(self, window, cx),
+                    Page::Alarms => alarms::render(self, unacknowledged, cx),
+                    Page::Trends => trends::render(self, cx),
                 };
                 div()
                     .flex()
@@ -49,10 +51,10 @@ impl Render for Console {
                             .flex()
                             .flex_1()
                             .min_h_0()
-                            .child(sidebar::render(self, cx))
+                            .child(sidebar::render(self, unacknowledged, cx))
                             .child(div().flex().flex_col().flex_1().min_w_0().child(page)),
                     )
-                    .child(status_bar::render(self, rate, cx))
+                    .child(status_bar::render(self, rate, unacknowledged, cx))
                     .into_any_element()
             }
         };
@@ -185,6 +187,29 @@ pub(crate) fn status_color(status: Status, theme: &Theme) -> Hsla {
         Status::Warning => theme.warning,
         Status::Critical => theme.danger,
         Status::Offline | Status::Unknown => theme.fg_dim,
+    }
+}
+
+/// Text that reads on a `fill` background: the theme's background or
+/// foreground, whichever contrasts more with it (WCAG relative luminance).
+pub(crate) fn text_on(fill: Hsla, theme: &Theme) -> Hsla {
+    let luminance = |color: Hsla| {
+        let rgb = color.to_rgb();
+        let linear = |channel: f32| {
+            if channel <= 0.039_28 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(rgb.r) + 0.7152 * linear(rgb.g) + 0.0722 * linear(rgb.b)
+    };
+    let contrast = |a: f32, b: f32| (a.max(b) + 0.05) / (a.min(b) + 0.05);
+    let fill = luminance(fill);
+    if contrast(fill, luminance(theme.bg)) >= contrast(fill, luminance(theme.fg)) {
+        theme.bg
+    } else {
+        theme.fg
     }
 }
 

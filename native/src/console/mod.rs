@@ -211,6 +211,8 @@ pub struct Console {
     pub utc_offset: UtcOffset,
     pub store: Store,
     pub alarms: Vec<Alarm>,
+    /// Why the alarm list could not be fetched last time: it is stale.
+    pub alarms_error: Option<String>,
     pub page: Page,
     pub selected: Option<usize>,
     pub trend: BTreeSet<usize>,
@@ -382,6 +384,7 @@ impl Console {
             utc_offset: launch.utc_offset,
             store: Store::default(),
             alarms: Vec::new(),
+            alarms_error: None,
             page: Page::Overview,
             selected: None,
             trend: BTreeSet::new(),
@@ -434,8 +437,30 @@ impl Console {
     // ── Runtime events ────────────────────────────────────────────────────
 
     fn apply(&mut self, event: Event, cx: &mut Context<Self>) {
+        // What a signed-out session's tasks reported before the runtime
+        // heard of the sign-out arrives here before the next sign-in.
+        let session_data = !matches!(
+            event,
+            Event::Link(_)
+                | Event::SignedIn { .. }
+                | Event::SignInFailed(_)
+                | Event::PasswordChanged(_)
+        );
+        if session_data && self.user.is_none() {
+            return;
+        }
         match event {
-            Event::Link(link) => self.link = link,
+            Event::Link(link) => {
+                if let Link::Failed(reason) = &link {
+                    // The session ended; the sign-in card says why too.
+                    self.busy = false;
+                    self.error = Some(reason.clone());
+                    if self.phase == Phase::Console {
+                        self.show_toast(reason.clone(), true, cx);
+                    }
+                }
+                self.link = link;
+            }
             Event::SignedIn {
                 username,
                 role,
@@ -498,7 +523,11 @@ impl Console {
                 let applied = self.store.apply(&updates);
                 self.rate.record(applied, Instant::now());
             }
-            Event::Alarms(alarms) => self.alarms = alarms,
+            Event::Alarms(alarms) => {
+                self.alarms = alarms;
+                self.alarms_error = None;
+            }
+            Event::AlarmsFailed(error) => self.alarms_error = Some(error),
             Event::AlarmRaised(alarm) => {
                 let name = self
                     .store
@@ -515,8 +544,13 @@ impl Console {
                     self.store.backfill(&series);
                 }
             }
-            Event::Written { tag, result } => {
+            Event::Written { tag, result, late } => {
                 if let Some(index) = self.store.position(&tag) {
+                    // A late answer to an earlier write must not settle the
+                    // one now waiting.
+                    if late && self.writing == Some(index) {
+                        return;
+                    }
                     if self.writing == Some(index) {
                         self.writing = None;
                     }
@@ -595,8 +629,12 @@ impl Console {
         self.write_result = None;
         self.store = Store::default();
         self.alarms.clear();
+        self.alarms_error = None;
         self.selected = None;
         self.trend.clear();
+        for field in [&self.inputs.new_password, &self.inputs.confirm_password] {
+            field.update(cx, |field, cx| field.set_text("", cx));
+        }
         self.inputs
             .password
             .update(cx, |field, _| field.focus(window));
@@ -688,7 +726,9 @@ impl Console {
     // ── Commands to the server ────────────────────────────────────────────
 
     pub fn write_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(index) = self.selected else {
+        // Enter in the field is not disabled like the button: one write at
+        // a time.
+        let Some(index) = self.selected.filter(|_| self.writing.is_none()) else {
             return;
         };
         let text = self.inputs.write.read(cx).value().trim().to_owned();
@@ -769,12 +809,14 @@ impl Console {
         .detach();
     }
 
-    /// Alarms of the chosen filter, most severe first.
-    pub fn filtered_alarms(&self) -> Vec<&Alarm> {
-        let mut alarms: Vec<&Alarm> = self
+    /// Positions in `alarms` of the chosen filter's alarms, most severe
+    /// first.
+    pub fn filtered_alarms(&self) -> Vec<usize> {
+        let mut alarms: Vec<usize> = self
             .alarms
             .iter()
-            .filter(|alarm| {
+            .enumerate()
+            .filter(|(_, alarm)| {
                 let shelved = is_shelved(alarm);
                 match self.alarm_filter {
                     AlarmFilter::Active => !shelved,
@@ -782,14 +824,34 @@ impl Console {
                     AlarmFilter::Shelved => shelved,
                 }
             })
+            .map(|(index, _)| index)
             .collect();
-        alarms.sort_by_key(|alarm| {
+        alarms.sort_by_key(|index| {
+            let alarm = &self.alarms[*index];
             (
                 severity_rank(&alarm.severity),
                 std::cmp::Reverse(alarm.triggered_at),
             )
         });
         alarms
+    }
+
+    fn has_role(&self, roles: &[&str]) -> bool {
+        self.user.as_ref().is_some_and(|(_, role)| {
+            roles
+                .iter()
+                .any(|allowed| role.eq_ignore_ascii_case(allowed))
+        })
+    }
+
+    /// The server lets only admins write tags.
+    pub fn can_write(&self) -> bool {
+        self.has_role(&["admin"])
+    }
+
+    /// The server's shelf routes take admin, demo and integration users.
+    pub fn can_shelve(&self) -> bool {
+        self.has_role(&["admin", "demo", "integration"])
     }
 
     /// Open alarms nobody has acknowledged yet: the sidebar badge.

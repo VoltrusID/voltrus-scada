@@ -73,7 +73,9 @@ impl Columns {
 /// `width` is the space right of the sidebar.
 pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let visible = console.visible_tags(cx).len();
+    // Filtered once per render; the list's rows index into it.
+    let rows = Rc::new(console.visible_tags(cx));
+    let visible = rows.len();
     let total = console.store.tags.len();
     let attention = console
         .store
@@ -165,7 +167,6 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
             cx.processor(
                 move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
-                    let rows = console.visible_tags(cx);
                     let now = now_ms();
                     let now_secs = time_now_secs();
                     range
@@ -389,10 +390,7 @@ fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl In
     } else {
         "No value yet".to_owned()
     };
-    let admin = console
-        .user
-        .as_ref()
-        .is_some_and(|(_, role)| role.eq_ignore_ascii_case("admin"));
+    let admin = console.can_write();
     let writing = console.writing == Some(index);
     let result = console
         .write_result

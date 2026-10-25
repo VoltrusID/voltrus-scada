@@ -8,9 +8,13 @@ use vt_ui::theme::*;
 
 use super::host;
 use crate::console::Console;
-use crate::console::store::Status;
 
-pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> impl IntoElement {
+pub fn render(
+    console: &Console,
+    rate: usize,
+    unacknowledged: usize,
+    cx: &mut Context<Console>,
+) -> impl IntoElement {
     let theme = theme(cx).clone();
     let (color, label) = match &console.link {
         Link::Live => (theme.success, "Live".to_owned()),
@@ -27,10 +31,13 @@ pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> impl
         Link::SignedOut => (theme.fg_dim, "Signed out".to_owned()),
     };
     let tags = console.store.tags.len();
-    let attention = console.store.count(Status::Warning)
-        + console.store.count(Status::Critical)
-        + console.store.count(Status::Offline);
-    let alarms = console.unacknowledged();
+    let attention = console
+        .store
+        .tags
+        .iter()
+        .filter(|tag| tag.status.needs_attention())
+        .count();
+    let alarms = unacknowledged;
 
     div()
         .flex()
@@ -67,6 +74,15 @@ pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> impl
                 div()
                     .text_color(theme.warning)
                     .child(format!("{attention} need attention")),
+            )
+        })
+        .when_some(console.alarms_error.as_ref(), |this, error| {
+            this.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(theme.warning)
+                    .child(format!("Alarm list not updated: {error}")),
             )
         })
         .child(

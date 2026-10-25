@@ -1,7 +1,7 @@
 //! Chosen tags on one time axis, over a range the server keeps history for.
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, ElementId, FontWeight, SharedString, Window, div, px};
+use gpui::{AnyElement, Context, ElementId, FontWeight, SharedString, div, px};
 use voltrus_scada_native::runtime::Link;
 use vt_ui::Icon;
 use vt_ui::chart::{Series, trend_chart};
@@ -13,7 +13,7 @@ use crate::console::{Console, RANGES, range_ms};
 
 const PICKER: f32 = 260.0;
 
-pub fn render(console: &Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
+pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
     let span = range_ms(console.range);
     let chosen: Vec<usize> = console
@@ -22,10 +22,10 @@ pub fn render(console: &Console, window: &mut Window, cx: &mut Context<Console>)
         .copied()
         .filter(|index| *index < console.store.tags.len())
         .collect();
-    // A live link scrolls the chart every frame; otherwise it holds still at
-    // the newest sample.
+    // A live link scrolls the chart with the console's once-a-second tick
+    // (redrawing the whole window every frame would cost a kiosk all day);
+    // otherwise it holds still at the newest sample.
     let now = if console.link == Link::Live {
-        window.request_animation_frame();
         now_ms()
     } else {
         chosen

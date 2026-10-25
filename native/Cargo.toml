@@ -14,7 +14,7 @@ path = "src/main.rs"
 gpui = "0.2.2"
 # The Voltrus design system, shared with Voltrus Tools (GPL-3.0-or-later,
 # compatible with this crate's AGPL-3.0-or-later).
-vt-ui = { git = "https://github.com/VoltrusID/voltrus-explorers", rev = "749edc41ed13fc29c82b3fc66f4641cff0ff2a75" }
+vt-ui = { git = "https://github.com/VoltrusID/voltrus-explorers", rev = "30678b76835285d62457762189b54f568b453adc" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

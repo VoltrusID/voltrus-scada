@@ -12,14 +12,17 @@ use crate::console::{Console, Page};
 
 pub const WIDTH: f32 = 232.0;
 
-pub fn render(console: &Console, cx: &mut Context<Console>) -> impl IntoElement {
+pub fn render(
+    console: &Console,
+    unacknowledged: usize,
+    cx: &mut Context<Console>,
+) -> impl IntoElement {
     let theme = theme(cx).clone();
     let top_pad = if cfg!(target_os = "macos") {
         TRAFFIC_LIGHT_WIDTH
     } else {
         SPACE_4
     };
-    let unacknowledged = console.unacknowledged();
     let (username, role) = console.user.clone().unwrap_or_default();
     let initials: String = username
         .chars()
@@ -88,7 +91,7 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> impl IntoElement 
                             .px(SPACE_2)
                             .rounded_full()
                             .bg(theme.danger)
-                            .text_color(theme.accent_fg)
+                            .text_color(super::text_on(theme.danger, &theme))
                             .text_size(FONT_CAPTION)
                             .font_weight(FontWeight::BOLD)
                             .child(if count > 99 {

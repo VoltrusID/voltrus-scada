@@ -3,8 +3,55 @@
 //! Auth: login sets an httpOnly `voltrus_token` cookie — not returned in the
 //! body — so we parse it from `Set-Cookie` and replay it as a Cookie header.
 
+use std::fmt;
+
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+
+/// A request the server answered with an error status.
+#[derive(Debug, Clone)]
+pub struct ServerError {
+    pub status: reqwest::StatusCode,
+    /// The server's `{"error": …}` text, or the status and body.
+    pub message: String,
+}
+
+impl ServerError {
+    fn new(status: reqwest::StatusCode, body: &str) -> Self {
+        // Server errors are `{"error": "..."}` JSON.
+        let message = serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|value| value.get("error")?.as_str().map(str::to_owned))
+            .unwrap_or_else(|| format!("HTTP {status}: {body}"));
+        Self { status, message }
+    }
+
+    /// The server refused the credentials: a wrong password (401) or a
+    /// locked or disabled account (403). Signing in again with them only
+    /// counts towards locking the account.
+    pub fn refuses_credentials(&self) -> bool {
+        matches!(
+            self.status,
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        )
+    }
+}
+
+impl fmt::Display for ServerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ServerError {}
+
+/// Whether a sign-in failed because the server refused the credentials, as
+/// opposed to being unreachable or busy.
+pub fn refused(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ServerError>()
+        .is_some_and(ServerError::refuses_credentials)
+}
 
 pub const TOKEN_COOKIE: &str = "voltrus_token";
 
@@ -203,13 +250,7 @@ impl VoltrusApi {
         let status = resp.status();
         let body = resp.text().await?;
         if !status.is_success() {
-            // Server errors are `{"error": "..."}` JSON.
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body)
-                && let Some(msg) = v.get("error").and_then(|e| e.as_str())
-            {
-                return Err(anyhow!("{msg}"));
-            }
-            return Err(anyhow!("HTTP {status}: {body}"));
+            return Err(ServerError::new(status, &body).into());
         }
         Ok(serde_json::from_str(&body)?)
     }
@@ -422,5 +463,31 @@ mod tests {
         assert_eq!(alarm.id, 7);
         assert_eq!(alarm.severity, "critical");
         assert_eq!(alarm.alarm_type, "high");
+    }
+
+    #[test]
+    fn refused_credentials_are_told_apart_from_other_failures() {
+        use reqwest::StatusCode;
+        let error = |status: StatusCode, body: &str| -> anyhow::Error {
+            ServerError::new(status, body).into()
+        };
+        let wrong = error(
+            StatusCode::UNAUTHORIZED,
+            r#"{"error":"Invalid credentials"}"#,
+        );
+        assert_eq!(wrong.to_string(), "Invalid credentials");
+        assert!(refused(&wrong));
+        assert!(refused(&error(
+            StatusCode::FORBIDDEN,
+            r#"{"error":"Account locked. Try again later."}"#
+        )));
+        assert!(!refused(&error(
+            StatusCode::TOO_MANY_REQUESTS,
+            r#"{"error":"Too many login attempts. Please try again later."}"#
+        )));
+        let down = error(StatusCode::BAD_GATEWAY, "upstream gone");
+        assert_eq!(down.to_string(), "HTTP 502 Bad Gateway: upstream gone");
+        assert!(!refused(&down));
+        assert!(!refused(&anyhow!("connect failed: refused")));
     }
 }

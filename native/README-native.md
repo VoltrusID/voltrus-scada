@@ -28,20 +28,30 @@ JetBrains Mono for values.
   field to write a value (admin role, and the server's write policy must
   allow it), and Add to Trends.
 - **Alarms**: open, to-acknowledge and shelved alarms, worst first, with
-  Acknowledge, Acknowledge all (⇧⌘A), Shelve for one hour and Unshelve.
+  Acknowledge, Acknowledge all (⇧⌘A), and for the admin, demo and integration
+  roles (the ones the server lets shelve) Shelve for one hour and Unshelve.
   Alarm times show on the computer's clock.
 - **Trends**: the chosen tags on one time axis over 5 min, 30 min, 1 h, 6 h or 24 h,
-  filled from the server's history and extended by live values. The chart
-  scrolls every frame only while the link is live.
+  filled from the server's history and extended by live values. While the
+  link is live the chart moves on once a second. Each tag keeps a day of
+  history: live values of the last 15 minutes at full rate, older ones
+  thinned to one per 20 seconds.
 - **Status bar**: link state (live, reconnecting with the reason, offline),
-  server, updates per second, tag and alarm counts.
+  server, updates per second, tag and alarm counts, and a warning when the
+  alarm list could not be fetched.
 - Light or dark (⇧⌘L), ⌘1–⌘4 for the pages, standard Edit menu in text fields.
 
 The network side runs on its own tokio thread: it signs in, keeps the
 WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s) signing in
-again each time, and renews the 15-minute session token every 10 minutes so
-REST calls keep working. Acknowledging, shelving, alarm refreshes and history
-loads never hold up the tag stream.
+again each time, and renews the 15-minute session token every 10 minutes
+(30 seconds after a renewal the server did not answer) so REST calls keep
+working. Only the operator's own sign-in waits for the server; every other
+REST call (tags, alarms, history, alarm actions, password changes, renewals,
+the sign-in before a reconnect) runs on its own and never holds up the tag
+stream. Answers that arrive after the session ended are dropped. When the
+server refuses the stored password (changed elsewhere, account locked) the
+session ends with "Not authorised" instead of trying again, since every
+wrong password counts towards locking the account.
 
 ## Build and run
 
@@ -102,7 +112,9 @@ formatting, clippy, the tests, then a release build of the console, the
 server and the Modbus simulator. `native/scripts/ci-server.sh` starts the
 solar-farm scenario, resets the admin password with
 `voltrus --reset-admin-password`, replaces it through the API, and sets
-plant-like alarm limits. The end-to-end test runs against that server, and
+plant-like alarm limits. The end-to-end test runs against that server
+(signing in, tags, history, live values, acknowledging an open alarm, and
+changing the admin password and back), and
 `native/scripts/screenshots-macos.sh` captures every page of the signed-in
 console. The screenshots and a zipped, ad-hoc signed `Voltrus SCADA.app` are
 the workflow's artifacts; tagged releases attach the zip as well.
@@ -120,7 +132,9 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   (`api.rs:percent_decode`); the WebSocket refuses the encoded form.
 - Writes address the data source's numeric id. The server answers only
   writes it accepts (admin role, a writable tag); otherwise it stays silent,
-  so the console reports no answer after 10 seconds.
+  so the console reports no answer after 10 seconds, and corrects that if
+  the answer comes later. The server sends every answer to every client, so
+  write ids carry a random per-session nonce.
 - The server's `active` alarm list holds unacknowledged alarms only, so the
   console also fetches the acknowledged and shelved lists and drops resolved
   ones. Alarms resolve without a WebSocket message; the list is fetched again
