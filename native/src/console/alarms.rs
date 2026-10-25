@@ -304,10 +304,14 @@ pub fn readable_details(details: &str) -> Option<String> {
     let object = parsed.as_object()?;
     let number = |key: &str| object.get(key).and_then(Value::as_f64);
     if let (Some(value), Some(threshold)) = (number("value"), number("threshold")) {
-        let severity = object
-            .get("severity")
-            .and_then(Value::as_str)
-            .unwrap_or("alarm");
+        let (value, threshold) = (
+            vt_ui::chart::format_value(value),
+            vt_ui::chart::format_value(threshold),
+        );
+        // A raise names its severity and side; a resolution only the value.
+        let Some(severity) = object.get("severity").and_then(Value::as_str) else {
+            return Some(format!("Value {value}, limit {threshold}"));
+        };
         let mut words = severity.chars();
         let severity: String = words
             .next()
@@ -318,11 +322,7 @@ pub fn readable_details(details: &str) -> Option<String> {
         } else {
             "at or above"
         };
-        return Some(format!(
-            "{severity} at {}, limit {} ({side})",
-            vt_ui::chart::format_value(value),
-            vt_ui::chart::format_value(threshold)
-        ));
+        return Some(format!("{severity} at {value}, limit {threshold} ({side})"));
     }
     let parts: Vec<String> = object
         .iter()
@@ -573,6 +573,11 @@ mod tests {
             )
             .as_deref(),
             Some("Critical at 2, limit 5 (at or below)")
+        );
+        assert_eq!(
+            readable_details(r#"{"value":4.843,"threshold":5}"#).as_deref(),
+            Some("Value 4.843, limit 5"),
+            "a resolution has no side"
         );
         assert_eq!(
             readable_details(r#"{"by":"admin","count":3}"#).as_deref(),
