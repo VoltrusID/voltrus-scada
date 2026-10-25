@@ -45,16 +45,16 @@ const ROW_HEIGHT_PX: f32 = 32.0;
 const DELETE: &str = "data-source-delete";
 
 const ORDER: f32 = 40.0;
-const KEY: f32 = 150.0;
+const KEY: f32 = 140.0;
 const UNIT: f32 = 52.0;
 const RANGE: f32 = 104.0;
 const LIMIT: f32 = 64.0;
-const SOURCE: f32 = 132.0;
+const SOURCE: f32 = 124.0;
 const CHART: f32 = 78.0;
 const HOTKEY: f32 = 74.0;
-const ACTIONS: f32 = 128.0;
+const ACTIONS: f32 = 120.0;
 /// The name column never gets narrower than this; columns drop first.
-const NAME_MIN: f32 = 180.0;
+const NAME_MIN: f32 = 120.0;
 
 #[derive(Default)]
 pub(crate) struct State {
@@ -447,8 +447,8 @@ impl Columns {
         let drops: [fn(&mut Self); 5] = [
             |c| c.chart = false,
             |c| c.range = false,
-            |c| c.unit = false,
             |c| c.hotkey = false,
+            |c| c.unit = false,
             |c| c.limits = false,
         ];
         for drop in drops {
@@ -1088,7 +1088,8 @@ mod tests {
         // The narrowest window (1024) less the sidebar.
         let narrow = Columns::fit(1024.0 - 208.0);
         assert!(!narrow.chart && !narrow.range, "chart and range go first");
-        assert!(narrow.key, "the key stays");
-        assert!(narrow.name >= 80.0);
+        assert!(narrow.key && narrow.limits, "the key and the limits stay");
+        assert!(!narrow.hotkey && !narrow.unit);
+        assert!(narrow.name >= NAME_MIN);
     }
 }

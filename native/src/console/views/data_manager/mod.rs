@@ -352,9 +352,10 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                         )
                         .child(
                             div()
+                                .truncate()
                                 .text_size(FONT_SMALL)
                                 .text_color(theme.fg_muted)
-                                .child("↑↓ sections · ↵ open · Esc back"),
+                                .child("↑↓ choose · ↵ open"),
                         ),
                 )
                 .children(groups),
