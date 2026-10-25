@@ -872,6 +872,7 @@ mod tests {
         let mut h = Harness::new(cx);
         h.sign_in("admin");
         h.update(|console, _, cx| on_open(console, cx));
+        assert!(h.calls().contains(&CallKey::new("data.users.list")));
         h.reply(
             CallKey::new("data.users.list"),
             Reply::ok(vec![account(1, "op", "admin"), account(2, "ana", "demo")]),
