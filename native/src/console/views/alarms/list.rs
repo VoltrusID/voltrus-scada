@@ -9,6 +9,7 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{AnyElement, App, Context, Div, ElementId, FontWeight, Window, div, px, uniform_list};
 use voltrus_scada_native::api::Alarm;
+use voltrus_scada_native::runtime::OPEN_ALARMS_LIMIT;
 use vt_ui::Icon;
 use vt_ui::chart::format_value;
 use vt_ui::components::{Button, IconButton, Segment, empty_state, pill, segmented};
@@ -244,6 +245,26 @@ pub(super) fn render(
                 .is_some_and(|field| !field.read(cx).value().trim().is_empty()),
         )
     };
+    // The server lists at most so many alarms of each status; during a flood
+    // the open alarms beyond them are not here, so say so.
+    let capped = (console.alarms_capped && filter != Filter::History).then(|| {
+        div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap(SPACE_4)
+            .px(SPACE_8)
+            .py(SPACE_3)
+            .bg(theme.warning.alpha(0.1))
+            .border_b_1()
+            .border_color(theme.border)
+            .text_size(FONT_SMALL)
+            .text_color(theme.warning)
+            .child(vt_ui::icon(Icon::CircleAlert, ICON_MD, theme.warning))
+            .child(format!(
+                "More than {OPEN_ALARMS_LIMIT} alarms of one status are open; the list shows the newest {OPEN_ALARMS_LIMIT} of each."
+            ))
+    });
 
     let header = div()
         .flex()
@@ -387,6 +408,7 @@ pub(super) fn render(
         .flex_1()
         .min_h_0()
         .child(toolbar)
+        .children(capped)
         .child(header)
         .child(list.flex_1().min_h_0().child(body))
         .into_any_element()

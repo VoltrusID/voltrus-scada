@@ -150,6 +150,25 @@ fn step_duration(console: &mut Console, forward: bool, cx: &mut Context<Console>
     cx.notify();
 }
 
+/// A click on a duration: choose it and give the keys back to the reason
+/// field, where Enter shelves and ↑/↓ step the duration (the click moved
+/// focus to the overlay's card).
+fn pick_duration(
+    console: &mut Console,
+    index: usize,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) {
+    let state = console.state::<State>();
+    if let Some((_, duration)) = &mut state.shelving {
+        *duration = index;
+    }
+    if let Some(field) = &state.reason {
+        field.read(cx).focus(window);
+    }
+    cx.notify();
+}
+
 fn submit_shelve(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
     let state = console.state::<State>();
     let Some((id, duration)) = state.shelving.take() else {
@@ -203,11 +222,8 @@ fn shelve_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
                 .cursor_pointer()
                 .when(selected, |this| this.bg(theme.selected))
                 .when(!selected, |this| this.hover(move |style| style.bg(hover)))
-                .on_click(cx.listener(move |console, _, _, cx| {
-                    if let Some((_, duration)) = &mut console.state::<State>().shelving {
-                        *duration = index;
-                    }
-                    cx.notify();
+                .on_click(cx.listener(move |console, _, window, cx| {
+                    pick_duration(console, index, window, cx);
                 }))
                 .child(
                     div()
@@ -411,8 +427,12 @@ fn confirm_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
     div()
         .track_focus(&focus)
         .key_context(LIST_CONTEXT)
-        .on_action(cx.listener(|console, _: &ListActivate, window, cx| {
-            acknowledge_all_now(console, window, cx);
+        // Enter confirms only from the dialog itself: on a focused Cancel it
+        // is that button's (its click comes with the key's release).
+        .on_action(cx.listener(move |console, _: &ListActivate, window, cx| {
+            if focus.is_focused(window) {
+                acknowledge_all_now(console, window, cx);
+            }
         }))
         .flex()
         .flex_col()
@@ -865,5 +885,85 @@ fn journal(
                     )
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use voltrus_scada_native::runtime::{Command, Event};
+
+    use super::*;
+    use crate::console::testing::Harness;
+
+    /// Signed in as an admin with one critical alarm waiting.
+    fn with_an_alarm(cx: &mut gpui::TestAppContext) -> Harness {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.event(Event::Alarms {
+            alarms: vec![Alarm {
+                id: 1,
+                source_key: "plts_1.p".into(),
+                severity: "critical".into(),
+                priority: "critical".into(),
+                state: "active".into(),
+                triggered_at: 100,
+                ..Alarm::default()
+            }],
+            capped: false,
+        });
+        h.commands();
+        h
+    }
+
+    fn acknowledged_all(commands: &[Command]) -> bool {
+        commands
+            .iter()
+            .any(|command| matches!(command, Command::AcknowledgeAll))
+    }
+
+    #[gpui::test]
+    fn enter_on_the_focused_cancel_acknowledges_nothing(cx: &mut gpui::TestAppContext) {
+        let mut h = with_an_alarm(cx);
+        h.update(confirm_acknowledge_all);
+        h.draw();
+        h.keys("tab");
+        let on_dialog = h.update(|console, window, _| {
+            console
+                .state::<State>()
+                .confirm_focus
+                .as_ref()
+                .is_some_and(|focus| focus.is_focused(window))
+        });
+        assert!(!on_dialog, "Tab moved to a button");
+        h.keys("enter");
+        assert!(!acknowledged_all(&h.commands()));
+    }
+
+    #[gpui::test]
+    fn enter_on_the_dialog_acknowledges_all(cx: &mut gpui::TestAppContext) {
+        let mut h = with_an_alarm(cx);
+        h.update(confirm_acknowledge_all);
+        h.draw();
+        h.keys("enter");
+        assert!(acknowledged_all(&h.commands()));
+    }
+
+    #[gpui::test]
+    fn a_clicked_duration_gives_the_keys_back_to_the_reason(cx: &mut gpui::TestAppContext) {
+        let mut h = with_an_alarm(cx);
+        h.update(|console, window, cx| open_shelve(console, 1, window, cx));
+        h.draw();
+        // The click lands outside the reason field and takes its focus.
+        h.update(|console, window, cx| {
+            window.blur();
+            pick_duration(console, 3, window, cx);
+        });
+        h.draw();
+        h.keys("down enter");
+        let shelved = h.commands().into_iter().find_map(|command| match command {
+            Command::Shelve { alarm, seconds, .. } => Some((alarm, seconds)),
+            _ => None,
+        });
+        assert_eq!(shelved, Some((1, SHELVE_DURATIONS[4].0)));
     }
 }

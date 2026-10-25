@@ -6,7 +6,6 @@
 //! number of rows and scrolls to keep the caret in view. IME-aware through
 //! `EntityInputHandler`, like `TextInput`. A candidate for vt-ui.
 
-use std::cell::Cell;
 use std::ops::Range;
 
 use gpui::prelude::*;
@@ -31,10 +30,6 @@ const KEY_CONTEXT: &str = "TextInput TextArea";
 const CONTEXT: &str = "TextArea";
 const LINE_HEIGHT: Pixels = px(18.0);
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// The keys only a multi-line field has. `shortcuts::rebind` includes
 /// them when it rebuilds the keymap.
 pub fn key_bindings() -> Vec<KeyBinding> {
@@ -45,14 +40,6 @@ pub fn key_bindings() -> Vec<KeyBinding> {
         KeyBinding::new("shift-down", SelectDown, Some(CONTEXT)),
         KeyBinding::new("secondary-enter", Commit, Some(CONTEXT)),
     ]
-}
-
-/// Bound once with the first field (the keymap may already have them).
-fn bind_keys(cx: &mut App) {
-    if BOUND.with(|bound| bound.replace(true)) {
-        return;
-    }
-    cx.bind_keys(key_bindings());
 }
 
 pub struct TextArea {
@@ -81,7 +68,6 @@ impl TextArea {
     /// A field showing `rows` rows of text. Emits `Changed`, `Submitted`
     /// (⌘↵), `Cancelled` (Esc) and `Blurred` like `TextInput`.
     pub fn new(rows: usize, cx: &mut Context<Self>) -> Self {
-        bind_keys(cx);
         Self {
             focus_handle: cx.focus_handle().tab_stop(true),
             content: String::new(),

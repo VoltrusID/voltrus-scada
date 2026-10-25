@@ -56,6 +56,35 @@ async fn logout_revokes_the_refresh_token(url: &str, user: &str, pass: &str) {
     println!("sign-out revoked the refresh token");
 }
 
+/// A renewal (`POST /auth/refresh`, as the runtime renews a session) hands
+/// out a new token and refresh token and revokes the old refresh token; the
+/// sign-out after it revokes the new one, so nothing the session held can
+/// mint a session afterwards.
+async fn a_renewal_rotates_the_refresh_token(url: &str, user: &str, pass: &str) {
+    let mut api = VoltrusApi::new(url);
+    api.login(user, pass).await.expect("sign in");
+    let first_refresh = api.refresh.clone().expect("a refresh token");
+    api.refresh_session().await.expect("renewed");
+    let renewed = api.refresh.clone().expect("a new refresh token");
+    assert_ne!(renewed, first_refresh, "a new refresh token");
+    assert_eq!(
+        refresh_status(url, &first_refresh).await,
+        reqwest::StatusCode::UNAUTHORIZED,
+        "the renewal revoked the refresh token it sent"
+    );
+    let _: Version = api
+        .get_json("/api/v1/version")
+        .await
+        .expect("the renewed token works");
+    api.logout().await.expect("sign out");
+    assert_eq!(
+        refresh_status(url, &renewed).await,
+        reqwest::StatusCode::UNAUTHORIZED,
+        "signing out after a renewal revokes the renewed refresh token"
+    );
+    println!("a renewal rotated the refresh token; sign-out revoked the new one");
+}
+
 async fn next(events: &async_channel::Receiver<Event>) -> Option<Event> {
     tokio::time::timeout(Duration::from_millis(500), events.recv())
         .await
@@ -131,7 +160,7 @@ async fn live_login_sensors_ws_stream() {
             Some(Event::Link(Link::Live)) => live = true,
             Some(Event::Updates(batch)) => updates += batch.len(),
             Some(Event::History { .. }) => history = true,
-            Some(Event::Alarms(list)) => alarms = Some(list),
+            Some(Event::Alarms { alarms: list, .. }) => alarms = Some(list),
             _ => {}
         }
     }
@@ -174,7 +203,7 @@ async fn live_login_sensors_ws_stream() {
                 done = true;
                 None
             }
-            Event::Alarms(list) if done => list
+            Event::Alarms { alarms: list, .. } if done => list
                 .iter()
                 .find(|alarm| alarm.id == id)
                 .is_none_or(|alarm| alarm.acknowledged_at.is_some())
@@ -225,13 +254,23 @@ async fn live_login_sensors_ws_stream() {
 
     alarm_management(&handle, &events, &alarms).await;
 
-    // Change the password (the runtime supplies the current one) and back.
+    // Change the password and back. The session does not keep the password
+    // it signed in with (renewals use the refresh token), so each change
+    // names the current one; an empty one is refused.
+    handle.send(Command::ChangePassword {
+        current: String::new(),
+        new: format!("{pass}-e2e-never"),
+    });
+    let refused = wait_for(&events, 20, |event| match event {
+        Event::PasswordChanged(result) => Some(result),
+        _ => None,
+    })
+    .await
+    .expect("no answer to the password change");
+    assert!(refused.is_err(), "no current password, no change");
     let temporary = format!("{pass}-e2e-temporary");
-    for new in [temporary, pass.clone()] {
-        handle.send(Command::ChangePassword {
-            current: String::new(),
-            new,
-        });
+    for (current, new) in [(pass.clone(), temporary.clone()), (temporary, pass.clone())] {
+        handle.send(Command::ChangePassword { current, new });
         let changed = wait_for(&events, 20, |event| match event {
             Event::PasswordChanged(result) => Some(result),
             _ => None,
@@ -264,6 +303,7 @@ async fn live_login_sensors_ws_stream() {
     handle.send(Command::Shutdown);
 
     logout_revokes_the_refresh_token(&url, &user, &pass).await;
+    a_renewal_rotates_the_refresh_token(&url, &user, &pass).await;
 
     data_manager_sources_round_trip(&url, &user, &pass).await;
     shell_preferences_notifications_and_edition(&url, &user, &pass).await;
@@ -514,6 +554,27 @@ async fn data_manager_sources_round_trip(url: &str, user: &str, pass: &str) {
     handle.send(Command::Shutdown);
 }
 
+/// The `PUT /nav-shortcuts` body that makes the resolved map `wanted`
+/// again, given the server's `defaults`: the targets set otherwise than by
+/// default, and an empty override for a default `wanted` lacks.
+fn nav_overrides(
+    wanted: &voltrus_scada_native::api::shell::ShortcutMap,
+    defaults: &voltrus_scada_native::api::shell::ShortcutMap,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut body: serde_json::Map<String, serde_json::Value> = wanted
+        .iter()
+        .filter(|(target, combo)| !combo.is_empty() && defaults.get(*target) != Some(*combo))
+        .map(|(target, combo)| (target.clone(), serde_json::Value::from(combo.as_str())))
+        .collect();
+    for target in defaults
+        .keys()
+        .filter(|target| !wanted.contains_key(*target))
+    {
+        body.insert(target.clone(), serde_json::Value::from(""));
+    }
+    body
+}
+
 /// The shell's paths (settings sheet, shortcuts, bell, edition, sign-in
 /// methods): each read, each write and back, the role gate on the alarm
 /// cooldown, and user notifications end to end: an operator mentions the
@@ -630,8 +691,8 @@ async fn shell_preferences_notifications_and_edition(url: &str, user: &str, pass
         theme.theme, lang.lang, cooldown.secs
     );
 
-    // Shortcuts: a tag's and a navigation target's, set and cleared. The
-    // plant's admin has no shortcuts of its own to keep.
+    // Shortcuts: a tag's and a navigation target's, set, then the admin's
+    // own put back (the server may be shared).
     let tags: Vec<voltrus_scada_native::api::DataSource> =
         admin.data_sources().await.expect("tags");
     let tag = tags.first().expect("a tag").id.to_string();
@@ -659,12 +720,20 @@ async fn shell_preferences_notifications_and_edition(url: &str, user: &str, pass
         .send_json(Method::PUT, "/api/v1/shortcuts", &restore)
         .await
         .expect("restore tag shortcuts");
-    let nav: ShortcutMap = admin
+    let nav_before: ShortcutMap = admin
+        .get_json("/api/v1/nav-shortcuts")
+        .await
+        .expect("nav shortcuts");
+    let _: IgnoredAny = admin
+        .send_json(Method::PUT, "/api/v1/nav-shortcuts", &serde_json::json!({}))
+        .await
+        .expect("clear nav shortcuts");
+    let defaults: ShortcutMap = admin
         .get_json("/api/v1/nav-shortcuts")
         .await
         .expect("nav shortcuts");
     assert_eq!(
-        nav.get("screen:all").map(String::as_str),
+        defaults.get("screen:all").map(String::as_str),
         Some("Mod+1"),
         "the default"
     );
@@ -681,11 +750,23 @@ async fn shell_preferences_notifications_and_edition(url: &str, user: &str, pass
         .await
         .expect("nav shortcuts");
     assert_eq!(nav.get("action:alarms").map(String::as_str), Some("F9"));
+    // Put the admin's own map back: the PUT replaces every override, so
+    // send what differed from the defaults (a default the admin removed
+    // goes back as an empty override).
     let _: IgnoredAny = admin
-        .send_json(Method::PUT, "/api/v1/nav-shortcuts", &serde_json::json!({}))
+        .send_json(
+            Method::PUT,
+            "/api/v1/nav-shortcuts",
+            &nav_overrides(&nav_before, &defaults),
+        )
         .await
-        .expect("clear nav shortcuts");
-    println!("shortcuts: a tag's and a target's set and cleared");
+        .expect("restore nav shortcuts");
+    let restored: ShortcutMap = admin
+        .get_json("/api/v1/nav-shortcuts")
+        .await
+        .expect("nav shortcuts");
+    assert_eq!(restored, nav_before, "the admin's nav shortcuts are back");
+    println!("shortcuts: a tag's and a target's set, then restored");
 
     // Two users: an operator who writes the handover, a viewer who reads.
     let suffix = format!("{:x}", std::process::id());

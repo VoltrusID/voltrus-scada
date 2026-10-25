@@ -170,7 +170,11 @@ fn refresh(console: &mut Console) {
     match view {
         View::List if filter == Filter::History => fetch_history(console),
         View::List => {}
-        View::Analytics => fetch_analytics(console),
+        // The history's last five minutes make the flood warning.
+        View::Analytics => {
+            fetch_analytics(console);
+            fetch_history(console);
+        }
         View::Audit => fetch_audit(console),
     }
 }
@@ -237,7 +241,14 @@ pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Cons
     }
     match view {
         View::List if filter == Filter::History && !history => fetch_history(console),
-        View::Analytics if !analytics => fetch_analytics(console),
+        View::Analytics => {
+            if !analytics {
+                fetch_analytics(console);
+            }
+            if !history {
+                fetch_history(console);
+            }
+        }
         View::Audit if !audit => fetch_audit(console),
         _ => {}
     }
