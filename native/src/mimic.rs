@@ -2185,5 +2185,7 @@ pub fn neighbor(
         .map(|(index, _)| index)
 }
 
+pub mod edit;
+
 #[cfg(test)]
 mod tests;
