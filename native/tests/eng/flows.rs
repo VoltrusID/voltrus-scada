@@ -12,7 +12,7 @@ use voltrus_scada_native::api::eng_flows::{
     End, Flow, FlowGraph, TEST_PAYLOAD, node_kind, trigger_kind,
 };
 
-pub(super) async fn round_trip(api: &VoltrusApi) {
+pub(crate) async fn round_trip(api: &VoltrusApi) {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is past 1970");

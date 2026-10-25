@@ -12,7 +12,7 @@ use voltrus_scada_native::api::eng_scripts::{CreateScript, HISTORY_LIMIT, MIB, U
 const FIRST: &str = "function main(input) {\n  return { value: input.value + 1 };\n}\n";
 const SECOND: &str = "// doubled\nfunction main(input) {\n  if (typeof input.value !== 'number') {\n    throw new Error('value must be a number');\n  }\n  return { value: input.value * 2 };\n}\n";
 
-pub(super) async fn round_trip(api: &VoltrusApi) {
+pub(crate) async fn round_trip(api: &VoltrusApi) {
     let before = api.scripts().await.expect("list scripts");
     println!("scripts: {} on the plant", before.len());
 

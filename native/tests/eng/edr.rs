@@ -5,7 +5,7 @@
 use voltrus_scada_native::api::VoltrusApi;
 use voltrus_scada_native::api::eng_edr::{self, PS1};
 
-pub(super) async fn round_trip(api: &VoltrusApi) {
+pub(crate) async fn round_trip(api: &VoltrusApi) {
     let report = api.edr_report().await.expect("EDR report");
     assert!(
         !report.recommended_exclusions.is_empty(),

@@ -525,7 +525,7 @@ mod tests {
                 (";", None),
             ]
         );
-        assert!(spans(0, &[]).is_empty());
+        assert!(super::spans(0, &[]).is_empty());
     }
 
     #[test]

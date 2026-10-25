@@ -22,7 +22,7 @@ use voltrus_scada_native::api::eng_system::{
 use voltrus_scada_native::api::ops::encode;
 use voltrus_scada_native::api::{DataSource, Method, ServerError, VoltrusApi};
 
-pub(super) async fn round_trip(api: &VoltrusApi) {
+pub(crate) async fn round_trip(api: &VoltrusApi) {
     overview(api).await;
     docs(api).await;
     let template = templates(api).await;

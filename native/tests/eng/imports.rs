@@ -66,7 +66,7 @@ fn mapping(pairs: &[(Field, usize)]) -> ColumnMapping {
     mapping
 }
 
-pub(super) async fn round_trip(api: &VoltrusApi) {
+pub(crate) async fn round_trip(api: &VoltrusApi) {
     let before = readings(api).await;
     csv(api).await;
     excel(api).await;

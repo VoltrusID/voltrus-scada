@@ -219,14 +219,17 @@ fn render_meta(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         form.error.clone(),
         form.saving,
     );
-    let set_enabled = |on: bool, cx: &mut Context<Console>| {
+    fn set_enabled(
+        on: bool,
+        cx: &mut Context<Console>,
+    ) -> impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static {
         cx.listener(move |console: &mut Console, _: &gpui::ClickEvent, _, cx| {
             if let Some(form) = console.state::<State>().form.as_mut() {
                 form.enabled = on;
             }
             cx.notify();
         })
-    };
+    }
     let note = |text: &'static str| {
         div()
             .text_size(FONT_SMALL)

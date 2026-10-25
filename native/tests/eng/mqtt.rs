@@ -106,7 +106,7 @@ async fn change_and_restore_config(api: &VoltrusApi, original: ConfigSummary) {
     );
 }
 
-pub(super) async fn round_trip(api: &VoltrusApi) {
+pub(crate) async fn round_trip(api: &VoltrusApi) {
     let before = api.mqtt_status().await.expect("broker status");
     println!(
         "mqtt: {} with {} clients, config {:?}",

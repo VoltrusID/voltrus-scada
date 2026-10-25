@@ -6,7 +6,7 @@
 use voltrus_scada_native::api::VoltrusApi;
 use voltrus_scada_native::api::eng_snapshots::{ConfigSnapshot, SNAPSHOTS};
 
-pub(super) async fn round_trip(api: &VoltrusApi) {
+pub(crate) async fn round_trip(api: &VoltrusApi) {
     let before = api.config_snapshots().await.expect("list snapshots");
     println!("snapshots: {} listed", before.len());
 

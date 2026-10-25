@@ -1210,14 +1210,17 @@ pub(super) fn render(
     let items = palette_items(folded);
 
     // ── Toolbar ──
-    let set_enabled = |on: bool, cx: &mut Context<Console>| {
+    fn set_enabled(
+        on: bool,
+        cx: &mut Context<Console>,
+    ) -> impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static {
         cx.listener(move |console: &mut Console, _: &gpui::ClickEvent, _, cx| {
             if let Some(editor) = editor_mut(console) {
                 editor.enabled = on;
             }
             cx.notify();
         })
-    };
+    }
     let toolbar = div()
         .flex()
         .flex_none()
