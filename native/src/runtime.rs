@@ -3,35 +3,167 @@
 //! the window through [`Event`]s.
 //!
 //! The actor waits only on the operator's own sign-in. Every other REST call
-//! (tags, alarms, history, alarm actions, password changes, token renewals
-//! and the sign-in before a reconnect) runs as its own task and comes back as
-//! an input tagged with its session, so tag updates keep flowing while the
-//! server answers, and a signed-out session's answers are dropped.
+//! (tags, alarms, history, alarm actions, password changes, token renewals,
+//! the sign-in before a reconnect and every generic [`Command::Call`]) runs
+//! as its own task and comes back as an input tagged with its session, so
+//! tag updates keep flowing while the server answers, and a signed-out
+//! session's answers are dropped.
 //!
 //! When the server refuses the stored password (changed elsewhere, account
 //! locked) the session ends instead of trying again: every wrong password
 //! counts towards locking the account.
+//!
+//! # Generic REST calls
+//!
+//! A feature that needs an endpoint does not add a command or an event:
+//! it sends `Command::Call { key, call }` with a [`Call`] built from the
+//! [`VoltrusApi`] helpers, and gets `Event::Reply { key, reply }` back with
+//! the decoded answer (decoded here, off the UI thread). The [`CallKey`]
+//! names the feature (`"alarms.summary"`) and an optional argument, so the
+//! console routes the reply to the page that asked.
 
+use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::hash::{BuildHasher, Hasher};
+use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
+use serde::de::DeserializeOwned;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::api::{self, Alarm, DataSourceSummary, HistorySeries, VoltrusApi};
+use crate::api::{self, Alarm, DataSource, HistorySeries, Method, VoltrusApi};
+use crate::stress::{self, StressFeed, StressOptions};
 use crate::ws_types::{ClientMessage, ServerMessage, TagUpdateEntry};
 
+/// Names a generic REST call so its answer finds the code that asked:
+/// `"<page id>.<what>"` (the console routes by the part before the dot),
+/// plus an argument such as an alarm id or a page number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CallKey {
+    pub name: &'static str,
+    pub arg: i64,
+}
+
+impl CallKey {
+    pub const fn new(name: &'static str) -> Self {
+        Self { name, arg: 0 }
+    }
+
+    #[must_use]
+    pub const fn with(self, arg: i64) -> Self {
+        Self {
+            name: self.name,
+            arg,
+        }
+    }
+
+    /// The part of the name before the first dot: the page id.
+    pub fn scope(&self) -> &'static str {
+        self.name.split('.').next().unwrap_or(self.name)
+    }
+}
+
+type CallFuture = Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>, String>> + Send>>;
+type CallFn = Box<dyn FnOnce(VoltrusApi) -> CallFuture + Send>;
+
+/// A REST call to run with the session's client. Build one with
+/// [`Call::get`], [`Call::send`], [`Call::send_empty`] or, for anything
+/// else, [`Call::new`].
+pub struct Call(CallFn);
+
+impl Call {
+    /// Any async work with the session's client; its result is the reply.
+    pub fn new<T, F, Fut>(call: F) -> Self
+    where
+        T: Send + 'static,
+        F: FnOnce(VoltrusApi) -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<T>> + Send + 'static,
+    {
+        Self(Box::new(move |api: VoltrusApi| -> CallFuture {
+            Box::pin(async move {
+                call(api)
+                    .await
+                    .map(|value| Box::new(value) as Box<dyn Any + Send>)
+                    .map_err(|error| error.to_string())
+            })
+        }))
+    }
+
+    /// `GET path`, decoded as `T`.
+    pub fn get<T: DeserializeOwned + Send + 'static>(path: impl Into<String>) -> Self {
+        let path = path.into();
+        Self::new(move |api| async move { api.get_json::<T>(&path).await })
+    }
+
+    /// `method path` with a JSON body, the answer decoded as `T`.
+    pub fn send<T: DeserializeOwned + Send + 'static>(
+        method: Method,
+        path: impl Into<String>,
+        body: serde_json::Value,
+    ) -> Self {
+        let path = path.into();
+        Self::new(move |api| async move { api.send_json::<_, T>(method, &path, &body).await })
+    }
+
+    /// `method path` without a body, the answer decoded as `T`
+    /// (`serde::de::IgnoredAny` when only success matters).
+    pub fn send_empty<T: DeserializeOwned + Send + 'static>(
+        method: Method,
+        path: impl Into<String>,
+    ) -> Self {
+        let path = path.into();
+        Self::new(move |api| async move { api.send_empty::<T>(method, &path).await })
+    }
+}
+
+/// The answer to a [`Command::Call`]: the decoded value, or why there is
+/// none.
+pub struct Reply(Result<Box<dyn Any + Send>, String>);
+
+impl Reply {
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self(Err(error.into()))
+    }
+
+    pub fn ok<T: Send + 'static>(value: T) -> Self {
+        Self(Ok(Box::new(value)))
+    }
+
+    /// The value, if the call succeeded and answered a `T`.
+    pub fn take<T: 'static>(self) -> Result<T, String> {
+        let value = self.0?;
+        value
+            .downcast::<T>()
+            .map(|value| *value)
+            .map_err(|_| format!("the reply is not a {}", std::any::type_name::<T>()))
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.0.as_ref().err().map(String::as_str)
+    }
+}
+
+impl fmt::Debug for Reply {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            Ok(_) => f.write_str("Reply(Ok(..))"),
+            Err(error) => f.debug_tuple("Reply").field(&Err::<(), _>(error)).finish(),
+        }
+    }
+}
+
 /// What the window asks for.
-#[derive(Clone)]
 pub enum Command {
     SignIn {
         url: String,
         username: String,
         password: String,
     },
+    /// End the session: the server is told (`POST /auth/logout`, which
+    /// revokes the refresh token) and the socket closes.
     SignOut,
     /// Replace the signed-in user's password. An empty `current` means the
     /// password the session signed in with.
@@ -39,11 +171,10 @@ pub enum Command {
         current: String,
         new: String,
     },
+    /// Stream these tag keys (WebSocket `Subscribe` takes keys).
     Subscribe(Vec<String>),
-    /// Write `value` to a tag. The console knows tags by `key`; the server
-    /// addresses writes by the data source's numeric `id`.
+    /// Write `value` to the tag with this data source id.
     Write {
-        key: String,
         id: i64,
         value: f64,
     },
@@ -57,6 +188,15 @@ pub enum Command {
     RefreshAlarms,
     /// Load history for every tag over `range` (`30m`, `1h`, `6h`, `24h`, `7d`).
     History(String),
+    /// A generic REST call for the session; answered by [`Event::Reply`]
+    /// with the same key.
+    Call {
+        key: CallKey,
+        call: Call,
+    },
+    /// End any session and feed a synthetic plant instead (see
+    /// [`crate::stress`]); `SignOut` stops it.
+    Stress(StressOptions),
     Shutdown,
 }
 
@@ -72,9 +212,8 @@ impl fmt::Debug for Command {
             Self::SignOut => f.write_str("SignOut"),
             Self::ChangePassword { .. } => f.debug_struct("ChangePassword").finish_non_exhaustive(),
             Self::Subscribe(tags) => f.debug_tuple("Subscribe").field(tags).finish(),
-            Self::Write { key, id, value } => f
+            Self::Write { id, value } => f
                 .debug_struct("Write")
-                .field("key", key)
                 .field("id", id)
                 .field("value", value)
                 .finish(),
@@ -88,6 +227,11 @@ impl fmt::Debug for Command {
             Self::Unshelve(id) => f.debug_tuple("Unshelve").field(id).finish(),
             Self::RefreshAlarms => f.write_str("RefreshAlarms"),
             Self::History(range) => f.debug_tuple("History").field(range).finish(),
+            Self::Call { key, .. } => f
+                .debug_struct("Call")
+                .field("key", key)
+                .finish_non_exhaustive(),
+            Self::Stress(options) => f.debug_tuple("Stress").field(options).finish(),
             Self::Shutdown => f.write_str("Shutdown"),
         }
     }
@@ -131,7 +275,7 @@ pub struct RaisedAlarm {
 }
 
 /// What the window hears back.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Event {
     Link(Link),
     SignedIn {
@@ -143,7 +287,7 @@ pub enum Event {
     },
     SignInFailed(String),
     PasswordChanged(Result<(), String>),
-    Tags(Vec<DataSourceSummary>),
+    Tags(Vec<DataSource>),
     Updates(Vec<TagUpdateEntry>),
     Alarms(Vec<Alarm>),
     /// The open alarms could not be fetched: the list shown is stale.
@@ -153,8 +297,9 @@ pub enum Event {
         range: String,
         series: HashMap<String, HistorySeries>,
     },
+    /// The answer to a write to the tag with this data source id.
     Written {
-        tag: String,
+        tag: i64,
         result: Result<String, String>,
         /// The answer came after the write was reported unanswered.
         late: bool,
@@ -163,6 +308,17 @@ pub enum Event {
     Done {
         action: String,
         result: Result<(), String>,
+    },
+    /// The answer to a [`Command::Call`].
+    Reply {
+        key: CallKey,
+        reply: Reply,
+    },
+    /// A device's link to the server came up or went down.
+    DeviceStatus {
+        device_id: String,
+        online: bool,
+        latency_ms: Option<u64>,
     },
 }
 
@@ -205,6 +361,11 @@ impl Out {
     fn send(&self, event: Event) {
         let _ = self.0.try_send(event);
     }
+
+    /// Events the window has not taken yet.
+    fn backlog(&self) -> usize {
+        self.0.len()
+    }
 }
 
 enum Input {
@@ -229,7 +390,7 @@ enum Socket {
 
 /// What a REST task brings back to the actor.
 enum Rest {
-    Tags(Result<Vec<DataSourceSummary>, String>),
+    Tags(Result<Vec<DataSource>, String>),
     Alarms(Result<Vec<Alarm>, String>),
     History {
         range: String,
@@ -249,6 +410,10 @@ enum Rest {
     Reconnect {
         socket: u64,
         result: Result<String, SignInError>,
+    },
+    Reply {
+        key: CallKey,
+        reply: Reply,
     },
 }
 
@@ -323,10 +488,10 @@ const LATE_WRITES: usize = 32;
 struct Writes {
     nonce: String,
     next: u64,
-    /// Command id → tag key.
-    pending: HashMap<String, String>,
+    /// Command id → data source id.
+    pending: HashMap<String, i64>,
     /// Timed-out writes, oldest first.
-    late: VecDeque<(String, String)>,
+    late: VecDeque<(String, i64)>,
 }
 
 impl Writes {
@@ -340,7 +505,7 @@ impl Writes {
     }
 
     /// A new command id for a write to `tag`.
-    fn issue(&mut self, tag: String) -> String {
+    fn issue(&mut self, tag: i64) -> String {
         self.next += 1;
         let id = format!("native-{}-{}", self.nonce, self.next);
         self.pending.insert(id.clone(), tag);
@@ -353,18 +518,18 @@ impl Writes {
     }
 
     /// The tag of a write that waited too long, if it still waited.
-    fn time_out(&mut self, id: &str) -> Option<String> {
+    fn time_out(&mut self, id: &str) -> Option<i64> {
         let tag = self.pending.remove(id)?;
         if self.late.len() == LATE_WRITES {
             self.late.pop_front();
         }
-        self.late.push_back((id.to_owned(), tag.clone()));
+        self.late.push_back((id.to_owned(), tag));
         Some(tag)
     }
 
     /// The tag of an acknowledged write of ours, and whether it had timed
     /// out.
-    fn acknowledge(&mut self, id: &str) -> Option<(String, bool)> {
+    fn acknowledge(&mut self, id: &str) -> Option<(i64, bool)> {
         if let Some(tag) = self.pending.remove(id) {
             return Some((tag, false));
         }
@@ -373,7 +538,7 @@ impl Writes {
     }
 
     /// The tags of every waiting write, when the connection drops.
-    fn abandon(&mut self) -> Vec<String> {
+    fn abandon(&mut self) -> Vec<i64> {
         self.pending.drain().map(|(_, tag)| tag).collect()
     }
 }
@@ -525,6 +690,9 @@ struct Actor {
     out: Out,
     inputs: mpsc::UnboundedSender<Input>,
     session: Option<Session>,
+    /// The synthetic plant's feed while a stress test runs instead of a
+    /// session; dropping it stops the feed.
+    stress: Option<AbortOnDrop>,
     subscribed: Vec<String>,
     /// Session and socket ids. Never reused, so neither a signed-out
     /// session's answers nor an old socket's messages pass for current ones.
@@ -537,6 +705,7 @@ impl Actor {
             out,
             inputs,
             session: None,
+            stress: None,
             subscribed: Vec::new(),
             ids: 0,
         }
@@ -607,7 +776,14 @@ impl Actor {
                 });
             }
             Command::SignOut => {
-                self.end_session();
+                if let Some(s) = self.end_session() {
+                    // Revoke the session on the server too; nobody waits
+                    // for the answer.
+                    let api = s.api;
+                    tokio::spawn(async move {
+                        let _ = api.logout().await;
+                    });
+                }
                 self.out.send(Event::Link(Link::SignedOut));
             }
             Command::Subscribe(tags) => {
@@ -620,7 +796,7 @@ impl Actor {
                     let _ = socket.try_send(ClientMessage::Subscribe { tag_ids: tags });
                 }
             }
-            Command::Write { key, id, value } => self.write(key, id, value),
+            Command::Write { id, value } => self.write(id, value),
             Command::Acknowledge(id) => {
                 self.action(format!("Acknowledge alarm {id}"), move |api| {
                     Box::pin(async move { api.ack_alarm(id).await })
@@ -653,6 +829,29 @@ impl Actor {
                         Rest::History { range, result }
                     });
                 }
+            }
+            Command::Call { key, call } => match &self.session {
+                Some(s) => {
+                    let api = s.api.clone();
+                    spawn_rest(&self.inputs, s.id, async move {
+                        Rest::Reply {
+                            key,
+                            reply: Reply((call.0)(api).await),
+                        }
+                    });
+                }
+                None => self.out.send(Event::Reply {
+                    key,
+                    reply: Reply::failed(if self.stress.is_some() {
+                        "A stress test has no server to ask"
+                    } else {
+                        "Not signed in"
+                    }),
+                }),
+            },
+            Command::Stress(options) => {
+                self.end_session();
+                self.stress = Some(spawn_stress(self.out.clone(), options));
             }
             Command::Shutdown => return false,
         }
@@ -687,9 +886,11 @@ impl Actor {
         self.refresh_alarms();
     }
 
-    /// Drop the session: its socket task is aborted and its answers ignored.
+    /// Drop the session (its socket task is aborted and its answers
+    /// ignored) or stop the stress feed.
     fn end_session(&mut self) -> Option<Session> {
         self.subscribed.clear();
+        self.stress = None;
         self.session.take()
     }
 
@@ -733,10 +934,10 @@ impl Actor {
         }
     }
 
-    fn write(&mut self, key: String, id: i64, value: f64) {
+    fn write(&mut self, id: i64, value: f64) {
         let Some(s) = self.session.as_mut() else {
             self.out.send(Event::Written {
-                tag: key,
+                tag: id,
                 result: Err("Not connected".into()),
                 late: false,
             });
@@ -744,13 +945,13 @@ impl Actor {
         };
         let Some(socket) = s.socket.as_ref() else {
             self.out.send(Event::Written {
-                tag: key,
+                tag: id,
                 result: Err("Not connected".into()),
                 late: false,
             });
             return;
         };
-        let command_id = s.writes.issue(key.clone());
+        let command_id = s.writes.issue(id);
         let message = ClientMessage::TagWrite {
             tag_id: id.to_string(),
             value,
@@ -759,7 +960,7 @@ impl Actor {
         if socket.try_send(message).is_err() {
             s.writes.cancel(&command_id);
             self.out.send(Event::Written {
-                tag: key,
+                tag: id,
                 result: Err("The connection is busy; try again".into()),
                 late: false,
             });
@@ -855,6 +1056,7 @@ impl Actor {
             }
             Rest::Renewed(result) => self.renewed(result),
             Rest::Reconnect { socket, result } => self.reconnect(socket, result),
+            Rest::Reply { key, reply } => self.out.send(Event::Reply { key, reply }),
         }
     }
 
@@ -1030,10 +1232,17 @@ impl Actor {
             // The socket's token was refused: reconnecting with it would
             // fail the same way.
             ServerMessage::AuthError { message } => self.refuse(&message),
-            ServerMessage::AuthOk { .. }
-            | ServerMessage::Pong
-            | ServerMessage::DeviceStatus { .. }
-            | ServerMessage::HaStatus { .. } => {}
+            ServerMessage::DeviceStatus {
+                device_id,
+                online,
+                latency_ms,
+            } => self.out.send(Event::DeviceStatus {
+                device_id,
+                online,
+                latency_ms,
+            }),
+            ServerMessage::AuthOk { .. } | ServerMessage::Pong | ServerMessage::HaStatus { .. } => {
+            }
         }
     }
 }
@@ -1045,6 +1254,46 @@ impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
     }
+}
+
+/// Batches the window has not taken yet beyond which the stress feed skips
+/// a tick rather than queue without bound: a console that cannot keep up
+/// shows it as a lower applied rate, not as growing memory.
+const STRESS_BACKLOG: usize = 64;
+
+/// The user and server a stress test signs in as.
+pub const STRESS_USER: &str = "stress";
+pub const STRESS_SERVER: &str = "stress://synthetic-plant";
+
+/// Act out a session with a synthetic plant: signed in, live, its tag list,
+/// then a batch of updates every [`stress::TICK`] until dropped.
+fn spawn_stress(out: Out, options: StressOptions) -> AbortOnDrop {
+    AbortOnDrop(tokio::spawn(async move {
+        let mut feed = StressFeed::new(options);
+        out.send(Event::SignedIn {
+            username: STRESS_USER.into(),
+            role: "admin".into(),
+            server: STRESS_SERVER.into(),
+            must_change_password: false,
+        });
+        out.send(Event::Link(Link::Live));
+        out.send(Event::Tags(feed.tags()));
+        out.send(Event::Alarms(Vec::new()));
+        let mut ticker = tokio::time::interval(stress::TICK);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            if out.backlog() > STRESS_BACKLOG {
+                continue;
+            }
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| {
+                    i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+                });
+            out.send(Event::Updates(feed.next_batch(now)));
+        }
+    }))
 }
 
 /// Connect, authenticate, then forward every server message tagged with
@@ -1123,7 +1372,7 @@ mod tests {
         runtime: tokio::runtime::Runtime,
         actor: Actor,
         events: async_channel::Receiver<Event>,
-        _inputs: mpsc::UnboundedReceiver<Input>,
+        inputs: mpsc::UnboundedReceiver<Input>,
     }
 
     impl Harness {
@@ -1138,7 +1387,7 @@ mod tests {
                 runtime,
                 actor: Actor::new(Out(out), inputs),
                 events,
-                _inputs: receiver,
+                inputs: receiver,
             }
         }
 
@@ -1241,7 +1490,7 @@ mod tests {
         h.events();
         h.feed(Input::Rest(
             first,
-            Rest::Tags(Ok(vec![DataSourceSummary::default()])),
+            Rest::Tags(Ok(vec![DataSource::default()])),
         ));
         h.feed(Input::Rest(first, Rest::Alarms(Ok(vec![Alarm::default()]))));
         h.feed(Input::Rest(
@@ -1265,7 +1514,7 @@ mod tests {
         );
         h.feed(Input::Rest(
             second,
-            Rest::Tags(Ok(vec![DataSourceSummary::default()])),
+            Rest::Tags(Ok(vec![DataSource::default()])),
         ));
         assert!(matches!(h.events().as_slice(), [Event::Tags(tags)] if tags.len() == 1));
     }
@@ -1393,16 +1642,16 @@ mod tests {
     #[test]
     fn writes_match_only_their_own_acks_even_late_ones() {
         let mut writes = Writes::new("abc".into());
-        let first = writes.issue("a".into());
-        let second = writes.issue("b".into());
+        let first = writes.issue(11);
+        let second = writes.issue(12);
         assert_ne!(first, second);
         assert!(first.starts_with("native-abc-"));
         assert_eq!(writes.acknowledge("native-other-1"), None);
-        assert_eq!(writes.time_out(&first).as_deref(), Some("a"));
+        assert_eq!(writes.time_out(&first), Some(11));
         assert_eq!(writes.time_out(&first), None, "reported once");
-        assert_eq!(writes.acknowledge(&first), Some(("a".into(), true)));
+        assert_eq!(writes.acknowledge(&first), Some((11, true)));
         assert_eq!(writes.acknowledge(&first), None);
-        assert_eq!(writes.abandon(), ["b"]);
+        assert_eq!(writes.abandon(), [12]);
         assert_eq!(writes.acknowledge(&second), None);
         assert_ne!(nonce(), nonce());
     }
@@ -1411,13 +1660,7 @@ mod tests {
     fn a_write_goes_out_on_the_socket_and_a_late_ack_corrects_its_timeout() {
         let mut h = Harness::new();
         let id = h.sign_in();
-        let write = || {
-            Input::Command(Command::Write {
-                key: "a".into(),
-                id: 7,
-                value: 1.5,
-            })
-        };
+        let write = || Input::Command(Command::Write { id: 7, value: 1.5 });
         h.feed(write());
         let (sender, mut queue) = mpsc::channel(4);
         let generation = h.session().generation;
@@ -1451,7 +1694,7 @@ mod tests {
                 Event::Link(Link::Live),
                 Event::Written { result: Err(_), late: false, .. },
                 Event::Written { tag, result: Ok(detail), late: true },
-            ] if not_connected == "Not connected" && tag == "a" && detail == "ok (12 ms)"
+            ] if not_connected == "Not connected" && *tag == 7 && detail == "ok (12 ms)"
         ));
     }
 
@@ -1568,5 +1811,140 @@ mod tests {
         let text = format!("{sign_in:?} {change:?}");
         assert!(text.contains("admin"));
         assert!(!text.contains("hunter"));
+    }
+
+    /// The answer a spawned REST task sent back to the actor, if one did
+    /// within a second.
+    fn spawned_reply(h: &mut Harness) -> Option<(u64, CallKey, Reply)> {
+        for _ in 0..100 {
+            h.run_for(Duration::from_millis(10));
+            while let Ok(input) = h.inputs.try_recv() {
+                if let Input::Rest(session, Rest::Reply { key, reply }) = input {
+                    return Some((session, key, reply));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn a_generic_call_runs_with_the_session_and_answers_under_its_key() {
+        let mut h = Harness::new();
+        let id = h.sign_in();
+        let key = CallKey::new("alarms.summary").with(3);
+        assert_eq!(key.scope(), "alarms");
+        h.feed(Input::Command(Command::Call {
+            key,
+            call: Call::new(|api| async move { Ok(format!("{} answered", api.base)) }),
+        }));
+        let (session, answered, reply) = spawned_reply(&mut h).expect("the call ran");
+        assert_eq!((session, answered), (id, key));
+        h.events();
+        h.feed(Input::Rest(session, Rest::Reply { key, reply }));
+        let Some(Event::Reply { key: got, reply }) = h.events().pop() else {
+            panic!("expected the reply as an event");
+        };
+        assert_eq!(got, key);
+        assert_eq!(
+            reply.take::<String>().as_deref(),
+            Ok("http://127.0.0.1:9 answered")
+        );
+
+        // A reply decoded as another type says so instead of panicking.
+        let wrong = Reply::ok(5_i64).take::<String>();
+        assert!(wrong.is_err_and(|error| error.contains("String")));
+    }
+
+    #[test]
+    fn calls_need_a_session_and_an_ended_sessions_replies_are_dropped() {
+        let mut h = Harness::new();
+        let key = CallKey::new("commands.list");
+        h.feed(Input::Command(Command::Call {
+            key,
+            call: Call::get::<serde_json::Value>("/api/v1/commands"),
+        }));
+        let Some(Event::Reply { reply, .. }) = h.events().pop() else {
+            panic!("expected a failed reply");
+        };
+        assert_eq!(reply.error(), Some("Not signed in"));
+
+        let old = h.sign_in();
+        h.feed(Input::Command(Command::SignOut));
+        h.sign_in();
+        h.events();
+        h.feed(Input::Rest(
+            old,
+            Rest::Reply {
+                key,
+                reply: Reply::ok(1_i64),
+            },
+        ));
+        assert!(
+            h.events().is_empty(),
+            "the signed-out session's answer is dropped"
+        );
+    }
+
+    #[test]
+    fn device_status_messages_become_events() {
+        let mut h = Harness::new();
+        h.sign_in();
+        let generation = h.session().generation;
+        h.events();
+        h.socket(Socket::Message(
+            generation,
+            ServerMessage::DeviceStatus {
+                device_id: "inverter-2".into(),
+                online: false,
+                latency_ms: Some(40),
+            },
+        ));
+        assert!(matches!(
+            h.events().as_slice(),
+            [Event::DeviceStatus { device_id, online: false, latency_ms: Some(40) }]
+                if device_id == "inverter-2"
+        ));
+    }
+
+    #[test]
+    fn a_stress_test_acts_out_a_session_until_signed_out() {
+        let mut h = Harness::new();
+        h.sign_in();
+        let options = StressOptions {
+            tags: 50,
+            rate: 5_000,
+            seed: 1,
+        };
+        // `feed` runs inside the runtime, so the feed task spawns there.
+        h.feed(Input::Command(Command::Stress(options)));
+        assert!(
+            h.actor.session.is_none(),
+            "the stress test replaces the session"
+        );
+        h.run_for(Duration::from_millis(200));
+        let events = h.events();
+        assert!(matches!(
+            &events[..4],
+            [
+                Event::SignedIn { username, server, .. },
+                Event::Link(Link::Live),
+                Event::Tags(tags),
+                Event::Alarms(alarms),
+            ] if username == STRESS_USER && server == STRESS_SERVER && tags.len() == 50 && alarms.is_empty()
+        ));
+        let updates: usize = events[4..]
+            .iter()
+            .map(|event| match event {
+                Event::Updates(batch) => batch.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(updates >= 50, "batches of 50 every 10 ms, got {updates}");
+
+        h.feed(Input::Command(Command::SignOut));
+        h.run_for(Duration::from_millis(50));
+        h.events();
+        h.run_for(Duration::from_millis(100));
+        assert!(h.events().is_empty(), "signing out stops the feed");
     }
 }

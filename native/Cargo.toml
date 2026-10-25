@@ -14,7 +14,7 @@ path = "src/main.rs"
 gpui = "0.2.2"
 # The Voltrus design system, shared with Voltrus Tools (GPL-3.0-or-later,
 # compatible with this crate's AGPL-3.0-or-later).
-vt-ui = { git = "https://github.com/VoltrusID/voltrus-explorers", rev = "2d91988da3e69fd7020da579bdf466ef989f5b08" }
+vt-ui = { git = "https://github.com/VoltrusID/voltrus-explorers", rev = "31e9c1e109e8ec0361a1df2d8ae80d34fff07978" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -27,6 +27,8 @@ anyhow = "1"
 toml = "0.8"
 dirs = "5"
 time = { version = "0.3", features = ["macros", "formatting", "local-offset"] }
+# `getrusage` for the performance HUD's memory figure.
+libc = "0.2"
 
 [dev-dependencies]
 http = "1"

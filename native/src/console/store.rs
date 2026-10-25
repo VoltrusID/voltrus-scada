@@ -1,11 +1,18 @@
 //! The console's copy of the plant: every tag's latest value, status and
 //! history, fed by the runtime's events. No UI here.
+//!
+//! Tags are known by their data source id. The WebSocket and the history
+//! name them by key, and several devices may share a key (two inverters'
+//! `frequency`): the server sends one update per data source, in the order
+//! of its data source list, so the n-th update for a key in a batch belongs
+//! to the n-th tag with that key in the list (`GET /api/v1/data-sources`
+//! has the same order).
 
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use voltrus_scada_native::api::{DataSourceSummary, HistorySeries};
+use voltrus_scada_native::api::{DataSource, HistorySeries};
 use voltrus_scada_native::ws_types::TagUpdateEntry;
 use vt_ui::chart::History;
 
@@ -62,8 +69,12 @@ impl Status {
 }
 
 pub struct Tag {
-    pub info: DataSourceSummary,
+    pub info: DataSource,
     pub value: f64,
+    /// The value before the latest change, for tweens.
+    pub previous: f64,
+    /// When the value last changed, for the change flash.
+    pub changed_at: Option<Instant>,
     pub status: Status,
     /// Unix seconds of the latest value, 0 before the first.
     pub at_secs: i64,
@@ -78,10 +89,12 @@ pub struct Tag {
 }
 
 impl Tag {
-    fn new(info: DataSourceSummary) -> Self {
+    fn new(info: DataSource) -> Self {
         Self {
             info,
             value: f64::NAN,
+            previous: f64::NAN,
+            changed_at: None,
             status: Status::Unknown,
             at_secs: 0,
             simulated: false,
@@ -89,6 +102,13 @@ impl Tag {
             samples: VecDeque::new(),
             thinned_to: f64::NAN,
         }
+    }
+
+    /// Where the value sits between the tag's minimum and maximum, 0 to 1,
+    /// when both are set and the value is known.
+    pub fn level(value: f64, info: &DataSource) -> Option<f64> {
+        let span = info.max_val - info.min_val;
+        (value.is_finite() && span > 0.0).then(|| ((value - info.min_val) / span).clamp(0.0, 1.0))
     }
 
     /// The value with the tag's configured decimals (the unit is separate).
@@ -168,52 +188,96 @@ impl Tag {
 #[derive(Default)]
 pub struct Store {
     pub tags: Vec<Tag>,
-    index: HashMap<String, usize>,
+    /// Data source id → position in `tags`.
+    by_id: HashMap<i64, usize>,
+    /// Key → positions of the tags with that key, in list order.
+    by_key: HashMap<String, Vec<usize>>,
+    /// Per batch: how many updates each shared key has had so far.
+    shared_seen: HashMap<usize, usize>,
 }
 
 impl Store {
     /// Replace the tag list, keeping the values and history of tags that
-    /// are still there.
-    pub fn replace(&mut self, list: Vec<DataSourceSummary>) {
-        let mut previous: HashMap<String, Tag> = self
-            .tags
-            .drain(..)
-            .map(|tag| (tag.info.key.clone(), tag))
-            .collect();
-        self.index.clear();
+    /// are still there (by id).
+    pub fn replace(&mut self, list: Vec<DataSource>) {
+        let mut previous: HashMap<i64, Tag> =
+            self.tags.drain(..).map(|tag| (tag.info.id, tag)).collect();
+        self.by_id.clear();
+        self.by_key.clear();
         for info in list {
-            // Several devices may report the same key: the first one wins.
-            if self.index.contains_key(&info.key) {
+            if self.by_id.contains_key(&info.id) {
                 continue;
             }
-            let tag = match previous.remove(&info.key) {
+            let tag = match previous.remove(&info.id) {
                 Some(mut kept) => {
                     kept.info = info;
                     kept
                 }
                 None => Tag::new(info),
             };
-            self.index.insert(tag.info.key.clone(), self.tags.len());
+            let position = self.tags.len();
+            self.by_id.insert(tag.info.id, position);
+            self.by_key
+                .entry(tag.info.key.clone())
+                .or_default()
+                .push(position);
             self.tags.push(tag);
         }
     }
 
-    pub fn position(&self, key: &str) -> Option<usize> {
-        self.index.get(key).copied()
+    /// The position in `tags` of the tag with data source id `id`.
+    pub fn position(&self, id: i64) -> Option<usize> {
+        self.by_id.get(&id).copied()
     }
 
+    pub fn get(&self, id: i64) -> Option<&Tag> {
+        self.position(id).map(|index| &self.tags[index])
+    }
+
+    /// The first tag with this key (alarms and `--tag` name tags by key).
+    pub fn by_key(&self, key: &str) -> Option<usize> {
+        self.by_key.get(key).and_then(|positions| positions.first().copied())
+    }
+
+    /// Every key once, in list order: what the WebSocket subscribes to.
     pub fn keys(&self) -> Vec<String> {
-        self.tags.iter().map(|tag| tag.info.key.clone()).collect()
+        self.tags
+            .iter()
+            .enumerate()
+            .filter(|(index, tag)| self.by_key(&tag.info.key) == Some(*index))
+            .map(|(_, tag)| tag.info.key.clone())
+            .collect()
     }
 
     /// Apply live updates; returns how many matched a known tag.
     pub fn apply(&mut self, updates: &[TagUpdateEntry]) -> usize {
+        self.apply_at(updates, Instant::now())
+    }
+
+    /// Apply live updates arriving at `now` (the change flash's start).
+    pub fn apply_at(&mut self, updates: &[TagUpdateEntry], now: Instant) -> usize {
         let mut applied = 0;
+        self.shared_seen.clear();
         for update in updates {
-            let Some(&index) = self.index.get(&update.tag_id) else {
+            let Some(positions) = self.by_key.get(&update.tag_id) else {
                 continue;
             };
+            let index = match positions.as_slice() {
+                [only] => *only,
+                shared => {
+                    // The n-th update for a shared key in this batch is the
+                    // n-th tag with it.
+                    let seen = self.shared_seen.entry(shared[0]).or_insert(0);
+                    let index = shared[(*seen).min(shared.len() - 1)];
+                    *seen += 1;
+                    index
+                }
+            };
             let tag = &mut self.tags[index];
+            if tag.value.to_bits() != update.value.to_bits() {
+                tag.previous = tag.value;
+                tag.changed_at = Some(now);
+            }
             tag.value = update.value;
             tag.status = Status::parse(&update.quality);
             tag.at_secs = update.ts;
@@ -234,15 +298,14 @@ impl Store {
 
     /// Load server history, replacing what each tag had up to its last
     /// bucket; the live samples after that bucket stay. A tag the server has
-    /// no samples for keeps its own.
+    /// no samples for keeps its own. The history is keyed by key, so of
+    /// tags sharing a key only the first gets it.
     pub fn backfill(&mut self, series: &HashMap<String, HistorySeries>) {
-        for tag in &mut self.tags {
-            let Some(series) = series
-                .get(&tag.info.key)
-                .filter(|series| !series.values.is_empty())
-            else {
+        for (key, series) in series {
+            let Some(index) = self.by_key(key) else {
                 continue;
             };
+            let tag = &mut self.tags[index];
             let Some((last_bucket, _)) = series.samples().last() else {
                 continue;
             };
@@ -302,12 +365,21 @@ impl Rate {
 mod tests {
     use super::*;
 
-    fn info(key: &str) -> DataSourceSummary {
-        DataSourceSummary {
+    /// A tag whose id derives from its key, so tests can name tags by key.
+    fn info(key: &str) -> DataSource {
+        let id = key
+            .bytes()
+            .fold(0_i64, |id, byte| id * 131 + i64::from(byte));
+        info_with(id, key)
+    }
+
+    fn info_with(id: i64, key: &str) -> DataSource {
+        DataSource {
+            id,
             key: key.into(),
             name: key.into(),
             decimals: 1,
-            ..DataSourceSummary::default()
+            ..DataSource::default()
         }
     }
 
@@ -330,23 +402,74 @@ mod tests {
             update("zzz", 1.0, 100, "normal"),
         ]);
         assert_eq!(applied, 1);
-        let b = &store.tags[store.position("b").unwrap()];
+        let b = &store.tags[store.by_key("b").unwrap()];
         assert_eq!(
             (b.value, b.status, b.display().as_str()),
             (4.25, Status::Warning, "4.2")
         );
         assert_eq!(b.history.latest(), Some((100_000.0, 4.25)));
+        assert_eq!(store.get(info("b").id).map(|tag| tag.value), Some(4.25));
     }
 
     #[test]
-    fn a_new_tag_list_keeps_surviving_history_and_drops_duplicates() {
+    fn a_new_tag_list_keeps_surviving_history_by_id() {
         let mut store = Store::default();
         store.replace(vec![info("a"), info("b")]);
         store.apply(&[update("a", 1.0, 10, "normal")]);
+        // `a` moved, a repeated id is dropped.
         store.replace(vec![info("c"), info("a"), info("a")]);
         assert_eq!(store.keys(), ["c", "a"]);
+        assert_eq!(store.tags.len(), 2);
         assert_eq!(store.tags[1].history.len(), 1);
         assert_eq!(store.tags[1].value, 1.0);
+        assert_eq!(store.position(info("a").id), Some(1));
+        assert_eq!(store.position(info("b").id), None);
+    }
+
+    #[test]
+    fn devices_sharing_a_key_each_keep_their_own_value() {
+        // Two inverters both report `frequency`; the server sends one
+        // update per data source, in list order.
+        let mut store = Store::default();
+        store.replace(vec![
+            info_with(1, "frequency"),
+            info_with(2, "power"),
+            info_with(3, "frequency"),
+        ]);
+        assert_eq!(store.keys(), ["frequency", "power"], "subscribed once");
+        store.apply(&[
+            update("frequency", 50.01, 100, "normal"),
+            update("power", 7.0, 100, "normal"),
+            update("frequency", 49.98, 100, "warning"),
+        ]);
+        let value = |store: &Store, id| store.get(id).map(|tag| (tag.value, tag.status));
+        assert_eq!(value(&store, 1), Some((50.01, Status::Normal)));
+        assert_eq!(value(&store, 3), Some((49.98, Status::Warning)));
+        // The next batch counts afresh; a lone update is the first tag's.
+        store.apply(&[update("frequency", 50.5, 101, "normal")]);
+        assert_eq!(value(&store, 1), Some((50.5, Status::Normal)));
+        assert_eq!(value(&store, 3), Some((49.98, Status::Warning)));
+        assert_eq!(store.by_key("frequency"), Some(0));
+    }
+
+    #[test]
+    fn a_changed_value_is_timed_for_its_flash_and_level() {
+        let mut store = Store::default();
+        let mut tag = info("a");
+        tag.min_val = 0.0;
+        tag.max_val = 200.0;
+        store.replace(vec![tag]);
+        let t0 = Instant::now();
+        store.apply_at(&[update("a", 50.0, 1, "normal")], t0);
+        let later = t0 + Duration::from_secs(1);
+        store.apply_at(&[update("a", 50.0, 2, "normal")], later);
+        assert_eq!(store.tags[0].changed_at, Some(t0), "the same value is no change");
+        store.apply_at(&[update("a", 150.0, 3, "normal")], later);
+        let tag = &store.tags[0];
+        assert_eq!((tag.previous, tag.changed_at), (50.0, Some(later)));
+        assert_eq!(Tag::level(tag.value, &tag.info), Some(0.75));
+        assert_eq!(Tag::level(f64::NAN, &tag.info), None);
+        assert_eq!(Tag::level(1.0, &DataSource::default()), None, "no range set");
     }
 
     #[test]

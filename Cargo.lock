@@ -8104,6 +8104,7 @@ dependencies = [
  "futures-util",
  "gpui",
  "http 1.4.0",
+ "libc",
  "reqwest",
  "rmp-serde",
  "serde",
@@ -8138,7 +8139,7 @@ dependencies = [
 [[package]]
 name = "vt-ui"
 version = "0.1.0"
-source = "git+https://github.com/VoltrusID/voltrus-explorers?rev=2d91988da3e69fd7020da579bdf466ef989f5b08#2d91988da3e69fd7020da579bdf466ef989f5b08"
+source = "git+https://github.com/VoltrusID/voltrus-explorers?rev=31e9c1e109e8ec0361a1df2d8ae80d34fff07978#31e9c1e109e8ec0361a1df2d8ae80d34fff07978"
 dependencies = [
  "gpui",
  "unicode-segmentation",

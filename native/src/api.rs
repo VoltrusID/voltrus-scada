@@ -1,11 +1,21 @@
 //! REST client for the voltrus server API (`/api/v1`).
 //!
-//! Auth: login sets an httpOnly `voltrus_token` cookie — not returned in the
-//! body — so we parse it from `Set-Cookie` and replay it as a Cookie header.
+//! Auth: login sets httpOnly `voltrus_token` and `voltrus_refresh` cookies,
+//! not returned in the body, so we parse them from `Set-Cookie` and replay
+//! the token as a Cookie header (the refresh cookie only on sign-out, so the
+//! server can revoke it).
+//!
+//! Every call goes through three generic helpers: [`VoltrusApi::get_json`],
+//! [`VoltrusApi::send_json`] and [`VoltrusApi::send_empty`]. A new endpoint
+//! is a typed mirror of its answer plus one line calling a helper; the
+//! console reaches it through the runtime's generic `Command::Call` (see
+//! `runtime::Call`) without a new command or event.
 
 use std::fmt;
 
 use anyhow::{Result, anyhow};
+pub use reqwest::Method;
+use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 
 /// A request the server answered with an error status.
@@ -54,11 +64,12 @@ pub fn refused(error: &anyhow::Error) -> bool {
 }
 
 pub const TOKEN_COOKIE: &str = "voltrus_token";
+pub const REFRESH_COOKIE: &str = "voltrus_refresh";
 
 #[derive(Debug, Clone, Serialize)]
-struct LoginBody {
-    username: String,
-    password: String,
+struct LoginBody<'a> {
+    username: &'a str,
+    password: &'a str,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -115,21 +126,42 @@ struct ShelveBody<'a> {
     reason: &'a str,
 }
 
-/// Mirrors `voltrus::models::DataSourceSummary` (server serializes exactly these fields).
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct DataSourceSummary {
+/// Mirrors `voltrus::models::DataSource`, the full row `GET
+/// /api/v1/data-sources` answers with. Missing fields default, so an older
+/// or newer server still decodes.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DataSource {
     pub id: i64,
     pub key: String,
     pub name: String,
     pub unit: String,
     pub color: String,
-    #[serde(default)]
+    pub min_val: f64,
+    pub max_val: f64,
     pub warn_val: f64,
-    #[serde(default)]
     pub crit_val: f64,
-    #[serde(default)]
+    pub base_val: f64,
+    pub sort_order: i64,
     pub decimals: i64,
     pub source_type: String,
+    /// JSON text: per-type settings, the low limits (`low_warn`,
+    /// `low_crit`) and an optional `expression`.
+    pub source_config: String,
+    pub device_id: String,
+    pub equipment_id: Option<String>,
+    pub chart_type: String,
+    /// The tag tree path, e.g. `plant/inverters/inv1`.
+    pub path: Option<String>,
+    /// ISA-18.2 alarm on/off delays in seconds; 0 is immediate.
+    pub on_delay_secs: i64,
+    pub off_delay_secs: i64,
+}
+
+/// `GET /api/v1/version`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct Version {
+    pub version: String,
 }
 
 /// Mirrors `voltrus::models::Alarm`.
@@ -199,10 +231,11 @@ pub fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Extract the token value from raw `Set-Cookie` header values.
-/// `voltrus_token=<jwt>; HttpOnly; SameSite=Strict; ...` → `<jwt>`
-pub fn parse_token_cookie(set_cookie_values: &[String]) -> Option<String> {
-    let prefix = format!("{TOKEN_COOKIE}=");
+/// The value of cookie `name` in raw `Set-Cookie` header values:
+/// `voltrus_token=<jwt>; HttpOnly; SameSite=Strict; ...` → `<jwt>`. An
+/// empty value (the server clearing the cookie) counts as none.
+pub fn parse_cookie(set_cookie_values: &[String], name: &str) -> Option<String> {
+    let prefix = format!("{name}=");
     for raw in set_cookie_values {
         if let Some(rest) = raw.strip_prefix(&prefix) {
             let value = rest.split(';').next().unwrap_or("").trim();
@@ -214,6 +247,14 @@ pub fn parse_token_cookie(set_cookie_values: &[String]) -> Option<String> {
     None
 }
 
+/// Parse a response body. An empty body reads as JSON `null`, so callers
+/// that do not care about the answer can ask for [`IgnoredAny`], `()` or an
+/// `Option`.
+fn parse_body<T: DeserializeOwned>(body: &str) -> Result<T> {
+    let body = if body.trim().is_empty() { "null" } else { body };
+    Ok(serde_json::from_str(body)?)
+}
+
 /// Clones share one connection pool, so background tasks can each hold one.
 #[derive(Clone)]
 pub struct VoltrusApi {
@@ -221,6 +262,9 @@ pub struct VoltrusApi {
     /// Base URL without trailing slash, e.g. `http://localhost:3000`.
     pub base: String,
     pub token: Option<String>,
+    /// The refresh token of the last sign-in, sent only to sign out so the
+    /// server revokes it.
+    pub refresh: Option<String>,
 }
 
 impl VoltrusApi {
@@ -232,10 +276,11 @@ impl VoltrusApi {
                 .expect("reqwest client"),
             base: base.trim_end_matches('/').to_string(),
             token: None,
+            refresh: None,
         }
     }
 
-    fn req(&self, method: reqwest::Method, path: &str) -> Result<reqwest::RequestBuilder> {
+    fn req(&self, method: Method, path: &str) -> Result<reqwest::RequestBuilder> {
         let token = self
             .token
             .as_deref()
@@ -246,24 +291,46 @@ impl VoltrusApi {
             .header("Cookie", format!("{TOKEN_COOKIE}={token}")))
     }
 
-    async fn decode<T: serde::de::DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
+    async fn decode<T: DeserializeOwned>(resp: reqwest::Response) -> Result<T> {
         let status = resp.status();
         let body = resp.text().await?;
         if !status.is_success() {
             return Err(ServerError::new(status, &body).into());
         }
-        Ok(serde_json::from_str(&body)?)
+        parse_body(&body)
     }
 
-    /// POST /api/v1/auth/login — captures the `voltrus_token` cookie.
+    /// `GET path` (e.g. `/api/v1/alarms/summary`), decoded as `T`.
+    pub async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let resp = self.req(Method::GET, path)?.send().await?;
+        Self::decode(resp).await
+    }
+
+    /// `method path` with `body` as JSON, the answer decoded as `T`.
+    pub async fn send_json<B: Serialize + ?Sized, T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let resp = self.req(method, path)?.json(body).send().await?;
+        Self::decode(resp).await
+    }
+
+    /// `method path` without a body (POST actions, DELETE), the answer
+    /// decoded as `T`; ask for [`IgnoredAny`] when only success matters.
+    pub async fn send_empty<T: DeserializeOwned>(&self, method: Method, path: &str) -> Result<T> {
+        let resp = self.req(method, path)?.send().await?;
+        Self::decode(resp).await
+    }
+
+    /// POST /api/v1/auth/login — captures the `voltrus_token` and
+    /// `voltrus_refresh` cookies.
     pub async fn login(&mut self, username: &str, password: &str) -> Result<LoginOk> {
         let resp = self
             .http
             .post(format!("{}/api/v1/auth/login", self.base))
-            .json(&LoginBody {
-                username: username.to_string(),
-                password: password.to_string(),
-            })
+            .json(&LoginBody { username, password })
             .send()
             .await
             .map_err(|e| anyhow!("connect failed: {e}"))?;
@@ -278,94 +345,92 @@ impl VoltrusApi {
         let login: LoginOk = Self::decode(resp).await?;
 
         self.token = Some(
-            parse_token_cookie(&set_cookies)
+            parse_cookie(&set_cookies, TOKEN_COOKIE)
                 .ok_or_else(|| anyhow!("login ok but no {TOKEN_COOKIE} cookie set"))?,
         );
+        self.refresh = parse_cookie(&set_cookies, REFRESH_COOKIE);
         Ok(login)
     }
 
-    /// GET /api/v1/data-sources
-    pub async fn data_sources(&self) -> Result<Vec<DataSourceSummary>> {
+    /// POST /api/v1/auth/logout with both cookies: the server revokes the
+    /// refresh token, so it cannot mint new sessions after sign-out.
+    pub async fn logout(&self) -> Result<()> {
+        let token = self
+            .token
+            .as_deref()
+            .ok_or_else(|| anyhow!("not logged in"))?;
+        let mut cookie = format!("{TOKEN_COOKIE}={token}");
+        if let Some(refresh) = &self.refresh {
+            cookie.push_str(&format!("; {REFRESH_COOKIE}={refresh}"));
+        }
         let resp = self
-            .req(reqwest::Method::GET, "/api/v1/data-sources")?
+            .http
+            .post(format!("{}/api/v1/auth/logout", self.base))
+            .header("Cookie", cookie)
             .send()
             .await?;
-        Self::decode(resp).await
+        Self::decode::<IgnoredAny>(resp).await?;
+        Ok(())
+    }
+
+    /// GET /api/v1/data-sources
+    pub async fn data_sources(&self) -> Result<Vec<DataSource>> {
+        self.get_json("/api/v1/data-sources").await
     }
 
     /// GET /api/v1/alarms?status=..&limit=..
     pub async fn alarms(&self, status: &str, limit: i64) -> Result<Vec<Alarm>> {
-        let resp = self
-            .req(
-                reqwest::Method::GET,
-                &format!("/api/v1/alarms?status={status}&limit={limit}"),
-            )?
-            .send()
-            .await?;
-        Self::decode(resp).await
+        self.get_json(&format!("/api/v1/alarms?status={status}&limit={limit}"))
+            .await
     }
 
     /// POST /api/v1/alarms/{id}/acknowledge
     pub async fn ack_alarm(&self, id: i64) -> Result<()> {
-        let resp = self
-            .req(
-                reqwest::Method::POST,
-                &format!("/api/v1/alarms/{id}/acknowledge"),
-            )?
-            .send()
+        self.send_empty::<IgnoredAny>(Method::POST, &format!("/api/v1/alarms/{id}/acknowledge"))
             .await?;
-        Self::decode::<serde_json::Value>(resp).await?;
         Ok(())
     }
 
-    /// POST /api/v1/alarms/acknowledge-all
+    /// POST /api/v1/alarms: the server's acknowledge-all (the same route the
+    /// web client and the Python SDK use).
     pub async fn ack_all(&self) -> Result<()> {
-        let resp = self
-            .req(reqwest::Method::POST, "/api/v1/alarms/acknowledge-all")?
-            .send()
+        self.send_empty::<IgnoredAny>(Method::POST, "/api/v1/alarms")
             .await?;
-        Self::decode::<serde_json::Value>(resp).await?;
         Ok(())
     }
 
     /// POST /api/v1/alarms/{id}/shelf — hide an alarm for `duration_secs`.
     pub async fn shelve_alarm(&self, id: i64, duration_secs: u64, reason: &str) -> Result<()> {
-        let resp = self
-            .req(reqwest::Method::POST, &format!("/api/v1/alarms/{id}/shelf"))?
-            .json(&ShelveBody {
+        self.send_json::<_, IgnoredAny>(
+            Method::POST,
+            &format!("/api/v1/alarms/{id}/shelf"),
+            &ShelveBody {
                 duration_secs,
                 reason,
-            })
-            .send()
-            .await?;
-        Self::decode::<serde_json::Value>(resp).await?;
+            },
+        )
+        .await?;
         Ok(())
     }
 
     /// POST /api/v1/alarms/{id}/unshelf
     pub async fn unshelve_alarm(&self, id: i64) -> Result<()> {
-        let resp = self
-            .req(
-                reqwest::Method::POST,
-                &format!("/api/v1/alarms/{id}/unshelf"),
-            )?
-            .send()
+        self.send_empty::<IgnoredAny>(Method::POST, &format!("/api/v1/alarms/{id}/unshelf"))
             .await?;
-        Self::decode::<serde_json::Value>(resp).await?;
         Ok(())
     }
 
     /// POST /api/v1/auth/change-password
     pub async fn change_password(&self, old_password: &str, new_password: &str) -> Result<()> {
-        let resp = self
-            .req(reqwest::Method::POST, "/api/v1/auth/change-password")?
-            .json(&ChangePasswordBody {
+        self.send_json::<_, IgnoredAny>(
+            Method::POST,
+            "/api/v1/auth/change-password",
+            &ChangePasswordBody {
                 old_password,
                 new_password,
-            })
-            .send()
-            .await?;
-        Self::decode::<serde_json::Value>(resp).await?;
+            },
+        )
+        .await?;
         Ok(())
     }
 
@@ -374,14 +439,10 @@ impl VoltrusApi {
         &self,
         range: &str,
     ) -> Result<std::collections::HashMap<String, HistorySeries>> {
-        let resp = self
-            .req(
-                reqwest::Method::GET,
-                &format!("/api/v1/history?range={range}"),
-            )?
-            .send()
-            .await?;
-        Ok(Self::decode::<HistoryResponse>(resp).await?.data)
+        Ok(self
+            .get_json::<HistoryResponse>(&format!("/api/v1/history?range={range}"))
+            .await?
+            .data)
     }
 }
 
@@ -413,14 +474,53 @@ mod tests {
     }
 
     #[test]
-    fn parses_token_from_set_cookie() {
+    fn a_data_source_keeps_every_field_the_server_sends() {
+        // One row of `GET /api/v1/data-sources` (models::DataSource).
+        let body = r##"{
+            "id": 42, "key": "frequency", "name": "Grid frequency", "unit": "Hz",
+            "color": "#f97316", "min_val": 49.0, "max_val": 51.0, "warn_val": 50.4,
+            "crit_val": 50.8, "base_val": 50.0, "sort_order": 7, "decimals": 2,
+            "source_type": "modbus", "source_config": "{\"low_warn\":49.6}",
+            "device_id": "inverter-2", "equipment_id": null, "chart_type": "gauge",
+            "path": "plant/grid", "on_delay_secs": 5, "off_delay_secs": 10
+        }"##;
+        let tag: DataSource = serde_json::from_str(body).unwrap();
+        assert_eq!((tag.id, tag.device_id.as_str()), (42, "inverter-2"));
+        assert_eq!((tag.min_val, tag.max_val, tag.base_val), (49.0, 51.0, 50.0));
+        assert_eq!(tag.path.as_deref(), Some("plant/grid"));
+        assert_eq!((tag.on_delay_secs, tag.off_delay_secs), (5, 10));
+        assert_eq!(tag.chart_type, "gauge");
+        // An older server without the delays (or the tree path) still decodes.
+        let old: DataSource =
+            serde_json::from_str(r#"{"id": 1, "key": "a", "name": "A"}"#).unwrap();
+        assert_eq!((old.on_delay_secs, old.path), (0, None));
+    }
+
+    #[test]
+    fn empty_bodies_read_as_null() {
+        assert!(parse_body::<IgnoredAny>("").is_ok());
+        assert_eq!(parse_body::<Option<i64>>("  ").unwrap(), None);
+        assert!(parse_body::<()>("").is_ok());
+        assert_eq!(
+            parse_body::<serde_json::Value>(r#"{"ok":true}"#).unwrap()["ok"],
+            true
+        );
+        assert!(parse_body::<Vec<i64>>("").is_err(), "a list needs a body");
+    }
+
+    #[test]
+    fn parses_token_and_refresh_from_set_cookie() {
         let raw = [
             "voltrus_refresh=abc123; HttpOnly; Path=/".to_string(),
             "voltrus_token=eyJhbGciOiJIUzI1NiJ9.payload.sig; HttpOnly; Secure; SameSite=Strict; Max-Age=900; Path=/".to_string(),
         ];
         assert_eq!(
-            parse_token_cookie(&raw).as_deref(),
+            parse_cookie(&raw, TOKEN_COOKIE).as_deref(),
             Some("eyJhbGciOiJIUzI1NiJ9.payload.sig")
+        );
+        assert_eq!(
+            parse_cookie(&raw, REFRESH_COOKIE).as_deref(),
+            Some("abc123")
         );
     }
 
@@ -432,21 +532,24 @@ mod tests {
                 .to_string(),
         ];
         assert_eq!(
-            parse_token_cookie(&raw).as_deref(),
+            parse_cookie(&raw, TOKEN_COOKIE).as_deref(),
             Some("eyJ1c2VybmFtZSI6ImFkbWluIn0==.deadbeef")
         );
     }
 
     #[test]
-    fn returns_none_without_token_cookie() {
+    fn returns_none_without_the_cookie() {
         let raw = ["session=xyz; Path=/".to_string()];
-        assert!(parse_token_cookie(&raw).is_none());
+        assert!(parse_cookie(&raw, TOKEN_COOKIE).is_none());
+        // A cookie whose name only starts the same is another cookie.
+        let raw = ["voltrus_token_old=xyz; Path=/".to_string()];
+        assert!(parse_cookie(&raw, TOKEN_COOKIE).is_none());
     }
 
     #[test]
-    fn rejects_empty_token_value() {
+    fn rejects_empty_cookie_value() {
         let raw = ["voltrus_token=; Path=/".to_string()];
-        assert!(parse_token_cookie(&raw).is_none());
+        assert!(parse_cookie(&raw, TOKEN_COOKIE).is_none());
     }
 
     #[test]
