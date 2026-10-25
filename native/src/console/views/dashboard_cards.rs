@@ -20,6 +20,7 @@ use vt_ui::theme::*;
 
 use super::{fit_span, span_label, status_color, value_color, value_with_unit};
 use crate::console::anim;
+use crate::console::store::Store;
 use crate::console::store::{Status, Tag};
 use voltrus_scada_native::screens::CardKind;
 
@@ -117,19 +118,26 @@ fn reading_color(tag: &Tag, own: Hsla, theme: &Theme) -> Hsla {
     }
 }
 
-/// What the card shows under its header: `height` is the card's in pixels.
-/// Returns the element and whether it is animating.
+/// The sparklines' span: as far back as the store's history reaches, within
+/// two and fifteen minutes (the Overview's rule).
+pub(super) fn spark_span(store: &Store, now_ms: f64) -> f64 {
+    fit_span(store.span_ms(now_ms), SHORTEST_MS, SPARK_MS)
+}
+
+/// What the card shows under its header: `height` is the card's in pixels,
+/// `span` the sparklines' ([`spark_span`]). Returns the element and whether
+/// it is animating.
 pub(super) fn body(
     tag: &Tag,
     kind: CardKind,
     picture: Option<&Picture>,
-    (now, now_ms): (Instant, f64),
+    (now, now_ms, span): (Instant, f64, f64),
     height: f32,
     theme: &Theme,
 ) -> (AnyElement, bool) {
     let own = tag_color(&tag.info.color, theme.accent);
     match kind {
-        CardKind::Sparkline => (spark(tag, own, now_ms, theme), false),
+        CardKind::Sparkline => (spark(tag, own, now_ms, span, theme), false),
         CardKind::Gauge => gauge(tag, own, now, theme),
         CardKind::BigNumber => big_number(tag, own, now, height, theme),
         CardKind::Image => (picture_card(picture, theme), false),
@@ -146,8 +154,7 @@ pub(super) fn body(
     }
 }
 
-fn spark(tag: &Tag, own: Hsla, now_ms: f64, theme: &Theme) -> AnyElement {
-    let span = fit_span(tag.span_ms(now_ms), SHORTEST_MS, SPARK_MS);
+fn spark(tag: &Tag, own: Hsla, now_ms: f64, span: f64, theme: &Theme) -> AnyElement {
     let history = tag.history.clone();
     let guides = Guides {
         history: history.clone(),

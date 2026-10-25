@@ -815,6 +815,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     );
     let now = Instant::now();
     let wall = now_ms();
+    let span = cards::spark_span(&console.store, wall);
 
     // Visible cards only: a scroll redraws the page.
     let scroll = console.scroll(SCROLL);
@@ -937,7 +938,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 editing,
                 removable: editing && can.tags,
                 picture: pictures.get(&card.id),
-                now: (now, wall),
+                now: (now, wall, span),
             },
             &theme,
             cx,
@@ -1117,7 +1118,7 @@ struct CardLook<'a> {
     editing: bool,
     removable: bool,
     picture: Option<&'a Picture>,
-    now: (Instant, f64),
+    now: (Instant, f64, f64),
 }
 
 fn card_element(
