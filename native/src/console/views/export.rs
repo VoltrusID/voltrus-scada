@@ -239,6 +239,7 @@ fn export(console: &mut Console, cx: &mut Context<Console>) {
         query.format.param()
     );
     save_download(
+        console,
         CallKey::new("audit.data-export"),
         query.path(),
         name,

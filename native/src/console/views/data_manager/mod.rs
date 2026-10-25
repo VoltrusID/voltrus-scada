@@ -12,7 +12,7 @@
 //!
 //! Keys: j/k or ↑↓ in the sidebar switch sections, Enter goes into the
 //! section, Esc in the section comes back to the sidebar (and Esc there
-//! goes back in).
+//! stays put).
 
 pub(crate) mod admin_kit;
 pub(crate) mod api_keys;
@@ -381,6 +381,9 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .size_full()
         .child(
             sidebar
+                // Esc in the sidebar stays there: without this the root's
+                // Esc would focus the page, that is, go into the section.
+                .on_action(cx.listener(|_, _: &Dismiss, _, _| {}))
                 .flex()
                 .flex_col()
                 .flex_none()
@@ -523,5 +526,29 @@ mod tests {
         assert_eq!(section_of("data.sources"), Some("sources"));
         assert_eq!(section_of("data"), None);
         assert_eq!(section_of("alarms.summary"), None);
+    }
+
+    #[gpui::test]
+    fn esc_in_the_sidebar_stays_in_the_sidebar(cx: &mut gpui::TestAppContext) {
+        use crate::console::pages::Page;
+        use crate::console::testing::Harness;
+
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| console.show(Page::DataManager, window, cx));
+        h.draw();
+        let in_sidebar = |h: &mut Harness| {
+            h.update(|console, window, cx| console.list(NAV, cx).focus.is_focused(window))
+        };
+        assert!(!in_sidebar(&mut h), "the page opens in the section");
+        h.keys("escape");
+        h.draw();
+        assert!(
+            in_sidebar(&mut h),
+            "Esc in the section comes back to the sidebar"
+        );
+        h.keys("escape");
+        h.draw();
+        assert!(in_sidebar(&mut h), "and Esc there stays put");
     }
 }

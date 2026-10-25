@@ -1,8 +1,9 @@
 //! Data Manager › Sources without a window: the source types and their
 //! settings (after `client/src/SourceConfigFields.tsx` and `EditPanel.tsx`),
 //! the form's draft and the bodies it sends, row order, sorting and search,
-//! and per-tag shortcut combos in the web client's format
-//! (`styles.ts::normalizeKeyEvent`), so the two clients share them.
+//! and how per-tag shortcut combos read and are sent. A recorded keystroke
+//! becomes a combo in the web client's format with
+//! `console::shortcuts::from_keystroke`, the console's one normaliser.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -871,86 +872,6 @@ pub fn reordered(all: &[i64], visible: &[i64], from: usize, to: usize) -> Option
 
 // ── Per-tag shortcuts ────────────────────────────────────────────────────
 
-/// A keystroke in the web client's combo format (`normalizeKeyEvent`):
-/// `Mod+Shift+ArrowUp`, `Alt+K`, `F2`. `Mod` is ⌘ or Ctrl. `None` for a
-/// bare modifier, which does not end the recording.
-pub fn combo(
-    key: &str,
-    key_char: Option<&str>,
-    control: bool,
-    alt: bool,
-    shift: bool,
-    platform: bool,
-) -> Option<String> {
-    if matches!(
-        key,
-        "shift"
-            | "control"
-            | "ctrl"
-            | "alt"
-            | "option"
-            | "platform"
-            | "cmd"
-            | "super"
-            | "fn"
-            | "function"
-            | "capslock"
-    ) {
-        return None;
-    }
-    let single = key.chars().count() == 1;
-    let name = if single {
-        // The browser's `key` is the typed character: `!` for ⇧1.
-        let typed = key_char
-            .filter(|typed| shift && typed.chars().count() == 1)
-            .unwrap_or(key);
-        typed.to_uppercase()
-    } else {
-        web_key_name(key)
-    };
-    let mut parts: Vec<String> = Vec::new();
-    if control || platform {
-        parts.push("Mod".into());
-    }
-    if alt {
-        parts.push("Alt".into());
-    }
-    // A shifted character already says so; named keys need the modifier.
-    if shift && name.chars().count() > 1 {
-        parts.push("Shift".into());
-    }
-    parts.push(name);
-    Some(parts.join("+"))
-}
-
-/// GPUI's key names as the browser's `KeyboardEvent.key`.
-fn web_key_name(key: &str) -> String {
-    match key {
-        "up" => "ArrowUp".into(),
-        "down" => "ArrowDown".into(),
-        "left" => "ArrowLeft".into(),
-        "right" => "ArrowRight".into(),
-        "enter" => "Enter".into(),
-        "tab" => "Tab".into(),
-        "space" => " ".into(),
-        "backspace" => "Backspace".into(),
-        "delete" => "Delete".into(),
-        "escape" => "Escape".into(),
-        "home" => "Home".into(),
-        "end" => "End".into(),
-        "pageup" => "PageUp".into(),
-        "pagedown" => "PageDown".into(),
-        "insert" => "Insert".into(),
-        other if other.starts_with('f') && other[1..].parse::<u8>().is_ok() => other.to_uppercase(),
-        other => {
-            let mut chars = other.chars();
-            chars.next().map_or_else(String::new, |first| {
-                first.to_uppercase().chain(chars).collect()
-            })
-        }
-    }
-}
-
 /// A combo as the operator reads it: `⇧⌘K` on macOS, `Ctrl+Shift+K`
 /// elsewhere.
 pub fn display_combo(combo: &str) -> String {
@@ -1277,29 +1198,7 @@ mod tests {
     }
 
     #[test]
-    fn keystrokes_record_in_the_web_format() {
-        assert_eq!(
-            combo("k", None, false, false, false, true).as_deref(),
-            Some("Mod+K")
-        );
-        assert_eq!(
-            combo("k", None, true, true, false, false).as_deref(),
-            Some("Mod+Alt+K")
-        );
-        assert_eq!(
-            combo("1", Some("!"), false, false, true, false).as_deref(),
-            Some("!"),
-            "a shifted character is the character"
-        );
-        assert_eq!(
-            combo("up", None, false, false, true, true).as_deref(),
-            Some("Mod+Shift+ArrowUp")
-        );
-        assert_eq!(
-            combo("f2", None, false, false, false, false).as_deref(),
-            Some("F2")
-        );
-        assert_eq!(combo("shift", None, false, false, true, false), None);
+    fn combos_read_as_keys() {
         if cfg!(target_os = "macos") {
             assert_eq!(display_combo("Mod+Shift+ArrowUp"), "⇧⌘↑");
             assert_eq!(display_combo("Mod+Alt+K"), "⌥⌘K");

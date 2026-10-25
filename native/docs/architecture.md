@@ -48,6 +48,31 @@ follow these recipes; keep them true when you change the shell.
 6. **Roles**: gate on `console.is_operator()` (admin, demo, integration:
    the server's `demo_protected` routes) or `console.is_admin()`; never a
    list of role names.
+7. **No REST from render.** A render function never sends a call or a
+   command: every page is drawn hidden after sign-in (the warm-up), so a
+   call there runs for pages nobody opened, and a failed one loops. Fetch
+   in `on_show`, on a selection, or from a reply.
+8. **Page state ends with the session.** On sign-out, on a failed link
+   and before a later sign-in, the console drops every `Console::state`
+   entry but the operator's own (`kept_across_sessions` in
+   `console/mod.rs`: the shell, the polls, the annunciator), so a request
+   the old session never answered cannot leave a page busy and nothing
+   reaches the next user. Keep session data in page state; keep a new
+   UI-only state in that list. Async work that outlives a frame (a save
+   panel) compares `console.session_epoch()` before acting.
+9. **Enter belongs to what has focus.** A dialog confirms on Enter only
+   when its own focus handle is focused (`focus.is_focused(window)`), and a
+   list activates a row only when the list has focus, so Enter on a focused
+   Cancel, Keep or row button does only what that button does.
+10. **Answers name their target.** A call whose answer belongs to one tag,
+    form or page of results carries it: `CallKey::new("tags.notes").with(seq)`,
+    and the reply is dropped unless its `arg` is the current one. Every
+    call key's scope must be a page (or `data.<section>`) with an
+    `on_reply`, or `shell`; a unit test checks it.
+11. **URLs from the server are checked by origin.** Parse them
+    (`reqwest::Url`) and compare scheme, host and port with the session's
+    base before sending the session cookie (`screens::is_own`); never a
+    string prefix. Follow no redirects with the cookie.
 
 ## Add a page
 
@@ -309,9 +334,13 @@ edition}`.
   come from `keys::COMMANDS` or the page registry, never from a separate
   `cx.bind_keys`. After changing `/shortcuts` or `/nav-shortcuts` on the
   server, call `shortcuts::reload(console)`.
-- **Kiosk lock**: `Console::kiosk_locked()`; the root captures `Quit` and
-  `SignOut` before their handlers, the menus and keymap drop them, and the
-  window refuses to close.
+- **Kiosk lock**: `Console::kiosk_locked()`, in the console only (the
+  sign-in card can always be quit); the root captures `Quit` and `SignOut`
+  before their handlers, the menus and keymap drop them, the window refuses
+  to close, and a stress test (which replaces the session) neither starts
+  nor stops.
+- **Server shortcuts** need ⌘, ⌥ or ⇧ (or are a function key): a bare
+  Enter, Space or arrow would take the key from lists and dialogs.
 - **Themes**: `shell::apply_theme` shows the theme chosen for the wanted
   brightness (server appearance, unless `--appearance` pinned one); never
   call `theme::set_theme` directly for the console's own theme.
@@ -383,7 +412,7 @@ A page that draws a screen (the card dashboard, the mimic viewer) shares
 one model, `console::screens::Screens`:
 
 ```rust
-screens::sync(console);                       // in on_show and render: fetches what is missing, once
+screens::sync(console);                       // in on_show (select calls it): fetches what is missing, once
 let model = console.state_ref::<Screens>();   // list, active, tags, layouts, error, generation
 let ids = model.map(|m| m.tag_ids(&console.store, &m.active));
 screens::select(console, "plts_1");           // or screens::OVERVIEW ("all")
@@ -392,7 +421,10 @@ screens::select(console, "plts_1");           // or screens::OVERVIEW ("all")
 Its calls answer under `dashboard.*` keys, which the dashboard page's
 `on_reply` hands to `screens::on_reply` whatever page is on show. Changes
 (`create`, `rename`, `delete`, `add_tag`, `remove_tag`, `save_layouts`) are
-operator routes: check `screens::rights(console.role(), screen)` first.
+operator routes: check `screens::rights(console.role(), screen)` first. A
+fetch that failed is not asked again until `screens::reload`; a screen
+whose layouts did not load has none (`Screens::layout_known` is false) and
+must not be edited, or a save would replace its stored layouts.
 Grid geometry and layout edits are in `voltrus_scada_native::screens`
 (`Grid`, `effective`, `place`, `resize`, `nudge`, `grow`, `neighbor`,
 `auto_arrange`), with unit tests beside them.

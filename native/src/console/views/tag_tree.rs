@@ -65,6 +65,9 @@ pub(crate) struct TreeState {
     move_to: Option<String>,
     /// Each tag's new path while its change is in flight.
     pending: std::collections::HashMap<i64, Option<String>>,
+    /// A branch move waiting for the tree without the search, which holds
+    /// only the matching tags: the node's path and where it goes.
+    branch: Option<(String, Option<String>)>,
     path_error: Option<String>,
     naming: Option<NamingConvention>,
     naming_error: Option<String>,
@@ -232,6 +235,26 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 fetch_tree(console, cx);
             }
         }
+        "tagtree.branch" => {
+            let state = console.state::<TreeState>();
+            if let Some((node, to)) = state.branch.take() {
+                state.moving = 0;
+                match reply.take::<TagTree>() {
+                    Ok(tree) => {
+                        let moves = tag_api::find(&tree.tree, &node)
+                            .map(|node| tag_api::moved_paths(node, to.as_deref()))
+                            .unwrap_or_default();
+                        if moves.is_empty() {
+                            state.path_error =
+                                Some("Pick a node or a tag with tags to move".into());
+                        } else {
+                            start_moves(console, moves, to);
+                        }
+                    }
+                    Err(error) => state.path_error = Some(error),
+                }
+            }
+        }
         "tagtree.naming" => {
             let state = console.state::<TreeState>();
             match reply.take::<NamingConvention>() {
@@ -374,6 +397,23 @@ fn apply_path(console: &mut Console, cx: &mut Context<Console>) {
             return;
         }
     };
+    let searching = state
+        .search
+        .as_ref()
+        .is_some_and(|field| !field.read(cx).value().trim().is_empty());
+    if searching && let Some(Selection::Node(node)) = state.selection.clone() {
+        // The search's tree holds only the matching tags: the branch moves
+        // whole, as the tree without the search has it.
+        state.branch = Some((node, to));
+        state.moving = 1;
+        state.path_error = None;
+        console.call(
+            CallKey::new("tagtree.branch"),
+            Call::get::<TagTree>("/api/v1/tags/tree"),
+        );
+        cx.notify();
+        return;
+    }
     let moves: Vec<(i64, Option<String>)> = match &state.selection {
         Some(Selection::Node(path)) => tag_api::find(&state.tree, path)
             .map(|node| tag_api::moved_paths(node, to.as_deref()))
@@ -386,6 +426,13 @@ fn apply_path(console: &mut Console, cx: &mut Context<Console>) {
         cx.notify();
         return;
     }
+    start_moves(console, moves, to);
+    cx.notify();
+}
+
+/// Send each tag's path change for a move to `to`.
+fn start_moves(console: &mut Console, moves: Vec<(i64, Option<String>)>, to: Option<String>) {
+    let state = console.state::<TreeState>();
     state.moving = moves.len();
     state.moved = 0;
     state.move_errors.clear();
@@ -404,7 +451,6 @@ fn apply_path(console: &mut Console, cx: &mut Context<Console>) {
             ),
         );
     }
-    cx.notify();
 }
 
 fn save_naming(console: &mut Console, cx: &mut Context<Console>) {
@@ -904,5 +950,71 @@ fn short_template(id: &str) -> SharedString {
         "custom" => "Custom".into(),
         "permissive" => "Any".into(),
         other => SharedString::from(other.to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use voltrus_scada_native::runtime::{CallKey, Reply};
+    use voltrus_scada_native::tag_api::{TagTree, TreeNode};
+
+    use super::{Selection, TreeState, apply_path};
+    use crate::console::Page;
+    use crate::console::testing::Harness;
+
+    fn node(name: &str, tag_ids: Vec<i64>, children: Vec<TreeNode>) -> TreeNode {
+        TreeNode {
+            name: name.into(),
+            tag_count: tag_ids.len(),
+            tag_ids,
+            children,
+        }
+    }
+
+    /// A search's tree holds only the matching tags; moving one of its
+    /// nodes still moves the whole branch, each tag keeping its place.
+    #[gpui::test]
+    fn a_searched_branch_moves_whole(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| console.show(Page::TagTree, window, cx));
+        let search = h
+            .update(|console, _, _| console.state::<TreeState>().search.clone())
+            .expect("the search field");
+        h.update(|_, _, cx| search.update(cx, |field, cx| field.set_text("inv1", cx)));
+        let seq = h.update(|console, _, _| console.state::<TreeState>().seq);
+        h.calls();
+        let matching = TagTree {
+            tree: vec![node("Plant", vec![], vec![node("INV1", vec![3], vec![])])],
+        };
+        h.reply(CallKey::new("tagtree.tree").with(seq), Reply::ok(matching));
+        h.update(|console, _, cx| {
+            let state = console.state::<TreeState>();
+            state.selection = Some(Selection::Node("Plant".into()));
+            let path = state.path.clone().expect("the path field");
+            path.update(cx, |field, cx| field.set_text("Site", cx));
+            apply_path(console, cx);
+        });
+        assert_eq!(h.calls(), vec![CallKey::new("tagtree.branch")]);
+        let whole = TagTree {
+            tree: vec![node(
+                "Plant",
+                vec![1],
+                vec![node("INV1", vec![3], vec![]), node("INV2", vec![4], vec![])],
+            )],
+        };
+        h.reply(CallKey::new("tagtree.branch"), Reply::ok(whole));
+        let mut moved: Vec<i64> = h
+            .calls()
+            .into_iter()
+            .filter(|key| key.name == "tagtree.path")
+            .map(|key| key.arg)
+            .collect();
+        moved.sort_unstable();
+        assert_eq!(moved, vec![1, 3, 4]);
+        let pending = h.update(|console, _, _| console.state::<TreeState>().pending.clone());
+        assert_eq!(pending.get(&1), Some(&Some("Site".to_owned())));
+        assert_eq!(pending.get(&4), Some(&Some("Site/INV2".to_owned())));
     }
 }
