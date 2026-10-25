@@ -1207,7 +1207,7 @@ pub(crate) fn panel(
 
     let facts = div()
         .grid()
-        .grid_cols(if expanded { 5 } else { 2 })
+        .grid_cols(2)
         .gap(SPACE_5)
         .px(SPACE_8)
         .pb(SPACE_7)
@@ -1249,23 +1249,56 @@ pub(crate) fn panel(
         })),
     );
 
+    if expanded {
+        // Widened: the chart takes the page's height on the left; the
+        // facts, notes and write section scroll in a column on the right.
+        return div()
+            .flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(theme.chrome)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(header)
+                    .child(value)
+                    .child(chart_section),
+            )
+            .child(
+                div()
+                    .id("tag-detail-side")
+                    .flex()
+                    .flex_col()
+                    .flex_none()
+                    .w(px(PANEL))
+                    .h_full()
+                    .overflow_y_scroll()
+                    .pt(SPACE_8)
+                    .border_l_1()
+                    .border_color(theme.border)
+                    .child(facts)
+                    .child(notes)
+                    .child(write)
+                    .child(trend_button),
+            )
+            .into_any_element();
+    }
     div()
         .id("tag-detail")
         .flex()
         .flex_col()
+        .flex_none()
+        .w(px(PANEL))
         .h_full()
         .overflow_y_scroll()
         .bg(theme.chrome)
-        .map(|this| {
-            if expanded {
-                this.flex_1().min_w_0()
-            } else {
-                this.flex_none()
-                    .w(px(PANEL))
-                    .border_l_1()
-                    .border_color(theme.border)
-            }
-        })
+        .border_l_1()
+        .border_color(theme.border)
         .child(header)
         .child(value)
         .child(chart_section)

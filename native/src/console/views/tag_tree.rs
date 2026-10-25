@@ -175,15 +175,22 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
     match key.name {
         "tagtree.tree" => {
             let state = console.state::<TreeState>();
-            if key.arg == state.seq {
-                state.loaded = true;
-                match reply.take::<TagTree>() {
-                    Ok(tree) => {
-                        state.tree = tree.tree;
-                        state.error = None;
-                    }
-                    Err(error) => state.error = Some(error),
+            if key.arg != state.seq {
+                return;
+            }
+            state.loaded = true;
+            match reply.take::<TagTree>() {
+                Ok(tree) => {
+                    state.tree = tree.tree;
+                    state.error = None;
                 }
+                Err(error) => state.error = Some(error),
+            }
+            // The cursor starts on the first row, so the panel shows it.
+            let fresh = state.selection.is_none();
+            if fresh && !rows(console).is_empty() {
+                console.list(LIST, cx).cursor = Some(0);
+                pick(console, 0, cx);
             }
         }
         "tagtree.path" => {
@@ -278,6 +285,11 @@ fn selection_path(selection: &Selection) -> &str {
 
 /// Move the cursor's row: it becomes the selection, its path the field's.
 fn follow(console: &mut Console, row: usize, _: &mut Window, cx: &mut Context<Console>) {
+    pick(console, row, cx);
+}
+
+/// Row `row` becomes the selection, its path the path field's.
+fn pick(console: &mut Console, row: usize, cx: &mut Context<Console>) {
     let rows = rows(console);
     let Some(selection) = rows.get(row).map(|row| match row {
         TreeRow::Node { path, .. } => Selection::Node(path.clone()),
@@ -556,6 +568,7 @@ fn tree_row(
             u64::try_from(row).unwrap_or(0),
         ))
         .relative()
+        .w_full()
         .flex()
         .items_center()
         .gap(SPACE_4)
