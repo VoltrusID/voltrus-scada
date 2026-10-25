@@ -35,6 +35,13 @@ shots=(
   "tag-note|--sign-in --page tags --tag ac_power --overlay tag-note --appearance dark"
   "tag-compare|--sign-in --page tags --tag ac_power --overlay tag-compare --appearance dark"
   "tag-range|--sign-in --page tags --tag ac_power --overlay tag-range --appearance dark"
+  "alarms-history|--sign-in --alarms history --appearance dark"
+  "alarms-analytics|--sign-in --alarms analytics --appearance dark"
+  "alarms-audit|--sign-in --alarms audit --appearance dark"
+  "alarms-detail|--sign-in --alarms detail --appearance dark"
+  "alarms-shelve|--sign-in --alarms shelve --appearance dark"
+  "alarms-confirm|--sign-in --alarms confirm --appearance dark"
+  "alarms-light|--sign-in --page alarms --appearance light"
 )
 
 status=0
