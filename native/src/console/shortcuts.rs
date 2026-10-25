@@ -614,10 +614,14 @@ mod tests {
             open.iter()
                 .any(|binding| binding.action().partial_eq(&ShellOpenTag(12)))
         );
-        assert!(
-            open.iter()
-                .any(|binding| binding.action().partial_eq(&ShowPage(Page::Alarms)))
-        );
+        // ⌘3 from the page registry, plus F9 from the server.
+        let to_alarms = |bindings: &[KeyBinding]| {
+            bindings
+                .iter()
+                .filter(|binding| binding.action().partial_eq(&ShowPage(Page::Alarms)))
+                .count()
+        };
+        assert_eq!(to_alarms(&open), to_alarms(&keys::key_bindings()) + 1);
         let locked = key_bindings(&plan, true);
         assert!(locked.len() < open.len());
         assert!(!locked.iter().any(|binding| kiosk_blocks(binding.action())));

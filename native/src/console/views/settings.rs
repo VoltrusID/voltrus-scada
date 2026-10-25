@@ -376,7 +376,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
     let aggregation_about = AGGREGATIONS
         .iter()
         .find(|(id, _, _)| *id == history_agg)
-        .map_or("", |(_, _, about)| about);
+        .map_or("", |(_, _, about)| *about);
 
     let shortcuts_row = setting(
         "Keyboard shortcuts",
