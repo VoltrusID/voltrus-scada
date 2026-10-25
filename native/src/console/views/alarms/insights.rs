@@ -18,7 +18,9 @@ use super::super::{
     tail_row, tail_rows,
 };
 use super::{ANALYTICS_LIST, AUDIT_LIST, LIST, State, dialogs, fetch_analytics, fetch_audit, list};
-use crate::console::alarms::{Counts, Filter, TOP, View, duration, flood, shelve_details};
+use crate::console::alarms::{
+    Counts, Filter, TOP, View, duration, flood, readable_details, shelve_details,
+};
 use crate::console::{Console, time_now_secs};
 
 const AUDIT_ROW_PX: f32 = 52.0;
@@ -153,6 +155,19 @@ pub(super) fn analytics(
             ),
         }
     };
+    // The console's name for each source; the server's row may carry none.
+    let names: Vec<String> = top
+        .iter()
+        .map(|entry| {
+            console
+                .store
+                .by_key(&entry.source_key)
+                .map(|index| console.store.tags[index].info.name.clone())
+                .filter(|name| !name.is_empty())
+                .or_else(|| (!entry.source_name.is_empty()).then(|| entry.source_name.clone()))
+                .unwrap_or_else(|| entry.source_key.clone())
+        })
+        .collect();
     let most = top
         .iter()
         .map(|entry| entry.trigger_count)
@@ -280,16 +295,18 @@ pub(super) fn analytics(
                                         div()
                                             .truncate()
                                             .font_weight(FontWeight::MEDIUM)
-                                            .child(entry.source_name.clone()),
+                                            .child(names[row].clone()),
                                     )
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .font_family(MONO)
-                                            .text_size(FONT_CAPTION)
-                                            .text_color(theme.fg_dim)
-                                            .child(entry.source_key.clone()),
-                                    ),
+                                    .when(names[row] != entry.source_key, |this| {
+                                        this.child(
+                                            div()
+                                                .truncate()
+                                                .font_family(MONO)
+                                                .text_size(FONT_CAPTION)
+                                                .text_color(theme.fg_dim)
+                                                .child(entry.source_key.clone()),
+                                        )
+                                    }),
                             )
                             .child(
                                 div()
@@ -431,6 +448,7 @@ fn open_audit_alarm(
 fn audit_color(action: &str, theme: &Theme) -> gpui::Hsla {
     match action {
         "acknowledged" | "acknowledge" | "ack" => theme.success,
+        "created" | "triggered" | "raised" => theme.warning,
         "shelved" | "shelve" => theme.info,
         "unshelved" | "unshelve" => theme.accent,
         _ => theme.fg_muted,
@@ -566,7 +584,7 @@ fn audit_row(
             }
             parts.join(" · ")
         }
-        None => entry.details.clone(),
+        None => readable_details(&entry.details).unwrap_or_else(|| entry.details.clone()),
     };
     let by = if entry.performed_by.is_empty() {
         "system".to_owned()

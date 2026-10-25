@@ -488,7 +488,7 @@ fn alarm_row(
         }
         if operator {
             actions.push(
-                Button::new(ElementId::NamedInteger("shelve".into(), key), "Shelve…")
+                Button::new(ElementId::NamedInteger("shelve".into(), key), "Shelve")
                     .compact()
                     .ghost()
                     .icon(Icon::Clock)

@@ -129,7 +129,7 @@ pub(super) fn open_shelve(
     let state = console.state::<State>();
     state.shelving = Some((id, DEFAULT_SHELVE));
     let field = state.reason.clone();
-    let overlay = Overlay::modal(SHELVE, px(440.0), shelve_dialog, cx);
+    let overlay = Overlay::modal(SHELVE, px(540.0), shelve_dialog, cx);
     console.open_overlay(overlay, window, cx);
     if let Some(field) = field {
         field.update(cx, |field, cx| {
@@ -272,16 +272,7 @@ fn shelve_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
                         .flex_col()
                         .gap(SPACE_3)
                         .child(section_label("Reason", cx))
-                        .child(
-                            div()
-                                .px(SPACE_4)
-                                .py(SPACE_3)
-                                .rounded(RADIUS_MD)
-                                .border_1()
-                                .border_color(theme.border)
-                                .bg(theme.bg)
-                                .children(field),
-                        ),
+                        .children(field),
                 )
                 .child(
                     div()
@@ -332,7 +323,7 @@ pub(crate) fn confirm_acknowledge_all(
         .confirm_focus
         .get_or_insert_with(|| cx.focus_handle())
         .clone();
-    let overlay = Overlay::modal(CONFIRM, px(420.0), confirm_dialog, cx);
+    let overlay = Overlay::modal(CONFIRM, px(500.0), confirm_dialog, cx);
     console.open_overlay(overlay, window, cx);
     window.focus(&focus);
 }

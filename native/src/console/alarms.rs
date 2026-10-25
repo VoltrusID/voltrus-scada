@@ -295,6 +295,45 @@ pub fn shelve_details(details: &str) -> Option<ShelveDetails> {
     (reason.is_some() || until.is_some()).then_some(ShelveDetails { reason, until })
 }
 
+/// Other JSON details made readable: a raise's severity, value and limit
+/// (`{"severity":…,"value":…,"threshold":…,"alarm_type":…}`), else each key
+/// and value. `None` for plain text.
+pub fn readable_details(details: &str) -> Option<String> {
+    use serde_json::Value;
+    let parsed: Value = serde_json::from_str(details.trim()).ok()?;
+    let object = parsed.as_object()?;
+    let number = |key: &str| object.get(key).and_then(Value::as_f64);
+    if let (Some(value), Some(threshold)) = (number("value"), number("threshold")) {
+        let severity = object
+            .get("severity")
+            .and_then(Value::as_str)
+            .unwrap_or("alarm");
+        let mut words = severity.chars();
+        let severity: String = words
+            .next()
+            .map(|first| first.to_uppercase().chain(words).collect())
+            .unwrap_or_default();
+        let side = if object.get("alarm_type").and_then(Value::as_str) == Some("low") {
+            "at or below"
+        } else {
+            "at or above"
+        };
+        return Some(format!(
+            "{severity} at {}, limit {} ({side})",
+            vt_ui::chart::format_value(value),
+            vt_ui::chart::format_value(threshold)
+        ));
+    }
+    let parts: Vec<String> = object
+        .iter()
+        .map(|(key, value)| match value {
+            Value::String(text) => format!("{key} {text}"),
+            other => format!("{key} {other}"),
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 /// Triggers in the last five minutes when they make a flood (more than ten,
 /// the web console's rule), counted over the ranked sources last raised in
 /// that window.
@@ -516,6 +555,31 @@ mod tests {
         );
         assert_eq!(shelve_details("acknowledged by admin"), None);
         assert_eq!(shelve_details("{}"), None);
+    }
+
+    #[test]
+    fn raise_details_read_as_a_sentence() {
+        // What the server audits when it raises an alarm.
+        assert_eq!(
+            readable_details(
+                r#"{"severity":"warning","value":411.5263366699219,"threshold":400,"alarm_type":"high"}"#
+            )
+            .as_deref(),
+            Some("Warning at 411.53, limit 400 (at or above)")
+        );
+        assert_eq!(
+            readable_details(
+                r#"{"severity":"critical","value":2,"threshold":5,"alarm_type":"low"}"#
+            )
+            .as_deref(),
+            Some("Critical at 2, limit 5 (at or below)")
+        );
+        assert_eq!(
+            readable_details(r#"{"by":"admin","count":3}"#).as_deref(),
+            Some("by admin · count 3")
+        );
+        assert_eq!(readable_details("acknowledged from the web"), None);
+        assert_eq!(readable_details("{}"), None);
     }
 
     #[test]
