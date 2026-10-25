@@ -1473,7 +1473,7 @@ fn annunciator(c: &mut Canvas<'_>, item: &Item, xf: &Xf, t: f32) {
     }
     let gap = 4.0;
     let (columns, col_w) = grid_columns(w, 150.0, gap);
-    let (name_h, row_h) = (13.2, 14.0);
+    let (name_h, row_h): (f32, f32) = (13.2, 14.0);
     let cell_h = (2.0 + 10.0 + name_h + 2.0 + row_h).max(40.0);
     for (index, tag) in item.tags.iter().enumerate() {
         let (col, row) = (index % columns, index / columns);

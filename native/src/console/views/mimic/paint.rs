@@ -20,6 +20,7 @@ use gpui::{
 use lyon::algorithms::measure::{PathMeasurements, SampleType};
 use lyon::math::{Angle, Box2D, Transform, Vector, point as lpoint, vector};
 use lyon::path::builder::BorderRadii;
+use lyon::path::iterator::PathIterator;
 use lyon::path::traits::SvgPathBuilder;
 use lyon::path::{ArcFlags, Path, PathEvent, Winding};
 use lyon::tessellation::{

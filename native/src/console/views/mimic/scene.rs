@@ -35,6 +35,7 @@ pub(crate) struct TagView {
 
 impl TagView {
     pub fn of(tag: &Tag, samples: usize) -> Self {
+        let info = &tag.info;
         let kept: Rc<[(f64, f64)]> = if samples == 0 {
             Rc::from([])
         } else {
