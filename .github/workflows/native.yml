@@ -127,3 +127,17 @@ jobs:
         with:
           name: voltrus-native-macos-arm64
           path: dist/Voltrus-SCADA-Console-macos-arm64.zip
+
+      # The demo plant to run on a Mac next to the console: the server, the
+      # simulator, and ci-server.sh with the scenario in their checkout layout.
+      # Tarred so the binaries keep their executable bit.
+      - name: Pack the demo plant
+        run: |
+          tar -czf dist/voltrus-demo-plant.tar.gz \
+            target/release/voltrus target/release/modbus-sim \
+            native/scripts/ci-server.sh scenarios/solar-farm
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: voltrus-native-demo-plant-macos-arm64
+          path: dist/voltrus-demo-plant.tar.gz

@@ -124,9 +124,25 @@ plant-like alarm limits. The end-to-end test runs against that server
 changing the admin password and back), and
 `native/scripts/screenshots-macos.sh` captures the signed-in console:
 `overview`, `tags` (with a tag's detail open), `alarms`, `trends` (5 min) and
-`overview-light`, plus the `sign-in` screen. The screenshots and a zipped,
-ad-hoc signed `Voltrus SCADA.app` are the workflow's artifacts; tagged
-releases attach the zip as well.
+`overview-light`, plus the `sign-in` screen. The screenshots, a zipped,
+ad-hoc signed `Voltrus SCADA.app`, and the demo plant
+(`voltrus-demo-plant.tar.gz`: the server, the Modbus simulator,
+`ci-server.sh` and the scenario) are the workflow's artifacts; tagged
+releases attach the app's zip as well.
+
+To run the demo plant on a Mac (Apple silicon; `curl`, `jq` and `openssl`
+ship with macOS 15):
+
+```bash
+gh run download <run id> -n voltrus-native-demo-plant-macos-arm64 -D plant
+cd plant && tar -xzf voltrus-demo-plant.tar.gz
+VOLTRUS_PLANT_PASSWORD=demo-plant-1 native/scripts/ci-server.sh work
+```
+
+It serves `http://127.0.0.1:3000` (Modbus simulators on 5020 and 5021) and
+leaves everything running. Sign in to the console as `admin` with
+`VOLTRUS_PLANT_PASSWORD` (at least 8 characters; when unset the script picks
+a random one and prints it). Stop it with `kill $(cat work/*.pid)`.
 
 Manual WebSocket debugging:
 

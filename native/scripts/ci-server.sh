@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
-# Run the solar-farm plant for the console's end-to-end test and screenshots:
-# a Voltrus server plus the scenario's two Modbus simulators, an admin whose
+# Run the solar-farm plant for the console's end-to-end test and screenshots,
+# or as a demo plant on a Mac: a Voltrus server on http://127.0.0.1:3000 plus
+# the scenario's two Modbus simulators (:5020, :5021), an admin whose
 # generated password is replaced through the API, and plant-like alarm limits.
 #
 # Usage: native/scripts/ci-server.sh <work dir>
-# Needs the release binaries `voltrus` and `modbus-sim`, curl, jq and openssl.
-# Prints the server URL and seed checks; appends the URL, username and password
-# (never printed) to $GITHUB_ENV when set.
+# Needs the release binaries `voltrus` and `modbus-sim` in target/release
+# (relative to the checkout or the unpacked demo-plant artifact), curl, jq and
+# openssl. VOLTRUS_PLANT_PASSWORD picks the admin's new password (at least 8
+# characters; default: random). In CI ($GITHUB_ENV set) the password is masked
+# and appended to $GITHUB_ENV with the URL and username; elsewhere it is
+# printed. The processes keep running; stop them with
+# `kill $(cat <work dir>/*.pid)`.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -47,7 +52,7 @@ login() {
 [ "$(login "$generated" | jq -r .must_change_password)" = "true" ] \
   || echo "::warning::the reset password did not ask for a change"
 
-password="ci-$(openssl rand -hex 12)"
+password="${VOLTRUS_PLANT_PASSWORD:-ci-$(openssl rand -hex 12)}"
 echo "::add-mask::$password"
 curl -fsS -b cookies.txt -H "$json" \
   -d "$(jq -n --arg old "$generated" --arg new "$password" '{old_password: $old, new_password: $new}')" \
@@ -111,4 +116,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "VOLTRUS_NATIVE_USER=admin"
     echo "VOLTRUS_NATIVE_PASSWORD=$password"
   } >> "$GITHUB_ENV"
+else
+  echo "sign in as admin with password: $password"
+  echo "stop the plant: kill \$(cat $PWD/*.pid)"
 fi
