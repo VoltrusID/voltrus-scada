@@ -2109,7 +2109,7 @@ impl Camera {
             }
         };
         let (dx, dy) = (shift(x0, x1, width), shift(y0, y1, height));
-        (dx != 0.0 || dy != 0.0).then(|| Self {
+        (dx != 0.0 || dy != 0.0).then_some(Self {
             zoom: self.zoom,
             x: self.x + dx,
             y: self.y + dy,
