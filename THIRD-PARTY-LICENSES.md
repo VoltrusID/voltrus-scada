@@ -66,8 +66,6 @@ each release.
 | async-recursion | 1.1.1 | MIT OR Apache-2.0 |
 | async-signal | 0.2.14 | Apache-2.0 OR MIT |
 | async-std | 1.13.2 | Apache-2.0 OR MIT |
-| async-stream | 0.3.6 | MIT |
-| async-stream-impl | 0.3.6 | MIT |
 | async-task | 4.7.1 | Apache-2.0 OR MIT |
 | async-trait | 0.1.89 | MIT OR Apache-2.0 |
 | async-tungstenite | 0.25.1 | MIT |
@@ -87,7 +85,6 @@ each release.
 | axum-core | 0.5.6 | MIT |
 | axum-extra | 0.10.3 | MIT |
 | bacnet-rs | 0.3.0 | MIT OR Apache-2.0 |
-| base62 | 2.2.4 | MIT |
 | base64 | 0.21.7 | MIT OR Apache-2.0 |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
 | base64ct | 1.8.3 | Apache-2.0 OR MIT |
@@ -151,17 +148,17 @@ each release.
 | compression-core | 0.4.32 | MIT OR Apache-2.0 |
 | concurrent-queue | 2.5.0 | Apache-2.0 OR MIT |
 | config | 0.14.1 | MIT OR Apache-2.0 |
-| const-oid | 0.10.2 | Apache-2.0 OR MIT |
 | const-oid | 0.9.6 | Apache-2.0 OR MIT |
+| const-oid | 0.10.2 | Apache-2.0 OR MIT |
 | const-random | 0.1.18 | MIT OR Apache-2.0 |
 | const-random-macro | 0.1.16 | MIT OR Apache-2.0 |
 | constant_time_eq | 0.3.1 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
-| convert_case | 0.11.0 | MIT |
 | convert_case | 0.4.0 | MIT |
 | convert_case | 0.6.0 | MIT |
+| convert_case | 0.11.0 | MIT |
 | cookie | 0.18.1 | MIT OR Apache-2.0 |
-| core-foundation | 0.10.0 | MIT OR Apache-2.0 |
 | core-foundation | 0.9.4 | MIT OR Apache-2.0 |
+| core-foundation | 0.10.0 | MIT OR Apache-2.0 |
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
 | core-graphics | 0.23.2 | MIT OR Apache-2.0 |
 | core-graphics | 0.24.0 | MIT OR Apache-2.0 |
@@ -190,8 +187,6 @@ each release.
 | csv-core | 0.1.13 | Unlicense/MIT |
 | ctor | 0.4.3 | Apache-2.0 OR MIT |
 | ctor-proc-macro | 0.0.6 | Apache-2.0 OR MIT |
-| curve25519-dalek | 4.1.3 | BSD-3-Clause |
-| curve25519-dalek-derive | 0.1.1 | MIT/Apache-2.0 |
 | dashmap | 6.1.0 | MIT |
 | data-encoding | 2.11.0 | MIT |
 | data-url | 0.3.2 | MIT OR Apache-2.0 |
@@ -207,10 +202,8 @@ each release.
 | digest | 0.11.3 | MIT OR Apache-2.0 |
 | dirs | 4.0.0 | MIT OR Apache-2.0 |
 | dirs | 5.0.1 | MIT OR Apache-2.0 |
-| dirs | 6.0.0 | MIT OR Apache-2.0 |
 | dirs-sys | 0.3.7 | MIT OR Apache-2.0 |
 | dirs-sys | 0.4.1 | MIT OR Apache-2.0 |
-| dirs-sys | 0.5.0 | MIT OR Apache-2.0 |
 | dispatch | 0.2.0 | MIT |
 | dispatch2 | 0.3.1 | Zlib OR Apache-2.0 OR MIT |
 | displaydoc | 0.2.5 | MIT OR Apache-2.0 |
@@ -222,8 +215,6 @@ each release.
 | dunce | 1.0.5 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | dwrote | 0.11.5 | MPL-2.0 |
 | dyn-clone | 1.0.20 | MIT OR Apache-2.0 |
-| ed25519 | 2.2.3 | Apache-2.0 OR MIT |
-| ed25519-dalek | 2.1.1 | BSD-3-Clause |
 | either | 1.15.0 | MIT OR Apache-2.0 |
 | email-encoding | 0.4.1 | MIT OR Apache-2.0 |
 | email_address | 0.2.9 | MIT |
@@ -232,8 +223,6 @@ each release.
 | embedded-io | 0.6.1 | MIT OR Apache-2.0 |
 | encoding_rs | 0.8.35 | (Apache-2.0 OR MIT) AND BSD-3-Clause |
 | endi | 1.1.1 | MIT |
-| enum-iterator | 2.3.0 | 0BSD |
-| enum-iterator-derive | 1.5.0 | 0BSD |
 | enumflags2 | 0.7.12 | MIT OR Apache-2.0 |
 | enumflags2_derive | 0.7.12 | MIT OR Apache-2.0 |
 | equator | 0.4.2 | MIT |
@@ -254,7 +243,6 @@ each release.
 | fastrand | 2.4.1 | Apache-2.0 OR MIT |
 | fax | 0.2.7 | MIT |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 |
-| fiat-crypto | 0.2.9 | MIT OR Apache-2.0 OR BSD-1-Clause |
 | filedescriptor | 0.8.3 | MIT |
 | filetime | 0.2.27 | MIT/Apache-2.0 |
 | find-msvc-tools | 0.1.9 | MIT OR Apache-2.0 |
@@ -263,7 +251,6 @@ each release.
 | float-cmp | 0.9.0 | MIT |
 | float-ord | 0.3.2 | MIT / Apache-2.0 |
 | float_next_after | 1.0.0 | MIT |
-| fluent-uri | 0.1.4 | MIT |
 | flume | 0.11.1 | Apache-2.0/MIT |
 | fnv | 1.0.7 | Apache-2.0 / MIT |
 | foldhash | 0.1.5 | Zlib |
@@ -277,7 +264,6 @@ each release.
 | foreign-types-shared | 0.3.1 | MIT/Apache-2.0 |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
 | freetype-sys | 0.20.1 | MIT |
-| fsevent-sys | 4.1.0 | MIT |
 | futf | 0.1.5 | MIT / Apache-2.0 |
 | futures | 0.3.31 | MIT OR Apache-2.0 |
 | futures-channel | 0.3.32 | MIT OR Apache-2.0 |
@@ -299,16 +285,12 @@ each release.
 | gif | 0.14.2 | MIT OR Apache-2.0 |
 | glob | 0.3.4 | MIT OR Apache-2.0 |
 | globset | 0.4.19 | Unlicense OR MIT |
-| globwalk | 0.8.1 | MIT |
 | gloo-timers | 0.3.0 | MIT OR Apache-2.0 |
 | glow | 0.16.0 | MIT OR Apache-2.0 OR Zlib |
 | gpu-alloc | 0.6.2 | MIT OR Apache-2.0 |
 | gpu-alloc-ash | 0.7.1 | MIT OR Apache-2.0 |
 | gpu-alloc-types | 0.3.1 | MIT OR Apache-2.0 |
 | gpui | 0.2.2 | Apache-2.0 |
-| gpui-component | 0.5.1 | Apache-2.0 |
-| gpui-component-assets | 0.5.1 | Apache-2.0 |
-| gpui-component-macros | 0.5.1 | Apache-2.0 |
 | gpui-macros | 0.2.2 | Apache-2.0 |
 | gpui_collections | 0.2.2 | Apache-2.0 |
 | gpui_derive_refineable | 0.2.2 | Apache-2.0 |
@@ -324,12 +306,11 @@ each release.
 | h2 | 0.4.16 | MIT |
 | half | 2.7.1 | MIT OR Apache-2.0 |
 | hash32 | 0.2.1 | MIT OR Apache-2.0 |
-| hashbrown | 0.12.3 | MIT OR Apache-2.0 |
 | hashbrown | 0.14.5 | MIT OR Apache-2.0 |
 | hashbrown | 0.15.5 | MIT OR Apache-2.0 |
 | hashbrown | 0.17.0 | MIT OR Apache-2.0 |
-| hashlink | 0.10.0 | MIT OR Apache-2.0 |
 | hashlink | 0.8.4 | MIT OR Apache-2.0 |
+| hashlink | 0.10.0 | MIT OR Apache-2.0 |
 | heapless | 0.7.17 | MIT OR Apache-2.0 |
 | heck | 0.4.1 | MIT OR Apache-2.0 |
 | heck | 0.5.0 | MIT OR Apache-2.0 |
@@ -340,7 +321,6 @@ each release.
 | hkdf | 0.12.4 | MIT OR Apache-2.0 |
 | hmac | 0.12.1 | MIT OR Apache-2.0 |
 | home | 0.5.12 | MIT OR Apache-2.0 |
-| html5ever | 0.27.0 | MIT OR Apache-2.0 |
 | http | 0.2.12 | MIT OR Apache-2.0 |
 | http | 1.4.0 | MIT OR Apache-2.0 |
 | http-body | 0.4.6 | MIT |
@@ -353,7 +333,6 @@ each release.
 | hyper | 0.14.32 | MIT |
 | hyper | 1.9.0 | MIT |
 | hyper-rustls | 0.27.9 | Apache-2.0 OR ISC OR MIT |
-| hyper-timeout | 0.5.2 | MIT OR Apache-2.0 |
 | hyper-util | 0.1.20 | MIT |
 | iana-time-zone | 0.1.65 | MIT OR Apache-2.0 |
 | iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 |
@@ -369,15 +348,11 @@ each release.
 | idna | 1.1.0 | MIT OR Apache-2.0 |
 | idna_adapter | 1.2.1 | Apache-2.0 OR MIT |
 | if-addrs | 0.13.4 | MIT OR BSD-3-Clause |
-| ignore | 0.4.32 | Unlicense OR MIT |
 | image | 0.25.10 | MIT OR Apache-2.0 |
 | image-webp | 0.2.4 | MIT OR Apache-2.0 |
 | imagesize | 0.13.0 | MIT |
 | imgref | 1.12.2 | CC0-1.0 OR Apache-2.0 |
-| indexmap | 1.9.3 | Apache-2.0 OR MIT |
 | indexmap | 2.14.0 | Apache-2.0 OR MIT |
-| inotify | 0.10.2 | ISC |
-| inotify-sys | 0.1.8 | ISC |
 | inout | 0.1.4 | MIT OR Apache-2.0 |
 | instant | 0.1.13 | BSD-3-Clause |
 | interpolate_name | 0.2.4 | MIT |
@@ -387,17 +362,13 @@ each release.
 | is-docker | 0.2.0 | MIT |
 | is-wsl | 0.4.0 | MIT |
 | is_terminal_polyfill | 1.70.2 | MIT OR Apache-2.0 |
-| itertools | 0.11.0 | MIT OR Apache-2.0 |
 | itertools | 0.13.0 | MIT OR Apache-2.0 |
 | itertools | 0.14.0 | MIT OR Apache-2.0 |
 | itoa | 1.0.18 | MIT OR Apache-2.0 |
 | jobserver | 0.1.34 | MIT OR Apache-2.0 |
 | js-sys | 0.3.97 | MIT OR Apache-2.0 |
 | json5 | 0.4.1 | ISC |
-| jsonwebtoken | 9.3.1 | MIT |
 | khronos-egl | 6.0.0 | MIT/Apache-2.0 |
-| kqueue | 1.2.1 | MIT |
-| kqueue-sys | 1.1.2 | MIT |
 | kurbo | 0.11.3 | Apache-2.0 OR MIT |
 | kv-log-macro | 1.0.7 | MIT OR Apache-2.0 |
 | lazy_static | 1.5.0 | MIT OR Apache-2.0 |
@@ -412,14 +383,13 @@ each release.
 | libm | 0.2.16 | MIT |
 | libredox | 0.1.16 | MIT |
 | libsqlite3-sys | 0.32.0 | MIT |
-| linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | linux-raw-sys | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
+| linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.2 | Unicode-3.0 |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.29 | MIT OR Apache-2.0 |
 | loop9 | 0.1.5 | MIT |
 | lru-slab | 0.1.2 | MIT OR Apache-2.0 OR Zlib |
-| lsp-types | 0.97.0 | MIT |
 | lyon | 1.0.19 | MIT OR Apache-2.0 |
 | lyon_algorithms | 1.0.20 | MIT OR Apache-2.0 |
 | lyon_geom | 1.0.19 | MIT OR Apache-2.0 |
@@ -429,9 +399,6 @@ each release.
 | lzma-sys | 0.1.20 | MIT/Apache-2.0 |
 | mac | 0.1.1 | MIT/Apache-2.0 |
 | malloc_buf | 0.0.6 | MIT |
-| markdown | 1.0.0 | MIT |
-| markup5ever | 0.12.1 | MIT OR Apache-2.0 |
-| markup5ever_rcdom | 0.3.0 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
 | matchit | 0.7.3 | MIT AND BSD-3-Clause |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
@@ -461,9 +428,6 @@ each release.
 | nom | 7.1.3 | MIT |
 | nom | 8.0.0 | MIT |
 | noop_proc_macro | 0.3.0 | MIT |
-| normpath | 1.5.1 | MIT OR Apache-2.0 |
-| notify | 7.0.0 | CC0-1.0 |
-| notify-types | 1.0.1 | MIT OR Apache-2.0 |
 | ntapi | 0.4.3 | Apache-2.0 OR MIT |
 | nu-ansi-term | 0.50.3 | MIT |
 | num | 0.4.3 | MIT OR Apache-2.0 |
@@ -511,7 +475,6 @@ each release.
 | pathfinder_geometry | 0.5.1 | MIT/Apache-2.0 |
 | pathfinder_simd | 0.5.6 | MIT OR Apache-2.0 |
 | pbkdf2 | 0.12.2 | MIT OR Apache-2.0 |
-| pem | 3.0.6 | MIT |
 | pem-rfc7468 | 0.7.0 | Apache-2.0 OR MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
 | percent-encoding-rfc3986 | 0.1.3 | MIT/Apache-2.0 |
@@ -520,10 +483,6 @@ each release.
 | pest_generator | 2.8.6 | MIT OR Apache-2.0 |
 | pest_meta | 2.8.6 | MIT OR Apache-2.0 |
 | pharos | 0.5.3 | Unlicense |
-| phf | 0.11.3 | MIT |
-| phf_codegen | 0.11.3 | MIT |
-| phf_generator | 0.11.3 | MIT |
-| phf_shared | 0.11.3 | MIT |
 | pico-args | 0.5.0 | MIT |
 | pin-project | 1.1.11 | Apache-2.0 OR MIT |
 | pin-project-internal | 1.1.11 | Apache-2.0 OR MIT |
@@ -544,7 +503,6 @@ each release.
 | potential_utf | 0.1.5 | Unicode-3.0 |
 | powerfmt | 0.2.0 | MIT OR Apache-2.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
-| precomputed-hash | 0.1.1 | MIT |
 | prettyplease | 0.2.37 | MIT OR Apache-2.0 |
 | proc-macro-crate | 3.5.0 | MIT OR Apache-2.0 |
 | proc-macro-error-attr2 | 2.0.0 | MIT OR Apache-2.0 |
@@ -552,7 +510,6 @@ each release.
 | proc-macro2 | 1.0.106 | MIT OR Apache-2.0 |
 | profiling | 1.0.18 | MIT OR Apache-2.0 |
 | profiling-procmacros | 1.0.18 | MIT OR Apache-2.0 |
-| prost | 0.13.5 | Apache-2.0 |
 | psm | 0.1.32 | MIT OR Apache-2.0 |
 | pulp | 0.22.3 | MIT |
 | pulp-wasm-simd-flag | 0.1.1 | MIT |
@@ -569,14 +526,14 @@ each release.
 | quoted_printable | 0.5.2 | 0BSD |
 | r-efi | 5.3.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
-| rand | 0.10.1 | MIT OR Apache-2.0 |
 | rand | 0.8.6 | MIT OR Apache-2.0 |
 | rand | 0.9.4 | MIT OR Apache-2.0 |
+| rand | 0.10.1 | MIT OR Apache-2.0 |
 | rand_chacha | 0.3.1 | MIT OR Apache-2.0 |
 | rand_chacha | 0.9.0 | MIT OR Apache-2.0 |
-| rand_core | 0.10.1 | MIT OR Apache-2.0 |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
 | rand_core | 0.9.5 | MIT OR Apache-2.0 |
+| rand_core | 0.10.1 | MIT OR Apache-2.0 |
 | rangemap | 1.8.0 | MIT/Apache-2.0 |
 | rav1e | 0.8.1 | BSD-2-Clause |
 | ravif | 0.13.0 | BSD-3-Clause |
@@ -591,7 +548,6 @@ each release.
 | redox_syscall | 0.5.18 | MIT |
 | redox_syscall | 0.7.4 | MIT |
 | redox_users | 0.4.6 | MIT |
-| redox_users | 0.5.2 | MIT |
 | ref-cast | 1.0.26 | MIT OR Apache-2.0 |
 | ref-cast-impl | 1.0.26 | MIT OR Apache-2.0 |
 | regex | 1.12.3 | MIT OR Apache-2.0 |
@@ -605,7 +561,6 @@ each release.
 | rmp | 0.8.15 | MIT |
 | rmp-serde | 1.3.0 | MIT |
 | ron | 0.8.1 | MIT OR Apache-2.0 |
-| ropey | 2.0.0-beta.1 | MIT OR Apache-2.0 |
 | roxmltree | 0.20.0 | MIT OR Apache-2.0 |
 | rquickjs | 0.12.2 | MIT |
 | rquickjs-core | 0.12.2 | MIT |
@@ -617,9 +572,6 @@ each release.
 | rust-embed | 8.12.0 | MIT |
 | rust-embed-impl | 8.12.0 | MIT |
 | rust-embed-utils | 8.12.0 | MIT |
-| rust-i18n | 3.1.5 | MIT |
-| rust-i18n-macro | 3.1.5 | MIT |
-| rust-i18n-support | 3.1.5 | MIT |
 | rust-ini | 0.20.0 | MIT |
 | rustc-hash | 1.1.0 | Apache-2.0/MIT |
 | rustc-hash | 2.1.2 | Apache-2.0 OR MIT |
@@ -670,13 +622,11 @@ each release.
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | sha2 | 0.11.0 | MIT OR Apache-2.0 |
 | sharded-slab | 0.1.7 | MIT |
-| shellexpand | 3.1.2 | MIT/Apache-2.0 |
 | shlex | 1.3.0 | MIT OR Apache-2.0 |
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 |
 | signature | 2.2.0 | Apache-2.0 OR MIT |
 | simd-adler32 | 0.3.9 | MIT |
 | simd_helpers | 0.1.0 | MIT |
-| simple_asn1 | 0.6.4 | ISC |
 | simplecss | 0.2.2 | Apache-2.0 OR MIT |
 | siphasher | 1.0.3 | MIT/Apache-2.0 |
 | sketches-ddsketch | 0.2.2 | Apache-2.0 |
@@ -697,11 +647,7 @@ each release.
 | stacksafe | 0.1.4 | Apache-2.0 |
 | stacksafe-macro | 0.1.4 | Apache-2.0 |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 |
-| str_indices | 0.4.4 | MIT OR Apache-2.0 |
-| streaming-iterator | 0.1.9 | MIT OR Apache-2.0 |
 | strict-num | 0.1.1 | MIT |
-| string_cache | 0.8.9 | MIT OR Apache-2.0 |
-| string_cache_codegen | 0.5.4 | MIT OR Apache-2.0 |
 | strsim | 0.11.1 | MIT |
 | strum | 0.26.3 | MIT |
 | strum | 0.27.2 | MIT |
@@ -760,7 +706,6 @@ each release.
 | tokio-rustls | 0.25.0 | MIT/Apache-2.0 |
 | tokio-rustls | 0.26.4 | MIT OR Apache-2.0 |
 | tokio-socks | 0.5.3 | MIT |
-| tokio-stream | 0.1.18 | MIT |
 | tokio-tungstenite | 0.26.2 | MIT |
 | tokio-tungstenite | 0.29.0 | MIT |
 | tokio-util | 0.7.18 | MIT |
@@ -773,8 +718,6 @@ each release.
 | toml_parser | 1.1.3+spec-1.1.0 | MIT OR Apache-2.0 |
 | toml_write | 0.1.2 | MIT OR Apache-2.0 |
 | toml_writer | 1.1.2+spec-1.1.0 | MIT OR Apache-2.0 |
-| tonic | 0.12.3 | MIT |
-| tower | 0.4.13 | MIT |
 | tower | 0.5.3 | MIT |
 | tower-http | 0.6.8 | MIT |
 | tower-layer | 0.3.3 | MIT |
@@ -785,10 +728,6 @@ each release.
 | tracing-futures | 0.2.5 | MIT |
 | tracing-log | 0.2.0 | MIT |
 | tracing-subscriber | 0.3.23 | MIT |
-| tree-sitter | 0.25.10 | MIT |
-| tree-sitter-json | 0.24.8 | MIT |
-| tree-sitter-language | 0.1.7 | MIT |
-| triomphe | 0.1.16 | MIT OR Apache-2.0 |
 | try-lock | 0.2.5 | MIT |
 | ttf-parser | 0.20.0 | MIT OR Apache-2.0 |
 | ttf-parser | 0.21.1 | MIT OR Apache-2.0 |
@@ -807,7 +746,6 @@ each release.
 | unicode-bidi-mirroring | 0.4.0 | MIT/Apache-2.0 |
 | unicode-ccc | 0.2.0 | MIT/Apache-2.0 |
 | unicode-ccc | 0.4.0 | MIT/Apache-2.0 |
-| unicode-id | 0.3.6 | MIT OR Apache-2.0 |
 | unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-linebreak | 0.1.5 | Apache-2.0 |
 | unicode-properties | 0.1.4 | MIT/Apache-2.0 |
@@ -835,6 +773,7 @@ each release.
 | version_check | 0.9.5 | MIT/Apache-2.0 |
 | vswhom | 0.1.0 | MIT |
 | vswhom-sys | 0.1.3 | MIT |
+| vt-ui | 0.1.0 | GPL-3.0-or-later |
 | waker-fn | 1.2.0 | Apache-2.0 OR MIT |
 | walkdir | 2.5.0 | Unlicense/MIT |
 | want | 0.3.1 | MIT |
@@ -935,7 +874,6 @@ each release.
 | wit-bindgen-rust-macro | 0.51.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wit-component | 0.244.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | wit-parser | 0.244.0 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| workspace-hack | 0.1.0 | CC0-1.0 |
 | writeable | 0.6.3 | Unicode-3.0 |
 | ws_stream_tungstenite | 0.13.0 | Unlicense |
 | x11 | 2.21.0 | MIT |
@@ -952,7 +890,6 @@ each release.
 | xim-parser | 0.2.2 | MIT |
 | xkbcommon | 0.8.0 | MIT |
 | xkeysym | 0.2.1 | MIT OR Apache-2.0 OR Zlib |
-| xml5ever | 0.18.1 | MIT OR Apache-2.0 |
 | xmlwriter | 0.1.0 | MIT |
 | xz2 | 0.1.7 | MIT/Apache-2.0 |
 | y4m | 0.8.0 | MIT |
@@ -969,7 +906,6 @@ each release.
 | zed-font-kit | 0.14.1-zed | MIT OR Apache-2.0 |
 | zed-reqwest | 0.12.15-zed | MIT OR Apache-2.0 |
 | zed-scap | 0.0.8-zed | MIT |
-| zed-sum-tree | 0.2.0 | Apache-2.0 |
 | zed-xim | 0.4.0-zed | MIT |
 | zeno | 0.3.3 | Apache-2.0 OR MIT |
 | zerocopy | 0.8.48 | BSD-2-Clause OR Apache-2.0 OR MIT |

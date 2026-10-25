@@ -5,7 +5,8 @@
 #
 # Usage: native/scripts/ci-server.sh <work dir>
 # Needs the release binaries `voltrus` and `modbus-sim`, curl, jq and openssl.
-# Prints the URL and password, and appends them to $GITHUB_ENV when set.
+# Prints the server URL and seed checks; appends the URL, username and password
+# (never printed) to $GITHUB_ENV when set.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
