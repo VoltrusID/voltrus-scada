@@ -235,7 +235,10 @@ fn row(manifest: &'static Manifest, theme: &Theme, cx: &mut Context<Console>) ->
     let placing = Placing::Widget(manifest.kind);
     let hover = theme.hover;
     div()
-        .id(SharedString::from(format!("mimic-palette-{}", manifest.kind)))
+        .id(SharedString::from(format!(
+            "mimic-palette-{}",
+            manifest.kind
+        )))
         .flex()
         .items_center()
         .gap(SPACE_4)

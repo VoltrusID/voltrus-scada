@@ -26,6 +26,7 @@
 //! data batches. Only the widgets in view are prepared and drawn.
 
 mod banner;
+pub(crate) mod editor;
 mod faceplate;
 mod paint;
 mod pinch;
@@ -179,6 +180,8 @@ pub(crate) struct State {
     /// What to do once the screen and its values are in (a key pressed
     /// before, e.g. `--overlay MimicOpen` right after sign-in).
     pending: Option<Pending>,
+    /// The editor, in edit mode.
+    edit: Option<Box<editor::Editor>>,
 }
 
 impl Default for State {
@@ -209,6 +212,7 @@ impl Default for State {
             pinch_listening: false,
             window_height: 0.0,
             pending: None,
+            edit: None,
         }
     }
 }
@@ -424,6 +428,7 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             };
             state.layouts.insert(screen, loaded);
         }
+        "mimic.save" => editor::on_reply(console, key, reply, cx),
         "mimic.write" => {
             let state = console.state::<State>();
             state.sending = None;
@@ -793,6 +798,11 @@ fn step_setpoint(console: &mut Console, steps: f64, cx: &mut Context<Console>) {
 }
 
 fn switch_screen(console: &mut Console, id: &str, window: &mut Window, cx: &mut Context<Console>) {
+    if active(console) != id
+        && editor::holds(console, editor::Leave::Screen(id.to_owned()), window, cx)
+    {
+        return;
+    }
     if active(console) != id {
         screens::select(console, id);
         let state = console.state::<State>();
@@ -1074,6 +1084,8 @@ struct Frame {
     cache: Rc<Tessellations>,
     drawn: Rc<Cell<Option<Drawn>>>,
     focused: bool,
+    /// The editor's grid under the widgets.
+    grid: bool,
 }
 
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
@@ -1087,6 +1099,10 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             .is_some_and(|state| state.layouts.contains_key(&active(console)))
     {
         cx.defer_in(window, |console, _, _| sync(console));
+    }
+    editor::launch_ready(console, window, cx);
+    if editor::editing(console) && console.stress.is_none() {
+        return editor::render(console, window, cx);
     }
     let theme = theme(cx).clone();
     let hmi = Hmi::new(&theme);
@@ -1220,7 +1236,10 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         Some(Loaded::Ready(layout)) => layout.widgets.len(),
         _ => 0,
     };
-    let bar = sub_bar(&tabs, &names, &screen, zoom, fitted, count, &theme, cx);
+    let edit = console.is_operator().then(|| editor::edit_button(cx));
+    let bar = sub_bar(
+        &tabs, &names, &screen, zoom, fitted, count, edit, &theme, cx,
+    );
 
     let body: AnyElement = match loaded {
         _ if stress => empty_state(
@@ -1273,6 +1292,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 cache,
                 drawn,
                 focused,
+                grid: false,
             };
             stage(frame, pressing, cx)
         }
@@ -1462,6 +1482,9 @@ fn paint_frame(frame: Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &m
         hmi.stage,
         Some((hmi.border, 1.0 / zoom)),
     );
+    if frame.grid {
+        editor::paint_grid(&mut canvas, &stage);
+    }
     // The parent's overflow clips to the stage area.
     for wire in &frame.wires {
         paint_wire(&mut canvas, &stage, wire, frame.t);
@@ -1578,6 +1601,7 @@ fn sub_bar(
     zoom: Option<f64>,
     fitted: bool,
     count: usize,
+    edit: Option<AnyElement>,
     theme: &Theme,
     cx: &mut Context<Console>,
 ) -> AnyElement {
@@ -1709,6 +1733,7 @@ fn sub_bar(
                 .child(kbd("↵", cx))
                 .child("faceplate"),
         )
+        .children(edit)
         .into_any_element()
 }
 
@@ -1724,6 +1749,9 @@ pub(crate) fn level_color(hmi: &Hmi, level: mimic::Level) -> Hsla {
 /// The width of the faceplate along the page's right edge, which the
 /// toasts keep clear of.
 pub fn side_panel(console: &Console) -> Pixels {
+    if console.page == Page::Mimic && editor::editing(console) {
+        return editor::INSPECTOR_WIDTH;
+    }
     let open = console.page == Page::Mimic
         && console
             .state_ref::<State>()

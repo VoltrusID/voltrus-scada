@@ -471,12 +471,7 @@ fn arrange(turns: bool, cx: &mut Context<Console>) -> Vec<AnyElement> {
 }
 
 /// A tag's name and key, or the placeholder.
-fn tag_line(
-    console: &Console,
-    tag: Option<i64>,
-    empty: &'static str,
-    theme: &Theme,
-) -> AnyElement {
+fn tag_line(console: &Console, tag: Option<i64>, empty: &'static str, theme: &Theme) -> AnyElement {
     let known = tag.and_then(|id| console.store.get(id));
     match (tag, known) {
         (Some(_), Some(known)) => div()
@@ -844,12 +839,12 @@ fn widget_panel(
                         .flex()
                         .items_center()
                         .gap(SPACE_3)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(tag_line(console, Some(*tag), "", theme)),
-                        )
+                        .child(div().flex_1().min_w_0().child(tag_line(
+                            console,
+                            Some(*tag),
+                            "",
+                            theme,
+                        )))
                         .child(
                             Button::new(
                                 ElementId::NamedInteger(
@@ -861,18 +856,17 @@ fn widget_panel(
                             .compact()
                             .ghost()
                             .tooltip("Remove the tag")
-                            .on_click(cx.listener(move |console, _, window, cx| {
-                                unbind(console, &clear, window, cx);
-                            })),
+                            .on_click(cx.listener(
+                                move |console, _, window, cx| {
+                                    unbind(console, &clear, window, cx);
+                                },
+                            )),
                         )
                         .into_any_element(),
                 );
             }
             if widget.tags.is_empty() {
-                binding.push(caption(
-                    "No tags: it shows the plant's first ones.",
-                    theme,
-                ));
+                binding.push(caption("No tags: it shows the plant's first ones.", theme));
             }
             binding.push(
                 Button::new("mimic-insp-add-tag", "Add a tag")

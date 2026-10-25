@@ -155,7 +155,12 @@ pub(super) fn paint(marks: &Marks, window: &mut Window, cx: &mut App) {
     };
     if let Some(points) = &marks.line {
         let shape = route(points);
-        canvas.stroke(&flat, &shape, fade(accent, 0.3), Line::hairline(8.0).round());
+        canvas.stroke(
+            &flat,
+            &shape,
+            fade(accent, 0.3),
+            Line::hairline(8.0).round(),
+        );
         canvas.stroke(&flat, &shape, accent, Line::hairline(1.5));
     }
     if let Some(hover) = &marks.hover {

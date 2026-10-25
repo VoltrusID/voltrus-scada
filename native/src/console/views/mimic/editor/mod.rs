@@ -790,9 +790,11 @@ pub(crate) fn actions(root: Stateful<Div>, cx: &Context<Console>) -> Stateful<Di
     .on_action(cx.listener(|console, _: &MimicEditSelectTool, window, cx| {
         run(console, Cmd::Tool(Tool::Select), window, cx);
     }))
-    .on_action(cx.listener(|console, _: &MimicEditConnectTool, window, cx| {
-        run(console, Cmd::Tool(Tool::Connect), window, cx);
-    }))
+    .on_action(
+        cx.listener(|console, _: &MimicEditConnectTool, window, cx| {
+            run(console, Cmd::Tool(Tool::Connect), window, cx);
+        }),
+    )
     .on_action(cx.listener(|console, _: &MimicEditRotate, window, cx| {
         run(console, Cmd::Rotate(1), window, cx);
     }))
@@ -1095,8 +1097,7 @@ fn on_press(
         match hit {
             Some(id) => match editor.from.take() {
                 Some(from) if from != id => {
-                    let line =
-                        edit::connection(edit::fresh_id("c"), &from, &id, editor.line_type);
+                    let line = edit::connection(edit::fresh_id("c"), &from, &id, editor.line_type);
                     let line_id = line.id.clone();
                     let added = Edit::Add {
                         widgets: Vec::new(),
@@ -1353,11 +1354,7 @@ fn on_hover(console: &mut Console, event: &MouseMoveEvent, cx: &mut Context<Cons
 }
 
 /// A palette item dragged over the stage: where it would land.
-fn on_drag_over(
-    console: &mut Console,
-    event: &DragMoveEvent<Placing>,
-    cx: &mut Context<Console>,
-) {
+fn on_drag_over(console: &mut Console, event: &DragMoveEvent<Placing>, cx: &mut Context<Console>) {
     let placing = *event.drag(cx);
     let inside = event.bounds.contains(&event.event.position);
     let at = stage_at(console, event.event.position);
@@ -1649,14 +1646,8 @@ pub(super) fn render(
                 .flex_1()
                 .min_h_0()
                 .child(
-                    AnyView::from(palette_view).cached(
-                        div()
-                            .flex_none()
-                            .w(PALETTE_WIDTH)
-                            .h_full()
-                            .style()
-                            .clone(),
-                    ),
+                    AnyView::from(palette_view)
+                        .cached(div().flex_none().w(PALETTE_WIDTH).h_full().style().clone()),
                 )
                 .child(body)
                 .child(
@@ -1866,13 +1857,17 @@ fn toolbar(
             IconButton::new("mimic-edit-undo", Icon::ChevronLeft)
                 .tooltip("Undo  ⌘Z")
                 .disabled(!bar.can_undo)
-                .on_click(cx.listener(|console, _, window, cx| run(console, Cmd::Undo, window, cx))),
+                .on_click(
+                    cx.listener(|console, _, window, cx| run(console, Cmd::Undo, window, cx)),
+                ),
         )
         .child(
             IconButton::new("mimic-edit-redo", Icon::ChevronRight)
                 .tooltip("Redo  ⇧⌘Z")
                 .disabled(!bar.can_redo)
-                .on_click(cx.listener(|console, _, window, cx| run(console, Cmd::Redo, window, cx))),
+                .on_click(
+                    cx.listener(|console, _, window, cx| run(console, Cmd::Redo, window, cx)),
+                ),
         )
         .child(separator())
         .child(segmented("mimic-edit-tool", tool_segments, cx))
@@ -1884,13 +1879,17 @@ fn toolbar(
             IconButton::new("mimic-edit-grid", Icon::Columns)
                 .tooltip("Grid  G")
                 .active(bar.grid)
-                .on_click(cx.listener(|console, _, window, cx| run(console, Cmd::Grid, window, cx))),
+                .on_click(
+                    cx.listener(|console, _, window, cx| run(console, Cmd::Grid, window, cx)),
+                ),
         )
         .child(
             Button::new("mimic-edit-zoom-out", "−")
                 .compact()
                 .tooltip("Zoom out  ⌘−")
-                .on_click(cx.listener(|console, _, _, cx| super::zoom_key(console, Some(false), cx))),
+                .on_click(
+                    cx.listener(|console, _, _, cx| super::zoom_key(console, Some(false), cx)),
+                ),
         )
         .child(
             Button::new("mimic-edit-fit", percent)
@@ -1902,14 +1901,20 @@ fn toolbar(
             Button::new("mimic-edit-zoom-in", "+")
                 .compact()
                 .tooltip("Zoom in  ⌘+")
-                .on_click(cx.listener(|console, _, _, cx| super::zoom_key(console, Some(true), cx))),
+                .on_click(
+                    cx.listener(|console, _, _, cx| super::zoom_key(console, Some(true), cx)),
+                ),
         )
         .child(separator())
         .child(
             div()
                 .flex_none()
                 .text_size(FONT_CAPTION)
-                .text_color(if bar.dirty { theme.warning } else { theme.fg_dim })
+                .text_color(if bar.dirty {
+                    theme.warning
+                } else {
+                    theme.fg_dim
+                })
                 .whitespace_nowrap()
                 .child(status),
         )
@@ -1919,7 +1924,9 @@ fn toolbar(
                 .icon(Icon::Check)
                 .compact()
                 .tooltip("Leave edit mode  E")
-                .on_click(cx.listener(|console, _, window, cx| run(console, Cmd::Toggle, window, cx))),
+                .on_click(
+                    cx.listener(|console, _, window, cx| run(console, Cmd::Toggle, window, cx)),
+                ),
         )
         .into_any_element()
 }
