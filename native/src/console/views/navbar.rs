@@ -187,6 +187,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 .when(!compact, |this| this.child("Search"))
                 .child(kbd(palette_keys, cx)),
         )
+        .child(super::alarms::mute_button(console, cx))
         .child(
             IconButton::new("perf-hud", Icon::Activity)
                 .active(console.hud)

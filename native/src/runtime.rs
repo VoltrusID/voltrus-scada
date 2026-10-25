@@ -180,9 +180,12 @@ pub enum Command {
     },
     Acknowledge(i64),
     AcknowledgeAll,
+    /// Shelve an alarm for `seconds` with the operator's `reason`
+    /// (`POST /alarms/{id}/shelf`; the server takes an empty reason too).
     Shelve {
         alarm: i64,
         seconds: u64,
+        reason: String,
     },
     Unshelve(i64),
     RefreshAlarms,
@@ -219,10 +222,15 @@ impl fmt::Debug for Command {
                 .finish(),
             Self::Acknowledge(id) => f.debug_tuple("Acknowledge").field(id).finish(),
             Self::AcknowledgeAll => f.write_str("AcknowledgeAll"),
-            Self::Shelve { alarm, seconds } => f
+            Self::Shelve {
+                alarm,
+                seconds,
+                reason,
+            } => f
                 .debug_struct("Shelve")
                 .field("alarm", alarm)
                 .field("seconds", seconds)
+                .field("reason", reason)
                 .finish(),
             Self::Unshelve(id) => f.debug_tuple("Unshelve").field(id).finish(),
             Self::RefreshAlarms => f.write_str("RefreshAlarms"),
@@ -807,12 +815,13 @@ impl Actor {
                     Box::pin(async move { api.ack_all().await })
                 });
             }
-            Command::Shelve { alarm, seconds } => {
+            Command::Shelve {
+                alarm,
+                seconds,
+                reason,
+            } => {
                 self.action(format!("Shelve alarm {alarm}"), move |api| {
-                    Box::pin(async move {
-                        api.shelve_alarm(alarm, seconds, "Shelved from the operator console")
-                            .await
-                    })
+                    Box::pin(async move { api.shelve_alarm(alarm, seconds, &reason).await })
                 });
             }
             Command::Unshelve(id) => {
