@@ -1156,7 +1156,9 @@ mod tests {
 
         /// Let the spawned tasks run for a while.
         fn run_for(&self, duration: Duration) {
-            self.runtime.block_on(tokio::time::sleep(duration));
+            // The timer must be made inside the runtime.
+            self.runtime
+                .block_on(async move { tokio::time::sleep(duration).await });
         }
 
         fn session(&self) -> &Session {
