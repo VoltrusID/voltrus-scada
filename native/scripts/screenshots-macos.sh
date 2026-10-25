@@ -64,6 +64,11 @@ shots=(
   "dashboard-add-tags|--sign-in --page dashboard --screen 2 --edit --overlay add-tags --appearance dark"
   "dashboard-light|--sign-in --page dashboard --screen 2 --appearance light"
   "stress-dashboard|--stress --stress-switch-ms 0 --page dashboard --hud --appearance dark"
+  "data-user-new|--sign-in --page data --overlay DataNewUser --appearance dark"
+  "data-role-new|--sign-in --page data --overlay DataNewRole --appearance dark"
+  "data-api-key-new|--sign-in --page data --overlay DataNewApiKey --appearance dark"
+  "data-rule-new|--sign-in --page data --overlay DataNewRule --appearance dark"
+  "data-rule-new-light|--sign-in --page data --overlay DataNewRule --appearance light"
 )
 
 status=0

@@ -273,6 +273,17 @@ to close a dialog after the server answered, keep the window handle in the
 section's state and close it in `cx.defer` (see
 `data_manager::source_form::close_later`).
 
+The Admin sections (Users, Roles, Notifications, API keys) share
+`data_manager::admin_kit`: `ask` (a confirmation before a destructive call;
+the section keeps its target in its state), `search_field`, the table
+`header`/`row_frame`/`cell`/`actions`, a dialog's `dialog_header`,
+`dialog_body` and `dialog_footer`, and `close_later`/`focus_later` for a
+dialog the server's answer ends or changes. Their tables set
+`keys::DATA_ADMIN_*` key contexts: `DataAdmin` (⌫) plus the section's own
+(`DataUsers` N and P, `DataRoles` N, `DataApiKeys` N, `DataRules` N and T).
+A dialog that holds a secret (passwords, a new API key) is dropped from the
+section's state as soon as its overlay is no longer open.
+
 
 ## The shell: settings, keymap, notifications, edition
 

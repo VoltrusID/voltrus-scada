@@ -84,6 +84,20 @@ JetBrains Mono for values.
   its settings, a Modbus device with one register or an expression); D
   duplicates, ⌫ deletes after a confirmation, ⌥↑/⌥↓ or dragging a row
   reorders (shown at once, saved to the server).
+  **Admin** (as the web client's group): **Users** (admin only): every
+  account with its role; N adds one (name, the password typed twice in
+  masked fields, role), Enter changes the role and optionally the password,
+  P resets a password, ⌫ deletes after a confirmation; the console refuses
+  demoting or deleting yourself or the last admin. **Roles** (admin only):
+  the server's RBAC roles with their permissions picked from the 24 the
+  server accepts. **Notifications** (operators): who hears of a tag's (or
+  every tag's) alarms by email, webhook or push; N, Enter, Space turns a
+  rule on or off, T sends a test through the server and shows each
+  target's outcome, ⌫ deletes. **API keys** (admin only): name, prefix,
+  role, maker, last use and expiry; N makes a read-only or integration key
+  with a lifetime and shows its secret once (masked until revealed, C or
+  Copy), ⌫ revokes. The palette offers New user, New role, New API key and
+  New notification rule.
 - **Dashboard** (⌘6): the server's screens as card dashboards, as the web
   client's card view lays them out (its 24-column grid and saved layouts).
   Screen tabs sit in a bar under the navbar (1–9 jump to them, [ and ] step;
@@ -239,6 +253,8 @@ native/src/
                     data sources, alarms, history, password change
   api/ops.rs        commands, shift handover, audit log and data export: mirrors,
                     paths, text downloads
+  api/admin.rs      users, RBAC roles, API keys and notification rules: mirrors,
+                    request bodies checked as the server checks them
   ws_types.rs       MessagePack WebSocket messages (mirror of the server's)
   runtime.rs        the network actor: Command in, Event out, generic calls
   stress.rs         the deterministic synthetic plant
@@ -396,3 +412,21 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   client sends milliseconds and reads them as such). An unknown command
   answers 500 "Command not found", not 404; cancelling a command already
   sent answers 400.
+- Users, roles and API keys are admin-only routes. A user's role is one of
+  `admin`, `demo`, `operator`, `viewer` or `user`; only admin and demo pass
+  the operator routes. A role change or a deletion does not end the user's
+  open sessions: the token keeps its role until it expires. There is no way
+  to disable an account (only delete it), and deleting a user whose
+  handovers or mentions remain fails on a foreign key.
+- RBAC roles (`/api/v1/roles`) store a JSON list of permissions, refused
+  unless every one is in `models::ALL_PERMISSIONS` (the web's own list
+  offers names the server refuses); nothing checks them yet, and
+  `PUT /users/{id}/role` assigns one without any route to read it back.
+- API keys expire in Unix seconds and are shown once; the list keeps only
+  the first eight characters. Their stored permissions are not checked;
+  `api` keys read, `integration` keys also pass operator routes.
+- `POST /notifications/test` answers 200 with a per-target status (sent or
+  the error) for webhooks and email; email needs SMTP configured (else
+  500), push is not testable. `PUT /notifications/settings/{id}` checks the
+  config but not email or URL shapes, so the console checks them as
+  `POST` does.

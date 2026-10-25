@@ -88,6 +88,13 @@ actions!(
         DataMoveSourceDown,
         DataSortNext,
         DataReverseSort,
+        DataNewUser,
+        DataNewRole,
+        DataNewApiKey,
+        DataNewRule,
+        DataAdminDelete,
+        DataAdminPassword,
+        DataAdminTest,
     ]
 );
 
@@ -115,6 +122,19 @@ pub const OPS_AUDIT: &str = "OpsAudit && !TextInput";
 pub const ALARM_LIST: &str = "AlarmList";
 /// The Data Manager's sources table has focus.
 pub const DATA_SOURCES: &str = "DataSources";
+/// The Data Manager's Admin tables (Users, Roles, API keys, Notifications):
+/// every one carries `DataAdmin` (⌫ deletes or revokes) and its own name
+/// (N makes one; P resets a password; T tests a rule).
+pub const DATA_ADMIN: &str = "DataAdmin";
+pub const DATA_USERS: &str = "DataUsers";
+pub const DATA_ROLES: &str = "DataRoles";
+pub const DATA_API_KEYS: &str = "DataApiKeys";
+pub const DATA_RULES: &str = "DataRules";
+/// The key contexts the Admin tables set on their element.
+pub const DATA_ADMIN_USERS: &str = "DataAdmin DataUsers";
+pub const DATA_ADMIN_ROLES: &str = "DataAdmin DataRoles";
+pub const DATA_ADMIN_API_KEYS: &str = "DataAdmin DataApiKeys";
+pub const DATA_ADMIN_RULES: &str = "DataAdmin DataRules";
 
 /// How the help overlay groups the commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1023,6 +1043,73 @@ pub static COMMANDS: &[CommandSpec] = &[
         ["shift-s"],
         DATA_SOURCES,
         DataReverseSort,
+        false
+    ),
+    CommandSpec {
+        label: "New user",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_USERS,
+        action: || -> Box<dyn Action> { Box::new(DataNewUser) },
+        palette: true,
+        role: Role::Admin,
+    },
+    CommandSpec {
+        label: "New role",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_ROLES,
+        action: || -> Box<dyn Action> { Box::new(DataNewRole) },
+        palette: true,
+        role: Role::Admin,
+    },
+    CommandSpec {
+        label: "New API key",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_API_KEYS,
+        action: || -> Box<dyn Action> { Box::new(DataNewApiKey) },
+        palette: true,
+        role: Role::Admin,
+    },
+    CommandSpec {
+        label: "New notification rule",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_RULES,
+        action: || -> Box<dyn Action> { Box::new(DataNewRule) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Delete the user, role or rule; revoke the key",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        DATA_ADMIN,
+        DataAdminDelete,
+        false
+    ),
+    command!(
+        "Reset the user's password",
+        Data,
+        Lock,
+        ["p"],
+        DATA_USERS,
+        DataAdminPassword,
+        false
+    ),
+    command!(
+        "Send a test notification",
+        Data,
+        Send,
+        ["t"],
+        DATA_RULES,
+        DataAdminTest,
         false
     ),
 ];

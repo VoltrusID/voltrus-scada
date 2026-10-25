@@ -111,6 +111,27 @@ curl -fsS -b cookies.txt "$url/api/v1/data-sources" | jq -r '.[] | "\(.id) \(.ke
     fi
   done
 
+# The Data Manager's Admin group: two more accounts (random passwords,
+# never printed), a read-only API key (its secret is dropped) and three
+# notification rules, so the screenshots show what a plant has. The
+# webhook points at a closed local port and is off.
+for account in "ana.shiftlead demo" "budi.viewer viewer"; do
+  read -r name role <<< "$account"
+  curl -fsS -b cookies.txt -H "$json" \
+    -d "$(jq -n --arg user "$name" --arg pass "seed-$(openssl rand -hex 12)" --arg role "$role" \
+      '{username: $user, password: $pass, role: $role}')" \
+    "$url/api/v1/users" > /dev/null
+done
+curl -fsS -b cookies.txt -H "$json" \
+  -d '{"name": "Grafana read-only", "role": "api", "permissions": "[]"}' \
+  "$url/api/v1/api-keys" | jq -e .id > /dev/null
+for rule in \
+  '{"source_key": "", "channel_type": "email", "config": "[\"control-room@solar.example\"]", "enabled": true}' \
+  '{"source_key": "ac_current_l1", "channel_type": "webhook", "config": "[\"http://127.0.0.1:9/voltrus\"]", "enabled": false}' \
+  '{"source_key": "irradiance", "channel_type": "push", "config": "[\"admin\"]", "enabled": true}'; do
+  curl -fsS -b cookies.txt -H "$json" -d "$rule" "$url/api/v1/notifications/settings" > /dev/null
+done
+
 "$bin/modbus-sim" --scenario solar-farm --role inverter --port 5020 > inverter.log 2>&1 &
 echo $! > inverter.pid
 "$bin/modbus-sim" --scenario solar-farm --role grid-meter --port 5021 > meter.log 2>&1 &
