@@ -1,41 +1,39 @@
 //! Warming the pages after sign-in: each page the user may open is drawn
 //! once, out of sight, one page per frame. It is rendered, laid out,
-//! prepainted and painted like a shown page (its view made and kept, its
-//! fonts loaded, its text shaped and its glyphs rasterized into the atlas)
-//! inside a clip of no size, so nothing of it reaches the screen or the
-//! mouse. The first switch to it then costs what any later one does. The
-//! meter keeps these frames out of its figures and reports each page's
-//! warm-up apart.
+//! prepainted and painted like a shown page, at the page's size and place
+//! but fully transparent and under a layer that takes the mouse: its view
+//! is made and kept, its fonts loaded, its text shaped and its glyphs and
+//! icons rasterized into the atlas (GPUI skips glyphs outside the clip, so
+//! a clipped page would leave that work to its first show). The first
+//! switch to it then costs what any later one does. The meter keeps these
+//! frames out of its figures and reports each page's warm-up apart.
 
 use gpui::prelude::*;
-use gpui::{AnyElement, AnyView, Context, Entity, Pixels, Size, Window, div, px};
+use gpui::{AnyElement, AnyView, Context, Entity, Pixels, Size, Window, div};
 use vt_ui::theme::TITLE_BAR_HEIGHT;
 
 use super::views::cached::CachedView;
 use super::{Console, Phase, pages};
 
-/// A page view drawn in full where pages go, `size` large, but clipped to
-/// nothing: GPUI drops every primitive and hitbox outside the clip, after
-/// the work of making them is done.
+/// A page view drawn in full where pages go, `size` large, transparent,
+/// with a layer over it that takes every mouse event: nothing of it is
+/// seen, hovered or clicked. Put it before the shown page.
 pub(crate) fn hidden(view: Entity<CachedView>, size: Size<Pixels>) -> AnyElement {
     div()
         .absolute()
         .top(TITLE_BAR_HEIGHT)
         .left_0()
-        .w(px(0.0))
-        .h(px(0.0))
-        .overflow_hidden()
+        .w(size.width)
+        .h(size.height)
         .child(
             div()
-                .absolute()
-                .top_0()
-                .left_0()
-                .w(size.width)
-                .h(size.height)
+                .size_full()
                 .flex()
                 .flex_col()
+                .opacity(0.0)
                 .child(AnyView::from(view).cached(div().size_full().style().clone())),
         )
+        .child(div().id("warm-shield").absolute().inset_0().occlude())
         .into_any_element()
 }
 
@@ -66,7 +64,7 @@ impl Console {
             self.meter.borrow_mut().set_warming(false);
             return None;
         };
-        // Drawn clipped, its cached frame is not the one to replay: the
+        // Drawn transparent, its cached frame is not the one to replay: the
         // switch to it notifies the console, so its view draws afresh in
         // the page slot.
         window.request_animation_frame();
