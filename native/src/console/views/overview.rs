@@ -8,6 +8,7 @@
 //! same height (their positions are taken from the last frame's layout).
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -18,7 +19,7 @@ use gpui::{
 };
 use voltrus_scada_native::stress::PROFILE_TREND;
 use vt_ui::Icon;
-use vt_ui::chart::{History, Series, format_value, trend_chart};
+use vt_ui::chart::format_value;
 use vt_ui::components::{Button, pill, status_dot};
 use vt_ui::theme::*;
 
@@ -49,7 +50,8 @@ const SPARK_COLUMNS: usize = 110;
 const SCROLL_MARGIN: f32 = 16.0;
 /// The stress profile's trend: how far back, and samples kept per line.
 const PROFILE_MS: f64 = 6_000.0;
-const PROFILE_SAMPLES: usize = 2048;
+/// Columns in each profile lane: about one per two pixels.
+const PROFILE_COLUMNS: usize = 300;
 
 /// Where the tile rows were laid out in the last frame, in the scrolling
 /// content's coordinates (independent of the scroll offset).
@@ -67,7 +69,7 @@ struct State {
     /// The cursor at the last render, to scroll a moved one into view.
     cursor: Option<usize>,
     /// The stress profile's trend lines, sampled every frame.
-    profile: Vec<Rc<History>>,
+    profile: Vec<VecDeque<(f64, f64)>>,
 }
 
 pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
@@ -410,7 +412,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     if animating {
         anim::request_frame(window, &console.meter);
     }
-    let trend_card = trend_lines.map(|series| profile_card(console, series, now, &theme, cx));
+    let trend_card = trend_lines.map(|lines| profile_card(console, lines, &theme));
     // The profile shows what moves, its trend and the tiles, in place of
     // the attention and alarm cards (the counts above still give them).
     let cards = (!profile).then(|| {
@@ -553,41 +555,54 @@ fn reveal_offset((top, bottom): (f32, f32), offset_y: f32, viewport: f32, max: f
 
 /// The stress profile's trend lines, with this frame's values added: drawn
 /// at the display's rate, each line gains a point whenever its tag moved.
-fn profile_series(console: &mut Console, theme: &Theme, now: f64) -> Vec<Series> {
+/// Kept by the page, oldest first, the last [`PROFILE_MS`] of them.
+fn profile_series(console: &mut Console, theme: &Theme, now: f64) -> Vec<ProfileLine> {
     let tags: Vec<(SharedString, f64)> = PROFILE_TREND
         .filter_map(|index| console.store.tags.get(index))
         .map(|tag| (tag.label.clone(), tag.value))
         .collect();
     let lines = &mut console.state::<State>().profile;
-    lines.resize_with(tags.len(), || History::new(PROFILE_SAMPLES));
+    lines.resize_with(tags.len(), VecDeque::new);
     tags.into_iter()
-        .zip(lines.iter())
+        .zip(lines.iter_mut())
         .enumerate()
-        .map(|(lane, ((label, value), history))| {
-            if history
-                .latest()
-                .is_none_or(|(_, last)| last.to_bits() != value.to_bits())
+        .map(|(lane, ((label, value), samples))| {
+            if samples
+                .back()
+                .is_none_or(|(_, last): &(f64, f64)| last.to_bits() != value.to_bits())
             {
-                history.push(now, value);
+                samples.push_back((now, value));
             }
-            Series {
+            while samples
+                .front()
+                .is_some_and(|(at, _)| *at < now - PROFILE_MS)
+            {
+                samples.pop_front();
+            }
+            ProfileLine {
                 label,
                 color: theme.series(lane),
-                history: Rc::clone(history),
-                stepped: false,
+                columns: super::spark::columns(
+                    samples.iter().copied(),
+                    now - PROFILE_MS,
+                    PROFILE_MS,
+                    PROFILE_COLUMNS,
+                ),
             }
         })
         .collect()
 }
 
-/// The stress profile's card: the trend, and what the frames cost.
-fn profile_card(
-    console: &Console,
-    series: Vec<Series>,
-    now: f64,
-    theme: &Theme,
-    cx: &Context<Console>,
-) -> AnyElement {
+/// One lane of the profile's trend.
+struct ProfileLine {
+    label: SharedString,
+    color: Hsla,
+    columns: Vec<super::spark::Column>,
+}
+
+/// The stress profile's card: a lane per line, drawn with quads like the
+/// sparklines, and what the frames cost.
+fn profile_card(console: &Console, lines: Vec<ProfileLine>, theme: &Theme) -> AnyElement {
     let figures = {
         let meter = console.meter.borrow();
         let cpu = meter.stats.cpu();
@@ -617,8 +632,33 @@ fn profile_card(
             div()
                 .flex_1()
                 .min_h_0()
+                .flex()
+                .flex_col()
+                .gap(SPACE_4)
                 .p(SPACE_6)
-                .child(trend_chart(series, now, PROFILE_MS, cx)),
+                .children(lines.into_iter().map(|line| {
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_5)
+                        .child(
+                            div()
+                                .w(px(120.0))
+                                .flex_none()
+                                .truncate()
+                                .text_size(FONT_SMALL)
+                                .text_color(theme.fg_muted)
+                                .child(line.label),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .h_full()
+                                .child(super::spark::bars(line.columns, line.color)),
+                        )
+                })),
         )
         .into_any_element()
 }

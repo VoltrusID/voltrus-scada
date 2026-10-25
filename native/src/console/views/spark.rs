@@ -98,6 +98,11 @@ pub(crate) fn spark(
         span_ms,
         count,
     );
+    bars(columns, color)
+}
+
+/// `columns` drawn as bars across the element.
+pub(crate) fn bars(columns: Vec<Column>, color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| (),
         move |bounds, (), window, _| {
