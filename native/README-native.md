@@ -84,6 +84,18 @@ JetBrains Mono for values.
   its settings, a Modbus device with one register or an expression); D
   duplicates, ⌫ deletes after a confirmation, ⌥↑/⌥↓ or dragging a row
   reorders (shown at once, saved to the server).
+- **Dashboard** (⌘6): the server's screens as card dashboards, as the web
+  client's card view lays them out (its 24-column grid and saved layouts).
+  Screen tabs sit in a bar under the navbar (1–9 jump to them, [ and ] step;
+  1 is the overview, which has every tag). Each card draws its tag's chart
+  type: a sparkline with the warning and critical limits, a gauge, a big
+  number with its level bar, a picture or a Markdown note; a click or Enter
+  opens the tag, the arrows move between cards. Operators edit (E): drag a
+  card to move it and its corner to resize it, the grid reflowing under it
+  at the display's rate; arrows move the focused card and Shift-arrows
+  resize it; A arranges the cards by device; T adds tags, Backspace removes
+  one; screens are created (N), renamed and deleted. E, Esc or Done saves
+  the layout. Only the cards in view are drawn.
 - **Tag tree** (⌘5): the tags filed by their path (or their device when
   they have none), folded and unfolded with Space or Enter, searched on the
   server as you type (`/`), each tag with its live value; Enter on a tag
@@ -231,6 +243,8 @@ native/src/
   runtime.rs        the network actor: Command in, Event out, generic calls
   stress.rs         the deterministic synthetic plant
   perf.rs           frame statistics and the stress report
+  screens.rs        screens, card layouts and the card grid's rules (compaction,
+                    drag, resize, auto-arrange; shared with the mimic viewer)
   main.rs           command line, window, theme, menus
   console/
     mod.rs          the Console model: phases, navigation, overlays, stress run
@@ -242,6 +256,7 @@ native/src/
     overlay.rs      the overlay slot and the palette's search
     anim.rs, meter.rs  animation helpers, the frame meter
     store.rs        tags, values, statuses and history; update rate
+    screens.rs      the session's screens: list, active screen, tags, layouts
     config.rs       remembered address and username
     text_area.rs    the multi-line text field (handover notes)
     views/          one cached view per window part, one module per page

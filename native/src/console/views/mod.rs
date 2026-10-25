@@ -8,6 +8,8 @@ pub(crate) mod alarms;
 pub(crate) mod audit;
 pub(crate) mod cached;
 pub(crate) mod commands;
+pub(crate) mod dashboard;
+mod dashboard_cards;
 pub(crate) mod data_manager;
 pub(crate) mod edition;
 pub(crate) mod export;
@@ -286,6 +288,7 @@ impl Render for Console {
                     }
                 }),
             )
+            .map(|this| dashboard::actions(this, cx))
             .child(body)
             .when(!self.toasts.is_empty(), |this| {
                 this.child(

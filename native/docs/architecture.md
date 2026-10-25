@@ -21,6 +21,7 @@ follow these recipes; keep them true when you change the shell.
 | Animation | `src/console/anim.rs` | Easing, progress, `request_frame`. |
 | Frame meter | `src/console/meter.rs` | Feeds the HUD (⇧⌘P), the Performance page and the stress report. |
 | Views | `src/console/views/` | Functions over `&mut Console`, each part drawn by its own cached view. |
+| Screens | `src/screens.rs`, `src/console/screens.rs` | The server's screens and card layouts, and the card grid's rules (compaction, drag, resize, auto-arrange) as pure functions; the session's screens (`Screens`: list, active screen, tags, layouts) that the card dashboard and the mimic viewer share. |
 
 ## Rules
 
@@ -363,3 +364,23 @@ asks where to save (GPUI's `prompt_for_new_path`, in Downloads), then
 fetches `path` as text off the UI thread (`VoltrusApi::download`) and
 answers the page of `key` with an `api::ops::Saved` (file, rows, the
 server's total).
+
+## Build on the screens
+
+A page that draws a screen (the card dashboard, the mimic viewer) shares
+one model, `console::screens::Screens`:
+
+```rust
+screens::sync(console);                       // in on_show and render: fetches what is missing, once
+let model = console.state_ref::<Screens>();   // list, active, tags, layouts, error, generation
+let ids = model.map(|m| m.tag_ids(&console.store, &m.active));
+screens::select(console, "plts_1");           // or screens::OVERVIEW ("all")
+```
+
+Its calls answer under `dashboard.*` keys, which the dashboard page's
+`on_reply` hands to `screens::on_reply` whatever page is on show. Changes
+(`create`, `rename`, `delete`, `add_tag`, `remove_tag`, `save_layouts`) are
+operator routes: check `screens::rights(console.role(), screen)` first.
+Grid geometry and layout edits are in `voltrus_scada_native::screens`
+(`Grid`, `effective`, `place`, `resize`, `nudge`, `grow`, `neighbor`,
+`auto_arrange`), with unit tests beside them.

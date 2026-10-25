@@ -21,8 +21,9 @@ fn usage() -> String {
         "\
 usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
-                      [--hud] [--overlay palette|help|new-source|<action>|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
+                      [--hud] [--overlay palette|help|new-source|add-tags|<action>|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
                       [--alarms history|analytics|audit|detail|shelve|confirm]
+                      [--screen N|ID] [--edit]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
                       [--stress-profile]
@@ -35,10 +36,13 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --appearance       dark or light instead of the server's preference or the system
   --hud              show the performance HUD (also ⇧⌘P)
   --overlay          open the command palette, the shortcut help, the Data Manager's
-                     new-source form, or run a command by its action name
+                     new-source form, the dashboard's tag picker (add-tags), or run
+                     a command by its action name
                      (e.g. ShellOpenSettings) once signed in; tag-… opens a
                      dialog of the --tag tag's detail (tag-expand widens the detail)
   --alarms           open the Alarms page with this view or dialog once signed in
+  --screen           the dashboard's screen: its id, or 1 for the overview, 2 for the first
+  --edit             open the dashboard in edit mode (operator roles)
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
   --stress-tags      how many synthetic tags
   --stress-rate      synthetic updates per second
@@ -63,6 +67,8 @@ struct Options {
     hud: bool,
     overlay: Option<LaunchOverlay>,
     stress: Option<StressPlan>,
+    screen: Option<String>,
+    edit: bool,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, text: Option<&String>) -> Result<T, String> {
@@ -80,6 +86,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         hud: false,
         overlay: None,
         stress: None,
+        screen: None,
+        edit: false,
     };
     let mut stress = StressPlan::default();
     let mut stressed = false;
@@ -122,6 +130,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     Some("palette") => LaunchOverlay::Palette,
                     Some("help") => LaunchOverlay::Help,
                     Some("new-source") => LaunchOverlay::NewSource,
+                    Some("add-tags") => LaunchOverlay::AddTags,
                     other => {
                         let name = other.unwrap_or("");
                         if let Some(dialog) = TagDialog::parse(name) {
@@ -153,6 +162,11 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 })?;
                 options.overlay = Some(LaunchOverlay::Alarms(view));
             }
+            "--screen" => match args.next() {
+                Some(screen) if !screen.is_empty() => options.screen = Some(screen.clone()),
+                _ => return Err("--screen takes a screen id or position".into()),
+            },
+            "--edit" => options.edit = true,
             "--stress" => stressed = true,
             "--stress-tags" => {
                 stress.options.tags = number(arg, args.next())?;
@@ -242,6 +256,8 @@ fn main() -> ExitCode {
         hud: options.hud,
         overlay: options.overlay,
         stress: options.stress,
+        screen: options.screen,
+        edit: options.edit,
         utc_offset,
         appearance: options.dark,
     };
@@ -355,12 +371,23 @@ mod tests {
                 hud: true,
                 overlay: Some(LaunchOverlay::Help),
                 stress: None,
+                screen: None,
+                edit: false,
             })
         );
         assert_eq!(
             parse(&args(&["--tag", "ac_current_l1"])).map(|options| options.tag),
             Ok(Some("ac_current_l1".to_owned()))
         );
+        assert_eq!(
+            parse(&args(&["--screen", "2", "--edit", "--overlay", "add-tags"])).map(|options| (
+                options.screen,
+                options.edit,
+                options.overlay
+            )),
+            Ok((Some("2".to_owned()), true, Some(LaunchOverlay::AddTags)))
+        );
+        assert!(parse(&args(&["--screen"])).is_err());
         assert_eq!(
             parse(&args(&["--page", "performance"])).map(|options| options.page),
             Ok(Some(Page::Performance))

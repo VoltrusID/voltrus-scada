@@ -14,6 +14,7 @@ mod nav;
 pub mod overlay;
 pub mod pages;
 mod prefs;
+pub mod screens;
 mod shell;
 pub mod shortcuts;
 pub mod store;
@@ -140,6 +141,8 @@ pub enum LaunchOverlay {
     Alarms(alarms::Launch),
     /// The Data Manager's form for a new data source.
     NewSource,
+    /// The dashboard's tag picker, on its `--screen`.
+    AddTags,
 }
 
 /// How a stress run goes (`--stress …` or the palette).
@@ -188,6 +191,11 @@ pub struct Launch {
     pub hud: bool,
     pub overlay: Option<LaunchOverlay>,
     pub stress: Option<StressPlan>,
+    /// The dashboard's screen to show (`--screen`): an id, or a position
+    /// from 1 (the overview).
+    pub screen: Option<String>,
+    /// Open the dashboard in edit mode (`--edit`).
+    pub edit: bool,
     /// Read before any thread started: `time` cannot ask the system later.
     pub utc_offset: UtcOffset,
     /// `--appearance`: pinned light (false) or dark (true); the server's
@@ -525,6 +533,7 @@ impl Console {
                 .update(cx, |field, cx| field.set_text(password, cx));
             console.sign_in(window, cx);
         }
+        views::dashboard::launch(&mut console, launch.screen, launch.edit);
         shell::init(&mut console, launch.appearance, window, cx);
         console
     }
@@ -801,6 +810,7 @@ impl Console {
             Some(LaunchOverlay::NewSource) => {
                 views::data_manager::sources::new_source(self, window, cx);
             }
+            Some(LaunchOverlay::AddTags) => views::dashboard::launch_picker(self),
             None => {}
         }
     }

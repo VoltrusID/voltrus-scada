@@ -58,6 +58,12 @@ shots=(
   "data-sources-light|--sign-in --page data --appearance light"
   "data-source-form|--sign-in --page data --overlay new-source --appearance dark"
   "data-sources-stress|--stress --stress-switch-ms 0 --page data --appearance dark"
+  "dashboard|--sign-in --page dashboard --appearance dark"
+  "dashboard-screen|--sign-in --page dashboard --screen 2 --appearance dark"
+  "dashboard-edit|--sign-in --page dashboard --screen 2 --edit --appearance dark"
+  "dashboard-add-tags|--sign-in --page dashboard --screen 2 --edit --overlay add-tags --appearance dark"
+  "dashboard-light|--sign-in --page dashboard --screen 2 --appearance light"
+  "stress-dashboard|--stress --stress-switch-ms 0 --page dashboard --hud --appearance dark"
 )
 
 status=0

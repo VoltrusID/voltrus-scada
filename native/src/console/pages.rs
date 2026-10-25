@@ -22,6 +22,7 @@ pub enum Page {
     Trends,
     Performance,
     DataManager,
+    Dashboard,
     TagTree,
     Commands,
     Shift,
@@ -237,6 +238,21 @@ pub static PAGES: &[PageSpec] = &[
         search: Some(views::audit::search),
         side_panel: views::audit::side_panel,
     },
+    PageSpec {
+        page: Page::Dashboard,
+        id: "dashboard",
+        title: "Dashboard",
+        icon: Icon::Columns,
+        digit: Some(6),
+        role: Role::Any,
+        placement: Placement::Tab,
+        render: views::dashboard::render,
+        badge: None,
+        on_show: Some(views::dashboard::on_show),
+        on_reply: Some(views::dashboard::on_reply),
+        search: None,
+        side_panel: no_panel,
+    },
 ];
 
 /// The row of `page`. Every variant has one (a unit test checks).
@@ -284,6 +300,7 @@ mod tests {
             Page::Trends,
             Page::Performance,
             Page::DataManager,
+            Page::Dashboard,
             Page::TagTree,
             Page::Commands,
             Page::Shift,
@@ -305,7 +322,7 @@ mod tests {
         assert_eq!(Page::parse("nowhere"), None);
         assert_eq!(
             ids(),
-            "overview|tags|alarms|trends|performance|data|tagtree|commands|shift|audit"
+            "overview|tags|alarms|trends|performance|data|tagtree|commands|shift|audit|dashboard"
         );
     }
 
