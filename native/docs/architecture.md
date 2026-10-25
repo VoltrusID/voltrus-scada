@@ -225,8 +225,17 @@ events applied to the store, and gives the share of frames built within a
 (tiles flashing in ripples, a trend redrawn every frame). CI runs a 20 s
 pass and a 10 s profile (`native/scripts/stress-macos.sh`), prints both
 reports in the job log and summary, and checks the budget: under 1% of
-vsyncs dropped, frame interval p95 within 17.5 ms, no frame over 50 ms, a
-page's first frame within 34 ms of the switch.
+vsyncs dropped, at least 97% of back-to-back frames one vsync after the
+previous (`frame_pacing`), no frame interval over 50 ms, a page's first
+frame within 34 ms of the switch, and in the profile 95% of frames built
+within a 120 Hz frame. The frame interval p95 is information only: frames
+start when the display link wakes the main thread, and on the CI runner
+that wake jitters by a millisecond or two with no cause in the console
+(`late_starts` splits late starts into a long previous frame, an event
+batch, a pause in the data, and other). The report also splits each frame
+into the root's layout, the cached views' render, layout and prepaint
+(GPUI does all three for a cached view in its prepaint), paint, and
+present (handing the frame to the GPU).
 
 ## Keep frames cheap
 

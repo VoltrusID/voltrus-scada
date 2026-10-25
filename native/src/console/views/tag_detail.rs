@@ -691,24 +691,19 @@ fn open_compare(console: &mut Console, window: &mut Window, cx: &mut Context<Con
 /// its filter.
 fn picks(console: &mut Console, cx: &gpui::App) -> Vec<usize> {
     let open = console.selected;
-    let filter = console
+    let query = console
         .state::<DetailState>()
         .pick
         .as_ref()
-        .map(|field| field.read(cx).value().trim().to_lowercase())
+        .map(|field| field.read(cx).value().to_owned())
         .unwrap_or_default();
+    // The store keeps filter results per query: no tag is lowercased here.
     console
         .store
-        .tags
+        .filter(&query)
         .iter()
-        .enumerate()
-        .filter(|(_, tag)| Some(tag.info.id) != open)
-        .filter(|(_, tag)| {
-            filter.is_empty()
-                || tag.info.name.to_lowercase().contains(&filter)
-                || tag.info.key.to_lowercase().contains(&filter)
-        })
-        .map(|(index, _)| index)
+        .copied()
+        .filter(|index| Some(console.store.tags[*index].info.id) != open)
         .collect()
 }
 
