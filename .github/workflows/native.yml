@@ -68,7 +68,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lint
-        run: cargo clippy --locked -p voltrus-scada-native --all-targets -- -D warnings
+        run: cargo clippy --locked --keep-going -p voltrus-scada-native --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --locked -p voltrus-scada-native

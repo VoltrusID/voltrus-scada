@@ -46,59 +46,61 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> impl IntoElement 
             format!("Ctrl {digit}")
         }
     };
-    let nav = pages.into_iter().map(|(page, glyph, digit, badge)| {
-        let active = console.page == page;
-        let color = if active { theme.fg } else { theme.fg_muted };
-        let hover = theme.hover;
-        div()
-            .id(SharedString::from(format!("nav-{}", page.title())))
-            .group("nav")
-            .flex()
-            .items_center()
-            .gap(SPACE_4)
-            .mx(SPACE_4)
-            .px(SPACE_4)
-            .h(px(30.0))
-            .rounded(RADIUS_MD)
-            .cursor_pointer()
-            .text_color(color)
-            .font_weight(if active {
-                FontWeight::MEDIUM
-            } else {
-                FontWeight::NORMAL
-            })
-            .when(active, |this| this.bg(theme.selected))
-            .when(!active, |this| this.hover(move |style| style.bg(hover)))
-            .on_click(cx.listener(move |console, _, _, cx| console.show(page, cx)))
-            .child(vt_ui::icon(
-                glyph,
-                ICON_MD,
-                if active { theme.accent } else { theme.fg_dim },
-            ))
-            .child(div().flex_1().child(page.title()))
-            .when_some(badge, |this, count| {
-                this.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .min_w(px(18.0))
-                        .h(px(16.0))
-                        .px(SPACE_2)
-                        .rounded_full()
-                        .bg(theme.danger)
-                        .text_color(theme.accent_fg)
-                        .text_size(FONT_CAPTION)
-                        .font_weight(FontWeight::BOLD)
-                        .child(if count > 99 {
-                            "99+".to_owned()
-                        } else {
-                            count.to_string()
-                        }),
-                )
-            })
-            .when(badge.is_none(), |this| this.child(kbd(shortcut(digit), cx)))
-    });
+    let nav: Vec<_> = pages
+        .into_iter()
+        .map(|(page, glyph, digit, badge)| {
+            let active = console.page == page;
+            let color = if active { theme.fg } else { theme.fg_muted };
+            let hover = theme.hover;
+            div()
+                .id(SharedString::from(format!("nav-{}", page.title())))
+                .flex()
+                .items_center()
+                .gap(SPACE_4)
+                .mx(SPACE_4)
+                .px(SPACE_4)
+                .h(px(30.0))
+                .rounded(RADIUS_MD)
+                .cursor_pointer()
+                .text_color(color)
+                .font_weight(if active {
+                    FontWeight::MEDIUM
+                } else {
+                    FontWeight::NORMAL
+                })
+                .when(active, |this| this.bg(theme.selected))
+                .when(!active, |this| this.hover(move |style| style.bg(hover)))
+                .on_click(cx.listener(move |console, _, _, cx| console.show(page, cx)))
+                .child(vt_ui::icon(
+                    glyph,
+                    ICON_MD,
+                    if active { theme.accent } else { theme.fg_dim },
+                ))
+                .child(div().flex_1().child(page.title()))
+                .when_some(badge, |this, count| {
+                    this.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .min_w(px(18.0))
+                            .h(px(16.0))
+                            .px(SPACE_2)
+                            .rounded_full()
+                            .bg(theme.danger)
+                            .text_color(theme.accent_fg)
+                            .text_size(FONT_CAPTION)
+                            .font_weight(FontWeight::BOLD)
+                            .child(if count > 99 {
+                                "99+".to_owned()
+                            } else {
+                                count.to_string()
+                            }),
+                    )
+                })
+                .when(badge.is_none(), |this| this.child(kbd(shortcut(digit), cx)))
+        })
+        .collect();
 
     let dark = theme.dark;
     div()

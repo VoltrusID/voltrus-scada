@@ -33,7 +33,7 @@ fn auth_first_frame_shape() {
     });
     let first = bytes[0];
     // fixmap 0x80|n — Auth has 2 fields (type, token)
-    assert_eq!(first, 0x82, "expected fixmap(2), got {first:#02x}");
+    assert_eq!(first, 0x82, "expected fixmap(2), got {first:#04x}");
     let decoded: ClientMessage = rmp_serde::from_slice(&bytes).unwrap();
     assert!(matches!(decoded, ClientMessage::Auth { .. }));
 }

@@ -134,63 +134,69 @@ pub fn render(console: &Console, window: &mut Window, cx: &mut Context<Console>)
         trend_chart(series, now, span, cx).into_any_element()
     };
 
-    let picker = console.store.tags.iter().enumerate().map(|(index, tag)| {
-        let position = chosen.iter().position(|chosen| *chosen == index);
-        let hover = theme.hover;
-        div()
-            .id(ElementId::NamedInteger(
-                "pick".into(),
-                u64::try_from(index).unwrap_or(0),
-            ))
-            .flex()
-            .items_center()
-            .gap(SPACE_4)
-            .h(px(28.0))
-            .px(SPACE_4)
-            .rounded(RADIUS_MD)
-            .cursor_pointer()
-            .hover(move |style| style.bg(hover))
-            .on_click(cx.listener(move |console, _, _, cx| console.toggle_trend(index, cx)))
-            .child(
-                div()
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .justify_center()
-                    .size(px(14.0))
-                    .rounded(RADIUS_SM)
-                    .border_1()
-                    .map(|this| match position {
-                        Some(position) => {
-                            let color = theme.series(position);
-                            this.bg(color).border_color(color).child(vt_ui::icon(
-                                Icon::Check,
-                                px(10.0),
-                                theme.bg,
-                            ))
-                        }
-                        None => this.border_color(theme.border_strong),
-                    }),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(if position.is_some() {
-                        theme.fg
-                    } else {
-                        theme.fg_muted
-                    })
-                    .child(tag.info.name.clone()),
-            )
-            .child(
-                div()
-                    .size(px(6.0))
-                    .rounded_full()
-                    .bg(status_color(tag.status, &theme)),
-            )
-    });
+    let picker: Vec<_> = console
+        .store
+        .tags
+        .iter()
+        .enumerate()
+        .map(|(index, tag)| {
+            let position = chosen.iter().position(|chosen| *chosen == index);
+            let hover = theme.hover;
+            div()
+                .id(ElementId::NamedInteger(
+                    "pick".into(),
+                    u64::try_from(index).unwrap_or(0),
+                ))
+                .flex()
+                .items_center()
+                .gap(SPACE_4)
+                .h(px(28.0))
+                .px(SPACE_4)
+                .rounded(RADIUS_MD)
+                .cursor_pointer()
+                .hover(move |style| style.bg(hover))
+                .on_click(cx.listener(move |console, _, _, cx| console.toggle_trend(index, cx)))
+                .child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(14.0))
+                        .rounded(RADIUS_SM)
+                        .border_1()
+                        .map(|this| match position {
+                            Some(position) => {
+                                let color = theme.series(position);
+                                this.bg(color).border_color(color).child(vt_ui::icon(
+                                    Icon::Check,
+                                    px(10.0),
+                                    theme.bg,
+                                ))
+                            }
+                            None => this.border_color(theme.border_strong),
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(if position.is_some() {
+                            theme.fg
+                        } else {
+                            theme.fg_muted
+                        })
+                        .child(tag.info.name.clone()),
+                )
+                .child(
+                    div()
+                        .size(px(6.0))
+                        .rounded_full()
+                        .bg(status_color(tag.status, &theme)),
+                )
+        })
+        .collect();
 
     div()
         .flex()
