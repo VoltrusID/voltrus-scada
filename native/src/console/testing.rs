@@ -4,7 +4,7 @@
 
 use std::rc::Rc;
 
-use gpui::{AppContext as _, Context, Entity, TestAppContext, VisualTestContext, Window};
+use gpui::{Context, Entity, TestAppContext, VisualTestContext, Window};
 use time::UtcOffset;
 use tokio::sync::mpsc::UnboundedReceiver;
 use voltrus_scada_native::api::DataSource;

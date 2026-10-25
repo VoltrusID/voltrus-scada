@@ -763,11 +763,19 @@ pub(crate) fn export_csv(console: &mut Console, cx: &mut Context<Console>) {
     let directory = dirs::download_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_default();
+    let epoch = console.session_epoch();
     let chosen = cx.prompt_for_new_path(&directory, Some(name.as_str()));
     cx.spawn(async move |this, cx| {
         let Ok(Ok(Some(path))) = chosen.await else {
             return;
         };
+        // A session that ended while the panel was open keeps its data.
+        let same = this
+            .update(cx, |console, _| console.session_epoch() == epoch)
+            .unwrap_or(false);
+        if !same {
+            return;
+        }
         let target = path.clone();
         let written = cx
             .background_executor()

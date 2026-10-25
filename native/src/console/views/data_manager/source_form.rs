@@ -19,6 +19,7 @@ use gpui::{
     AnyElement, App, Context, Entity, FontWeight, Keystroke, SharedString, Subscription, Window,
     div, px, uniform_list,
 };
+use serde::de::IgnoredAny;
 use voltrus_scada_native::api::{
     DataSource, Method, ModbusDevice, ModbusDeviceDetail, ModbusRegister, TagShortcuts,
 };
