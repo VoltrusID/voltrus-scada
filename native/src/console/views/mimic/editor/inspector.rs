@@ -866,7 +866,22 @@ fn widget_panel(
                 );
             }
             if widget.tags.is_empty() {
-                binding.push(caption("No tags: it shows the plant's first ones.", theme));
+                let shows_plant = matches!(
+                    widget.kind,
+                    WidgetKind::DataTable
+                        | WidgetKind::Annunciator
+                        | WidgetKind::BarChart
+                        | WidgetKind::PieChart
+                        | WidgetKind::MultiTrend
+                );
+                binding.push(caption(
+                    if shows_plant {
+                        "No tags: it shows the plant's first ones."
+                    } else {
+                        "No tags bound."
+                    },
+                    theme,
+                ));
             }
             binding.push(
                 Button::new("mimic-insp-add-tag", "Add a tag")

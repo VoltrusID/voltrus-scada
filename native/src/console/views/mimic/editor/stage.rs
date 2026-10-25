@@ -16,33 +16,48 @@ use super::super::Drawn;
 use super::super::paint::{Canvas, Hmi, Line, Shape, Tessellations, Xf, fade};
 use super::{Editor, KNOB_GAP, Tool};
 
-/// The grid's dots: one shape, tessellated once per zoom.
+/// The grid's dots: one shape per density, tessellated once per zoom.
 const GRID_KEY: u64 = 0x6d69_6d69_6367_7264;
 /// Below this zoom the dots would crowd: none are drawn.
-const GRID_MIN_ZOOM: f32 = 0.25;
+const GRID_MIN_ZOOM: f32 = 0.12;
+/// Below this zoom every other dot is drawn, twice the size, so the grid
+/// stays visible on a small stage.
+const COARSE_BELOW: f32 = 0.5;
 /// A handle's side, window pixels.
 const HANDLE: f32 = 8.0;
 
-/// The grid, a dot every [`DOTS`] stage pixels, under the widgets.
+/// The grid, a dot every [`DOTS`] stage pixels (further out every other
+/// one), under the widgets.
 pub(crate) fn paint_grid(canvas: &mut Canvas<'_>, stage: &Xf) {
     if canvas.zoom < GRID_MIN_ZOOM {
         return;
     }
-    let dots = Shape::cached(GRID_KEY, || {
+    let coarse = canvas.zoom < COARSE_BELOW;
+    let (every, side, key) = if coarse {
+        (DOTS * 2.0, 4.0, GRID_KEY + 1)
+    } else {
+        (DOTS, 2.0, GRID_KEY)
+    };
+    let dots = Shape::cached(key, || {
         let mut data = String::new();
-        let mut y = DOTS;
+        let mut y = every;
         while y < STAGE_H {
-            let mut x = DOTS;
+            let mut x = every;
             while x < STAGE_W {
-                let _ = write!(data, "M{} {}h2v2h-2Z", x - 1.0, y - 1.0);
-                x += DOTS;
+                let _ = write!(
+                    data,
+                    "M{} {}h{side}v{side}h-{side}Z",
+                    x - side / 2.0,
+                    y - side / 2.0
+                );
+                x += every;
             }
-            y += DOTS;
+            y += every;
         }
         data
     });
     let hmi = *canvas.hmi;
-    canvas.fill(stage, &dots, fade(hmi.stroke, 0.28));
+    canvas.fill(stage, &dots, fade(hmi.stroke, 0.32));
 }
 
 /// The marks of one frame, in stage units.
