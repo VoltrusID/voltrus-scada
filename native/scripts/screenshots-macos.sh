@@ -27,6 +27,13 @@ shots=(
   "trends-hud|--sign-in --page trends --range 5m --hud --appearance dark"
   "stress-performance|--stress --stress-switch-ms 0 --page performance --appearance dark"
   "stress-overview|--stress --stress-switch-ms 0 --page overview --hud --appearance dark"
+  "alarms-history|--sign-in --alarms history --appearance dark"
+  "alarms-analytics|--sign-in --alarms analytics --appearance dark"
+  "alarms-audit|--sign-in --alarms audit --appearance dark"
+  "alarms-detail|--sign-in --alarms detail --appearance dark"
+  "alarms-shelve|--sign-in --alarms shelve --appearance dark"
+  "alarms-confirm|--sign-in --alarms confirm --appearance dark"
+  "alarms-light|--sign-in --page alarms --appearance light"
 )
 
 status=0

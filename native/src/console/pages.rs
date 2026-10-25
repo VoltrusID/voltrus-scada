@@ -123,8 +123,8 @@ pub static PAGES: &[PageSpec] = &[
         render: views::alarms::render,
         badge: Some(Console::unacknowledged),
         on_show: Some(views::alarms::on_show),
-        on_reply: None,
-        search: None,
+        on_reply: Some(views::alarms::on_reply),
+        search: Some(views::alarms::search),
         side_panel: no_panel,
     },
     PageSpec {

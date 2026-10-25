@@ -49,6 +49,15 @@ actions!(
         ListToggle,
         StartStress,
         StopStress,
+        AlarmsAcknowledge,
+        AlarmsShelve,
+        AlarmsNextFilter,
+        AlarmsPreviousFilter,
+        AlarmsCycleSort,
+        AlarmsToggleMute,
+        AlarmsShowList,
+        AlarmsShowAnalytics,
+        AlarmsShowAudit,
     ]
 );
 
@@ -61,6 +70,9 @@ pub const CONSOLE: &str = "Console";
 pub const NOT_TYPING: &str = "Console && !TextInput";
 pub const LIST: &str = "List";
 pub const MENU: &str = "Menu";
+/// The Alarms page's lists (and its detail sheet): a = acknowledge, s =
+/// shelve, ⇧A = acknowledge all, ←/→ = filter, o = sort.
+pub const ALARM_LIST: &str = "AlarmList";
 
 /// How the help overlay groups the commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -340,6 +352,99 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     command!("Sign out", Session, Unplug, [], CONSOLE, SignOut, true),
     command!("Quit", Session, X, ["secondary-q"], CONSOLE, Quit, true),
+    command!(
+        "Acknowledge all alarms",
+        Alarms,
+        Check,
+        ["shift-a"],
+        ALARM_LIST,
+        AcknowledgeAll,
+        false
+    ),
+    command!(
+        "Acknowledge the alarm",
+        Alarms,
+        Check,
+        ["a"],
+        ALARM_LIST,
+        AlarmsAcknowledge,
+        false
+    ),
+    CommandSpec {
+        label: "Shelve or unshelve the alarm",
+        group: Group::Alarms,
+        icon: Icon::Clock,
+        keys: &["s"],
+        context: ALARM_LIST,
+        action: || -> Box<dyn Action> { Box::new(AlarmsShelve) },
+        palette: false,
+        role: Role::Operator,
+    },
+    command!(
+        "Next alarm filter",
+        Alarms,
+        ChevronRight,
+        ["right"],
+        ALARM_LIST,
+        AlarmsNextFilter,
+        false
+    ),
+    command!(
+        "Previous alarm filter",
+        Alarms,
+        ChevronLeft,
+        ["left"],
+        ALARM_LIST,
+        AlarmsPreviousFilter,
+        false
+    ),
+    command!(
+        "Sort the alarms",
+        Alarms,
+        ArrowUpDown,
+        ["o"],
+        ALARM_LIST,
+        AlarmsCycleSort,
+        false
+    ),
+    command!(
+        "Mute or unmute the alarm sound",
+        Alarms,
+        Radio,
+        ["secondary-shift-m"],
+        CONSOLE,
+        AlarmsToggleMute,
+        true
+    ),
+    command!(
+        "Alarm list",
+        Alarms,
+        List,
+        [],
+        CONSOLE,
+        AlarmsShowList,
+        true
+    ),
+    CommandSpec {
+        label: "Alarm analytics",
+        group: Group::Alarms,
+        icon: Icon::ChartLine,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(AlarmsShowAnalytics) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Alarm audit trail",
+        group: Group::Alarms,
+        icon: Icon::ScrollText,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(AlarmsShowAudit) },
+        palette: true,
+        role: Role::Operator,
+    },
 ];
 
 /// A binding from table data; panics on a bad keystroke or context, which
