@@ -43,6 +43,18 @@ JetBrains Mono for values.
   link is live the chart moves on once a second. Each tag keeps a day of
   history: live values of the last 15 minutes at full rate, older ones
   thinned to one per 20 seconds.
+- **Dashboard** (⌘6): the server's screens as card dashboards, as the web
+  client's card view lays them out (its 24-column grid and saved layouts).
+  Screen tabs sit in a bar under the navbar (1–9 jump to them, [ and ] step;
+  1 is the overview, which has every tag). Each card draws its tag's chart
+  type: a sparkline with the warning and critical limits, a gauge, a big
+  number with its level bar, a picture or a Markdown note; a click or Enter
+  opens the tag, the arrows move between cards. Operators edit (E): drag a
+  card to move it and its corner to resize it, the grid reflowing under it
+  at the display's rate; arrows move the focused card and Shift-arrows
+  resize it; A arranges the cards by device; T adds tags, Backspace removes
+  one; screens are created (N), renamed and deleted. E, Esc or Done saves
+  the layout. Only the cards in view are drawn.
 - **Status bar**: link state (live, reconnecting with the reason, offline),
   server, updates per second, tag and alarm counts, and a warning when the
   alarm list could not be fetched.
@@ -119,6 +131,8 @@ native/src/
   runtime.rs        the network actor: Command in, Event out, generic calls
   stress.rs         the deterministic synthetic plant
   perf.rs           frame statistics and the stress report
+  screens.rs        screens, card layouts and the card grid's rules (compaction,
+                    drag, resize, auto-arrange; shared with the mimic viewer)
   main.rs           command line, window, theme, menus
   console/
     mod.rs          the Console model: phases, navigation, overlays, stress run
@@ -128,6 +142,7 @@ native/src/
     overlay.rs      the overlay slot and the palette's search
     anim.rs, meter.rs  animation helpers, the frame meter
     store.rs        tags, values, statuses and history; update rate
+    screens.rs      the session's screens: list, active screen, tags, layouts
     config.rs       remembered address and username
     views/          one cached view per window part, one module per page
 native/scripts/     CI: the solar-farm plant, app bundle, screenshots

@@ -27,6 +27,12 @@ shots=(
   "trends-hud|--sign-in --page trends --range 5m --hud --appearance dark"
   "stress-performance|--stress --stress-switch-ms 0 --page performance --appearance dark"
   "stress-overview|--stress --stress-switch-ms 0 --page overview --hud --appearance dark"
+  "dashboard|--sign-in --page dashboard --appearance dark"
+  "dashboard-screen|--sign-in --page dashboard --screen 2 --appearance dark"
+  "dashboard-edit|--sign-in --page dashboard --screen 2 --edit --appearance dark"
+  "dashboard-add-tags|--sign-in --page dashboard --screen 2 --edit --overlay add-tags --appearance dark"
+  "dashboard-light|--sign-in --page dashboard --screen 2 --appearance light"
+  "stress-dashboard|--stress --stress-switch-ms 0 --page dashboard --hud --appearance dark"
 )
 
 status=0

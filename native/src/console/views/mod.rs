@@ -6,6 +6,8 @@
 
 pub(crate) mod alarms;
 pub(crate) mod cached;
+pub(crate) mod dashboard;
+mod dashboard_cards;
 pub(crate) mod hud;
 pub(crate) mod navbar;
 pub(crate) mod overlays;
@@ -207,6 +209,7 @@ impl Render for Console {
                     console.sign_out(window, cx);
                 }
             }))
+            .map(|this| dashboard::actions(this, cx))
             .child(body)
             .when(!self.toasts.is_empty(), |this| {
                 this.child(

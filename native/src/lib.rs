@@ -8,8 +8,11 @@
 //!   including generic REST calls tied to the session.
 //! - [`stress`]: a deterministic synthetic plant for stress tests.
 //! - [`perf`]: frame statistics for the HUD and the stress report.
+//! - [`screens`]: screens, their card layouts and the 24-column card grid
+//!   (compaction, drag, resize, auto-arrange), shared with the mimic viewer.
 pub mod api;
 pub mod perf;
 pub mod runtime;
+pub mod screens;
 pub mod stress;
 pub mod ws_types;

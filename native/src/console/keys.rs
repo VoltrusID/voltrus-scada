@@ -340,6 +340,267 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     command!("Sign out", Session, Unplug, [], CONSOLE, SignOut, true),
     command!("Quit", Session, X, ["secondary-q"], CONSOLE, Quit, true),
+    // The card dashboard (`views::dashboard`): arrows and letters act on
+    // its focused grid; the palette's entries open the page first.
+    command!(
+        "Dashboard: card above (editing: move it up)",
+        Navigation,
+        ChevronUp,
+        ["up"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardUp,
+        false
+    ),
+    command!(
+        "Dashboard: card below (editing: move it down)",
+        Navigation,
+        ChevronDown,
+        ["down"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardDown,
+        false
+    ),
+    command!(
+        "Dashboard: card to the left (editing: move it)",
+        Navigation,
+        ChevronLeft,
+        ["left"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardLeft,
+        false
+    ),
+    command!(
+        "Dashboard: card to the right (editing: move it)",
+        Navigation,
+        ChevronRight,
+        ["right"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardRight,
+        false
+    ),
+    command!(
+        "Dashboard: make the card shorter (editing)",
+        View,
+        ChevronUp,
+        ["shift-up"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardShorter,
+        false
+    ),
+    command!(
+        "Dashboard: make the card taller (editing)",
+        View,
+        ChevronDown,
+        ["shift-down"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardTaller,
+        false
+    ),
+    command!(
+        "Dashboard: make the card narrower (editing)",
+        View,
+        ChevronLeft,
+        ["shift-left"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardNarrower,
+        false
+    ),
+    command!(
+        "Dashboard: make the card wider (editing)",
+        View,
+        ChevronRight,
+        ["shift-right"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardWider,
+        false
+    ),
+    command!(
+        "Dashboard: open the card's tag",
+        Navigation,
+        CircleDot,
+        ["enter"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardOpen,
+        false
+    ),
+    CommandSpec {
+        label: "Dashboard: edit the cards (move, resize, add)",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &["e"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardEdit) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: arrange the cards by device",
+        group: Group::View,
+        icon: Icon::Columns,
+        keys: &["a"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardArrange) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: add tags to the screen",
+        group: Group::View,
+        icon: Icon::Plus,
+        keys: &["t"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardAddTags) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: remove the card from the screen (editing)",
+        group: Group::View,
+        icon: Icon::Trash,
+        keys: &["backspace", "delete"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardRemove) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: new screen",
+        group: Group::View,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardNewScreen) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: rename the screen",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardRenameScreen) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: delete the screen",
+        group: Group::View,
+        icon: Icon::Trash,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardDeleteScreen) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Dashboard: next screen",
+        Navigation,
+        ChevronRight,
+        ["]"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardNextScreen,
+        true
+    ),
+    command!(
+        "Dashboard: previous screen",
+        Navigation,
+        ChevronLeft,
+        ["["],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardPreviousScreen,
+        true
+    ),
+    command!(
+        "Dashboard: reload the screens",
+        View,
+        RefreshCw,
+        ["r"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardReload,
+        true
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["1"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(1),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["2"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(2),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["3"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(3),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["4"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(4),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["5"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(5),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["6"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(6),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["7"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(7),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["8"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(8),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["9"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(9),
+        false
+    ),
 ];
 
 /// A binding from table data; panics on a bad keystroke or context, which

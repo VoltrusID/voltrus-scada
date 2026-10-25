@@ -11,6 +11,7 @@ mod meter;
 mod nav;
 pub mod overlay;
 pub mod pages;
+pub mod screens;
 pub mod store;
 mod views;
 
@@ -130,6 +131,8 @@ pub struct DeviceLink {
 pub enum LaunchOverlay {
     Palette,
     Help,
+    /// The dashboard's tag picker, on its `--screen`.
+    AddTags,
 }
 
 /// How a stress run goes (`--stress …` or the palette).
@@ -178,6 +181,11 @@ pub struct Launch {
     pub hud: bool,
     pub overlay: Option<LaunchOverlay>,
     pub stress: Option<StressPlan>,
+    /// The dashboard's screen to show (`--screen`): an id, or a position
+    /// from 1 (the overview).
+    pub screen: Option<String>,
+    /// Open the dashboard in edit mode (`--edit`).
+    pub edit: bool,
     /// Read before any thread started: `time` cannot ask the system later.
     pub utc_offset: UtcOffset,
 }
@@ -503,6 +511,7 @@ impl Console {
                 .update(cx, |field, cx| field.set_text(password, cx));
             console.sign_in(window, cx);
         }
+        views::dashboard::launch(&mut console, launch.screen, launch.edit);
         console
     }
 
@@ -524,6 +533,13 @@ impl Console {
             .or_insert_with(|| Box::new(S::default()))
             .downcast_mut::<S>()
             .expect("states are keyed by their type")
+    }
+
+    /// A page module's state, if it was made; for `&Console` callers.
+    pub fn state_ref<S: 'static>(&self) -> Option<&S> {
+        self.states
+            .get(&TypeId::of::<S>())
+            .and_then(|state| state.downcast_ref::<S>())
     }
 
     /// The keyboard list `id`, made on first use.
@@ -733,6 +749,7 @@ impl Console {
         match self.pending_overlay.take() {
             Some(LaunchOverlay::Palette) => self.open_palette(window, cx),
             Some(LaunchOverlay::Help) => self.open_help(window, cx),
+            Some(LaunchOverlay::AddTags) => views::dashboard::launch_picker(self),
             None => {}
         }
     }

@@ -91,6 +91,25 @@ curl -fsS -b cookies.txt "$url/api/v1/data-sources" | jq -r '.[] | "\(.id) \(.ke
       "$url/api/v1/data-sources/$id" > /dev/null
   done
 
+# Card kinds for the dashboards: gauges and big numbers beside the default
+# sparklines, the gauges with a range they can show.
+card() {
+  case "$1" in
+    ac_power) echo '{"chart_type": "gauge", "min_val": 0, "max_val": 62000}' ;;
+    frequency) echo '{"chart_type": "gauge", "min_val": 49.5, "max_val": 50.5}' ;;
+    dc_power | efficiency) echo '{"chart_type": "bignumber"}' ;;
+    *) echo "" ;;
+  esac
+}
+curl -fsS -b cookies.txt "$url/api/v1/data-sources" | jq -r '.[] | "\(.id) \(.key)"' |
+  while read -r id key; do
+    body="$(card "$key")"
+    if [ -n "$body" ]; then
+      curl -fsS -b cookies.txt -X PUT -H "$json" -d "$body" \
+        "$url/api/v1/data-sources/$id" > /dev/null
+    fi
+  done
+
 "$bin/modbus-sim" --scenario solar-farm --role inverter --port 5020 > inverter.log 2>&1 &
 echo $! > inverter.pid
 "$bin/modbus-sim" --scenario solar-farm --role grid-meter --port 5021 > meter.log 2>&1 &

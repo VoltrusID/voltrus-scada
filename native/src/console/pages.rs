@@ -21,6 +21,7 @@ pub enum Page {
     Alarms,
     Trends,
     Performance,
+    Dashboard,
 }
 
 /// The least a user's role must be to see a page or run a command; the
@@ -157,6 +158,21 @@ pub static PAGES: &[PageSpec] = &[
         search: None,
         side_panel: no_panel,
     },
+    PageSpec {
+        page: Page::Dashboard,
+        id: "dashboard",
+        title: "Dashboard",
+        icon: Icon::Columns,
+        digit: Some(6),
+        role: Role::Any,
+        placement: Placement::Tab,
+        render: views::dashboard::render,
+        badge: None,
+        on_show: Some(views::dashboard::on_show),
+        on_reply: Some(views::dashboard::on_reply),
+        search: None,
+        side_panel: no_panel,
+    },
 ];
 
 /// The row of `page`. Every variant has one (a unit test checks).
@@ -203,6 +219,7 @@ mod tests {
             Page::Alarms,
             Page::Trends,
             Page::Performance,
+            Page::Dashboard,
         ] {
             assert_eq!(PAGES.iter().filter(|spec| spec.page == page).count(), 1);
             assert_eq!(Page::parse(spec(page).id), Some(page));
@@ -218,7 +235,7 @@ mod tests {
         digits.dedup();
         assert_eq!(digits.len(), count, "each ⌘ digit once");
         assert_eq!(Page::parse("nowhere"), None);
-        assert_eq!(ids(), "overview|tags|alarms|trends|performance");
+        assert_eq!(ids(), "overview|tags|alarms|trends|performance|dashboard");
     }
 
     #[test]

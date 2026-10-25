@@ -258,3 +258,141 @@ async fn live_login_sensors_ws_stream() {
 
     logout_revokes_the_refresh_token(&url, &user, &pass).await;
 }
+
+/// Screens and card dashboards against the live plant: the screen list,
+/// the overview's layouts, and a screen of its own (created, tags added,
+/// laid out, renamed, a tag removed, deleted), so the plant ends as it
+/// started.
+#[tokio::test]
+async fn live_screens_and_layouts() {
+    use serde::de::IgnoredAny;
+    use voltrus_scada_native::api::{DataSource, Method};
+    use voltrus_scada_native::screens::{
+        self, Card, CardKind, OVERVIEW, Screen, ScreenLayouts, layouts_path, tags_path,
+    };
+
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    let mut api = VoltrusApi::new(&url);
+    api.login(&user, &pass).await.expect("sign in");
+
+    let listed: Vec<Screen> = api.get_json("/api/v1/screens").await.expect("GET /screens");
+    println!(
+        "screens: {}",
+        listed
+            .iter()
+            .map(|screen| screen.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if let Some(first) = listed.first() {
+        let rows: Vec<DataSource> = api
+            .get_json(&tags_path(&first.id))
+            .await
+            .expect("a screen's tags");
+        println!("{} has {} tags", first.name, rows.len());
+    }
+    let overview: ScreenLayouts = api
+        .get_json(&layouts_path(OVERVIEW))
+        .await
+        .expect("the overview's layouts");
+    println!("overview layout: {} cards on lg", overview.lg.len());
+
+    // A screen of its own, with two of the plant's tags.
+    let tags: Vec<DataSource> = api.get_json(&tags_path(OVERVIEW)).await.expect("every tag");
+    assert!(tags.len() >= 2, "the plant has tags to put on a screen");
+    let name = format!("Native e2e {}", std::process::id());
+    let created: Screen = api
+        .send_json(
+            Method::POST,
+            "/api/v1/screens",
+            &serde_json::json!({ "name": name }),
+        )
+        .await
+        .expect("POST /screens");
+    assert_eq!(created.name, name);
+    assert!(!created.id.is_empty());
+    let path = format!("/api/v1/screens/{}", created.id);
+    for tag in &tags[..2] {
+        api.send_json::<_, IgnoredAny>(
+            Method::POST,
+            &format!("{path}/data-sources"),
+            &serde_json::json!({ "data_source_id": tag.id }),
+        )
+        .await
+        .expect("POST /screens/{id}/data-sources");
+    }
+    let on_screen: Vec<DataSource> = api
+        .get_json(&tags_path(&created.id))
+        .await
+        .expect("the new screen's tags");
+    assert_eq!(
+        on_screen.iter().map(|tag| tag.id).collect::<Vec<_>>(),
+        [tags[0].id, tags[1].id],
+        "tags in the order they were added"
+    );
+
+    // Arrange them and save every breakpoint; the server keeps lg, md, sm.
+    let cards: Vec<Card> = on_screen
+        .iter()
+        .map(|tag| Card {
+            id: tag.id,
+            device: &tag.device_id,
+            kind: CardKind::of(&tag.chart_type),
+        })
+        .collect();
+    let layouts = screens::auto_arrange_all(&cards);
+    api.send_json::<_, IgnoredAny>(Method::PUT, &layouts_path(&created.id), &layouts)
+        .await
+        .expect("PUT /screens/{id}/layouts");
+    let saved: ScreenLayouts = api
+        .get_json(&layouts_path(&created.id))
+        .await
+        .expect("the saved layouts");
+    assert_eq!(saved.lg, layouts.lg);
+    assert_eq!(saved.md, layouts.md);
+    assert_eq!(saved.sm, layouts.sm);
+
+    // Rename it, take a tag off, delete it.
+    let renamed = format!("{name} renamed");
+    api.send_json::<_, IgnoredAny>(Method::PUT, &path, &serde_json::json!({ "name": renamed }))
+        .await
+        .expect("PUT /screens/{id}");
+    let listed: Vec<Screen> = api.get_json("/api/v1/screens").await.expect("GET /screens");
+    assert!(
+        listed
+            .iter()
+            .any(|screen| screen.id == created.id && screen.name == renamed),
+        "the screen shows its new name"
+    );
+    api.send_empty::<IgnoredAny>(
+        Method::DELETE,
+        &format!("{path}/data-sources/{}", tags[0].id),
+    )
+    .await
+    .expect("DELETE /screens/{id}/data-sources/{ds}");
+    let left: Vec<DataSource> = api
+        .get_json(&tags_path(&created.id))
+        .await
+        .expect("the screen's tags");
+    assert_eq!(
+        left.iter().map(|tag| tag.id).collect::<Vec<_>>(),
+        [tags[1].id]
+    );
+    api.send_empty::<IgnoredAny>(Method::DELETE, &path)
+        .await
+        .expect("DELETE /screens/{id}");
+    let listed: Vec<Screen> = api.get_json("/api/v1/screens").await.expect("GET /screens");
+    assert!(
+        !listed.iter().any(|screen| screen.id == created.id),
+        "the screen is gone"
+    );
+    println!(
+        "screen {} created, laid out, renamed and deleted",
+        created.id
+    );
+}

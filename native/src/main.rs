@@ -21,7 +21,8 @@ fn usage() -> String {
         "\
 usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
-                      [--hud] [--overlay palette|help]
+                      [--hud] [--overlay palette|help|add-tags]
+                      [--screen N|ID] [--edit]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
 
@@ -32,7 +33,10 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --range            the Trends range to start with (default 1h)
   --appearance       dark or light instead of following the system
   --hud              show the performance HUD (also ⇧⌘P)
-  --overlay          open the command palette or the shortcut help once signed in
+  --overlay          open the command palette, the shortcut help or the dashboard's
+                     tag picker once signed in
+  --screen           the dashboard's screen: its id, or 1 for the overview, 2 for the first
+  --edit             open the dashboard in edit mode (operator roles)
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
   --stress-tags      how many synthetic tags
   --stress-rate      synthetic updates per second
@@ -54,6 +58,8 @@ struct Options {
     hud: bool,
     overlay: Option<LaunchOverlay>,
     stress: Option<StressPlan>,
+    screen: Option<String>,
+    edit: bool,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, text: Option<&String>) -> Result<T, String> {
@@ -71,6 +77,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         hud: false,
         overlay: None,
         stress: None,
+        screen: None,
+        edit: false,
     };
     let mut stress = StressPlan::default();
     let mut stressed = false;
@@ -111,14 +119,20 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 options.overlay = Some(match args.next().map(String::as_str) {
                     Some("palette") => LaunchOverlay::Palette,
                     Some("help") => LaunchOverlay::Help,
+                    Some("add-tags") => LaunchOverlay::AddTags,
                     other => {
                         return Err(format!(
-                            "--overlay takes palette or help, not “{}”",
+                            "--overlay takes palette, help or add-tags, not “{}”",
                             other.unwrap_or("")
                         ));
                     }
                 });
             }
+            "--screen" => match args.next() {
+                Some(screen) if !screen.is_empty() => options.screen = Some(screen.clone()),
+                _ => return Err("--screen takes a screen id or position".into()),
+            },
+            "--edit" => options.edit = true,
             "--stress" => stressed = true,
             "--stress-tags" => {
                 stress.options.tags = number(arg, args.next())?;
@@ -200,6 +214,8 @@ fn main() -> ExitCode {
         hud: options.hud,
         overlay: options.overlay,
         stress: options.stress,
+        screen: options.screen,
+        edit: options.edit,
         utc_offset,
     };
     let appearance = options.dark;
@@ -295,12 +311,23 @@ mod tests {
                 hud: true,
                 overlay: Some(LaunchOverlay::Help),
                 stress: None,
+                screen: None,
+                edit: false,
             })
         );
         assert_eq!(
             parse(&args(&["--tag", "ac_current_l1"])).map(|options| options.tag),
             Ok(Some("ac_current_l1".to_owned()))
         );
+        assert_eq!(
+            parse(&args(&["--screen", "2", "--edit", "--overlay", "add-tags"])).map(|options| (
+                options.screen,
+                options.edit,
+                options.overlay
+            )),
+            Ok((Some("2".to_owned()), true, Some(LaunchOverlay::AddTags)))
+        );
+        assert!(parse(&args(&["--screen"])).is_err());
         assert_eq!(
             parse(&args(&["--page", "performance"])).map(|options| options.page),
             Ok(Some(Page::Performance))
