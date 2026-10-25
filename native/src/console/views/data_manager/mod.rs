@@ -14,16 +14,21 @@
 //! section, Esc in the section comes back to the sidebar (and Esc there
 //! stays put).
 
+pub(crate) mod admin_kit;
+pub(crate) mod api_keys;
 pub(crate) mod edr;
 pub(crate) mod flows;
 pub(crate) mod imports;
 pub(crate) mod mqtt;
+pub(crate) mod notification_rules;
+pub(crate) mod roles;
 pub(crate) mod scripts;
 pub(crate) mod snapshots;
 pub(crate) mod source_form;
 pub(crate) mod source_model;
 pub(crate) mod sources;
 pub(crate) mod system;
+pub(crate) mod users;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Entity, FontWeight, Window, div, px};
@@ -109,6 +114,54 @@ pub static SECTIONS: &[SectionSpec] = &[
         focus: Some(sources::focus),
         on_reply: Some(sources::on_reply),
         search: Some(sources::search),
+    },
+    SectionSpec {
+        id: "users",
+        title: "Users",
+        icon: Icon::CircleDot,
+        group: SectionGroup::Admin,
+        role: Role::Admin,
+        render: users::render,
+        on_open: Some(users::on_open),
+        focus: Some(users::focus),
+        on_reply: Some(users::on_reply),
+        search: Some(users::search),
+    },
+    SectionSpec {
+        id: "roles",
+        title: "Roles",
+        icon: Icon::Layers,
+        group: SectionGroup::Admin,
+        role: Role::Admin,
+        render: roles::render,
+        on_open: Some(roles::on_open),
+        focus: Some(roles::focus),
+        on_reply: Some(roles::on_reply),
+        search: Some(roles::search),
+    },
+    SectionSpec {
+        id: "notifications",
+        title: "Notifications",
+        icon: Icon::Send,
+        group: SectionGroup::Admin,
+        role: Role::Operator,
+        render: notification_rules::render,
+        on_open: Some(notification_rules::on_open),
+        focus: Some(notification_rules::focus),
+        on_reply: Some(notification_rules::on_reply),
+        search: Some(notification_rules::search),
+    },
+    SectionSpec {
+        id: "api-keys",
+        title: "API keys",
+        icon: Icon::Lock,
+        group: SectionGroup::Admin,
+        role: Role::Admin,
+        render: api_keys::render,
+        on_open: Some(api_keys::on_open),
+        focus: Some(api_keys::focus),
+        on_reply: Some(api_keys::on_reply),
+        search: Some(api_keys::search),
     },
     SectionSpec {
         id: "system",
@@ -593,6 +646,27 @@ mod tests {
             ]
         );
         assert_eq!(operator.last(), Some(&"scripts"));
+        assert!(operator.contains(&"sources") && operator.contains(&"notifications"));
+        assert!(
+            !operator
+                .iter()
+                .any(|id| ["users", "roles", "api-keys"].contains(id)),
+            "users, roles and API keys are strictly admin"
+        );
+        let admin: Vec<_> = visible(SECTIONS, Some(Role::Admin))
+            .iter()
+            .map(|spec| spec.id)
+            .collect();
+        let tail: Vec<_> = admin
+            .iter()
+            .copied()
+            .filter(|id| ["users", "roles", "notifications", "api-keys"].contains(id))
+            .collect();
+        assert_eq!(
+            tail,
+            ["users", "roles", "notifications", "api-keys"],
+            "the web's Admin order"
+        );
         let mut all: Vec<_> = SECTIONS.iter().map(|spec| spec.id).collect();
         all.sort_unstable();
         all.dedup();

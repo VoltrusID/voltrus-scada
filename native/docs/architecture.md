@@ -326,6 +326,16 @@ its paint (a hitbox from prepaint; move/up listeners only while a drag
 runs). On pointer work, notify only the page's view. Keep geometry (pan,
 zoom about a point, hit tests, Bézier wires) in a GPUI-free model with unit
 tests (`flows/model.rs`).
+The Admin sections (Users, Roles, Notifications, API keys) share
+`data_manager::admin_kit`: `ask` (a confirmation before a destructive call;
+the section keeps its target in its state), `search_field`, the table
+`header`/`row_frame`/`cell`/`actions`, a dialog's `dialog_header`,
+`dialog_body` and `dialog_footer`, and `close_later`/`focus_later` for a
+dialog the server's answer ends or changes. Their tables set
+`keys::DATA_ADMIN_*` key contexts: `DataAdmin` (⌫) plus the section's own
+(`DataUsers` N and P, `DataRoles` N, `DataApiKeys` N, `DataRules` N and T).
+A dialog that holds a secret (passwords, a new API key) is dropped from the
+section's state as soon as its overlay is no longer open.
 
 
 ## The shell: settings, keymap, notifications, edition

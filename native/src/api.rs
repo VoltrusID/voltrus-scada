@@ -20,6 +20,7 @@ pub use reqwest::Method;
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 
+pub mod admin;
 pub mod eng_edr;
 pub mod eng_flows;
 pub mod eng_imports;

@@ -85,36 +85,20 @@ JetBrains Mono for values.
   its settings, a Modbus device with one register or an expression); D
   duplicates, ⌫ deletes after a confirmation, ⌥↑/⌥↓ or dragging a row
   reorders (shown at once, saved to the server).
-- **Data Manager › Engineering** (the web client's System panel, its tools
-  menu, `/flows` and `/scripts`):
-  - **System** (any role): host, CPU, memory, disk, database and process
-    figures (every 5 s while shown); generated documentation (topology, tag
-    cross-reference, automation) with an HTML export (E); vertical
-    templates (detail, preview, instantiate after a confirmation); the quick
-    start and project wizard; the health check; SMTP settings with a test
-    email (operators); Voltrus PLC/HMI deep links. T and ⇧T switch tabs.
-  - **Config snapshots** (operators): a searchable table (N new with a
-    label, F/T pick a diff's ends, C compares: per-table added, removed and
-    changed rows and the changed fields; R rolls back after a
-    confirmation).
-  - **MQTT broker** (status for any role, the rest for operators):
-    overview, start/stop (S), configuration (C: port, connections, users),
-    topic tree with recent messages, the live log, publish (P); [ ] switch
-    tabs.
-  - **EDR compatibility** (any role): report, exclusions, the Defender
-    script (copy, save as .ps1 for operators) and the deployment guide.
-  - **Import** (operators; CSV/Excel for admins): the data file wizard
-    (O or a drop picks the file, column mapping over the file's own header,
-    dry run, import, report) and the Node-RED wizard (W switches).
-  - **Flows** (operators): list with Start/Stop, settings, runs, a test
-    with a JSON payload, and a native canvas editor (O or Enter): palette,
-    step settings, drag a step, drag from an output port to a step to run it
-    next, pan, ⌘-scroll or + − 0 zoom about the pointer, arrows nudge, ⌥←→
-    reorder, ⌫ removes, ⌘Z undoes, ⌘S saves.
-  - **Scripts** (operators): list plus a code editor (line numbers,
-    JavaScript colours, Tab/⇧Tab indent, auto-indent, ⌘/ comment, ⌘Z/⇧⌘Z),
-    ⌘S saves, ⌘↵ test-runs the saved script with a JSON input; its runs
-    refresh every 10 s while shown.
+  **Admin** (as the web client's group): **Users** (admin only): every
+  account with its role; N adds one (name, the password typed twice in
+  masked fields, role), Enter changes the role and optionally the password,
+  P resets a password, ⌫ deletes after a confirmation; the console refuses
+  demoting or deleting yourself or the last admin. **Roles** (admin only):
+  the server's RBAC roles with their permissions picked from the 24 the
+  server accepts. **Notifications** (operators): who hears of a tag's (or
+  every tag's) alarms by email, webhook or push; N, Enter, Space turns a
+  rule on or off, T sends a test through the server and shows each
+  target's outcome, ⌫ deletes. **API keys** (admin only): name, prefix,
+  role, maker, last use and expiry; N makes a read-only or integration key
+  with a lifetime and shows its secret once (masked until revealed, C or
+  Copy), ⌫ revokes. The palette offers New user, New role, New API key and
+  New notification rule.
 - **Dashboard** (⌘6): the server's screens as card dashboards, as the web
   client's card view lays them out (its 24-column grid and saved layouts).
   Screen tabs sit in a bar under the navbar (1–9 jump to them, [ and ] step;
@@ -314,6 +298,8 @@ native/src/
                     data sources, alarms, history, password change
   api/ops.rs        commands, shift handover, audit log and data export: mirrors,
                     paths, text downloads
+  api/admin.rs      users, RBAC roles, API keys and notification rules: mirrors,
+                    request bodies checked as the server checks them
   ws_types.rs       MessagePack WebSocket messages (mirror of the server's)
   runtime.rs        the network actor: Command in, Event out, generic calls
   stress.rs         the deterministic synthetic plant
@@ -494,3 +480,21 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   `syntax_error`. CSV/Excel imports write readings only (no route removes
   them) and replace mode answers 501; the Node-RED import only converts and
   reports.
+- Users, roles and API keys are admin-only routes. A user's role is one of
+  `admin`, `demo`, `operator`, `viewer` or `user`; only admin and demo pass
+  the operator routes. A role change or a deletion does not end the user's
+  open sessions: the token keeps its role until it expires. There is no way
+  to disable an account (only delete it), and deleting a user whose
+  handovers or mentions remain fails on a foreign key.
+- RBAC roles (`/api/v1/roles`) store a JSON list of permissions, refused
+  unless every one is in `models::ALL_PERMISSIONS` (the web's own list
+  offers names the server refuses); nothing checks them yet, and
+  `PUT /users/{id}/role` assigns one without any route to read it back.
+- API keys expire in Unix seconds and are shown once; the list keeps only
+  the first eight characters. Their stored permissions are not checked;
+  `api` keys read, `integration` keys also pass operator routes.
+- `POST /notifications/test` answers 200 with a per-target status (sent or
+  the error) for webhooks and email; email needs SMTP configured (else
+  500), push is not testable. `PUT /notifications/settings/{id}` checks the
+  config but not email or URL shapes, so the console checks them as
+  `POST` does.

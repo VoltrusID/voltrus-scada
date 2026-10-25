@@ -319,6 +319,7 @@ impl Render for Console {
                     }
                 }),
             )
+            .map(|this| data_manager::admin_kit::root_actions(this, cx))
             .map(|this| dashboard::actions(this, cx))
             .map(|this| mimic::editor::actions(this, cx))
             .child(body)

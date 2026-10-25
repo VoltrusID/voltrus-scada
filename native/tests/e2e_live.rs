@@ -308,6 +308,7 @@ async fn live_login_sensors_ws_stream() {
     data_manager_sources_round_trip(&url, &user, &pass).await;
     shell_preferences_notifications_and_edition(&url, &user, &pass).await;
     operations_pages(&url, &user, &pass).await;
+    admin_users_roles_keys_and_notification_rules(&url, &user, &pass).await;
 }
 
 /// [`call`], which must succeed.
@@ -1759,6 +1760,438 @@ async fn live_screens_and_layouts() {
         "screen {} created, laid out, renamed and deleted",
         created.id
     );
+}
+
+/// The status a failed call ended with, if the server answered.
+fn refusal(error: &anyhow::Error) -> Option<reqwest::StatusCode> {
+    error
+        .downcast_ref::<voltrus_scada_native::api::ServerError>()
+        .map(|error| error.status)
+}
+
+/// `method path` signed in with an API key only (`X-API-Key`).
+async fn with_key(
+    url: &str,
+    key: &str,
+    method: reqwest::Method,
+    path: &str,
+) -> reqwest::StatusCode {
+    let request = reqwest::Client::new()
+        .request(method.clone(), format!("{url}{path}"))
+        .header("X-API-Key", key);
+    let request = if method == reqwest::Method::GET {
+        request
+    } else {
+        request.json(&serde_json::json!({
+            "source_key": "", "channel_type": "email", "config": "[\"key@example.com\"]"
+        }))
+    };
+    request.send().await.expect("the server answers").status()
+}
+
+/// Data Manager › Admin against the live plant, through the runtime as the
+/// console sends it: a throwaway user (create, sign in as them, change
+/// their role and password, sign in again, delete), the server's own
+/// refusals (a viewer and a demo user on admin routes, deleting yourself),
+/// a role (create, edit its permissions, delete; an unknown permission
+/// refused), a throwaway API key (create with its secret shown once, use
+/// it, see it refused on an operator route, revoke it, see it refused) and
+/// a notification rule (create, switch off, edit, test to a closed local
+/// port, delete). Leaves the plant's users, roles, keys and rules as found.
+async fn admin_users_roles_keys_and_notification_rules(url: &str, user: &str, pass: &str) {
+    use reqwest::StatusCode;
+    use serde::de::IgnoredAny;
+    use serde_json::json;
+    use voltrus_scada_native::api::Method;
+    use voltrus_scada_native::api::admin::{
+        self, ApiKeyList, NewApiKey, NotificationRule, RbacRole, TestOutcome, User,
+    };
+
+    let (handle, events) = runtime::start().expect("runtime");
+    handle.send(Command::SignIn {
+        url: url.to_owned(),
+        username: user.to_owned(),
+        password: pass.to_owned(),
+    });
+    wait_for(&events, 30, |event| match event {
+        Event::SignInFailed(error) => panic!("sign-in failed: {error}"),
+        Event::Tags(list) => Some(list),
+        _ => None,
+    })
+    .await
+    .expect("the tag list after signing in");
+    let suffix = format!("{:x}", std::process::id());
+
+    // ── Users ──
+    let list_users = || Call::get::<Vec<User>>("/api/v1/users");
+    let before: Vec<User> = answer(&handle, &events, "data.users.list", list_users()).await;
+    let me = before
+        .iter()
+        .find(|row| row.username == user)
+        .expect("the signed-in admin is listed")
+        .clone();
+    assert!(me.is_admin());
+    assert!(
+        admin::delete_refused(user, &me, &before).is_some(),
+        "the console refuses deleting yourself"
+    );
+    let refused = call::<IgnoredAny>(
+        &handle,
+        &events,
+        CallKey::new("data.users.delete").with(me.id),
+        Call::send_empty::<IgnoredAny>(Method::DELETE, format!("/api/v1/users/{}", me.id)),
+    )
+    .await;
+    assert!(
+        refused.is_err_and(|error| error.contains("yourself")),
+        "the server refuses it too"
+    );
+
+    let name = format!("e2e_admin_{suffix}");
+    let first = format!("E2e-{suffix}-first");
+    let body =
+        admin::new_user_body(&name, &first, &first, "viewer", &before).expect("a valid user");
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.users.save",
+        Call::send::<IgnoredAny>(Method::POST, "/api/v1/users", body),
+    )
+    .await;
+    let listed: Vec<User> = answer(&handle, &events, "data.users.list", list_users()).await;
+    let made = listed
+        .iter()
+        .find(|row| row.username == name)
+        .expect("the new user is listed")
+        .clone();
+    assert_eq!(made.role, "viewer");
+    assert!(
+        admin::new_user_body(&name, &first, &first, "viewer", &listed).is_err(),
+        "a taken name is refused before asking"
+    );
+
+    // Use them: they sign in, and a viewer is refused the admin and
+    // operator routes.
+    let mut viewer = VoltrusApi::new(url);
+    let login = viewer
+        .login(&name, &first)
+        .await
+        .expect("the new user signs in");
+    assert_eq!(login.role, "viewer");
+    let error = viewer
+        .get_json::<Vec<User>>("/api/v1/users")
+        .await
+        .expect_err("a viewer may not list users");
+    assert_eq!(refusal(&error), Some(StatusCode::FORBIDDEN));
+    let error = viewer
+        .send_json::<_, IgnoredAny>(
+            Method::POST,
+            "/api/v1/notifications/settings",
+            &json!({ "source_key": "", "channel_type": "email", "config": "[\"v@example.com\"]" }),
+        )
+        .await
+        .expect_err("a viewer may not add notification rules");
+    assert_eq!(refusal(&error), Some(StatusCode::FORBIDDEN));
+
+    // Edit: the role and a reset password in one PUT.
+    let second = format!("E2e-{suffix}-second");
+    assert!(admin::role_change_refused(user, &made, "demo", &listed).is_none());
+    let body = admin::user_update_body(Some("demo"), Some(&second)).expect("a change");
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.users.save",
+        Call::send::<IgnoredAny>(Method::PUT, format!("/api/v1/users/{}", made.id), body),
+    )
+    .await;
+    let listed: Vec<User> = answer(&handle, &events, "data.users.list", list_users()).await;
+    assert_eq!(
+        listed
+            .iter()
+            .find(|row| row.id == made.id)
+            .map(|row| row.role.as_str()),
+        Some("demo")
+    );
+    assert!(
+        VoltrusApi::new(url).login(&name, &first).await.is_err(),
+        "the old password no longer signs in"
+    );
+    let mut demo = VoltrusApi::new(url);
+    let login = demo
+        .login(&name, &second)
+        .await
+        .expect("the new password signs in");
+    assert_eq!(login.role, "demo", "the new role from the next sign-in");
+    let error = demo
+        .get_json::<Vec<User>>("/api/v1/users")
+        .await
+        .expect_err("demo is not admin");
+    assert_eq!(refusal(&error), Some(StatusCode::FORBIDDEN));
+    println!("user {name}: created, signed in, role and password changed, refused admin routes");
+
+    // ── Roles ──
+    let list_roles = || Call::get::<Vec<RbacRole>>("/api/v1/roles");
+    let roles: Vec<RbacRole> = answer(&handle, &events, "data.roles.list", list_roles()).await;
+    assert!(!roles.is_empty(), "the server seeds its default roles");
+    let role_name = format!("E2E role {suffix}");
+    let body = admin::role_body(&role_name, &["alarms:ack".into(), "alarms:read".into()])
+        .expect("a valid role");
+    let created: serde_json::Value = answer(
+        &handle,
+        &events,
+        "data.roles.save",
+        Call::send::<serde_json::Value>(Method::POST, "/api/v1/roles", body),
+    )
+    .await;
+    let role_id = created["id"].as_i64().expect("the new role's id");
+    let body = admin::role_body(&role_name, &["screens:read".into(), "alarms:read".into()])
+        .expect("a valid role");
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.roles.save",
+        Call::send::<IgnoredAny>(Method::PUT, format!("/api/v1/roles/{role_id}"), body),
+    )
+    .await;
+    let roles_now: Vec<RbacRole> = answer(&handle, &events, "data.roles.list", list_roles()).await;
+    let edited = roles_now
+        .iter()
+        .find(|role| role.id == role_id)
+        .expect("the role is listed");
+    assert_eq!(edited.name, role_name);
+    assert_eq!(edited.permission_list(), ["screens:read", "alarms:read"]);
+    let unknown = call::<IgnoredAny>(
+        &handle,
+        &events,
+        CallKey::new("data.roles.save"),
+        Call::send::<IgnoredAny>(
+            Method::POST,
+            "/api/v1/roles",
+            json!({ "name": "nope", "permissions": "[\"flows:read\"]" }),
+        ),
+    )
+    .await;
+    assert!(
+        unknown.is_err(),
+        "the server refuses a permission it does not know"
+    );
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.roles.delete",
+        Call::send_empty::<IgnoredAny>(Method::DELETE, format!("/api/v1/roles/{role_id}")),
+    )
+    .await;
+    let roles_after: Vec<RbacRole> =
+        answer(&handle, &events, "data.roles.list", list_roles()).await;
+    assert_eq!(
+        roles_after.iter().map(|role| role.id).collect::<Vec<_>>(),
+        roles.iter().map(|role| role.id).collect::<Vec<_>>(),
+        "the roles are as found"
+    );
+    println!("role {role_name}: created, permissions edited, deleted");
+
+    // ── API keys ──
+    let list_keys = || Call::get::<ApiKeyList>("/api/v1/api-keys");
+    let keys_before: ApiKeyList = answer(&handle, &events, "data.api-keys.list", list_keys()).await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs() as i64;
+    let body = admin::api_key_body(&format!("e2e key {suffix}"), "api", Some(1), now, &[])
+        .expect("a valid key");
+    let key: NewApiKey = answer(
+        &handle,
+        &events,
+        "data.api-keys.create",
+        Call::send::<NewApiKey>(Method::POST, "/api/v1/api-keys", body),
+    )
+    .await;
+    assert_eq!(key.key.len(), 64, "a 32-byte hex key");
+    assert!(!key.warning.is_empty());
+    let raw: serde_json::Value = answer(
+        &handle,
+        &events,
+        "data.api-keys.list",
+        Call::get::<serde_json::Value>("/api/v1/api-keys"),
+    )
+    .await;
+    assert!(
+        !raw.to_string().contains(&key.key),
+        "the list never shows a key again"
+    );
+    // Use it: it reads; it is refused an operator route and the admin ones.
+    assert_eq!(
+        with_key(url, &key.key, reqwest::Method::GET, "/api/v1/data-sources").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        with_key(
+            url,
+            &key.key,
+            reqwest::Method::POST,
+            "/api/v1/notifications/settings"
+        )
+        .await,
+        StatusCode::FORBIDDEN,
+        "a read-only key may not write"
+    );
+    assert_eq!(
+        with_key(url, &key.key, reqwest::Method::GET, "/api/v1/users").await,
+        StatusCode::FORBIDDEN,
+        "no key manages users"
+    );
+    let keys_now: ApiKeyList = answer(&handle, &events, "data.api-keys.list", list_keys()).await;
+    let listed = keys_now
+        .keys
+        .iter()
+        .find(|row| row.id == key.id)
+        .expect("the key is listed");
+    assert_eq!(listed.key_prefix, key.key[..8]);
+    assert!(listed.last_used_at.is_some(), "its use is recorded");
+    assert!(
+        listed
+            .expires_at
+            .is_some_and(|at| at > now && at <= now + 86_400)
+    );
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.api-keys.revoke",
+        Call::send_empty::<IgnoredAny>(Method::DELETE, format!("/api/v1/api-keys/{}", key.id)),
+    )
+    .await;
+    assert_eq!(
+        with_key(url, &key.key, reqwest::Method::GET, "/api/v1/data-sources").await,
+        StatusCode::UNAUTHORIZED,
+        "a revoked key no longer signs in"
+    );
+    let keys_after: ApiKeyList = answer(&handle, &events, "data.api-keys.list", list_keys()).await;
+    assert_eq!(
+        keys_after.keys.iter().map(|row| row.id).collect::<Vec<_>>(),
+        keys_before
+            .keys
+            .iter()
+            .map(|row| row.id)
+            .collect::<Vec<_>>(),
+        "the keys are as found"
+    );
+    println!(
+        "API key {}…: created, used, refused writes, revoked",
+        &key.key[..8]
+    );
+
+    // ── Notification rules ──
+    let list_rules = || Call::get::<Vec<NotificationRule>>("/api/v1/notifications/settings");
+    let rules_before: Vec<NotificationRule> =
+        answer(&handle, &events, "data.notifications.list", list_rules()).await;
+    let body = admin::rule_body("ac_current_l1", "webhook", "http://127.0.0.1:9/e2e", true)
+        .expect("a valid rule");
+    let created: serde_json::Value = answer(
+        &handle,
+        &events,
+        "data.notifications.save",
+        Call::send::<serde_json::Value>(Method::POST, "/api/v1/notifications/settings", body),
+    )
+    .await;
+    let rule_id = created["id"].as_i64().expect("the new rule's id");
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.notifications.switch",
+        Call::send::<IgnoredAny>(
+            Method::PUT,
+            format!("/api/v1/notifications/settings/{rule_id}"),
+            json!({ "enabled": false }),
+        ),
+    )
+    .await;
+    let body = admin::rule_body(
+        "ac_current_l1",
+        "webhook",
+        "http://127.0.0.1:9/e2e-a\nhttp://127.0.0.1:9/e2e-b",
+        false,
+    )
+    .expect("a valid rule");
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.notifications.save",
+        Call::send::<IgnoredAny>(
+            Method::PUT,
+            format!("/api/v1/notifications/settings/{rule_id}"),
+            body,
+        ),
+    )
+    .await;
+    let rules_now: Vec<NotificationRule> =
+        answer(&handle, &events, "data.notifications.list", list_rules()).await;
+    let rule = rules_now
+        .iter()
+        .find(|rule| rule.id == rule_id)
+        .expect("the rule is listed")
+        .clone();
+    assert!(!rule.enabled, "switched off");
+    assert_eq!(rule.targets().len(), 2, "edited");
+    let outcome: TestOutcome = answer(
+        &handle,
+        &events,
+        "data.notifications.test",
+        Call::send::<TestOutcome>(
+            Method::POST,
+            "/api/v1/notifications/test",
+            admin::test_body(&rule),
+        ),
+    )
+    .await;
+    assert_eq!(outcome.channel, "webhook");
+    assert_eq!(outcome.results.len(), 2, "one outcome per target");
+    assert_eq!(outcome.sent(), 0, "nothing listens on port 9");
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.notifications.delete",
+        Call::send_empty::<IgnoredAny>(
+            Method::DELETE,
+            format!("/api/v1/notifications/settings/{rule_id}"),
+        ),
+    )
+    .await;
+    let rules_after: Vec<NotificationRule> =
+        answer(&handle, &events, "data.notifications.list", list_rules()).await;
+    assert_eq!(
+        rules_after.iter().map(|rule| rule.id).collect::<Vec<_>>(),
+        rules_before.iter().map(|rule| rule.id).collect::<Vec<_>>(),
+        "the rules are as found"
+    );
+    println!("notification rule {rule_id}: created, switched off, edited, tested, deleted");
+
+    // ── Delete the throwaway user ──
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.users.delete",
+        Call::send_empty::<IgnoredAny>(Method::DELETE, format!("/api/v1/users/{}", made.id)),
+    )
+    .await;
+    let after: Vec<User> = answer(&handle, &events, "data.users.list", list_users()).await;
+    assert_eq!(
+        after.iter().map(|row| row.id).collect::<Vec<_>>(),
+        before.iter().map(|row| row.id).collect::<Vec<_>>(),
+        "the users are as found"
+    );
+    assert!(
+        VoltrusApi::new(url).login(&name, &second).await.is_err(),
+        "a deleted user cannot sign in"
+    );
+    match demo.get_json::<IgnoredAny>("/api/v1/data-sources").await {
+        Ok(_) => println!(
+            "note: a deleted user's open session still reads until its token expires (the server does not revoke it)"
+        ),
+        Err(error) => println!("a deleted user's open session is refused: {error}"),
+    }
+    println!("user {name} deleted");
+    handle.send(Command::Shutdown);
 }
 
 /// The HMI mimic against the live plant: the overview's mimic (seeded by
