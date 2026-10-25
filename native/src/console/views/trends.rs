@@ -11,7 +11,7 @@ use vt_ui::theme::*;
 use super::{card, now_ms, page_header, status_color};
 use crate::console::{Console, RANGES, range_ms};
 
-const PICKER: f32 = 260.0;
+pub(crate) const PICKER: f32 = 260.0;
 
 pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();

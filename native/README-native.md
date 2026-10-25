@@ -46,6 +46,9 @@ JetBrains Mono for values.
 - **Status bar**: link state (live, reconnecting with the reason, offline),
   server, updates per second, tag and alarm counts, and a warning when the
   alarm list could not be fetched.
+- **Toasts** for new alarms, link losses and failed actions: bottom right,
+  above the status bar and left of any side panel, up to three stacked
+  upward, each gone after 6 seconds.
 - Light or dark (⇧⌘L), ⌘1–⌘4 for the pages, standard Edit menu in text fields.
 
 The network side runs on its own tokio thread: it signs in, keeps the

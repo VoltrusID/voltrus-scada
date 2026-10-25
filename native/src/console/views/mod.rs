@@ -100,28 +100,29 @@ impl Render for Console {
                 console.toggle_appearance(cx);
             }))
             .child(body)
-            .when_some(self.toast.as_ref(), |this, toast| {
-                let color = if toast.error {
-                    theme.danger
-                } else {
-                    theme.success
+            .when(!self.toasts.is_empty(), |this| {
+                // Bottom right, above the status bar and left of the page's
+                // side panel (tag detail, trend picker), stacked upward with
+                // the newest at the bottom: clear of headers and controls.
+                let in_console = self.phase == Phase::Console;
+                let panel = match self.page {
+                    Page::Tags if in_console && self.selected.is_some() => px(tags::PANEL),
+                    Page::Trends if in_console => px(trends::PICKER),
+                    _ => px(0.0),
                 };
-                // Under the navbar and the page header, and left of the tag
-                // detail panel when it is open, so it never covers a control.
-                let panel_open = self.phase == Phase::Console
-                    && self.page == Page::Tags
-                    && self.selected.is_some();
-                let right = if panel_open {
-                    px(tags::PANEL) + SPACE_7
+                let bottom = if in_console {
+                    STATUS_BAR_HEIGHT + SPACE_7
                 } else {
                     SPACE_7
                 };
-                this.child(
+                let toasts = self.toasts.iter().map(|toast| {
+                    let color = if toast.error {
+                        theme.danger
+                    } else {
+                        theme.success
+                    };
                     div()
-                        .absolute()
-                        .top(TITLE_BAR_HEIGHT + px(68.0))
-                        .right(right)
-                        .max_w(px(440.0))
+                        .w(px(380.0))
                         .flex()
                         .items_start()
                         .gap(SPACE_4)
@@ -147,7 +148,17 @@ impl Render for Console {
                                 .min_w_0()
                                 .text_size(FONT_BODY)
                                 .child(toast.message.clone()),
-                        ),
+                        )
+                });
+                this.child(
+                    div()
+                        .absolute()
+                        .bottom(bottom)
+                        .right(panel + SPACE_7)
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_4)
+                        .children(toasts),
                 )
             })
     }

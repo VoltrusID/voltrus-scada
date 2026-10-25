@@ -188,6 +188,9 @@ pub struct Toast {
     id: u64,
 }
 
+/// Toasts shown at once; a newer one pushes the oldest out.
+const MAX_TOASTS: usize = 3;
+
 /// What `--sign-in` and `--page` set up, for screenshots and kiosks.
 pub struct Launch {
     pub sign_in: Option<(String, String, String)>,
@@ -225,7 +228,8 @@ pub struct Console {
     /// The tag whose write awaits the server's answer.
     pub writing: Option<usize>,
     pub rate: Rate,
-    pub toast: Option<Toast>,
+    /// Oldest first; each dismisses itself after a while.
+    pub toasts: Vec<Toast>,
     toast_seq: u64,
     pub focus: FocusHandle,
     pub tags_scroll: UniformListScrollHandle,
@@ -396,7 +400,7 @@ impl Console {
             write_result: None,
             writing: None,
             rate: Rate::default(),
-            toast: None,
+            toasts: Vec::new(),
             toast_seq: 0,
             focus,
             tags_scroll: UniformListScrollHandle::new(),
@@ -794,7 +798,10 @@ impl Console {
     ) {
         self.toast_seq += 1;
         let id = self.toast_seq;
-        self.toast = Some(Toast {
+        if self.toasts.len() == MAX_TOASTS {
+            self.toasts.remove(0);
+        }
+        self.toasts.push(Toast {
             message: message.into(),
             error,
             id,
@@ -803,8 +810,9 @@ impl Console {
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(Duration::from_secs(6)).await;
             let _ = this.update(cx, |console, cx| {
-                if console.toast.as_ref().is_some_and(|toast| toast.id == id) {
-                    console.toast = None;
+                let before = console.toasts.len();
+                console.toasts.retain(|toast| toast.id != id);
+                if console.toasts.len() != before {
                     cx.notify();
                 }
             });
