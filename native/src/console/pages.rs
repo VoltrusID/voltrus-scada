@@ -21,6 +21,7 @@ pub enum Page {
     Alarms,
     Trends,
     Performance,
+    DataManager,
 }
 
 /// The least a user's role must be to see a page or run a command; the
@@ -157,6 +158,21 @@ pub static PAGES: &[PageSpec] = &[
         search: None,
         side_panel: no_panel,
     },
+    PageSpec {
+        page: Page::DataManager,
+        id: "data",
+        title: "Data Manager",
+        icon: Icon::Database,
+        digit: None,
+        role: Role::Operator,
+        placement: Placement::More,
+        render: views::data_manager::render,
+        badge: None,
+        on_show: Some(views::data_manager::on_show),
+        on_reply: Some(views::data_manager::on_reply),
+        search: Some(views::data_manager::search),
+        side_panel: no_panel,
+    },
 ];
 
 /// The row of `page`. Every variant has one (a unit test checks).
@@ -203,6 +219,7 @@ mod tests {
             Page::Alarms,
             Page::Trends,
             Page::Performance,
+            Page::DataManager,
         ] {
             assert_eq!(PAGES.iter().filter(|spec| spec.page == page).count(), 1);
             assert_eq!(Page::parse(spec(page).id), Some(page));
@@ -218,7 +235,7 @@ mod tests {
         digits.dedup();
         assert_eq!(digits.len(), count, "each ⌘ digit once");
         assert_eq!(Page::parse("nowhere"), None);
-        assert_eq!(ids(), "overview|tags|alarms|trends|performance");
+        assert_eq!(ids(), "overview|tags|alarms|trends|performance|data");
     }
 
     #[test]

@@ -27,6 +27,10 @@ shots=(
   "trends-hud|--sign-in --page trends --range 5m --hud --appearance dark"
   "stress-performance|--stress --stress-switch-ms 0 --page performance --appearance dark"
   "stress-overview|--stress --stress-switch-ms 0 --page overview --hud --appearance dark"
+  "data-sources|--sign-in --page data --appearance dark"
+  "data-sources-light|--sign-in --page data --appearance light"
+  "data-source-form|--sign-in --page data --overlay new-source --appearance dark"
+  "data-sources-stress|--stress --stress-switch-ms 0 --page data --appearance dark"
 )
 
 status=0

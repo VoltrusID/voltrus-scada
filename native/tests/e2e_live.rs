@@ -257,4 +257,259 @@ async fn live_login_sensors_ws_stream() {
     handle.send(Command::Shutdown);
 
     logout_revokes_the_refresh_token(&url, &user, &pass).await;
+
+    data_manager_sources_round_trip(&url, &user, &pass).await;
+}
+
+/// A generic REST call through the runtime, answered under its key.
+async fn answer<T: Send + 'static>(
+    handle: &runtime::Handle,
+    events: &async_channel::Receiver<Event>,
+    name: &'static str,
+    call: Call,
+) -> T {
+    let key = CallKey::new(name);
+    handle.send(Command::Call { key, call });
+    wait_for(events, 20, |event| match event {
+        Event::Reply {
+            key: answered,
+            reply,
+        } if answered == key => Some(reply.take::<T>()),
+        _ => None,
+    })
+    .await
+    .unwrap_or_else(|| panic!("no reply to {name}"))
+    .unwrap_or_else(|error| panic!("{name} failed: {error}"))
+}
+
+/// `Command::RefreshTags`: the tag list as the server has it now.
+async fn refreshed_tags(
+    handle: &runtime::Handle,
+    events: &async_channel::Receiver<Event>,
+) -> Vec<voltrus_scada_native::api::DataSource> {
+    handle.send(Command::RefreshTags);
+    wait_for(events, 20, |event| match event {
+        Event::Tags(list) => Some(list),
+        _ => None,
+    })
+    .await
+    .expect("a refreshed tag list")
+}
+
+/// Data Manager › Sources against the live plant, through the runtime as
+/// the console does it: create a source (its settings sent as an object),
+/// edit it, move it to the top, duplicate it, set and clear a per-tag
+/// shortcut, list the Modbus devices and one device's registers, then
+/// delete both sources and check the rest of the list kept its order.
+async fn data_manager_sources_round_trip(url: &str, user: &str, pass: &str) {
+    use serde::de::IgnoredAny;
+    use serde_json::json;
+    use voltrus_scada_native::api::{
+        Created, Method, ModbusDevice, ModbusDeviceDetail, TagShortcuts,
+    };
+
+    let (handle, events) = runtime::start().expect("runtime");
+    handle.send(Command::SignIn {
+        url: url.to_owned(),
+        username: user.to_owned(),
+        password: pass.to_owned(),
+    });
+    let signed_in = wait_for(&events, 30, |event| match event {
+        Event::SignInFailed(error) => panic!("sign-in failed: {error}"),
+        Event::Tags(list) => Some(list),
+        _ => None,
+    })
+    .await
+    .expect("the tag list after signing in");
+    assert!(!signed_in.is_empty(), "the plant has data sources");
+
+    // Create: POST /api/v1/data-sources.
+    let key = format!("e2e_native_source_{}", std::process::id());
+    let created: Created = answer(
+        &handle,
+        &events,
+        "data.sources.save",
+        Call::send::<Created>(
+            Method::POST,
+            "/api/v1/data-sources",
+            json!({
+                "key": key, "name": "E2E native source", "unit": "V", "color": "#22c55e",
+                "min_val": 0.0, "max_val": 10.0, "warn_val": 7.0, "crit_val": 9.0,
+                "base_val": 5.0, "decimals": 2, "source_type": "sine",
+                "source_config": { "amplitude": 3, "low_warn": 1 }, "chart_type": "gauge",
+            }),
+        ),
+    )
+    .await;
+    let list = refreshed_tags(&handle, &events).await;
+    let row = list
+        .iter()
+        .find(|source| source.id == created.id)
+        .expect("the new source is listed");
+    assert_eq!(row.key, key);
+    let config: serde_json::Value =
+        serde_json::from_str(&row.source_config).expect("the settings are JSON");
+    assert_eq!(
+        config["amplitude"], 3,
+        "settings sent as an object are stored as one"
+    );
+    println!("created data source {} ({key})", created.id);
+
+    // Edit: PUT /api/v1/data-sources/{id}, with the alarm delays.
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.sources.save",
+        Call::send::<IgnoredAny>(
+            Method::PUT,
+            format!("/api/v1/data-sources/{}", created.id),
+            json!({ "name": "E2E native source edited", "on_delay_secs": 4, "off_delay_secs": 2 }),
+        ),
+    )
+    .await;
+    let list = refreshed_tags(&handle, &events).await;
+    let row = list
+        .iter()
+        .find(|source| source.id == created.id)
+        .expect("the edited source is listed");
+    assert_eq!(row.name, "E2E native source edited");
+    assert_eq!((row.on_delay_secs, row.off_delay_secs), (4, 2));
+
+    // Reorder: PATCH /api/v1/data-sources/reorder with every id.
+    let mut order: Vec<i64> = list.iter().map(|source| source.id).collect();
+    order.retain(|id| *id != created.id);
+    order.insert(0, created.id);
+    // The plant's sources, in the order the reorder gives them.
+    let plant: Vec<i64> = order[1..].to_vec();
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.sources.reorder",
+        Call::send::<IgnoredAny>(
+            Method::PATCH,
+            "/api/v1/data-sources/reorder",
+            json!({ "order": order }),
+        ),
+    )
+    .await;
+    let list = refreshed_tags(&handle, &events).await;
+    assert_eq!(list[0].id, created.id, "the moved source comes first");
+
+    // Duplicate: the copy under <key>_copy, its delays in a follow-up PUT.
+    let copy: Created = answer(
+        &handle,
+        &events,
+        "data.sources.duplicate",
+        Call::send::<Created>(
+            Method::POST,
+            "/api/v1/data-sources",
+            json!({
+                "key": format!("{key}_copy"), "name": "E2E native source edited copy",
+                "unit": "V", "color": "#22c55e", "min_val": 0.0, "max_val": 10.0,
+                "warn_val": 7.0, "crit_val": 9.0, "base_val": 5.0, "decimals": 2,
+                "source_type": "sine", "source_config": config, "chart_type": "gauge",
+            }),
+        ),
+    )
+    .await;
+    answer::<IgnoredAny>(
+        &handle,
+        &events,
+        "data.sources.duplicate",
+        Call::send::<IgnoredAny>(
+            Method::PUT,
+            format!("/api/v1/data-sources/{}", copy.id),
+            json!({ "on_delay_secs": 4, "off_delay_secs": 2 }),
+        ),
+    )
+    .await;
+    let list = refreshed_tags(&handle, &events).await;
+    let row = list
+        .iter()
+        .find(|source| source.id == copy.id)
+        .expect("the copy is listed");
+    assert_eq!(row.key, format!("{key}_copy"));
+    assert_eq!((row.on_delay_secs, row.off_delay_secs), (4, 2));
+
+    // Per-tag shortcut: PUT /api/v1/shortcuts replaces the user's map.
+    let before: TagShortcuts = answer(
+        &handle,
+        &events,
+        "data.sources.shortcuts",
+        Call::get::<TagShortcuts>("/api/v1/shortcuts"),
+    )
+    .await;
+    let kept: serde_json::Map<String, serde_json::Value> = before
+        .by_id()
+        .into_iter()
+        .map(|(id, combo)| (id.to_string(), json!(combo)))
+        .collect();
+    let mut with = kept.clone();
+    with.insert(created.id.to_string(), json!("Mod+Shift+9"));
+    for (map, expected) in [(with, Some("Mod+Shift+9")), (kept, None)] {
+        answer::<IgnoredAny>(
+            &handle,
+            &events,
+            "data.sources.save",
+            Call::send::<IgnoredAny>(
+                Method::PUT,
+                "/api/v1/shortcuts",
+                serde_json::Value::Object(map),
+            ),
+        )
+        .await;
+        let now: TagShortcuts = answer(
+            &handle,
+            &events,
+            "data.sources.shortcuts",
+            Call::get::<TagShortcuts>("/api/v1/shortcuts"),
+        )
+        .await;
+        assert_eq!(
+            now.by_id().get(&created.id).map(String::as_str),
+            expected,
+            "the shortcut is set, then cleared"
+        );
+    }
+
+    // The Modbus devices a source can read, and one device's registers.
+    let devices: Vec<ModbusDevice> = answer(
+        &handle,
+        &events,
+        "data.sources.devices",
+        Call::get::<Vec<ModbusDevice>>("/api/v1/modbus-devices"),
+    )
+    .await;
+    let device = devices.first().expect("the solar farm has Modbus devices");
+    let detail: ModbusDeviceDetail = answer(
+        &handle,
+        &events,
+        "data.sources.registers",
+        Call::get::<ModbusDeviceDetail>(format!("/api/v1/modbus-devices/{}", device.id)),
+    )
+    .await;
+    assert_eq!(detail.device.id, device.id);
+    assert!(!detail.registers.is_empty(), "the device has registers");
+    println!(
+        "modbus devices: {}, {} has {} registers",
+        devices.len(),
+        device.id,
+        detail.registers.len()
+    );
+
+    // Delete: DELETE /api/v1/data-sources/{id}, both of them.
+    for id in [created.id, copy.id] {
+        answer::<IgnoredAny>(
+            &handle,
+            &events,
+            "data.sources.delete",
+            Call::send_empty::<IgnoredAny>(Method::DELETE, format!("/api/v1/data-sources/{id}")),
+        )
+        .await;
+    }
+    let list = refreshed_tags(&handle, &events).await;
+    let ids: Vec<i64> = list.iter().map(|source| source.id).collect();
+    assert_eq!(ids, plant, "the plant's sources keep their order");
+    println!("data sources created, edited, moved, duplicated and deleted");
+    handle.send(Command::Shutdown);
 }

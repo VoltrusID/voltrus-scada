@@ -49,6 +49,13 @@ actions!(
         ListToggle,
         StartStress,
         StopStress,
+        DataNewSource,
+        DataDuplicateSource,
+        DataDeleteSource,
+        DataMoveSourceUp,
+        DataMoveSourceDown,
+        DataSortNext,
+        DataReverseSort,
     ]
 );
 
@@ -61,6 +68,8 @@ pub const CONSOLE: &str = "Console";
 pub const NOT_TYPING: &str = "Console && !TextInput";
 pub const LIST: &str = "List";
 pub const MENU: &str = "Menu";
+/// The Data Manager's sources table has focus.
+pub const DATA_SOURCES: &str = "DataSources";
 
 /// How the help overlay groups the commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,16 +80,18 @@ pub enum Group {
     Alarms,
     View,
     Session,
+    Data,
 }
 
 impl Group {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Pages,
         Self::Navigation,
         Self::Lists,
         Self::Alarms,
         Self::View,
         Self::Session,
+        Self::Data,
     ];
 
     pub fn title(self) -> &'static str {
@@ -91,6 +102,7 @@ impl Group {
             Self::Alarms => "Alarms",
             Self::View => "View",
             Self::Session => "Session",
+            Self::Data => "Data Manager",
         }
     }
 }
@@ -340,6 +352,70 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     command!("Sign out", Session, Unplug, [], CONSOLE, SignOut, true),
     command!("Quit", Session, X, ["secondary-q"], CONSOLE, Quit, true),
+    CommandSpec {
+        label: "New data source",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_SOURCES,
+        action: || -> Box<dyn Action> { Box::new(DataNewSource) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Duplicate the source",
+        Data,
+        Copy,
+        ["d"],
+        DATA_SOURCES,
+        DataDuplicateSource,
+        false
+    ),
+    command!(
+        "Delete the source",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        DATA_SOURCES,
+        DataDeleteSource,
+        false
+    ),
+    command!(
+        "Move the source up",
+        Data,
+        ChevronUp,
+        ["alt-up"],
+        DATA_SOURCES,
+        DataMoveSourceUp,
+        false
+    ),
+    command!(
+        "Move the source down",
+        Data,
+        ChevronDown,
+        ["alt-down"],
+        DATA_SOURCES,
+        DataMoveSourceDown,
+        false
+    ),
+    command!(
+        "Sort by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        DATA_SOURCES,
+        DataSortNext,
+        false
+    ),
+    command!(
+        "Reverse the sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        DATA_SOURCES,
+        DataReverseSort,
+        false
+    ),
 ];
 
 /// A binding from table data; panics on a bad keystroke or context, which

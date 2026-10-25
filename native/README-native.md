@@ -43,6 +43,18 @@ JetBrains Mono for values.
   link is live the chart moves on once a second. Each tag keeps a day of
   history: live values of the last 15 minutes at full rate, older ones
   thinned to one per 20 seconds.
+- **Data Manager** (More menu, palette; admin, demo and integration roles):
+  a sidebar of sections grouped Data, Protocols, Insights and Admin as in the
+  web client (only built sections are listed; ↑↓ switch, Enter goes in, Esc
+  comes back). **Sources**: every data source in a virtualised table
+  (order, name, key, unit, range, limits, source type, card, per-tag
+  shortcut), `/` to search, sorting by clicking a header or S (⇧S reverses);
+  N or New source and Enter or a double click open the form (General: name,
+  key, unit, decimals, range, limits, base, card kind, colour, low limits and
+  deadband, alarm delays, recorded per-tag shortcut; Source: the type and
+  its settings, a Modbus device with one register or an expression); D
+  duplicates, ⌫ deletes after a confirmation, ⌥↑/⌥↓ or dragging a row
+  reorders (shown at once, saved to the server).
 - **Status bar**: link state (live, reconnecting with the reason, offline),
   server, updates per second, tag and alarm counts, and a warning when the
   alarm list could not be fetched.
@@ -200,3 +212,15 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - Tag keys are register names, so two devices may share one (solar-farm has
   `frequency` twice). The console shows the first; keying by device is future
   work.
+- `PUT /api/v1/data-sources/{id}` answers ok but does not store
+  `source_config` or `device_id`, so source settings, low limits and the
+  Modbus device cannot be changed on an existing source (the web client's
+  edits are lost the same way). The console checks the stored row after an
+  edit and says so. `POST` stores `source_config` as the text of whatever
+  JSON it gets, so the console sends an object (the web client's string is
+  stored quoted), and ignores the alarm delays, which follow in a `PUT`.
+- `PUT /api/v1/shortcuts` replaces the user's whole map and stores a `null`
+  as an empty shortcut instead of removing it: the console sends the full
+  map without the cleared entry. The default "permissive" name rule refuses
+  parentheses, so a duplicate is named `<name> copy` (the web's
+  `<name> (Copy)` is refused).

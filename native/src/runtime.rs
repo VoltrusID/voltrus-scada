@@ -198,6 +198,9 @@ pub enum Command {
     /// [`crate::stress`]); `SignOut` stops it.
     Stress(StressOptions),
     Shutdown,
+    /// Fetch the tag list again (after a data source was added, changed,
+    /// removed or reordered); answered by [`Event::Tags`] as at sign-in.
+    RefreshTags,
 }
 
 /// Passwords stay out of logs.
@@ -233,6 +236,7 @@ impl fmt::Debug for Command {
                 .finish_non_exhaustive(),
             Self::Stress(options) => f.debug_tuple("Stress").field(options).finish(),
             Self::Shutdown => f.write_str("Shutdown"),
+            Self::RefreshTags => f.write_str("RefreshTags"),
         }
     }
 }
@@ -854,6 +858,14 @@ impl Actor {
                 self.stress = Some(spawn_stress(self.out.clone(), options));
             }
             Command::Shutdown => return false,
+            Command::RefreshTags => {
+                if let Some(s) = &self.session {
+                    let api = s.api.clone();
+                    spawn_rest(&self.inputs, s.id, async move {
+                        Rest::Tags(api.data_sources().await.map_err(|error| error.to_string()))
+                    });
+                }
+            }
         }
         true
     }

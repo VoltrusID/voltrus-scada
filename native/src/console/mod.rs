@@ -130,6 +130,8 @@ pub struct DeviceLink {
 pub enum LaunchOverlay {
     Palette,
     Help,
+    /// The Data Manager's form for a new data source.
+    NewSource,
 }
 
 /// How a stress run goes (`--stress …` or the palette).
@@ -516,6 +518,12 @@ impl Console {
         self.send(Command::Call { key, call });
     }
 
+    /// Fetch the tag list again after a data source changed on the server;
+    /// it arrives like the sign-in's list (`Event::Tags`).
+    pub fn refresh_tags(&self) {
+        self.send(Command::RefreshTags);
+    }
+
     /// A page module's own state, made on first use. Keyed by type, so a
     /// page keeps its state in its own module without a field here.
     pub fn state<S: Default + 'static>(&mut self) -> &mut S {
@@ -524,6 +532,13 @@ impl Console {
             .or_insert_with(|| Box::new(S::default()))
             .downcast_mut::<S>()
             .expect("states are keyed by their type")
+    }
+
+    /// A page module's state, if made: for hooks that get `&Console`.
+    pub fn state_ref<S: 'static>(&self) -> Option<&S> {
+        self.states
+            .get(&TypeId::of::<S>())
+            .and_then(|state| state.downcast_ref::<S>())
     }
 
     /// The keyboard list `id`, made on first use.
@@ -733,6 +748,9 @@ impl Console {
         match self.pending_overlay.take() {
             Some(LaunchOverlay::Palette) => self.open_palette(window, cx),
             Some(LaunchOverlay::Help) => self.open_help(window, cx),
+            Some(LaunchOverlay::NewSource) => {
+                views::data_manager::sources::new_source(self, window, cx);
+            }
             None => {}
         }
     }

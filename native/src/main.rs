@@ -21,7 +21,7 @@ fn usage() -> String {
         "\
 usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
-                      [--hud] [--overlay palette|help]
+                      [--hud] [--overlay palette|help|new-source]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
 
@@ -32,7 +32,8 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --range            the Trends range to start with (default 1h)
   --appearance       dark or light instead of following the system
   --hud              show the performance HUD (also ⇧⌘P)
-  --overlay          open the command palette or the shortcut help once signed in
+  --overlay          open the command palette, the shortcut help or the Data Manager's
+                     new-source form once signed in
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
   --stress-tags      how many synthetic tags
   --stress-rate      synthetic updates per second
@@ -111,9 +112,10 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 options.overlay = Some(match args.next().map(String::as_str) {
                     Some("palette") => LaunchOverlay::Palette,
                     Some("help") => LaunchOverlay::Help,
+                    Some("new-source") => LaunchOverlay::NewSource,
                     other => {
                         return Err(format!(
-                            "--overlay takes palette or help, not “{}”",
+                            "--overlay takes palette, help or new-source, not “{}”",
                             other.unwrap_or("")
                         ));
                     }
@@ -309,6 +311,11 @@ mod tests {
         assert!(parse(&args(&["--page", "nowhere"])).is_err());
         assert!(parse(&args(&["--appearance"])).is_err());
         assert!(parse(&args(&["--overlay", "menu"])).is_err());
+        assert_eq!(
+            parse(&args(&["--page", "data", "--overlay", "new-source"]))
+                .map(|options| (options.page, options.overlay)),
+            Ok((Some(Page::DataManager), Some(LaunchOverlay::NewSource)))
+        );
         assert!(parse(&args(&["--bogus"])).is_err());
     }
 
