@@ -124,6 +124,25 @@ for _ in $(seq 1 90); do
 done
 echo "history samples: $stored"
 [ "$stored" -gt 0 ] || { echo "::error::no values reached the server"; tail -50 server.log; exit 1; }
+
+# The Insights sections' data: a shift schedule, a stop of the inverter
+# closed with its reason and one still open on the grid meter, and a
+# recipe of the inverter's values as they are now.
+for shift in '{"name": "Morning", "start_hour": 6, "start_minute": 0, "duration_hours": 8, "days_mask": 31}' \
+  '{"name": "Afternoon", "start_hour": 14, "start_minute": 0, "duration_hours": 8, "days_mask": 31}' \
+  '{"name": "Night", "start_hour": 22, "start_minute": 0, "duration_hours": 8, "days_mask": 127}'; do
+  curl -fsS -b cookies.txt -H "$json" -d "$shift" "$url/api/v1/oee/shifts" > /dev/null
+done
+stop="$(curl -fsS -b cookies.txt -H "$json" -d '{"device_id": "sma_inv_1", "state": "idle"}' \
+  "$url/api/v1/oee/downtime" | jq -r .id)"
+sleep 2
+curl -fsS -b cookies.txt -X PUT -H "$json" -d '{"reason": "Inverter firmware update"}' \
+  "$url/api/v1/oee/downtime/$stop/close" > /dev/null
+curl -fsS -b cookies.txt -H "$json" -d '{"device_id": "pm5560_grid", "state": "maintenance"}' \
+  "$url/api/v1/oee/downtime" > /dev/null
+curl -fsS -b cookies.txt -H "$json" \
+  -d '{"name": "Clear-sky setpoints", "device_id": "sma_inv_1", "category": "Seasonal", "description": "Values at full irradiance"}' \
+  "$url/api/v1/recipes" > /dev/null
 echo "open alarms: $(curl -fsS -b cookies.txt "$url/api/v1/alarms?status=active&limit=100" | jq length)"
 
 echo "server: $url"

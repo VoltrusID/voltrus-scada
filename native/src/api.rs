@@ -20,6 +20,7 @@ pub use reqwest::Method;
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 
+pub mod insights;
 pub mod ops;
 
 /// A request the server answered with an error status.

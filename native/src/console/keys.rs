@@ -1025,6 +1025,314 @@ pub static COMMANDS: &[CommandSpec] = &[
         DataReverseSort,
         false
     ),
+    // Data Manager › Insights (`views::data_manager::{oee, analytics,
+    // recipes}`): each section's root and chart carry these contexts.
+    command!(
+        "OEE: previous figure",
+        Data,
+        ChevronLeft,
+        ["left"],
+        super::views::data_manager::oee::OEE_CARDS,
+        super::views::data_manager::oee::OeePreviousFigure,
+        false
+    ),
+    command!(
+        "OEE: next figure",
+        Data,
+        ChevronRight,
+        ["right"],
+        super::views::data_manager::oee::OEE_CARDS,
+        super::views::data_manager::oee::OeeNextFigure,
+        false
+    ),
+    command!(
+        "OEE: what the figure is made of",
+        Data,
+        CircleDot,
+        ["enter"],
+        super::views::data_manager::oee::OEE_CARDS,
+        super::views::data_manager::oee::OeeDrill,
+        false
+    ),
+    command!(
+        "OEE: to the list below",
+        Data,
+        ChevronDown,
+        ["down"],
+        super::views::data_manager::oee::OEE_CARDS,
+        super::views::data_manager::oee::OeeToList,
+        false
+    ),
+    command!(
+        "Insights: previous device",
+        Data,
+        ChevronLeft,
+        [","],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeePreviousDevice,
+        false
+    ),
+    command!(
+        "Insights: next device",
+        Data,
+        ChevronRight,
+        ["."],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeNextDevice,
+        false
+    ),
+    command!(
+        "Insights: shorter range",
+        Data,
+        Clock,
+        ["["],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeePreviousRange,
+        false
+    ),
+    command!(
+        "Insights: longer range",
+        Data,
+        Clock,
+        ["]"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeNextRange,
+        false
+    ),
+    command!(
+        "OEE: switch Downtime and Shifts",
+        Data,
+        Columns,
+        ["t"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeSwitchTab,
+        false
+    ),
+    command!(
+        "OEE: record downtime, or add a shift",
+        Data,
+        Plus,
+        ["n"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeNew,
+        false
+    ),
+    command!(
+        "Insights: fetch again",
+        Data,
+        RefreshCw,
+        ["r"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeRefresh,
+        false
+    ),
+    command!(
+        "OEE: delete the shift",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeDeleteShift,
+        false
+    ),
+    command!(
+        "Analytics: previous bar",
+        Data,
+        ChevronLeft,
+        ["left"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsPreviousBar,
+        false
+    ),
+    command!(
+        "Analytics: next bar",
+        Data,
+        ChevronRight,
+        ["right"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsNextBar,
+        false
+    ),
+    command!(
+        "Analytics: first bar",
+        Data,
+        ChevronLeft,
+        ["home"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsFirstBar,
+        false
+    ),
+    command!(
+        "Analytics: last bar",
+        Data,
+        ChevronRight,
+        ["end"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsLastBar,
+        false
+    ),
+    command!(
+        "Analytics: drill into the bar",
+        Data,
+        CircleDot,
+        ["enter"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsDrill,
+        false
+    ),
+    command!(
+        "Analytics: back out of the bar",
+        Data,
+        ChevronUp,
+        ["backspace"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsBack,
+        false
+    ),
+    command!(
+        "Analytics: previous metric",
+        Data,
+        ChevronUp,
+        ["up"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsPreviousMetric,
+        false
+    ),
+    command!(
+        "Analytics: next metric",
+        Data,
+        ChevronDown,
+        ["down"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsNextMetric,
+        false
+    ),
+    command!(
+        "Insights: previous device",
+        Data,
+        ChevronLeft,
+        [","],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsPreviousDevice,
+        false
+    ),
+    command!(
+        "Insights: next device",
+        Data,
+        ChevronRight,
+        ["."],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsNextDevice,
+        false
+    ),
+    command!(
+        "Insights: shorter range",
+        Data,
+        Clock,
+        ["["],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsPreviousRange,
+        false
+    ),
+    command!(
+        "Insights: longer range",
+        Data,
+        Clock,
+        ["]"],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsNextRange,
+        false
+    ),
+    command!(
+        "Analytics: switch Aggregate and Compare",
+        Data,
+        Columns,
+        ["m"],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsSwitchMode,
+        false
+    ),
+    command!(
+        "Insights: fetch again",
+        Data,
+        RefreshCw,
+        ["r"],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsRefresh,
+        false
+    ),
+    command!(
+        "Analytics: save the buckets as CSV",
+        Data,
+        Download,
+        ["e"],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsExport,
+        false
+    ),
+    command!(
+        "Recipes: save current as recipe",
+        Data,
+        Plus,
+        ["n"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesNew,
+        false
+    ),
+    command!(
+        "Recipes: load the recipe",
+        Data,
+        Upload,
+        ["l"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesLoad,
+        false
+    ),
+    command!(
+        "Recipes: delete the recipe",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesDelete,
+        false
+    ),
+    command!(
+        "Insights: previous device",
+        Data,
+        ChevronLeft,
+        [","],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesPreviousDevice,
+        false
+    ),
+    command!(
+        "Insights: next device",
+        Data,
+        ChevronRight,
+        ["."],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesNextDevice,
+        false
+    ),
+    command!(
+        "Recipes: next category",
+        Data,
+        Funnel,
+        ["c"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesNextCategory,
+        false
+    ),
+    command!(
+        "Insights: fetch again",
+        Data,
+        RefreshCw,
+        ["r"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesRefresh,
+        false
+    ),
 ];
 
 /// A binding from table data; panics on a bad keystroke or context, which

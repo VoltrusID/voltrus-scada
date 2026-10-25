@@ -14,6 +14,10 @@
 //! section, Esc in the section comes back to the sidebar (and Esc there
 //! goes back in).
 
+pub(crate) mod analytics;
+pub(crate) mod insights_kit;
+pub(crate) mod oee;
+pub(crate) mod recipes;
 pub(crate) mod source_form;
 pub(crate) mod source_model;
 pub(crate) mod sources;
@@ -80,18 +84,56 @@ pub struct SectionSpec {
 }
 
 /// Every built section, in sidebar order within its group.
-pub static SECTIONS: &[SectionSpec] = &[SectionSpec {
-    id: "sources",
-    title: "Sources",
-    icon: Icon::Database,
-    group: SectionGroup::Data,
-    role: Role::Operator,
-    render: sources::render,
-    on_open: Some(sources::on_open),
-    focus: Some(sources::focus),
-    on_reply: Some(sources::on_reply),
-    search: Some(sources::search),
-}];
+pub static SECTIONS: &[SectionSpec] = &[
+    SectionSpec {
+        id: "sources",
+        title: "Sources",
+        icon: Icon::Database,
+        group: SectionGroup::Data,
+        role: Role::Operator,
+        render: sources::render,
+        on_open: Some(sources::on_open),
+        focus: Some(sources::focus),
+        on_reply: Some(sources::on_reply),
+        search: Some(sources::search),
+    },
+    SectionSpec {
+        id: oee::ID,
+        title: "OEE",
+        icon: Icon::Gauge,
+        group: SectionGroup::Insights,
+        role: Role::Any,
+        render: oee::render,
+        on_open: Some(oee::on_open),
+        focus: Some(oee::focus),
+        on_reply: Some(oee::on_reply),
+        search: None,
+    },
+    SectionSpec {
+        id: analytics::ID,
+        title: "Analytics",
+        icon: Icon::ChartLine,
+        group: SectionGroup::Insights,
+        role: Role::Any,
+        render: analytics::render,
+        on_open: Some(analytics::on_open),
+        focus: Some(analytics::focus),
+        on_reply: Some(analytics::on_reply),
+        search: None,
+    },
+    SectionSpec {
+        id: recipes::ID,
+        title: "Recipes",
+        icon: Icon::Layers,
+        group: SectionGroup::Insights,
+        role: Role::Operator,
+        render: recipes::render,
+        on_open: Some(recipes::on_open),
+        focus: Some(recipes::focus),
+        on_reply: Some(recipes::on_reply),
+        search: Some(recipes::search),
+    },
+];
 
 /// The sidebar's keyboard list.
 pub(crate) const NAV: &str = "data.sections";
@@ -148,6 +190,13 @@ pub(crate) fn choose(console: &mut Console, id: &'static str, cx: &mut Context<C
         on_open(console, cx);
     }
     cx.notify();
+}
+
+/// Whether section `id` is on screen: the Data Manager shown with it
+/// chosen. A section's own timers (a status poll) run only while it is.
+pub(crate) fn section_shown(console: &Console, id: &str) -> bool {
+    console.page == crate::console::Page::DataManager
+        && current(console).is_some_and(|spec| spec.id == id)
 }
 
 /// The page's `on_show`: open the section and focus inside it.
@@ -429,12 +478,21 @@ mod tests {
 
     #[test]
     fn the_built_sections_are_listed_once_for_operators() {
-        let operator: Vec<_> = visible(SECTIONS, Some(Role::Operator))
-            .iter()
-            .map(|spec| spec.id)
-            .collect();
-        assert_eq!(operator, ["sources"]);
-        assert!(visible(SECTIONS, Some(Role::Any)).is_empty());
+        let ids = |role| -> Vec<&'static str> {
+            visible(SECTIONS, Some(role))
+                .iter()
+                .map(|spec| spec.id)
+                .collect()
+        };
+        let operator = ids(Role::Operator);
+        for id in ["sources", "oee", "analytics", "recipes"] {
+            assert!(operator.contains(&id), "operators see {id}");
+        }
+        // OEE and analytics are read by anyone; recipes (the list too) and
+        // sources are operator routes.
+        let viewer = ids(Role::Any);
+        assert!(viewer.contains(&"oee") && viewer.contains(&"analytics"));
+        assert!(!viewer.contains(&"recipes") && !viewer.contains(&"sources"));
         let mut all: Vec<_> = SECTIONS.iter().map(|spec| spec.id).collect();
         all.sort_unstable();
         all.dedup();
