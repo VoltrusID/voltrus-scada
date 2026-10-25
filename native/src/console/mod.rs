@@ -139,6 +139,8 @@ pub enum LaunchOverlay {
     Action(&'static str),
     /// A view or dialog of the Alarms page (`--alarms`).
     Alarms(alarms::Launch),
+    /// The Data Manager's form for a new data source.
+    NewSource,
     /// The dashboard's tag picker, on its `--screen`.
     AddTags,
 }
@@ -546,6 +548,12 @@ impl Console {
         self.send(Command::Call { key, call });
     }
 
+    /// Fetch the tag list again after a data source changed on the server;
+    /// it arrives like the sign-in's list (`Event::Tags`).
+    pub fn refresh_tags(&self) {
+        self.send(Command::RefreshTags);
+    }
+
     /// A page module's own state, made on first use. Keyed by type, so a
     /// page keeps its state in its own module without a field here.
     pub fn state<S: Default + 'static>(&mut self) -> &mut S {
@@ -799,6 +807,9 @@ impl Console {
                 }
             }
             Some(LaunchOverlay::Alarms(view)) => views::alarms::launch(self, view, window, cx),
+            Some(LaunchOverlay::NewSource) => {
+                views::data_manager::sources::new_source(self, window, cx);
+            }
             Some(LaunchOverlay::AddTags) => views::dashboard::launch_picker(self),
             None => {}
         }

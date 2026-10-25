@@ -221,6 +221,60 @@ flash, Trends while live), so its render must not scale with the plant:
   one; the meter keeps those frames out of its figures and reports them as
   the warm-up.
 
+## Add a Data Manager section
+
+The Data Manager (`views/data_manager/`, `--page data`) is one page with a
+sidebar of sections grouped Data, Protocols, Insights and Admin, as the web
+client's `DataManager.tsx`. A section is one module plus one row:
+
+1. Write `views/data_manager/<section>.rs` with
+   `pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement`
+   (it draws everything right of the sidebar, its `page_header` included)
+   and the optional hooks below. Declare it `pub(crate) mod <section>;` in
+   `views/data_manager/mod.rs`.
+2. Add one row to `data_manager::SECTIONS`:
+
+   ```rust
+   SectionSpec {
+       id: "modbus",                  // calls are named data.modbus.<what>
+       title: "Modbus",
+       icon: Icon::Cable,
+       group: SectionGroup::Protocols, // Data, Protocols, Insights or Admin
+       role: Role::Operator,          // web `admin` items; `strictAdmin` is Role::Admin
+       render: modbus::render,
+       on_open: Some(modbus::on_open), // shown (page opened, sidebar moved): fetch once
+       focus: Some(modbus::focus),     // Enter in the sidebar: focus the section's list
+       on_reply: Some(modbus::on_reply),
+       search: Some(modbus::search),   // `/`
+   }
+   ```
+
+That is all: the sidebar lists the row for users whose role allows it, a
+group appears once it has a row, and nothing is listed for a section that is
+not built. The page routes the answer of every `CallKey` named
+`data.<id>.<what>` to that section's `on_reply`, so a section sends
+`console.call(CallKey::new("data.modbus.list"), Call::get::<…>(…))` and
+matches on `key.name` there. Keep the section's state in its module
+(`console.state::<State>()`, and `console.state_ref::<State>()` in hooks
+that get `&Console`).
+
+Keys: j/k or ↑↓ in the sidebar switch sections (`on_open` runs), Enter goes
+in (`focus` runs), Esc anywhere in the section comes back to the sidebar
+(the page handles `Dismiss` around the section; overlays and text fields
+take their own Esc first). Commands that act on a section's list get rows in
+`keys::COMMANDS` with a key context the section sets around its list (the
+Sources table uses `keys::DATA_SOURCES`: N, D, ⌫, ⌥↑ ⌥↓, S) and handle them
+on that element; a command that must work from anywhere (New data source in
+the palette) is handled on the root.
+
+After a change to data sources, `console.refresh_tags()` fetches the tag
+list again (`Command::RefreshTags`, answered by `Event::Tags` as at sign-in),
+so every page shows what the server now has. Replies come without a window:
+to close a dialog after the server answered, keep the window handle in the
+section's state and close it in `cx.defer` (see
+`data_manager::source_form::close_later`).
+
+
 ## The shell: settings, keymap, notifications, edition
 
 `console/shell.rs` holds what surrounds the pages, in its own state
@@ -268,7 +322,6 @@ first open with `tag_detail::text_field`, and subscribe once with
 `tag_detail::on_field` (Enter submits, Esc closes). A reply that ends a
 dialog cannot close it (replies have no window): close it when sending, or
 show the outcome inside it, as the write dialog shows the command id.
-
 ## Poll while a page is on screen
 
 A list the server changes without a WebSocket message (the Commands

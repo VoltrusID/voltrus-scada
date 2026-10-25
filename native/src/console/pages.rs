@@ -21,6 +21,7 @@ pub enum Page {
     Alarms,
     Trends,
     Performance,
+    DataManager,
     Dashboard,
     TagTree,
     Commands,
@@ -164,6 +165,21 @@ pub static PAGES: &[PageSpec] = &[
         side_panel: no_panel,
     },
     PageSpec {
+        page: Page::DataManager,
+        id: "data",
+        title: "Data Manager",
+        icon: Icon::Database,
+        digit: None,
+        role: Role::Operator,
+        placement: Placement::More,
+        render: views::data_manager::render,
+        badge: None,
+        on_show: Some(views::data_manager::on_show),
+        on_reply: Some(views::data_manager::on_reply),
+        search: Some(views::data_manager::search),
+        side_panel: no_panel,
+    },
+    PageSpec {
         page: Page::TagTree,
         id: "tagtree",
         title: "Tag tree",
@@ -299,6 +315,7 @@ mod tests {
             Page::Alarms,
             Page::Trends,
             Page::Performance,
+            Page::DataManager,
             Page::Dashboard,
             Page::TagTree,
             Page::Commands,
@@ -322,7 +339,7 @@ mod tests {
         assert_eq!(Page::parse("nowhere"), None);
         assert_eq!(
             ids(),
-            "overview|tags|alarms|trends|performance|tagtree|commands|shift|audit|dashboard|mimic"
+            "overview|tags|alarms|trends|performance|data|tagtree|commands|shift|audit|dashboard|mimic"
         );
     }
 

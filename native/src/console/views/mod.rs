@@ -10,6 +10,7 @@ pub(crate) mod cached;
 pub(crate) mod commands;
 pub(crate) mod dashboard;
 mod dashboard_cards;
+pub(crate) mod data_manager;
 pub(crate) mod edition;
 pub(crate) mod export;
 pub(crate) mod hud;
@@ -281,6 +282,13 @@ impl Render for Console {
                 }
             }))
             .map(|root| alarms::root_actions(root, cx))
+            .on_action(
+                cx.listener(|console, _: &super::keys::DataNewSource, window, cx| {
+                    if console.phase == Phase::Console {
+                        data_manager::sources::new_source(console, window, cx);
+                    }
+                }),
+            )
             .map(|this| dashboard::actions(this, cx))
             .child(body)
             .when(!self.toasts.is_empty(), |this| {

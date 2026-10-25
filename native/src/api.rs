@@ -504,6 +504,75 @@ impl VoltrusApi {
     }
 }
 
+/// `POST /api/v1/data-sources` answers `201 {"id": 12}`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+pub struct Created {
+    pub id: i64,
+}
+
+/// `GET /api/v1/shortcuts`: the signed-in user's per-tag shortcuts,
+/// `{"<data source id>": "Mod+Shift+K"}` in the web client's combo format.
+/// The server stores a cleared shortcut as an empty combo.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(transparent)]
+pub struct TagShortcuts(pub std::collections::HashMap<String, Option<String>>);
+
+impl TagShortcuts {
+    /// The set shortcuts by data source id; empty and malformed entries
+    /// are skipped.
+    pub fn by_id(&self) -> std::collections::HashMap<i64, String> {
+        self.0
+            .iter()
+            .filter_map(|(id, combo)| {
+                let combo = combo.as_deref().filter(|combo| !combo.is_empty())?;
+                Some((id.parse().ok()?, combo.to_owned()))
+            })
+            .collect()
+    }
+}
+
+/// One row of `GET /api/v1/modbus-devices` (`api/modbus_devices.rs`), and
+/// the `device` of `GET /api/v1/modbus-devices/{id}`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ModbusDevice {
+    pub id: String,
+    pub name: String,
+    pub ip: String,
+    pub port: u16,
+    pub unit_id: u8,
+    pub interval_ms: u64,
+    pub endianness: String,
+    pub enabled: bool,
+    /// In the list only.
+    pub register_count: usize,
+}
+
+/// Mirrors `voltrus::models::ModbusRegister`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ModbusRegister {
+    pub id: i64,
+    pub device_id: String,
+    pub name: String,
+    pub address: u16,
+    /// `int16`, `uint16`, `int32`, `float32` or `float64`.
+    pub register_type: String,
+    /// `holding` or `input`.
+    pub register_area: String,
+    pub scale: f64,
+    pub sort_order: i64,
+    pub zero_based: bool,
+}
+
+/// `GET /api/v1/modbus-devices/{id}`.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct ModbusDeviceDetail {
+    pub device: ModbusDevice,
+    pub registers: Vec<ModbusRegister>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

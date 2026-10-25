@@ -81,6 +81,13 @@ actions!(
         AlarmsShowList,
         AlarmsShowAnalytics,
         AlarmsShowAudit,
+        DataNewSource,
+        DataDuplicateSource,
+        DataDeleteSource,
+        DataMoveSourceUp,
+        DataMoveSourceDown,
+        DataSortNext,
+        DataReverseSort,
     ]
 );
 
@@ -106,6 +113,8 @@ pub const OPS_AUDIT: &str = "OpsAudit && !TextInput";
 /// The Alarms page's lists (and its detail sheet): a = acknowledge, s =
 /// shelve, ⇧A = acknowledge all, ←/→ = filter, o = sort.
 pub const ALARM_LIST: &str = "AlarmList";
+/// The Data Manager's sources table has focus.
+pub const DATA_SOURCES: &str = "DataSources";
 
 /// How the help overlay groups the commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,16 +125,18 @@ pub enum Group {
     Alarms,
     View,
     Session,
+    Data,
 }
 
 impl Group {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Pages,
         Self::Navigation,
         Self::Lists,
         Self::Alarms,
         Self::View,
         Self::Session,
+        Self::Data,
     ];
 
     pub fn title(self) -> &'static str {
@@ -136,6 +147,7 @@ impl Group {
             Self::Alarms => "Alarms",
             Self::View => "View",
             Self::Session => "Session",
+            Self::Data => "Data Manager",
         }
     }
 }
@@ -1105,6 +1117,70 @@ pub static COMMANDS: &[CommandSpec] = &[
         ["r"],
         super::views::mimic::MIMIC,
         super::views::mimic::MimicReload,
+        false
+    ),
+    CommandSpec {
+        label: "New data source",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_SOURCES,
+        action: || -> Box<dyn Action> { Box::new(DataNewSource) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Duplicate the source",
+        Data,
+        Copy,
+        ["d"],
+        DATA_SOURCES,
+        DataDuplicateSource,
+        false
+    ),
+    command!(
+        "Delete the source",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        DATA_SOURCES,
+        DataDeleteSource,
+        false
+    ),
+    command!(
+        "Move the source up",
+        Data,
+        ChevronUp,
+        ["alt-up"],
+        DATA_SOURCES,
+        DataMoveSourceUp,
+        false
+    ),
+    command!(
+        "Move the source down",
+        Data,
+        ChevronDown,
+        ["alt-down"],
+        DATA_SOURCES,
+        DataMoveSourceDown,
+        false
+    ),
+    command!(
+        "Sort by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        DATA_SOURCES,
+        DataSortNext,
+        false
+    ),
+    command!(
+        "Reverse the sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        DATA_SOURCES,
+        DataReverseSort,
         false
     ),
 ];
