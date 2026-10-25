@@ -44,6 +44,15 @@ use crate::console::views::{
     ListKeys, card, focus_ring, keyboard_list, page_header, rows_on_screen, tail_row, tail_rows,
 };
 
+/// A wizard step's footer: the back label, the next label, whether next
+/// is enabled, and the key hints.
+type StepBar = (
+    Option<&'static str>,
+    Option<&'static str>,
+    bool,
+    Vec<(&'static str, &'static str)>,
+);
+
 /// The section's id (its calls are `data.imports.*`).
 const ID: &str = "imports";
 /// The one keyboard list of whichever step shows rows.
@@ -2365,12 +2374,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                     DataStep::Report => result_step(console, window, true, &theme, cx),
                 }
             };
-            let (back, next_label, enabled, hints): (
-                Option<&'static str>,
-                Option<&'static str>,
-                bool,
-                Vec<(&'static str, &'static str)>,
-            ) = match step {
+            let (back, next_label, enabled, hints): StepBar = match step {
                 _ if !admin => (None, None, false, vec![("W", "Node-RED import")]),
                 DataStep::File => (
                     None,
@@ -2442,12 +2446,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 FlowStep::Preview => flows_result_step(console, window, false, &theme, cx),
                 FlowStep::Report => flows_result_step(console, window, true, &theme, cx),
             };
-            let (back, next_label, enabled, hints): (
-                Option<&'static str>,
-                Option<&'static str>,
-                bool,
-                Vec<(&'static str, &'static str)>,
-            ) = match step {
+            let (back, next_label, enabled, hints): StepBar = match step {
                 FlowStep::File => (
                     None,
                     Some(if has_file {

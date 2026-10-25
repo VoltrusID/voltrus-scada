@@ -146,11 +146,11 @@ impl Default for View {
 }
 
 impl View {
-    pub(crate) fn to_screen(&self, world: Vec2) -> Vec2 {
+    pub(crate) fn to_screen(self, world: Vec2) -> Vec2 {
         world.scale(self.zoom) + self.pan
     }
 
-    pub(crate) fn to_world(&self, screen: Vec2) -> Vec2 {
+    pub(crate) fn to_world(self, screen: Vec2) -> Vec2 {
         (screen - self.pan).scale(1.0 / self.zoom)
     }
 

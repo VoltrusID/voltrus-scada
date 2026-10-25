@@ -340,13 +340,11 @@ fn number_end(bytes: &[u8], start: usize) -> usize {
     let mut i = start;
     while i < bytes.len() {
         let byte = bytes[i];
-        if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.' {
-            i += 1;
-        } else if (byte == b'+' || byte == b'-')
+        let exponent_sign = (byte == b'+' || byte == b'-')
             && i > start
             && matches!(bytes[i - 1], b'e' | b'E')
-            && !matches!(bytes.get(start + 1), Some(b'x' | b'X'))
-        {
+            && !matches!(bytes.get(start + 1), Some(b'x' | b'X'));
+        if byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.' || exponent_sign {
             i += 1;
         } else {
             break;
