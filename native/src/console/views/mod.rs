@@ -113,11 +113,21 @@ impl Render for Console {
                 } else {
                     theme.success
                 };
+                // Under the page header, and left of the tag detail panel
+                // when it is open, so it never covers a control.
+                let panel_open = self.phase == Phase::Console
+                    && self.page == Page::Tags
+                    && self.selected.is_some();
+                let right = if panel_open {
+                    px(tags::PANEL) + SPACE_7
+                } else {
+                    SPACE_7
+                };
                 this.child(
                     div()
                         .absolute()
-                        .bottom(px(40.0))
-                        .right(SPACE_7)
+                        .top(px(68.0))
+                        .right(right)
                         .max_w(px(440.0))
                         .flex()
                         .items_start()

@@ -15,6 +15,17 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/voltrus-native"
 sed "s/@VERSION@/$version/g" "$native/packaging/Info.plist" > "$app/Contents/Info.plist"
 
+# The icon: AppKit renders the SVG to 1024 px, sips scales the iconset.
+work="$(mktemp -d)"
+swift "$native/scripts/rasterize-icon.swift" "$native/packaging/AppIcon.svg" "$work/AppIcon.png" 1024
+iconset="$work/AppIcon.iconset"
+mkdir -p "$iconset"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$work/AppIcon.png" --out "$iconset/icon_${size}x${size}.png" > /dev/null
+  double=$((size * 2))
+  sips -z "$double" "$double" "$work/AppIcon.png" --out "$iconset/icon_${size}x${size}@2x.png" > /dev/null
+done
+iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 # Ad-hoc signature: required to launch on Apple silicon. It is not a
 # Developer ID signature, so Gatekeeper asks before the first launch.
 codesign --force --deep --sign - "$app"

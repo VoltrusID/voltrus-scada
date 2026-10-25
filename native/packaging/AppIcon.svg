@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1c20"/>
+      <stop offset="1" stop-color="#0b0b0d"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4ade80"/>
+      <stop offset="1" stop-color="#16a34a"/>
+    </linearGradient>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#tile)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="186" fill="none" stroke="#ffffff" stroke-opacity="0.08" stroke-width="3"/>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- The operator's screen. -->
+    <rect x="236" y="250" width="552" height="430" rx="56" stroke="#3f3f46" stroke-width="36"/>
+    <!-- Three live values, rising. -->
+    <line x1="374" y1="590" x2="374" y2="500" stroke="url(#glow)" stroke-width="56"/>
+    <line x1="512" y1="590" x2="512" y2="430" stroke="url(#glow)" stroke-width="56"/>
+    <line x1="650" y1="590" x2="650" y2="350" stroke="url(#glow)" stroke-width="56"/>
+    <!-- The stand. -->
+    <line x1="512" y1="698" x2="512" y2="776" stroke="#3f3f46" stroke-width="36"/>
+    <line x1="392" y1="786" x2="632" y2="786" stroke="#3f3f46" stroke-width="36"/>
+  </g>
+  <circle cx="724" cy="314" r="26" fill="#4ade80"/>
+</svg>

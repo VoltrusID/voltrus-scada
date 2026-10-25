@@ -22,20 +22,52 @@ const VALUE: f32 = 120.0;
 const STATUS: f32 = 84.0;
 const AGE: f32 = 56.0;
 const SPARK: f32 = 110.0;
-const PANEL: f32 = 340.0;
+pub(crate) const PANEL: f32 = 340.0;
+/// The key follows the name only when the name column has this much room.
+const INLINE_KEY_MIN: f32 = 260.0;
 /// The table's sparklines reach back this far at most, the panel's trend
 /// an hour; both start where the data does when it is younger.
 const SPARK_MS: f64 = 15.0 * 60_000.0;
 const DETAIL_MS: f64 = 60.0 * 60_000.0;
 const SHORTEST_MS: f64 = 2.0 * 60_000.0;
 
-/// Which optional columns fit the table's width.
+/// Which optional columns fit the table's width, and how wide the name is:
+/// text only ellipsizes inside a known width.
 #[derive(Clone, Copy)]
 struct Columns {
     key: bool,
     trend: bool,
+    /// The name text's width, after its status dot.
+    name: f32,
     /// The sparklines' span.
     span_ms: f64,
+}
+
+impl Columns {
+    fn fit(table_width: f32, span_ms: f64) -> Self {
+        let key = table_width >= 860.0;
+        let trend = table_width >= 600.0;
+        let mut fixed = VALUE + STATUS + AGE;
+        let mut count = 4.0;
+        if key {
+            fixed += KEY;
+            count += 1.0;
+        }
+        if trend {
+            fixed += SPARK;
+            count += 1.0;
+        }
+        let gaps = f32::from(SPACE_5) * (count - 1.0);
+        let padding = f32::from(SPACE_8) * 2.0;
+        // The status dot and its gap, and room for the list's scrollbar.
+        let dot = 8.0 + f32::from(SPACE_4) + 8.0;
+        Self {
+            key,
+            trend,
+            name: (table_width - fixed - gaps - padding - dot).max(40.0),
+            span_ms,
+        }
+    }
 }
 
 /// `width` is the space right of the sidebar.
@@ -60,10 +92,9 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
         width
     };
     let now = now_ms();
-    let columns = Columns {
-        key: table_width >= px(860.0),
-        trend: table_width >= px(600.0),
-        span_ms: fit_span(
+    let columns = Columns::fit(
+        f32::from(table_width),
+        fit_span(
             console
                 .store
                 .tags
@@ -73,7 +104,7 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
             SHORTEST_MS,
             SPARK_MS,
         ),
-    };
+    );
 
     let filter = div()
         .flex()
@@ -217,7 +248,20 @@ fn tag_row(
         .when(selected, |this| this.bg(theme.selected))
         .when(!selected, |this| this.hover(move |style| style.bg(hover)))
         .on_click(cx.listener(move |console, _, _, cx| console.select(index, cx)))
-        .child(
+        .child({
+            let gap = f32::from(SPACE_4);
+            let room = columns.name
+                - if trended {
+                    f32::from(ICON_SM) + gap
+                } else {
+                    0.0
+                };
+            let (name_width, key_width) = if inline_key && room >= INLINE_KEY_MIN {
+                let name_width = (room - gap) * 0.6;
+                (name_width, Some(room - gap - name_width))
+            } else {
+                (room, None)
+            };
             div()
                 .flex()
                 .flex_1()
@@ -228,16 +272,16 @@ fn tag_row(
                 .child(status_dot(color))
                 .child(
                     div()
-                        .flex_shrink()
-                        .min_w_0()
+                        .flex_none()
+                        .w(px(name_width))
                         .truncate()
                         .child(tag.info.name.clone()),
                 )
-                .when(inline_key, |this| {
+                .when_some(key_width, |this, key_width| {
                     this.child(
                         div()
-                            .flex_shrink()
-                            .min_w_0()
+                            .flex_none()
+                            .w(px(key_width))
                             .truncate()
                             .font_family(MONO)
                             .text_size(FONT_CAPTION)
@@ -247,8 +291,8 @@ fn tag_row(
                 })
                 .when(trended, |this| {
                     this.child(vt_ui::icon(Icon::ChartLine, ICON_SM, theme.fg_dim))
-                }),
-        )
+                })
+        })
         .when(columns.key, |this| {
             this.child(
                 div()
