@@ -757,7 +757,16 @@ impl Console {
                     .iter()
                     .find(|command| (command.action)().name() == name)
                 {
-                    window.dispatch_action((command.action)(), cx);
+                    // Not before the console's first frame is drawn: until
+                    // then the page's focus is not in the drawn frame, and
+                    // the action would reach no handler. Frame callbacks
+                    // run before the frame draws, hence two.
+                    let action = command.action;
+                    window.on_next_frame(move |window, _| {
+                        window.on_next_frame(move |window, cx| {
+                            window.dispatch_action(action(), cx);
+                        });
+                    });
                 }
             }
             None => {}
