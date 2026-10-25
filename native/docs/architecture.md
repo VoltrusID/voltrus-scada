@@ -78,6 +78,8 @@ That is all: the navbar tab or More item, the ⌘ digit, the View menu, the
 palette's "Go to …", the help overlay, `--page` and role gating follow from
 the row. Keep page state in your module: `#[derive(Default)] struct
 State { … }` and `console.state::<State>()`.
+A hook that only reads the console (`search`) reaches that state with
+`console.state_ref::<State>()`.
 
 ## Add a REST call
 
@@ -189,3 +191,20 @@ charts the last ten seconds. `--stress` feeds 10 000 synthetic tags at
 `--stress-seconds N --stress-report FILE` ends the run, prints the report
 and writes it. CI runs a 20 s pass (`native/scripts/stress-macos.sh`) and
 prints the report in the job log and summary.
+
+## Charts that need more than a live trend
+
+`vt_ui::chart::trend_chart` draws live trends ("now" at the right, no
+pointer). The Tags detail's chart, `views::tag_chart`, adds what a detail
+view needs: a clock time axis on round local times, any `[from, to]` (a
+past span too), limit lines, annotation marks, a crosshair, overlays with
+their own scale when their size differs, and min/max thinning per pixel
+column. It records where it painted its plot (`PlotCell`), so a pointer
+position maps back to a time (`tag_chart::time_at`). Reuse it for other
+detail charts; it is a candidate to move into vt-ui.
+
+Dialogs with text fields keep their fields in the page's state, made on
+first open with `tag_detail::text_field`, and subscribe once with
+`tag_detail::on_field` (Enter submits, Esc closes). A reply that ends a
+dialog cannot close it (replies have no window): close it when sending, or
+show the outcome inside it, as the write dialog shows the command id.

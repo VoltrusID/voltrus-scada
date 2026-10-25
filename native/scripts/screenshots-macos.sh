@@ -27,6 +27,14 @@ shots=(
   "trends-hud|--sign-in --page trends --range 5m --hud --appearance dark"
   "stress-performance|--stress --stress-switch-ms 0 --page performance --appearance dark"
   "stress-overview|--stress --stress-switch-ms 0 --page overview --hud --appearance dark"
+  "tagtree|--sign-in --page tagtree --appearance dark"
+  "tagtree-light|--sign-in --page tagtree --appearance light"
+  "tag-detail-wide|--sign-in --page tags --tag ac_power --overlay tag-expand --appearance dark"
+  "tag-write|--sign-in --page tags --tag ac_current_l1 --overlay tag-write --appearance dark"
+  "tag-policy|--sign-in --page tags --tag ac_current_l1 --overlay tag-policy --appearance dark"
+  "tag-note|--sign-in --page tags --tag ac_power --overlay tag-note --appearance dark"
+  "tag-compare|--sign-in --page tags --tag ac_power --overlay tag-compare --appearance dark"
+  "tag-range|--sign-in --page tags --tag ac_power --overlay tag-range --appearance dark"
 )
 
 status=0

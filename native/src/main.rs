@@ -14,14 +14,14 @@ use gpui::{
 use time::UtcOffset;
 use vt_ui::theme::{self, ThemeCatalog};
 
-use console::{Console, Launch, LaunchOverlay, Page, StressPlan};
+use console::{Console, Launch, LaunchOverlay, Page, StressPlan, TagDialog};
 
 fn usage() -> String {
     format!(
         "\
 usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
-                      [--hud] [--overlay palette|help]
+                      [--hud] [--overlay palette|help|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
 
@@ -32,7 +32,8 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --range            the Trends range to start with (default 1h)
   --appearance       dark or light instead of following the system
   --hud              show the performance HUD (also ⇧⌘P)
-  --overlay          open the command palette or the shortcut help once signed in
+  --overlay          open the command palette or the shortcut help once signed in; tag-…
+                     opens a dialog of the --tag tag's detail (tag-expand widens the detail)
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
   --stress-tags      how many synthetic tags
   --stress-rate      synthetic updates per second
@@ -108,15 +109,13 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--hud" => options.hud = true,
             "--overlay" => {
-                options.overlay = Some(match args.next().map(String::as_str) {
-                    Some("palette") => LaunchOverlay::Palette,
-                    Some("help") => LaunchOverlay::Help,
-                    other => {
-                        return Err(format!(
-                            "--overlay takes palette or help, not “{}”",
-                            other.unwrap_or("")
-                        ));
-                    }
+                let name = args.next().map_or("", String::as_str);
+                options.overlay = Some(match name {
+                    "palette" => LaunchOverlay::Palette,
+                    "help" => LaunchOverlay::Help,
+                    other => LaunchOverlay::Tags(TagDialog::parse(other).ok_or_else(|| {
+                        format!("--overlay takes palette, help or a tag-… dialog, not “{other}”")
+                    })?),
                 });
             }
             "--stress" => stressed = true,
@@ -310,6 +309,14 @@ mod tests {
         assert!(parse(&args(&["--appearance"])).is_err());
         assert!(parse(&args(&["--overlay", "menu"])).is_err());
         assert!(parse(&args(&["--bogus"])).is_err());
+        assert_eq!(
+            parse(&args(&["--overlay", "tag-write"])).map(|options| options.overlay),
+            Ok(Some(LaunchOverlay::Tags(TagDialog::Write)))
+        );
+        assert_eq!(
+            parse(&args(&["--page", "tagtree"])).map(|options| options.page),
+            Ok(Some(Page::TagTree))
+        );
     }
 
     #[test]

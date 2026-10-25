@@ -35,6 +35,7 @@ use vt_ui::theme::{self, ThemeCatalog};
 
 pub use keys::{Quit, key_bindings, menus};
 pub use pages::Page;
+pub use views::tag_detail::TagDialog;
 
 use meter::Meter;
 use nav::{ListNav, Move};
@@ -130,6 +131,8 @@ pub struct DeviceLink {
 pub enum LaunchOverlay {
     Palette,
     Help,
+    /// A dialog of the Tags page's detail, once `--tag` opened a tag.
+    Tags(TagDialog),
 }
 
 /// How a stress run goes (`--stress …` or the palette).
@@ -526,6 +529,14 @@ impl Console {
             .expect("states are keyed by their type")
     }
 
+    /// A page module's state, if it has made it: for hooks that only read
+    /// the console (`search`).
+    pub fn state_ref<S: 'static>(&self) -> Option<&S> {
+        self.states
+            .get(&TypeId::of::<S>())
+            .and_then(|state| state.downcast_ref::<S>())
+    }
+
     /// The keyboard list `id`, made on first use.
     pub fn list(&mut self, id: &'static str, cx: &mut gpui::App) -> &mut ListNav {
         self.lists.entry(id).or_insert_with(|| ListNav::new(cx))
@@ -733,6 +744,7 @@ impl Console {
         match self.pending_overlay.take() {
             Some(LaunchOverlay::Palette) => self.open_palette(window, cx),
             Some(LaunchOverlay::Help) => self.open_help(window, cx),
+            Some(LaunchOverlay::Tags(dialog)) => views::tag_detail::launch(self, dialog),
             None => {}
         }
     }
@@ -1158,23 +1170,10 @@ impl Console {
 
     // ── Commands to the server ────────────────────────────────────────────
 
+    /// Enter in the write field: the write dialog's mode decides how the
+    /// value goes (`views::tag_write`).
     pub fn write_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        // Enter in the field is not disabled like the button: one write at
-        // a time.
-        let Some(id) = self.selected.filter(|_| self.writing.is_none()) else {
-            return;
-        };
-        let text = self.inputs.write.read(cx).value().trim().to_owned();
-        match text.parse::<f64>() {
-            Ok(value) if value.is_finite() => {
-                self.write_result = None;
-                self.writing = Some(id);
-                self.send(Command::Write { id, value });
-                self.focus_page(window, cx);
-            }
-            _ => self.write_result = Some((id, Err(format!("“{text}” is not a number")))),
-        }
-        cx.notify();
+        views::tag_write::submit(self, window, cx);
     }
 
     pub fn acknowledge(&mut self, alarm: i64) {

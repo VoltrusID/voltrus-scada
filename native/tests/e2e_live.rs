@@ -258,3 +258,224 @@ async fn live_login_sensors_ws_stream() {
 
     logout_revokes_the_refresh_token(&url, &user, &pass).await;
 }
+
+/// The Tags slice's REST paths against the live plant: the tag tree and a
+/// path move, the naming convention, a write policy and the REST write it
+/// governs (refused without the reason, then accepted with a command id),
+/// annotations, and the detail chart's history with a custom span, full
+/// detail and an aggregation. Everything changed is put back.
+#[tokio::test]
+async fn live_tag_tree_policy_writes_notes_and_detail_history() {
+    use reqwest::Method;
+    use serde::de::IgnoredAny;
+    use voltrus_scada_native::api::DataSource;
+    use voltrus_scada_native::tag_api::{
+        self, Aggregation, Annotations, Created, Detail, HistoryAnswer, HistoryQuery,
+        NamingConvention, NamingUpdate, NewAnnotation, Span, TagTree, TreeNode, WriteAccepted,
+        WriteMode, WritePolicy,
+    };
+
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    let mut api = VoltrusApi::new(&url);
+    api.login(&user, &pass).await.expect("sign in");
+
+    // GET /tags/tree: every tag filed somewhere.
+    let tags: Vec<DataSource> = api.data_sources().await.expect("the tag list");
+    let tree: TagTree = api
+        .get_json("/api/v1/tags/tree")
+        .await
+        .expect("the tag tree");
+    let filed: usize = tree.tree.iter().map(TreeNode::total).sum();
+    assert_eq!(filed, tags.len(), "the tree files every tag once");
+    let tag = tags
+        .iter()
+        .find(|tag| tag.source_type == "modbus" && !tag.device_id.is_empty())
+        .expect("a polled tag")
+        .clone();
+
+    // PUT /tags/{id}/path, found again by a tree search, then put back.
+    let path = format!("/api/v1/tags/{}/path", tag.id);
+    api.send_json::<_, IgnoredAny>(
+        Method::PUT,
+        &path,
+        &serde_json::json!({"path": "E2E/Native console"}),
+    )
+    .await
+    .expect("move the tag");
+    let found: TagTree = api
+        .get_json(&format!(
+            "/api/v1/tags/tree?search={}",
+            tag_api::query_value("Native console")
+        ))
+        .await
+        .expect("search the tree");
+    let node = tag_api::find(&found.tree, "E2E/Native console").expect("the moved tag's node");
+    assert_eq!(node.tag_ids, [tag.id]);
+    assert!(
+        tag_api::check_path("E2E//x").is_err(),
+        "the console refuses an empty segment"
+    );
+    let refused = api
+        .send_json::<_, IgnoredAny>(Method::PUT, &path, &serde_json::json!({"path": "E2E//x"}))
+        .await;
+    assert!(refused.is_err(), "so does the server");
+    api.send_json::<_, IgnoredAny>(Method::PUT, &path, &serde_json::json!({"path": tag.path}))
+        .await
+        .expect("put the path back");
+    println!("moved tag {} and back", tag.id);
+
+    // GET and PUT /settings/naming-convention: the same convention back.
+    let naming: NamingConvention = api
+        .get_json("/api/v1/settings/naming-convention")
+        .await
+        .expect("the naming convention");
+    assert!(
+        naming
+            .templates
+            .iter()
+            .any(|template| template.id == naming.template)
+    );
+    let update = NamingUpdate::new(
+        &naming.template,
+        naming.custom_regex.as_deref().unwrap_or(""),
+    );
+    api.send_json::<_, IgnoredAny>(Method::PUT, "/api/v1/settings/naming-convention", &update)
+        .await
+        .expect("save the naming convention");
+    let again: NamingConvention = api
+        .get_json("/api/v1/settings/naming-convention")
+        .await
+        .expect("the naming convention again");
+    assert_eq!(
+        (again.template, again.regex),
+        (naming.template, naming.regex)
+    );
+
+    // PATCH the write policy; the REST write it governs.
+    let policy = WritePolicy {
+        writable: true,
+        write_min: Some(-1.0e9),
+        write_max: Some(1.0e9),
+        write_requires_reason: true,
+        ..WritePolicy::default()
+    };
+    let policy_path = format!("/api/v1/data-sources/{}/write-policy", tag.id);
+    api.send_json::<_, IgnoredAny>(Method::PATCH, &policy_path, &policy)
+        .await
+        .expect("save the write policy");
+    let write_path = format!("/api/v1/tags/{}/write", tag.id);
+    let value = tag.base_val;
+    assert!(
+        tag_api::check_write(&value.to_string(), "", WriteMode::Queued, Some(&policy)).is_err(),
+        "the console asks for the reason"
+    );
+    let without = tag_api::write_request(value, "", WriteMode::Queued).expect("a REST write");
+    let refused = api
+        .send_json::<_, WriteAccepted>(Method::POST, &write_path, &without)
+        .await;
+    assert!(refused.is_err(), "the server wants the reason too");
+    let out_of_range =
+        tag_api::write_request(2.0e9, "native e2e", WriteMode::Immediate).expect("a REST write");
+    assert!(
+        api.send_json::<_, WriteAccepted>(Method::POST, &write_path, &out_of_range)
+            .await
+            .is_err(),
+        "the server checks the maximum"
+    );
+    let with =
+        tag_api::write_request(value, "native e2e", WriteMode::Queued).expect("a REST write");
+    let accepted = api
+        .send_json::<_, WriteAccepted>(Method::POST, &write_path, &with)
+        .await
+        .expect("the REST write");
+    assert!(
+        !accepted.command_id.is_empty(),
+        "the write names its command"
+    );
+    assert_eq!(accepted.data_source_id, tag.id);
+    println!(
+        "queued command {} ({})",
+        accepted.command_id, accepted.status
+    );
+    api.send_json::<_, IgnoredAny>(Method::PATCH, &policy_path, &WritePolicy::default())
+        .await
+        .expect("lock the tag again");
+
+    // Annotations: add one, find it on the tag, delete it.
+    #[allow(clippy::cast_possible_truncation)]
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("a clock after 1970")
+        .as_secs() as i64;
+    let created: Created = api
+        .send_json(
+            Method::POST,
+            "/api/v1/annotations",
+            &NewAnnotation {
+                tag_id: tag.key.clone(),
+                annotation_text: "native e2e note".into(),
+                data_timestamp: now_secs - 60,
+            },
+        )
+        .await
+        .expect("add a note");
+    let notes: Annotations = api
+        .get_json(&tag_api::annotations_path(&tag.key))
+        .await
+        .expect("the tag's notes");
+    let note = notes
+        .annotations
+        .iter()
+        .find(|note| note.id == created.id)
+        .expect("the new note");
+    assert_eq!(
+        (note.annotation_text.as_str(), note.data_timestamp),
+        ("native e2e note", now_secs - 60)
+    );
+    api.send_empty::<IgnoredAny>(
+        Method::DELETE,
+        &format!("/api/v1/annotations/{}", created.id),
+    )
+    .await
+    .expect("delete the note");
+    let notes: Annotations = api
+        .get_json(&tag_api::annotations_path(&tag.key))
+        .await
+        .expect("the tag's notes again");
+    assert!(notes.annotations.iter().all(|note| note.id != created.id));
+
+    // The detail chart's history: the last 10 minutes as a custom span,
+    // every second, averaged.
+    let end_ms = now_secs * 1000;
+    let query = HistoryQuery {
+        span: Span::Between {
+            start_ms: end_ms - 600_000,
+            end_ms,
+        },
+        detail: Detail::Full,
+        agg: Aggregation::Average,
+    };
+    let history: HistoryAnswer = api.get_json(&query.path()).await.expect("history");
+    let series = history.data.get(&tag.key).expect("the tag's series");
+    let samples = tag_api::chart_samples(series);
+    assert!(!samples.is_empty(), "the plant recorded the tag");
+    #[allow(clippy::cast_precision_loss)]
+    let (start, end) = ((end_ms - 600_000) as f64, end_ms as f64);
+    assert!(
+        samples
+            .iter()
+            .all(|(at, _)| *at >= start - 60_000.0 && *at <= end + 60_000.0),
+        "the samples lie in the span"
+    );
+    println!(
+        "history: {} samples of {} in the custom span, bucket {} ms",
+        samples.len(),
+        tag.key,
+        history.interval
+    );
+}

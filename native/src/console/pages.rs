@@ -21,6 +21,7 @@ pub enum Page {
     Alarms,
     Trends,
     Performance,
+    TagTree,
 }
 
 /// The least a user's role must be to see a page or run a command; the
@@ -108,7 +109,7 @@ pub static PAGES: &[PageSpec] = &[
         render: views::tags::render,
         badge: None,
         on_show: Some(views::tags::on_show),
-        on_reply: None,
+        on_reply: Some(views::tags::on_reply),
         search: Some(views::tags::search),
         side_panel: views::tags::side_panel,
     },
@@ -157,6 +158,21 @@ pub static PAGES: &[PageSpec] = &[
         search: None,
         side_panel: no_panel,
     },
+    PageSpec {
+        page: Page::TagTree,
+        id: "tagtree",
+        title: "Tag tree",
+        icon: Icon::Network,
+        digit: Some(5),
+        role: Role::Any,
+        placement: Placement::Tab,
+        render: views::tag_tree::render,
+        badge: None,
+        on_show: Some(views::tag_tree::on_show),
+        on_reply: Some(views::tag_tree::on_reply),
+        search: Some(views::tag_tree::search),
+        side_panel: views::tag_tree::side_panel,
+    },
 ];
 
 /// The row of `page`. Every variant has one (a unit test checks).
@@ -203,6 +219,7 @@ mod tests {
             Page::Alarms,
             Page::Trends,
             Page::Performance,
+            Page::TagTree,
         ] {
             assert_eq!(PAGES.iter().filter(|spec| spec.page == page).count(), 1);
             assert_eq!(Page::parse(spec(page).id), Some(page));
@@ -218,7 +235,7 @@ mod tests {
         digits.dedup();
         assert_eq!(digits.len(), count, "each ⌘ digit once");
         assert_eq!(Page::parse("nowhere"), None);
-        assert_eq!(ids(), "overview|tags|alarms|trends|performance");
+        assert_eq!(ids(), "overview|tags|alarms|trends|performance|tagtree");
     }
 
     #[test]

@@ -183,6 +183,11 @@ impl Tag {
             self.history.push(at, value);
         }
     }
+
+    /// The plotted samples, oldest first: `(Unix ms, value)`.
+    pub fn samples(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
+        self.samples.iter().copied()
+    }
 }
 
 #[derive(Default)]

@@ -30,10 +30,22 @@ JetBrains Mono for values.
   sparkline.
 - **Tags**: every tag in a virtualised table (name, key, value and unit
   coloured by the server's status, status, age, 15-minute sparkline), filtered
-  by name or key, ↑/↓ to move. The detail panel shows the value, the warning
-  and critical limits, the last hour's lowest/highest/average and trend, a
-  field to write a value (admin role, and the server's write policy must
-  allow it), and Add to Trends.
+  by name or key, ↑/↓ to move. The detail panel (widened across the page
+  from its header or the palette) shows the value and its
+  facts, and a chart with its own span: 5 min to 7 days running live at the
+  display's rate, or a custom stretch in the past; Auto or Full detail and
+  sample, average or min/max aggregation; overlays of up to five other tags
+  (a very different size gets its own scale); warning and critical lines; a
+  crosshair that reads every line's value; points, lowest, highest and
+  average over the span. ⇧⌘S saves what the chart shows as CSV to a file you
+  pick. Operators (admin, demo, integration) see the tag's notes on the chart
+  and in a list (Enter shows a note's moment), add one with ⇧⌘N or a
+  right-click on the chart, and delete them. Writing (⇧⌘W, Enter on a row):
+  operators write through the server's command queue, immediate or queued,
+  with a reason, checked against the write policy and answered with the
+  command's id (copyable); an admin can also write directly over the
+  WebSocket. Operators edit the write policy (writable, minimum, maximum,
+  writes per minute, reason required, deadband). Add to Trends.
 - **Alarms**: open, to-acknowledge and shelved alarms, worst first, with
   Acknowledge, Acknowledge all (⇧⌘A), and for the admin, demo and integration
   roles (the ones the server lets shelve) Shelve for one hour and Unshelve.
@@ -43,6 +55,13 @@ JetBrains Mono for values.
   link is live the chart moves on once a second. Each tag keeps a day of
   history: live values of the last 15 minutes at full rate, older ones
   thinned to one per 20 seconds.
+- **Tag tree** (⌘5): the tags filed by their path (or their device when
+  they have none), folded and unfolded with Space or Enter, searched on the
+  server as you type (`/`), each tag with its live value; Enter on a tag
+  opens it on the Tags page. Operators move a branch or one tag to another
+  path (each tag keeps its place below the branch; empty clears it) and set
+  the naming convention (ISA-5.1, IEC 61346, KKS, a custom pattern, or any
+  name).
 - **Status bar**: link state (live, reconnecting with the reason, offline),
   server, updates per second, tag and alarm counts, and a warning when the
   alarm list could not be fetched.
@@ -89,8 +108,9 @@ cargo build --release -p voltrus-scada-native
 Options, mainly for kiosks and screenshots:
 
 ```
-voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance] [--tag <key>]
-               [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud] [--overlay palette|help]
+voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance|tagtree] [--tag <key>]
+               [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud]
+               [--overlay palette|help|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
                [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                          [--stress-seconds N] [--stress-report FILE]]
 ```
@@ -98,6 +118,7 @@ voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance] [--t
 `--sign-in` signs in at once with `VOLTRUS_NATIVE_URL` (default
 `http://localhost:3000`), `VOLTRUS_NATIVE_USER` (default `admin`) and
 `VOLTRUS_NATIVE_PASSWORD`. `--tag` opens one tag's detail; `--range` picks the Trends range.
+`--overlay tag-…` opens one of that tag's dialogs (`tag-expand` widens its detail).
 `--stress-seconds 20 --stress-report report.txt` runs the stress test for
 20 seconds, prints the report (frames, frame time p50/p95/max, drops,
 page-switch time, memory), writes it to the file and quits.
@@ -112,7 +133,9 @@ GPUI also supports Linux (X11 or Wayland), which is not tested here.
 
 ```
 native/src/
-  lib.rs            api, runtime, ws_types, stress and perf (no UI; used by the tests)
+  lib.rs            api, runtime, ws_types, stress, perf and tag_api (no UI; used by the tests)
+  tag_api.rs        tag writes and policies, tag tree, naming convention, annotations,
+                    the detail chart's history query, CSV
   api.rs            REST client: login and logout cookies, generic JSON helpers,
                     data sources, alarms, history, password change
   ws_types.rs       MessagePack WebSocket messages (mirror of the server's)
@@ -142,10 +165,16 @@ cargo test -p voltrus-scada-native     # unit tests and wire round trips
 VOLTRUS_E2E_URL=http://localhost:3000 \
 VOLTRUS_E2E_USERNAME=admin \
 VOLTRUS_E2E_PASSWORD=... \
-cargo test -p voltrus-scada-native --test e2e_live -- --nocapture
+cargo test -p voltrus-scada-native --test e2e_live -- --nocapture --test-threads=1
 ```
 
-Set `VOLTRUS_E2E_EXPECT_UPDATES=1` to fail when no live values arrive.
+Set `VOLTRUS_E2E_EXPECT_UPDATES=1` to fail when no live values arrive. Run
+the end-to-end tests one at a time: each signs in, and a sign-in revokes the
+user's older refresh tokens, which the sign-out check relies on. The Tags
+test moves a tag in the tree and back, saves the naming convention it
+found, sets a write policy and writes through the command queue (refused
+without the reason, then accepted), adds and deletes a note, and reads a
+custom span of full-detail, averaged history.
 
 The `Native console` workflow (`.github/workflows/native.yml`) runs on macOS:
 formatting, clippy, the tests, then a release build of the console, the
@@ -200,3 +229,15 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - Tag keys are register names, so two devices may share one (solar-farm has
   `frequency` twice). The console shows the first; keying by device is future
   work.
+- There is no route that reads a tag's write policy back (only `PATCH
+  /api/v1/data-sources/{id}/write-policy`), so the console checks limits and
+  the reason only for a policy it saved itself; otherwise the server's
+  answer to the write says why it refused. Saving the policy sets all six
+  settings at once.
+- `GET /api/v1/history` answers every tag (only a `screen` filter), so the
+  detail chart asks once per span and setting and keeps the answer for every
+  tag's overlays. `agg=minmax` answers the bucket average (no low/high
+  band), and for Modbus tags the aggregation does not change the answer.
+- A REST write records a command for the device (`pending`); the command
+  queue sends it. A Modbus device defined in the configuration file gets
+  device id 0 in the command.
