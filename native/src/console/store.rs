@@ -151,7 +151,9 @@ impl Tag {
         format!("{:.*}", decimals, self.value)
     }
 
-    /// How far back the history reaches from `now_ms`, if it holds anything.
+    /// How far back the history reaches from `now_ms`, if it holds anything
+    /// (views ask the store's [`Store::span_ms`], kept for all tags).
+    #[cfg(test)]
     pub fn span_ms(&self, now_ms: f64) -> Option<f64> {
         self.samples
             .front()

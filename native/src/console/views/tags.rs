@@ -2,7 +2,6 @@
 //! (`tag_detail`, across the page when widened).
 
 use std::ops::Range;
-use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
