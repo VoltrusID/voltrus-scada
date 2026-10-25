@@ -680,6 +680,24 @@ fn arm(console: &mut Console, on: bool, cx: &mut Context<Console>) {
                     .map(|widget| widget.id.clone())
             });
         let Some(id) = wanted else {
+            // Equipment that takes commands once its value is in (an arm
+            // key at launch, before the first values): wait for it.
+            let any_value = |_: i64| {
+                Some(mimic::Reading {
+                    value: Some(0.0),
+                    ..mimic::Reading::default()
+                })
+            };
+            let waiting = layout.widgets.iter().any(|widget| {
+                widget
+                    .tag()
+                    .is_some_and(|tag| mimic::Values::value(&values, tag).is_none())
+                    && mimic::commands(widget, &any_value).is_some()
+            });
+            if waiting {
+                console.state::<State>().pending = Some(Pending::Arm(on));
+                return;
+            }
             console.show_toast("No equipment on this screen takes commands", true, cx);
             return;
         };
