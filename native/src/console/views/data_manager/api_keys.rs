@@ -761,3 +761,79 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         ))
         .into_any_element()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::console::keys::DataNewApiKey;
+    use crate::console::testing::Harness;
+    use gpui::TestAppContext;
+
+    fn secret(h: &mut Harness) -> Option<String> {
+        h.update(|console, _, _| {
+            console
+                .state::<State>()
+                .form
+                .as_ref()
+                .and_then(|form| form.created.as_ref())
+                .map(|created| created.key.clone())
+        })
+    }
+
+    #[gpui::test]
+    fn a_new_keys_secret_lives_only_in_its_dialog(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.cx.dispatch_action(DataNewApiKey);
+        assert!(h.update(|console, _, _| console.overlay_is(FORM)));
+        h.calls();
+        h.update(|console, _, cx| {
+            let name = console
+                .state::<State>()
+                .form
+                .as_ref()
+                .map(|form| form.name.clone());
+            name.expect("the form is open")
+                .update(cx, |field, cx| field.set_text("Grafana", cx));
+        });
+        h.update(|console, window, cx| submit(console, window, cx));
+        assert_eq!(h.calls(), [CallKey::new("data.api-keys.create")]);
+        h.reply(
+            CallKey::new("data.api-keys.create"),
+            Reply::ok(NewApiKey {
+                id: 5,
+                name: "Grafana".into(),
+                role: "api".into(),
+                key: "f00d".repeat(16),
+                ..NewApiKey::default()
+            }),
+        );
+        h.draw();
+        assert_eq!(
+            secret(&mut h).as_deref(),
+            Some("f00d".repeat(16).as_str()),
+            "shown once"
+        );
+        h.update(|console, window, cx| console.close_overlay(window, cx));
+        h.draw();
+        assert_eq!(secret(&mut h), None, "closing the dialog drops the secret");
+        assert!(
+            h.update(|console, _, _| console.state::<State>().form.is_none()),
+            "nothing of the dialog is kept"
+        );
+    }
+
+    #[gpui::test]
+    fn a_viewer_or_demo_user_cannot_open_api_keys(cx: &mut TestAppContext) {
+        for role in ["demo", "viewer"] {
+            let mut h = Harness::new(cx);
+            h.sign_in(role);
+            h.cx.dispatch_action(DataNewApiKey);
+            assert!(
+                !h.update(|console, _, _| console.overlay_is(FORM)),
+                "{role}"
+            );
+            assert!(h.calls().is_empty(), "{role}: nothing asked");
+        }
+    }
+}

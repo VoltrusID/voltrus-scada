@@ -216,7 +216,10 @@ fn reset_password(
     open_form(console, Kind::Password(user), window, cx);
 }
 
-const OWN_PASSWORD: &str = "Your own password is not changed here: the console renews this session with the one you signed in with";
+/// An admin's own password changes with the current one (the password
+/// change asks for it); a reset here would skip that check.
+const OWN_PASSWORD: &str =
+    "Your own password is not reset here: change it with your current password";
 
 fn ask_delete(console: &mut Console, user: User, window: &mut Window, cx: &mut Context<Console>) {
     if let Some(refused) = delete_refused(&me(console), &user, &users(console)) {
@@ -781,6 +784,110 @@ fn passwords(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::console::keys::DataNewUser;
+    use crate::console::testing::Harness;
+    use gpui::TestAppContext;
+
+    fn account(id: i64, name: &str, role: &str) -> User {
+        User {
+            id,
+            username: name.into(),
+            role: role.into(),
+            must_change_password: false,
+        }
+    }
+
+    fn type_into(h: &mut Harness, pick: fn(&Form) -> Entity<TextInput>, text: &'static str) {
+        h.update(|console, _, cx| {
+            let field = console
+                .state::<State>()
+                .form
+                .as_ref()
+                .map(pick)
+                .expect("the form is open");
+            field.update(cx, |field, cx| field.set_text(text, cx));
+        });
+    }
+
+    #[gpui::test]
+    fn an_admin_adds_a_user_only_with_the_password_typed_twice(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.cx.dispatch_action(DataNewUser);
+        assert!(h.update(|console, _, _| console.overlay_is(FORM)));
+        assert!(
+            h.calls().contains(&CallKey::new("data.users.list")),
+            "the list is fetched"
+        );
+        h.reply(
+            CallKey::new("data.users.list"),
+            Reply::ok(vec![account(1, "op", "admin")]),
+        );
+        type_into(&mut h, |form| form.username.clone(), "ana");
+        type_into(&mut h, |form| form.password.clone(), "secret-123");
+        type_into(&mut h, |form| form.again.clone(), "secret-124");
+        h.update(|console, window, cx| submit(console, window, cx));
+        assert!(h.calls().is_empty(), "differing passwords are not sent");
+        assert!(
+            h.update(|console, _, _| {
+                console
+                    .state::<State>()
+                    .form
+                    .as_ref()
+                    .and_then(|form| form.error.clone())
+            })
+            .is_some_and(|error| error.contains("differ"))
+        );
+
+        type_into(&mut h, |form| form.again.clone(), "secret-123");
+        h.update(|console, window, cx| submit(console, window, cx));
+        assert_eq!(h.calls(), [CallKey::new("data.users.save")]);
+        h.reply(
+            CallKey::new("data.users.save"),
+            Reply::ok(("Created ana".to_owned(), "ana".to_owned())),
+        );
+        h.draw();
+        assert!(
+            h.update(|console, _, _| !console.overlay_is(FORM)
+                && console.state::<State>().form.is_none()),
+            "saved: the dialog closes and its passwords go with it"
+        );
+        assert!(
+            h.calls().contains(&CallKey::new("data.users.list")),
+            "listed again"
+        );
+    }
+
+    #[gpui::test]
+    fn only_an_admin_manages_users_and_never_themselves(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("demo");
+        h.cx.dispatch_action(DataNewUser);
+        assert!(
+            !h.update(|console, _, _| console.overlay_is(FORM)),
+            "demo is not admin"
+        );
+        assert!(h.calls().is_empty());
+
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, _, cx| on_open(console, cx));
+        h.reply(
+            CallKey::new("data.users.list"),
+            Reply::ok(vec![account(1, "op", "admin"), account(2, "ana", "demo")]),
+        );
+        h.update(|console, window, cx| ask_delete(console, account(1, "op", "admin"), window, cx));
+        assert!(
+            h.update(|console, _, _| console.overlay.is_none()),
+            "deleting yourself is refused before asking"
+        );
+        h.update(|console, window, cx| ask_delete(console, account(2, "ana", "demo"), window, cx));
+        assert!(
+            h.update(|console, _, _| console.overlay.is_some()),
+            "another user: confirm first"
+        );
+        assert!(h.calls().is_empty(), "nothing is deleted before the yes");
+    }
 
     #[test]
     fn every_role_the_server_accepts_has_a_colour_and_a_reach() {
