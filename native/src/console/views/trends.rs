@@ -19,8 +19,8 @@ use vt_ui::text_input::TextInput;
 use vt_ui::theme::*;
 
 use super::{
-    LIST_TAIL, ListKeys, card, focus_ring, keyboard_list, now_ms, page_header, rows_on_screen,
-    status_color,
+    ListKeys, card, focus_ring, keyboard_list, now_ms, page_header, rows_on_screen, status_color,
+    tail_row, tail_rows,
 };
 use crate::console::{Console, RANGES, anim, range_ms};
 
@@ -219,14 +219,16 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let picker =
         uniform_list(
             "trend-picker",
-            shown,
+            shown + tail_rows(shown, PICK_ROW),
             cx.processor(
                 move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
                     let chosen: Vec<i64> = console.trend.iter().copied().collect();
                     range
-                        .filter_map(|row| Some((row, *rows.get(row)?)))
-                        .map(|(row, index)| {
+                        .map(|row| {
+                            let Some(index) = rows.get(row).copied() else {
+                                return tail_row(PICK_ROW);
+                            };
                             let tag = &console.store.tags[index];
                             let id = tag.info.id;
                             let position = chosen.iter().position(|chosen| *chosen == id);
@@ -285,6 +287,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                         .bg(status_color(tag.status, &theme)),
                                 )
                                 .when(ring, |this| this.child(focus_ring(&theme)))
+                                .into_any_element()
                         })
                         .collect::<Vec<_>>()
                 },
@@ -292,7 +295,6 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         )
         .track_scroll(scroll)
         .px(SPACE_3)
-        .pb(LIST_TAIL)
         .size_full();
 
     let chosen_count = chosen.len();

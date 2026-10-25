@@ -14,8 +14,8 @@ use vt_ui::components::{Button, IconButton, empty_state, field, pill, section_la
 use vt_ui::theme::*;
 
 use super::{
-    LIST_TAIL, ListKeys, age, card, fit_span, focus_ring, keyboard_list, now_ms, page_header,
-    rows_on_screen, span_label, status_color, value_color, value_with_unit,
+    ListKeys, age, card, fit_span, focus_ring, keyboard_list, now_ms, page_header, rows_on_screen,
+    span_label, status_color, tail_row, tail_rows, value_color, value_with_unit,
 };
 use crate::console::store::Status;
 use crate::console::{Console, time_now_secs};
@@ -239,23 +239,24 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     } else {
         uniform_list(
             "tags",
-            visible,
+            visible + tail_rows(visible, ROW_HEIGHT_PX),
             cx.processor(
                 move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
                     let clock = (now_ms(), time_now_secs());
                     range
-                        .filter_map(|row| Some((row, rows.get(row).copied()?)))
-                        .map(|(row, index)| {
-                            let ring = focused && cursor == Some(row);
-                            tag_row(console, index, row, columns, clock, ring, &theme, cx)
+                        .map(|row| match rows.get(row).copied() {
+                            Some(index) => {
+                                let ring = focused && cursor == Some(row);
+                                tag_row(console, index, row, columns, clock, ring, &theme, cx)
+                            }
+                            None => tail_row(ROW_HEIGHT_PX),
                         })
                         .collect::<Vec<_>>()
                 },
             ),
         )
         .track_scroll(scroll)
-        .pb(LIST_TAIL)
         .size_full()
         .into_any_element()
     };

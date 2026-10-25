@@ -40,8 +40,26 @@ use super::store::Status;
 use super::{Console, Page, Phase, anim, pages, severity_rank};
 
 /// Room below a list's last row, so it scrolls clear of the toast stack in
-/// the bottom-right corner (three toasts and their gaps).
+/// the bottom-right corner (three toasts and their gaps). Plain scrolling
+/// areas take it as bottom padding; a `uniform_list` (whose padding shrinks
+/// its viewport instead) gets [`tail_rows`] empty rows after its last.
 pub(crate) const LIST_TAIL: gpui::Pixels = px(200.0);
+
+/// Empty rows of `row_height` that make up [`LIST_TAIL`] after a
+/// `uniform_list`'s last row; none for an empty list.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn tail_rows(len: usize, row_height: f32) -> usize {
+    if len == 0 {
+        0
+    } else {
+        (f32::from(LIST_TAIL) / row_height).ceil() as usize
+    }
+}
+
+/// One of the [`tail_rows`].
+pub(crate) fn tail_row(row_height: f32) -> AnyElement {
+    div().w_full().h(px(row_height)).into_any_element()
+}
 
 impl Render for Console {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

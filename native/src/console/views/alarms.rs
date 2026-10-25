@@ -12,8 +12,8 @@ use vt_ui::components::{Button, Segment, empty_state, pill, segmented};
 use vt_ui::theme::*;
 
 use super::{
-    LIST_TAIL, ListKeys, age, alarm_source, focus_ring, keyboard_list, local_time, page_header,
-    rows_on_screen, severity_color, value_with_unit,
+    ListKeys, age, alarm_source, focus_ring, keyboard_list, local_time, page_header,
+    rows_on_screen, severity_color, tail_row, tail_rows, value_with_unit,
 };
 use crate::console::keys::{AcknowledgeAll, hint};
 use crate::console::{AlarmFilter, Console, is_shelved, time_now_secs};
@@ -157,24 +157,27 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     } else {
         uniform_list(
             "alarms",
-            shown,
+            shown + tail_rows(shown, ROW_HEIGHT_PX),
             cx.processor(
                 move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
                     let now = time_now_secs();
                     let can_shelve = console.is_operator();
                     range
-                        .filter_map(|row| Some((row, console.alarms.get(*rows.get(row)?)?)))
-                        .map(|(row, alarm)| {
-                            let ring = focused && cursor == Some(row);
-                            alarm_row(console, alarm, (now, can_shelve, ring), &theme, cx)
+                        .map(|row| {
+                            match rows.get(row).and_then(|index| console.alarms.get(*index)) {
+                                Some(alarm) => {
+                                    let ring = focused && cursor == Some(row);
+                                    alarm_row(console, alarm, (now, can_shelve, ring), &theme, cx)
+                                }
+                                None => tail_row(ROW_HEIGHT_PX),
+                            }
                         })
                         .collect::<Vec<_>>()
                 },
             ),
         )
         .track_scroll(scroll)
-        .pb(LIST_TAIL)
         .size_full()
         .into_any_element()
     };
