@@ -53,6 +53,18 @@ actions!(
         ShellToggleNotifications,
         ShellEditShortcuts,
         ShellPickTheme,
+        OpsPreviousPage,
+        OpsNextPage,
+        OpsNextTab,
+        OpsNextFilter,
+        OpsPreviousFilter,
+        OpsRefresh,
+        OpsCancelCommand,
+        OpsSortNext,
+        OpsSortReverse,
+        OpsNewHandover,
+        OpsExportAudit,
+        OpsExportData,
         AlarmsAcknowledge,
         AlarmsShelve,
         AlarmsNextFilter,
@@ -74,6 +86,16 @@ pub const CONSOLE: &str = "Console";
 pub const NOT_TYPING: &str = "Console && !TextInput";
 pub const LIST: &str = "List";
 pub const MENU: &str = "Menu";
+/// The operations pages' keys (Commands, Shift handover, Audit log): their
+/// page roots carry `OpsPaged`, `OpsTabbed`, … and the keys never fire
+/// while a text field has focus.
+pub const OPS_PAGED: &str = "OpsPaged && !TextInput";
+pub const OPS_TABBED: &str = "OpsTabbed && !TextInput";
+pub const OPS_FILTERED: &str = "OpsFiltered && !TextInput";
+pub const OPS_REFRESHABLE: &str = "OpsRefreshable && !TextInput";
+pub const OPS_COMMANDS: &str = "OpsCommands && !TextInput";
+pub const OPS_SHIFT: &str = "OpsShift && !TextInput";
+pub const OPS_AUDIT: &str = "OpsAudit && !TextInput";
 /// The Alarms page's lists (and its detail sheet): a = acknowledge, s =
 /// shelve, ⇧A = acknowledge all, ←/→ = filter, o = sort.
 pub const ALARM_LIST: &str = "AlarmList";
@@ -356,6 +378,117 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     command!("Sign out", Session, Unplug, [], CONSOLE, SignOut, true),
     command!("Quit", Session, X, ["secondary-q"], CONSOLE, Quit, true),
+    // The operations pages (Commands, Shift handover, Audit log).
+    command!(
+        "Previous page of results",
+        Lists,
+        ChevronLeft,
+        ["left"],
+        OPS_PAGED,
+        OpsPreviousPage,
+        false
+    ),
+    command!(
+        "Next page of results",
+        Lists,
+        ChevronRight,
+        ["right"],
+        OPS_PAGED,
+        OpsNextPage,
+        false
+    ),
+    command!(
+        "Switch the page's tab",
+        Lists,
+        Columns,
+        ["t"],
+        OPS_TABBED,
+        OpsNextTab,
+        false
+    ),
+    command!(
+        "Next filter",
+        Lists,
+        Funnel,
+        ["]"],
+        OPS_FILTERED,
+        OpsNextFilter,
+        false
+    ),
+    command!(
+        "Previous filter",
+        Lists,
+        Funnel,
+        ["["],
+        OPS_FILTERED,
+        OpsPreviousFilter,
+        false
+    ),
+    command!(
+        "Refresh the list",
+        Lists,
+        RefreshCw,
+        ["r"],
+        OPS_REFRESHABLE,
+        OpsRefresh,
+        false
+    ),
+    command!(
+        "Cancel the command",
+        Lists,
+        X,
+        ["x"],
+        OPS_COMMANDS,
+        OpsCancelCommand,
+        false
+    ),
+    command!(
+        "Sort by the next column",
+        Lists,
+        ArrowUpDown,
+        ["s"],
+        OPS_AUDIT,
+        OpsSortNext,
+        false
+    ),
+    command!(
+        "Reverse the sort",
+        Lists,
+        ArrowUpDown,
+        ["shift-s"],
+        OPS_AUDIT,
+        OpsSortReverse,
+        false
+    ),
+    CommandSpec {
+        label: "New shift handover entry",
+        group: Group::Lists,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: OPS_SHIFT,
+        action: || -> Box<dyn Action> { Box::new(OpsNewHandover) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Export the audit log as CSV",
+        group: Group::Lists,
+        icon: Icon::Download,
+        keys: &["e"],
+        context: OPS_AUDIT,
+        action: || -> Box<dyn Action> { Box::new(OpsExportAudit) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Export data…",
+        View,
+        Download,
+        [],
+        CONSOLE,
+        OpsExportData,
+        true
+    ),
     command!(
         "Settings",
         View,

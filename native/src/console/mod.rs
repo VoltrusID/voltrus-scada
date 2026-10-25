@@ -17,6 +17,7 @@ mod prefs;
 mod shell;
 pub mod shortcuts;
 pub mod store;
+mod text_area;
 mod views;
 
 use std::any::{Any, TypeId};
