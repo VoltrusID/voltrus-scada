@@ -1828,3 +1828,217 @@ async fn live_mimic_screen() {
         commanded.id
     );
 }
+
+/// A faceplate command against the live plant, end to end, the way the
+/// faceplate sends it: the equipment that takes commands (INV-1 on the
+/// inverter's run register, which `ci-server.sh` adds and the simulator
+/// keeps as written) unlocked; its enabled choice armed and confirmed over
+/// the admin's WebSocket write, then the other one (START or STOP) through
+/// an operator's REST write; each value read back from the plant a few
+/// polls later. The value ends where it was, and the tag locked again.
+#[tokio::test]
+async fn live_mimic_command() {
+    use std::collections::HashMap;
+    use std::time::Instant;
+
+    use serde::de::IgnoredAny;
+    use voltrus_scada_native::api::Method;
+    use voltrus_scada_native::mimic::{
+        self, Armed, ConnectionRow, EquipmentRow, Items, Reading, connections_path, equipment_path,
+    };
+    use voltrus_scada_native::screens::OVERVIEW;
+    use voltrus_scada_native::tag_api::{self, WriteAccepted, WriteMode, WritePolicy};
+
+    /// A row of `GET /api/v1/data`: a tag's value now.
+    #[derive(serde::Deserialize)]
+    struct Live {
+        id: i64,
+        value: f64,
+    }
+
+    /// `GET /api/v1/commands/{id}`: how a REST write went.
+    #[derive(serde::Deserialize)]
+    struct Sent {
+        status: String,
+        #[serde(default)]
+        error_message: Option<String>,
+    }
+
+    async fn live(api: &VoltrusApi) -> HashMap<i64, f64> {
+        let rows: Vec<Live> = api.get_json("/api/v1/data").await.expect("GET /data");
+        rows.into_iter().map(|row| (row.id, row.value)).collect()
+    }
+
+    fn readings(values: &HashMap<i64, f64>) -> impl Fn(i64) -> Option<Reading> + '_ {
+        move |tag| {
+            values.get(&tag).map(|value| Reading {
+                value: Some(*value),
+                ..Reading::default()
+            })
+        }
+    }
+
+    /// The plant reads `want` on `tag`, and still does three seconds (three
+    /// polls of the device) later: the device's value, not the write's echo.
+    async fn lands(api: &VoltrusApi, tag: i64, want: f64) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let now = live(api).await.get(&tag).copied();
+            if now.is_some_and(|value| (value - want).abs() < 1e-9) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "tag {tag} never read {want} (reads {now:?})"
+            );
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let held = live(api).await.get(&tag).copied();
+        assert!(
+            held.is_some_and(|value| (value - want).abs() < 1e-9),
+            "tag {tag} did not keep {want} (reads {held:?})"
+        );
+    }
+
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    let mut api = VoltrusApi::new(&url);
+    api.login(&user, &pass).await.expect("sign in");
+
+    let equipment: Items<EquipmentRow> = api
+        .get_json(&equipment_path(OVERVIEW))
+        .await
+        .expect("GET scada-equipment");
+    let connections: Items<ConnectionRow> = api
+        .get_json(&connections_path(OVERVIEW))
+        .await
+        .expect("GET scada-connections");
+    let layout = mimic::parse(&equipment.items, &connections.items);
+    let before = live(&api).await;
+    let widget = layout
+        .widgets
+        .iter()
+        .find(|widget| mimic::commands(widget, &readings(&before)).is_some())
+        .expect("equipment that takes commands, its tag read");
+    let tag = widget.tag().expect("its tag");
+    let original = before[&tag];
+    println!("{} commands tag {tag}, which reads {original}", widget.id);
+
+    let policy_path = format!("/api/v1/data-sources/{tag}/write-policy");
+    let unlocked = WritePolicy {
+        writable: true,
+        ..WritePolicy::default()
+    };
+    api.send_json::<_, IgnoredAny>(Method::PATCH, &policy_path, &unlocked)
+        .await
+        .expect("unlock the tag");
+
+    let (handle, events) = runtime::start().expect("runtime");
+    handle.send(Command::SignIn {
+        url: url.clone(),
+        username: user.clone(),
+        password: pass.clone(),
+    });
+    let live_link = wait_for(&events, 30, |event| match event {
+        Event::Link(Link::Live) => Some(()),
+        Event::SignInFailed(error) => panic!("sign-in failed: {error}"),
+        _ => None,
+    })
+    .await;
+    assert!(live_link.is_some(), "the WebSocket went live");
+
+    // An admin's command goes over the WebSocket, an operator's through the
+    // REST write.
+    let routes = [
+        mimic::write_route(true, true),
+        mimic::write_route(false, true),
+    ];
+    assert_eq!(
+        routes,
+        [Some(WriteMode::Direct), Some(WriteMode::Immediate)]
+    );
+    for route in routes.into_iter().flatten() {
+        let values = live(&api).await;
+        let commands = mimic::commands(widget, &readings(&values)).expect("its commands");
+        let choice = if commands.on.enabled {
+            commands.on
+        } else {
+            commands.off
+        };
+        assert!(choice.enabled, "one of START and STOP is offered");
+        let armed = Armed {
+            widget: widget.id.clone(),
+            tag,
+            label: choice.label,
+            value: choice.value,
+            at: Instant::now(),
+        };
+        assert!(!armed.expired(Instant::now()), "armed, not lapsed");
+        match route {
+            WriteMode::Direct => {
+                handle.send(Command::Write {
+                    id: armed.tag,
+                    value: armed.value,
+                });
+                let written = wait_for(&events, 20, |event| match event {
+                    Event::Written {
+                        tag: written,
+                        result,
+                        ..
+                    } if written == tag => Some(result),
+                    _ => None,
+                })
+                .await
+                .expect("an answer to the WebSocket write");
+                if let Err(error) = written {
+                    panic!("the WebSocket write of {} failed: {error}", armed.label);
+                }
+            }
+            mode => {
+                let body = tag_api::write_request(armed.value, "", mode).expect("a REST write");
+                let accepted: WriteAccepted = api
+                    .send_json(Method::POST, &format!("/api/v1/tags/{tag}/write"), &body)
+                    .await
+                    .expect("the REST write");
+                let path = format!("/api/v1/commands/{}", accepted.command_id);
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    let sent: Sent = api.get_json(&path).await.expect("the command");
+                    match sent.status.as_str() {
+                        "acked" => break,
+                        "failed" | "expired" | "cancelled" => panic!(
+                            "the REST write of {} {}: {:?}",
+                            armed.label, sent.status, sent.error_message
+                        ),
+                        _ => {}
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "the REST write of {} stayed {}",
+                        armed.label,
+                        sent.status
+                    );
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            }
+        }
+        lands(&api, tag, armed.value).await;
+        println!("{route:?}: {} landed ({})", armed.label, armed.value);
+    }
+    handle.send(Command::Shutdown);
+
+    let after = live(&api).await.get(&tag).copied();
+    assert!(
+        after.is_some_and(|value| (value - original).abs() < 1e-9),
+        "the two commands put tag {tag} back to {original} (reads {after:?})"
+    );
+    api.send_json::<_, IgnoredAny>(Method::PATCH, &policy_path, &WritePolicy::default())
+        .await
+        .expect("lock the tag again");
+    println!("tag {tag} back at {original}, locked");
+}

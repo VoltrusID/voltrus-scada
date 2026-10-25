@@ -442,7 +442,18 @@ let (equipment, connections) = mimic::to_rows(&layout);   // the PUT bodies: Ite
   for an admin (`Command::Write`, answered by `Event::Written`) and the
   REST write (`POST /tags/{id}/write`, `tag_api::write_request`) for other
   operators; viewers see no commands. An armed command lapses after
-  `ARM_TIMEOUT`.
+  `ARM_TIMEOUT`. An arm key that comes before its screen and values
+  (`--overlay MimicArmOn`/`MimicArmOff` at launch) waits for the first
+  equipment whose asked-for choice is enabled (else its other choice),
+  opens its faceplate and arms it, and holds it armed for `LAUNCH_HOLD`
+  (20 s) so a launch's screenshot catches it; any arm, confirm, dismiss or
+  other faceplate ends the hold, and the usual lapse follows.
 - **CI plant.** `native/scripts/ci-server.sh` seeds the overview's mimic
   from `native/scripts/mimic-solar-farm.json` (tags by `device/key`) when
-  the plant has none.
+  the plant has none. Its command target is INV-1 on `sma_inv_1/remote_run`,
+  a uint16 register the script adds at 45, the low word of the inverter
+  simulator's operating-hours counter: the simulator keeps a written word
+  there (the counter creeps by 1/3600 a second), the data source's
+  `source_config` address lets both writes reach it, and the script starts
+  it at 1 and leaves it locked (the e2e `live_mimic_command` unlocks it,
+  commands STOP/START over both routes and restores both).

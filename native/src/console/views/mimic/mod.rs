@@ -574,15 +574,27 @@ fn faceplate_commands(console: &mut Console) -> Option<(Widget, mimic::Commands)
     Some((widget, commands))
 }
 
-/// A key that came before the screen did.
+/// A key that came before the screen did, and the hold of the arm it made.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Pending {
     Open,
     Arm(bool),
+    /// An arm that waited for its screen (in practice `--overlay
+    /// MimicArmOn`/`MimicArmOff` at launch) stays armed until then, so a
+    /// launch's screenshot taken seconds later still shows it; it lapses
+    /// `ARM_TIMEOUT` after. Any arm, confirm, dismiss or other faceplate
+    /// ends the hold at once.
+    Hold {
+        until: Instant,
+    },
 }
 
+/// How long an arm that waited for its screen is held armed.
+const LAUNCH_HOLD: Duration = Duration::from_secs(20);
+
 /// Run the pending key once it can act: the screen is in and, for a
-/// command, some equipment takes one (its tag has a value).
+/// command, some equipment takes it (its tag has a value and the choice is
+/// enabled); then keep a held arm armed.
 fn run_pending(console: &mut Console, cx: &mut Context<Console>) {
     let Some(pending) = console.state::<State>().pending else {
         return;
@@ -596,14 +608,37 @@ fn run_pending(console: &mut Console, cx: &mut Context<Console>) {
             open_cursor(console, cx);
         }
         Pending::Arm(on) => {
+            // The first equipment whose asked-for choice is enabled, else
+            // the first whose other one is; none until their values are in.
             let values = StoreValues(&console.store);
-            if layout
-                .widgets
-                .iter()
-                .any(|widget| mimic::commands(widget, &values).is_some())
-            {
-                console.state::<State>().pending = None;
-                arm(console, on, cx);
+            let enabled = |wanted: bool| {
+                layout.widgets.iter().find_map(|widget| {
+                    let commands = mimic::commands(widget, &values)?;
+                    let choice = if wanted { commands.on } else { commands.off };
+                    choice.enabled.then(|| (widget.id.clone(), wanted))
+                })
+            };
+            let Some((id, on)) = enabled(on).or_else(|| enabled(!on)) else {
+                return;
+            };
+            let state = console.state::<State>();
+            state.pending = None;
+            state.cursor = Some(id.clone());
+            open_faceplate(state, &id);
+            arm(console, on, cx);
+            let state = console.state::<State>();
+            if state.armed.is_some() {
+                state.pending = Some(Pending::Hold {
+                    until: Instant::now() + LAUNCH_HOLD,
+                });
+            }
+        }
+        Pending::Hold { until } => {
+            let now = Instant::now();
+            let state = console.state::<State>();
+            match state.armed.as_mut() {
+                Some(armed) if now < until => armed.at = now,
+                _ => state.pending = None,
             }
         }
     }
@@ -612,6 +647,10 @@ fn run_pending(console: &mut Console, cx: &mut Context<Console>) {
 /// Arm the on (or off) command of the open faceplate; with none open, open
 /// the cursor's (or the first equipment that takes commands) first.
 fn arm(console: &mut Console, on: bool, cx: &mut Context<Console>) {
+    let state = console.state::<State>();
+    if matches!(state.pending, Some(Pending::Hold { .. })) {
+        state.pending = None;
+    }
     let Some(layout) = layout(console) else {
         console.state::<State>().pending = Some(Pending::Arm(on));
         return;
