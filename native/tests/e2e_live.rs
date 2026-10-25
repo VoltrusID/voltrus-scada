@@ -275,7 +275,7 @@ async fn live_login_sensors_ws_stream() {
 /// admin and a viewer in a shift handover; the viewer reads, marks read and
 /// dismisses theirs; the admin's stays unread (the bell's screenshot shows
 /// it). Leaves the admin's preferences as it found them, and removes the
-/// two users it makes.
+/// two users it makes where the server allows it.
 async fn shell_preferences_notifications_and_edition(url: &str, user: &str, pass: &str) {
     use serde::de::IgnoredAny;
     use voltrus_scada_native::api::Method;
@@ -554,11 +554,20 @@ async fn shell_preferences_notifications_and_edition(url: &str, user: &str, pass
             .any(|n| n.reference_id == Some(handover) && !n.read),
         "the admin was told of the mention too"
     );
+    // The server cannot delete a user its handovers or notifications still
+    // name (a foreign key, no cascade); such users stay, and the run says so.
     for id in made {
-        let _: IgnoredAny = admin
-            .send_empty(Method::DELETE, &format!("/api/v1/users/{id}"))
+        if let Err(error) = admin
+            .send_empty::<IgnoredAny>(Method::DELETE, &format!("/api/v1/users/{id}"))
             .await
-            .expect("remove the test user");
+        {
+            let error = error.to_string();
+            assert!(
+                error.contains("FOREIGN KEY"),
+                "removing test user {id} failed: {error}"
+            );
+            println!("note: test user {id} kept: the server refuses ({error})");
+        }
     }
 }
 
