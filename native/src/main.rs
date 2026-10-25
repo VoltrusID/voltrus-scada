@@ -1,124 +1,210 @@
-//! voltrus-native — GPUI operator console for the voltrus SCADA server.
+//! voltrus-native: the GPUI operator console for the Voltrus SCADA server.
 
-use gpui::*;
-use gpui_component::{ActiveTheme, Root, Theme, ThemeMode};
+mod console;
 
-use voltrus_scada_native::runtime::{RtEvent, RuntimeHandle};
-use voltrus_scada_native::views::console::Console;
-use voltrus_scada_native::views::login::LoginView;
+use std::process::ExitCode;
+use std::rc::Rc;
 
-actions!(voltrus, [Quit]);
+use gpui::{
+    App, AppContext as _, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point,
+    px, size,
+};
+use time::UtcOffset;
+use vt_ui::theme::{self, ThemeCatalog};
 
-struct VoltrusApp {
-    login: Entity<LoginView>,
-    console: Entity<Console>,
-    authed: bool,
-    #[allow(dead_code)] // keeps the runtime thread alive for the app lifetime
-    handle: RuntimeHandle,
+use console::{Console, Launch, Page};
+
+const USAGE: &str = "\
+usage: voltrus-native [--sign-in] [--page overview|tags|alarms|trends] [--tag <key>]
+                      [--appearance dark|light]
+
+  --sign-in      sign in at once with VOLTRUS_NATIVE_URL (default http://localhost:3000),
+                 VOLTRUS_NATIVE_USER (default admin) and VOLTRUS_NATIVE_PASSWORD
+  --page         the page to open after signing in
+  --tag          a tag key to open on the Tags page
+  --appearance   dark or light instead of following the system";
+
+/// What the command line asks for.
+#[derive(Debug, PartialEq)]
+struct Options {
+    sign_in: bool,
+    page: Option<Page>,
+    tag: Option<String>,
+    dark: Option<bool>,
 }
 
-impl VoltrusApp {
-    fn new(
-        handle: RuntimeHandle,
-        events: tokio::sync::mpsc::UnboundedReceiver<RtEvent>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let login = cx.new(|cx| LoginView::new(handle.clone(), window, cx));
-        let console = cx.new(|cx| Console::new(handle.clone(), window, cx));
-
-        // Pump runtime events into the view tree.
-        cx.spawn(async move |this, cx| {
-            let mut rx = events;
-            while let Some(ev) = rx.recv().await {
-                let Ok(()) = this.update(cx, |app, cx| app.on_event(ev, cx)) else {
-                    break;
-                };
+fn parse(args: &[String]) -> Result<Options, String> {
+    let mut options = Options {
+        sign_in: false,
+        page: None,
+        tag: None,
+        dark: None,
+    };
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--sign-in" => options.sign_in = true,
+            "--page" => {
+                let name = args.next().map_or("", String::as_str);
+                options.page =
+                    Some(Page::parse(name).ok_or_else(|| format!("unknown page “{name}”"))?);
             }
-        })
-        .detach();
-
-        Self {
-            login,
-            console,
-            authed: false,
-            handle,
+            "--tag" => match args.next() {
+                Some(key) if !key.is_empty() => options.tag = Some(key.clone()),
+                _ => return Err("--tag takes a tag key".into()),
+            },
+            "--appearance" => {
+                options.dark = Some(match args.next().map(String::as_str) {
+                    Some("dark") => true,
+                    Some("light") => false,
+                    other => {
+                        return Err(format!(
+                            "--appearance takes dark or light, not “{}”",
+                            other.unwrap_or("")
+                        ));
+                    }
+                });
+            }
+            "--help" | "-h" => return Err(String::new()),
+            other => return Err(format!("unknown argument “{other}”")),
         }
     }
-
-    fn on_event(&mut self, ev: RtEvent, cx: &mut Context<Self>) {
-        match ev {
-            RtEvent::LoginResult(Ok(login)) => {
-                self.authed = true;
-                let user = login.username.clone();
-                self.console.update(cx, |c, cx| c.set_user(&user, cx));
-            }
-            RtEvent::LoginResult(Err(e)) => {
-                self.login.update(cx, |v, cx| v.login_failed(e, cx));
-            }
-            RtEvent::Conn(state) => self.console.update(cx, |c, cx| c.on_conn(state, cx)),
-            RtEvent::Sensors(sensors) => {
-                self.console.update(cx, |c, cx| c.on_sensors(sensors, cx));
-            }
-            RtEvent::Tags(updates) => {
-                self.console.update(cx, |c, cx| c.on_tags(updates, cx));
-            }
-            RtEvent::Alarm(ev) => self.console.update(cx, |c, cx| c.on_alarm(ev, cx)),
-            RtEvent::Alarms(alarms) => {
-                self.console.update(cx, |c, cx| c.on_alarms(alarms, cx));
-            }
-            RtEvent::AckResult(_) => {}
-        }
-        cx.notify();
-    }
+    Ok(options)
 }
 
-impl Render for VoltrusApp {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = if self.authed {
-            self.console.clone().into_any_element()
-        } else {
-            self.login.clone().into_any_element()
+fn main() -> ExitCode {
+    // `time` can only read the local offset while the process has one
+    // thread, so ask before GPUI or the network runtime start any.
+    let utc_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let options = match parse(&args) {
+        Ok(options) => options,
+        Err(error) => {
+            if !error.is_empty() {
+                eprintln!("voltrus-native: {error}");
+            }
+            eprintln!("{USAGE}");
+            return if error.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
+        }
+    };
+    let sign_in = if options.sign_in {
+        let Ok(password) = std::env::var("VOLTRUS_NATIVE_PASSWORD") else {
+            eprintln!("voltrus-native: --sign-in needs VOLTRUS_NATIVE_PASSWORD");
+            return ExitCode::FAILURE;
         };
-        div().size_full().bg(cx.theme().background).child(content)
-    }
-}
-
-fn main() {
-    let (handle, events) = voltrus_scada_native::runtime::start();
+        Some((
+            std::env::var("VOLTRUS_NATIVE_URL").unwrap_or_else(|_| "http://localhost:3000".into()),
+            std::env::var("VOLTRUS_NATIVE_USER").unwrap_or_else(|_| "admin".into()),
+            password,
+        ))
+    } else {
+        None
+    };
+    let launch = Launch {
+        sign_in,
+        page: options.page,
+        tag: options.tag,
+        utc_offset,
+    };
+    let appearance = options.dark;
 
     Application::new()
-        .with_assets(gpui_component_assets::Assets)
-        .run(move |cx| {
-            gpui_component::init(cx);
+        .with_assets(vt_ui::Assets)
+        .run(move |cx: &mut App| {
+            let catalog = Rc::new(ThemeCatalog::bundled());
+            let dark = appearance.unwrap_or_else(|| theme::is_dark(cx.window_appearance()));
+            let initial = catalog.resolve(
+                if dark {
+                    theme::DEFAULT_DARK
+                } else {
+                    theme::DEFAULT_LIGHT
+                },
+                dark,
+            );
+            vt_ui::init(initial, cx);
+            cx.bind_keys(console::key_bindings());
+            cx.set_menus(console::menus());
+            cx.on_action(|_: &console::Quit, cx| cx.quit());
 
-            cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-            cx.on_action(|_: &Quit, cx| cx.quit());
+            let (runtime, events) = match voltrus_scada_native::runtime::start() {
+                Ok(started) => started,
+                Err(error) => {
+                    eprintln!("voltrus-native: could not start the network runtime: {error}");
+                    cx.quit();
+                    return;
+                }
+            };
 
-            let handle = handle.clone();
-            cx.spawn(async move |cx| {
-                let opts = WindowOptions {
-                    window_bounds: Some(
-                        cx.update(|cx| WindowBounds::centered(size(px(1240.), px(780.)), cx))
-                            .expect("app context"),
-                    ),
-                    titlebar: Some(TitlebarOptions {
-                        title: Some("Voltrus SCADA — Native Console".into()),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                };
-                cx.open_window(opts, |window, cx| {
-                    window.activate_window();
-                    Theme::change(ThemeMode::Dark, Some(window), cx);
-                    // Brand overrides must come after Theme::change (it resets colors).
-                    voltrus_scada_native::theme::apply(cx);
-                    let app = cx.new(|cx| VoltrusApp::new(handle.clone(), events, window, cx));
-                    // gpui-component requires its Root as the window's root view.
-                    cx.new(|cx| Root::new(app, window, cx))
-                })
-                .expect("failed to open window");
-            })
-            .detach();
+            let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Voltrus SCADA".into()),
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(14.0), px(13.0))),
+                }),
+                window_min_size: Some(size(px(1024.0), px(640.0))),
+                app_id: Some("id.voltrus.scada.console".into()),
+                ..WindowOptions::default()
+            };
+            let opened = cx.open_window(options, move |window, cx| {
+                let console =
+                    cx.new(|cx| Console::new(runtime, events, catalog, launch, window, cx));
+                let weak = console.downgrade();
+                window.on_window_should_close(cx, move |_, cx| {
+                    let _ = weak.update(cx, |console, _| console.shutdown());
+                    cx.quit();
+                    true
+                });
+                console
+            });
+            if let Err(error) = opened {
+                eprintln!("voltrus-native: could not open the window: {error}");
+                cx.quit();
+                return;
+            }
+            cx.activate(true);
         });
+    ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    #[test]
+    fn launch_options_parse() {
+        assert_eq!(
+            parse(&args(&[
+                "--sign-in",
+                "--page",
+                "alarms",
+                "--appearance",
+                "light"
+            ])),
+            Ok(Options {
+                sign_in: true,
+                page: Some(Page::Alarms),
+                tag: None,
+                dark: Some(false),
+            })
+        );
+        assert_eq!(
+            parse(&args(&["--tag", "ac_current_l1"])).map(|options| options.tag),
+            Ok(Some("ac_current_l1".to_owned()))
+        );
+        assert!(parse(&args(&["--tag"])).is_err());
+        assert!(parse(&args(&["--page", "nowhere"])).is_err());
+        assert!(parse(&args(&["--appearance"])).is_err());
+        assert!(parse(&args(&["--bogus"])).is_err());
+    }
 }

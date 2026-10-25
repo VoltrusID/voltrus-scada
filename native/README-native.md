@@ -1,77 +1,130 @@
-# Voltrus SCADA — Native Console (`voltrus-native`)
+# Voltrus SCADA: native operator console (`voltrus-native`)
 
-The GPU-accelerated operator console for the Voltrus SCADA server.
+A desktop console for the Voltrus SCADA server, drawn on the GPU with
+[GPUI](https://gpui.rs) (Metal on macOS). It speaks the same REST API and
+MessagePack WebSocket as the web client, so it needs nothing on the server
+beyond a user account.
 
-**Powered by [GPUI](https://gpui.rs) — Zed's GPU-accelerated Rust UI framework —
-with components from Longbridge's [gpui-component](https://github.com/longbridge/gpui-component).
-Every frame is rendered on the GPU (Metal on macOS, Vulkan/blade on Linux). No DOM, no
-Electron, no browser: a 12 MB native binary that ships live tag streams at display
-refresh rate.**
+The look and controls come from `vt-ui`, the Voltrus design system shared
+with Voltrus Tools (in the `voltrus-explorers` repository): colour tokens
+from the bundled Voltrus dark and light themes, one spacing and type scale,
+JetBrains Mono for values.
 
-## Features (v0.1 — operator console)
+## What it does
 
-- **Login** — server URL + credentials; URL/username remembered in `~/.config/voltrus-native/config.toml` (password never persisted)
-- **Live tag dashboard** — sortable table of all data sources with warn/crit threshold coloring, quality state, per-tag decimals
-- **Trend chart** — click any row to chart it; 300-point live ring per tag (same window as the web client), rendered as an area chart
-- **Alarms** — active alarm list with severity coloring, per-row and bulk acknowledge; live WebSocket alarm feed
-- **Status bar** — connection state, tag count, live **updates/s counter** (watch it scream)
-- Auto-reconnect with backoff (2s → 5s → 10s) incl. automatic re-login on token expiry
+- **Sign in** with the server address, username and password. The address and
+  username are remembered in `<config dir>/voltrus-native/config.toml`
+  (`~/Library/Application Support/voltrus-native/` on macOS); the password
+  never is. When the server flags a generated or reset password, the console
+  asks for a new one before anything else.
+- **Overview**: tag count, tags that need attention, alarms to acknowledge and
+  live updates per second; the worst tags and the open alarms (with
+  Acknowledge); a tile per tag with its value, status and a 15-minute
+  sparkline.
+- **Tags**: every tag in a virtualised table (name, key, value and unit
+  coloured by the server's status, status, age, 15-minute sparkline), filtered
+  by name or key, ↑/↓ to move. The detail panel shows the value, the warning
+  and critical limits, the last hour's lowest/highest/average and trend, a
+  field to write a value (admin role, and the server's write policy must
+  allow it), and Add to Trends.
+- **Alarms**: open, to-acknowledge and shelved alarms, worst first, with
+  Acknowledge, Acknowledge all (⇧⌘A), Shelve for one hour and Unshelve.
+  Alarm times show on the computer's clock.
+- **Trends**: the chosen tags on one time axis over 30 min, 1 h, 6 h or 24 h,
+  filled from the server's history and extended by live values. The chart
+  scrolls every frame only while the link is live.
+- **Status bar**: link state (live, reconnecting with the reason, offline),
+  server, updates per second, tag and alarm counts.
+- Light or dark (⇧⌘L), ⌘1–⌘4 for the pages, standard Edit menu in text fields.
 
-## Build & run
+The network side runs on its own tokio thread: it signs in, keeps the
+WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s) signing in
+again each time, and renews the 15-minute session token every 10 minutes so
+REST calls keep working. Acknowledging, shelving, alarm refreshes and history
+loads never hold up the tag stream.
+
+## Build and run
 
 ```bash
-cargo build -p voltrus-scada-native
-./target/debug/voltrus-native          # or target/release
+cargo build --release -p voltrus-scada-native
+./target/release/voltrus-native
 ```
 
-Start the server first (`cargo run -p voltrus`), then sign in with your
-Voltrus credentials.
+Options, mainly for kiosks and screenshots:
 
-> Requires a recent Rust (edition 2024). macOS uses Metal; Linux needs X11 or
-> Wayland dev libraries.
+```
+voltrus-native [--sign-in] [--page overview|tags|alarms|trends] [--tag <key>]
+               [--appearance dark|light]
+```
 
-## Architecture
+`--sign-in` signs in at once with `VOLTRUS_NATIVE_URL` (default
+`http://localhost:3000`), `VOLTRUS_NATIVE_USER` (default `admin`) and
+`VOLTRUS_NATIVE_PASSWORD`. `--tag` opens one tag's detail.
+
+Requires a recent stable Rust (edition 2024). CI builds and tests on macOS;
+GPUI also supports Linux (X11 or Wayland), which is not tested here.
+
+## Layout
 
 ```
 native/src/
-  main.rs           GPUI bootstrap, window, login ↔ console switch, event pump
-  ws_types.rs       MessagePack WS wire types (mirror of server src/ws_types.rs)
-  api.rs            REST client: login (Set-Cookie parse + %3D decode), data-sources, alarms, ack
-  runtime.rs        Dedicated tokio thread: WS client + reconnect backoff;
-                    UiCmd in, RtEvent out, bridged into GPUI's executor
-  views/
-    login.rs        Login form
-    console.rs      Tab shell (Dashboard / Alarms) + status bar
-    dashboard.rs    Live table + AreaChart trend
-    alarms.rs       Alarm table + acknowledge
+  lib.rs            api, runtime and ws_types (no UI; used by the tests)
+  api.rs            REST client: login (token from Set-Cookie), data sources,
+                    alarms (acknowledge, shelve, unshelve), history, password change
+  ws_types.rs       MessagePack WebSocket messages (mirror of the server's)
+  runtime.rs        the network actor: Command in, Event out
+  main.rs           command line, window, theme, menus
+  console/
+    mod.rs          the Console model: phases, pages, actions, key bindings
+    store.rs        tags, values, statuses and history; update rate
+    config.rs       remembered address and username
+    views/          one function per area: sign_in, sidebar, status_bar,
+                    overview, tags, alarms, trends
+native/scripts/     CI: the solar-farm plant, app bundle, screenshots
 ```
-
-The tokio I/O runtime and the GPUI render loop each own their thread; they
-talk over lock-free unbounded channels, so UI frames never block on network.
-
-Wire protocol: binary MessagePack frames over `/api/v1/ws` — identical to the
-web client. `tests/ws_roundtrip.rs` mirrors the server's own wire tests.
 
 ## Tests
 
 ```bash
-cargo test -p voltrus-scada-native           # unit + wire roundtrips
+cargo test -p voltrus-scada-native     # unit tests and wire round trips
 
-# Live end-to-end against a running server:
-VOLTRUS_E2E_URL=http://localhost:3100 \
+# End to end against a running server:
+VOLTRUS_E2E_URL=http://localhost:3000 \
 VOLTRUS_E2E_USERNAME=admin \
 VOLTRUS_E2E_PASSWORD=... \
 cargo test -p voltrus-scada-native --test e2e_live -- --nocapture
-
-# Manual WS debugging:
-cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3100 admin <password>
 ```
 
-## Notes
+Set `VOLTRUS_E2E_EXPECT_UPDATES=1` to fail when no live values arrive.
 
-- The server's `Set-Cookie` percent-encodes the JWT's base64 padding
-  (`==` → `%3D%3D`). Browser cookie jars decode this transparently; this
-  client does the same in `api.rs:percent_decode` — without it, WS auth
-  rejects the raw token while REST accepts it.
-- Duplicate data-source keys (same key on multiple devices) collapse to one
-  live row; keying by device is future work.
+The `Native console` workflow (`.github/workflows/native.yml`) runs on macOS:
+formatting, clippy, the tests, then a release build of the console, the
+server and the Modbus simulator. `native/scripts/ci-server.sh` starts the
+solar-farm scenario, resets the admin password with
+`voltrus --reset-admin-password`, replaces it through the API, and sets
+plant-like alarm limits. The end-to-end test runs against that server, and
+`native/scripts/screenshots-macos.sh` captures every page of the signed-in
+console. The screenshots and a zipped, ad-hoc signed `Voltrus SCADA.app` are
+the workflow's artifacts; tagged releases attach the zip as well.
+
+Manual WebSocket debugging:
+
+```bash
+cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 admin <password>
+```
+
+## Server behaviour to know
+
+- The login token comes only in the `Set-Cookie` header, with the JWT's
+  base64 padding percent-encoded (`%3D`). The console decodes it
+  (`api.rs:percent_decode`); the WebSocket refuses the encoded form.
+- Writes address the data source's numeric id. The server answers only
+  writes it accepts (admin role, a writable tag); otherwise it stays silent,
+  so the console reports no answer after 10 seconds.
+- The server's `active` alarm list holds unacknowledged alarms only, so the
+  console also fetches the acknowledged and shelved lists and drops resolved
+  ones. Alarms resolve without a WebSocket message; the list is fetched again
+  every 10 seconds.
+- Tag keys are register names, so two devices may share one (solar-farm has
+  `frequency` twice). The console shows the first; keying by device is future
+  work.

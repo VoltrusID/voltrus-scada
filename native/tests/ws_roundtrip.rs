@@ -106,7 +106,7 @@ fn server_alarm_roundtrip() {
 
 #[test]
 fn all_client_message_types_roundtrip() {
-    let messages = vec![
+    let messages = [
         ClientMessage::Auth {
             token: "test-jwt".to_string(),
         },
@@ -127,7 +127,7 @@ fn all_client_message_types_roundtrip() {
 
 #[test]
 fn all_server_message_types_roundtrip() {
-    let messages = vec![
+    let messages = [
         ServerMessage::AuthOk {
             user: "admin".to_string(),
             permissions: vec![],

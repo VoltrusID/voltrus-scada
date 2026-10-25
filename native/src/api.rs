@@ -19,6 +19,53 @@ pub struct LoginOk {
     pub ok: bool,
     pub username: String,
     pub role: String,
+    /// Set for a generated or reset password: the operator must choose a new
+    /// one before working.
+    #[serde(default)]
+    pub must_change_password: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ChangePasswordBody<'a> {
+    old_password: &'a str,
+    new_password: &'a str,
+}
+
+/// One tag's history in the server's compact form: evenly spaced values from
+/// `start` (Unix ms), `interval` ms apart.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct HistorySeries {
+    #[serde(default)]
+    pub values: Vec<f64>,
+    #[serde(default)]
+    pub start: i64,
+    #[serde(default)]
+    pub interval: u64,
+}
+
+impl HistorySeries {
+    /// `(Unix ms, value)` of every sample.
+    pub fn samples(&self) -> impl Iterator<Item = (i64, f64)> + '_ {
+        let interval = i64::try_from(self.interval).unwrap_or(i64::MAX);
+        self.values.iter().enumerate().map(move |(index, value)| {
+            let offset = i64::try_from(index)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(interval);
+            (self.start.saturating_add(offset), *value)
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryResponse {
+    #[serde(default)]
+    data: std::collections::HashMap<String, HistorySeries>,
+}
+
+#[derive(Debug, Serialize)]
+struct ShelveBody<'a> {
+    duration_secs: u64,
+    reason: &'a str,
 }
 
 /// Mirrors `voltrus::models::DataSourceSummary` (server serializes exactly these fields).
@@ -94,7 +141,7 @@ pub fn percent_decode(s: &str) -> String {
             let h = hex(bytes[i + 1]);
             let l = hex(bytes[i + 2]);
             if h != 0xff && l != 0xff {
-                out.push(h << 4 | l);
+                out.push((h << 4) | l);
                 i += 3;
                 continue;
             }
@@ -120,6 +167,8 @@ pub fn parse_token_cookie(set_cookie_values: &[String]) -> Option<String> {
     None
 }
 
+/// Clones share one connection pool, so background tasks can each hold one.
+#[derive(Clone)]
 pub struct VoltrusApi {
     http: reqwest::Client,
     /// Base URL without trailing slash, e.g. `http://localhost:3000`.
@@ -155,10 +204,10 @@ impl VoltrusApi {
         let body = resp.text().await?;
         if !status.is_success() {
             // Server errors are `{"error": "..."}` JSON.
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                if let Some(msg) = v.get("error").and_then(|e| e.as_str()) {
-                    return Err(anyhow!("{msg}"));
-                }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body)
+                && let Some(msg) = v.get("error").and_then(|e| e.as_str())
+            {
+                return Err(anyhow!("{msg}"));
             }
             return Err(anyhow!("HTTP {status}: {body}"));
         }
@@ -237,6 +286,62 @@ impl VoltrusApi {
         Self::decode::<serde_json::Value>(resp).await?;
         Ok(())
     }
+
+    /// POST /api/v1/alarms/{id}/shelf — hide an alarm for `duration_secs`.
+    pub async fn shelve_alarm(&self, id: i64, duration_secs: u64, reason: &str) -> Result<()> {
+        let resp = self
+            .req(reqwest::Method::POST, &format!("/api/v1/alarms/{id}/shelf"))?
+            .json(&ShelveBody {
+                duration_secs,
+                reason,
+            })
+            .send()
+            .await?;
+        Self::decode::<serde_json::Value>(resp).await?;
+        Ok(())
+    }
+
+    /// POST /api/v1/alarms/{id}/unshelf
+    pub async fn unshelve_alarm(&self, id: i64) -> Result<()> {
+        let resp = self
+            .req(
+                reqwest::Method::POST,
+                &format!("/api/v1/alarms/{id}/unshelf"),
+            )?
+            .send()
+            .await?;
+        Self::decode::<serde_json::Value>(resp).await?;
+        Ok(())
+    }
+
+    /// POST /api/v1/auth/change-password
+    pub async fn change_password(&self, old_password: &str, new_password: &str) -> Result<()> {
+        let resp = self
+            .req(reqwest::Method::POST, "/api/v1/auth/change-password")?
+            .json(&ChangePasswordBody {
+                old_password,
+                new_password,
+            })
+            .send()
+            .await?;
+        Self::decode::<serde_json::Value>(resp).await?;
+        Ok(())
+    }
+
+    /// GET /api/v1/history?range=.. — every tag's history, keyed by tag key.
+    pub async fn history(
+        &self,
+        range: &str,
+    ) -> Result<std::collections::HashMap<String, HistorySeries>> {
+        let resp = self
+            .req(
+                reqwest::Method::GET,
+                &format!("/api/v1/history?range={range}"),
+            )?
+            .send()
+            .await?;
+        Ok(Self::decode::<HistoryResponse>(resp).await?.data)
+    }
 }
 
 #[cfg(test)]
@@ -244,8 +349,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn history_decodes_the_compact_server_form() {
+        // The shape `GET /api/v1/history` answers with (see api/data/handlers.rs).
+        let body = r#"{
+            "sensors": [], "range": "30m", "interval": 5000,
+            "data": {
+                "PLC01.voltage": {"values": [230.1, 230.4, 229.9], "start": 1700000000000, "interval": 5000, "count": 3},
+                "PLC01.empty": {"values": [], "start": 1700000000000, "interval": 5000, "count": 0}
+            }
+        }"#;
+        let decoded: HistoryResponse = serde_json::from_str(body).unwrap();
+        let samples: Vec<_> = decoded.data["PLC01.voltage"].samples().collect();
+        assert_eq!(
+            samples,
+            [
+                (1_700_000_000_000, 230.1),
+                (1_700_000_005_000, 230.4),
+                (1_700_000_010_000, 229.9)
+            ]
+        );
+        assert_eq!(decoded.data["PLC01.empty"].samples().count(), 0);
+    }
+
+    #[test]
     fn parses_token_from_set_cookie() {
-        let raw = vec![
+        let raw = [
             "voltrus_refresh=abc123; HttpOnly; Path=/".to_string(),
             "voltrus_token=eyJhbGciOiJIUzI1NiJ9.payload.sig; HttpOnly; Secure; SameSite=Strict; Max-Age=900; Path=/".to_string(),
         ];
@@ -258,7 +386,7 @@ mod tests {
     #[test]
     fn decodes_percent_encoded_padding() {
         // The server percent-encodes '=' padding as %3D in Set-Cookie values.
-        let raw = vec![
+        let raw = [
             "voltrus_token=eyJ1c2VybmFtZSI6ImFkbWluIn0%3D%3D.deadbeef; HttpOnly; Path=/"
                 .to_string(),
         ];
@@ -270,13 +398,13 @@ mod tests {
 
     #[test]
     fn returns_none_without_token_cookie() {
-        let raw = vec!["session=xyz; Path=/".to_string()];
+        let raw = ["session=xyz; Path=/".to_string()];
         assert!(parse_token_cookie(&raw).is_none());
     }
 
     #[test]
     fn rejects_empty_token_value() {
-        let raw = vec!["voltrus_token=; Path=/".to_string()];
+        let raw = ["voltrus_token=; Path=/".to_string()];
         assert!(parse_token_cookie(&raw).is_none());
     }
 

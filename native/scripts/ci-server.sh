@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# Run the solar-farm plant for the console's end-to-end test and screenshots:
+# a Voltrus server plus the scenario's two Modbus simulators, an admin whose
+# generated password is replaced through the API, and plant-like alarm limits.
+#
+# Usage: native/scripts/ci-server.sh <work dir>
+# Needs the release binaries `voltrus` and `modbus-sim`, curl, jq and openssl.
+# Prints the URL and password, and appends them to $GITHUB_ENV when set.
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+bin="$root/target/release"
+work="$1"
+mkdir -p "$work"
+cd "$work"
+
+port=3000
+url="http://127.0.0.1:$port"
+json='content-type: application/json'
+
+# The scenario's devices, plus what plain-HTTP sign-in needs: cookies without
+# the Secure flag, and a fixed signing secret.
+{
+  cat "$root/scenarios/solar-farm/voltrus.yaml"
+  printf '\ncookie_secure: false\nauth_secret: "%s"\n' "$(openssl rand -hex 24)"
+} > voltrus.yaml
+
+"$bin/voltrus" voltrus.yaml > server.log 2>&1 &
+echo $! > server.pid
+for _ in $(seq 1 120); do
+  if curl -fsS "$url/api/v1/health" > /dev/null 2>&1; then break; fi
+  sleep 1
+done
+curl -fsS "$url/api/v1/health" > /dev/null || { echo "::error::the server did not start"; tail -50 server.log; exit 1; }
+
+# A fresh admin password from the CLI; the server wants it changed at once.
+generated="$("$bin/voltrus" --reset-admin-password voltrus.yaml | sed -n 's/^New password: //p')"
+[ -n "$generated" ] || { echo "::error::no password from --reset-admin-password"; exit 1; }
+echo "::add-mask::$generated"
+
+login() {
+  curl -fsS -c cookies.txt -H "$json" \
+    -d "$(jq -n --arg user admin --arg pass "$1" '{username: $user, password: $pass}')" \
+    "$url/api/v1/auth/login"
+}
+[ "$(login "$generated" | jq -r .must_change_password)" = "true" ] \
+  || echo "::warning::the reset password did not ask for a change"
+
+password="ci-$(openssl rand -hex 12)"
+echo "::add-mask::$password"
+curl -fsS -b cookies.txt -H "$json" \
+  -d "$(jq -n --arg old "$generated" --arg new "$password" '{old_password: $old, new_password: $new}')" \
+  "$url/api/v1/auth/change-password" > /dev/null
+[ "$(login "$password" | jq -r .must_change_password)" = "false" ] \
+  || { echo "::error::the password change did not clear must_change_password"; exit 1; }
+
+# The seeded limits (80/90 on almost every register) put the whole plant in
+# alarm. Set limits like a plant engineer would, so a few tags stand out:
+# AC current L1 critical, irradiance and current distortion warning.
+limits() {
+  case "$1" in
+    dc_voltage_a | dc_voltage_b) echo "750 790" ;;
+    dc_current_a | dc_current_b) echo "100 108" ;;
+    dc_power) echo "61000 61800" ;;
+    ac_voltage_l1 | ac_voltage_l2 | ac_voltage_l3) echo "245 250" ;;
+    voltage_l1n | voltage_l2n | voltage_l3n) echo "245 250" ;;
+    ac_current_l1) echo "80 85" ;;
+    ac_current_l2 | ac_current_l3) echo "95 98" ;;
+    ac_power) echo "59500 59900" ;;
+    frequency) echo "50.15 50.19" ;;
+    irradiance) echo "800 1050" ;;
+    temperature) echo "70 85" ;;
+    current_l1 | current_l2 | current_l3) echo "400 500" ;;
+    active_power) echo "150000 180000" ;;
+    thd_voltage) echo "5 8" ;;
+    thd_current) echo "5 8" ;;
+    *) echo "0 0" ;;
+  esac
+}
+curl -fsS -b cookies.txt "$url/api/v1/data-sources" | jq -r '.[] | "\(.id) \(.key)"' |
+  while read -r id key; do
+    read -r warn crit <<< "$(limits "$key")"
+    curl -fsS -b cookies.txt -X PUT -H "$json" \
+      -d "{\"warn_val\": $warn, \"crit_val\": $crit}" \
+      "$url/api/v1/data-sources/$id" > /dev/null
+  done
+
+"$bin/modbus-sim" --scenario solar-farm --role inverter --port 5020 > inverter.log 2>&1 &
+echo $! > inverter.pid
+"$bin/modbus-sim" --scenario solar-farm --role grid-meter --port 5021 > meter.log 2>&1 &
+echo $! > meter.pid
+
+# Wait until polled values reach the history store (it persists every 5 s).
+for _ in $(seq 1 90); do
+  stored="$(curl -fsS -b cookies.txt "$url/api/v1/history?range=30m" | jq '[.data[] | .values | length] | add // 0')"
+  if [ "$stored" -gt 0 ]; then break; fi
+  sleep 1
+done
+echo "history samples: $stored"
+[ "$stored" -gt 0 ] || { echo "::error::no values reached the server"; tail -50 server.log; exit 1; }
+echo "open alarms: $(curl -fsS -b cookies.txt "$url/api/v1/alarms?status=active&limit=100" | jq length)"
+
+echo "server: $url"
+if [ -n "${GITHUB_ENV:-}" ]; then
+  {
+    echo "VOLTRUS_E2E_URL=$url"
+    echo "VOLTRUS_E2E_USERNAME=admin"
+    echo "VOLTRUS_E2E_PASSWORD=$password"
+    echo "VOLTRUS_NATIVE_URL=$url"
+    echo "VOLTRUS_NATIVE_USER=admin"
+    echo "VOLTRUS_NATIVE_PASSWORD=$password"
+  } >> "$GITHUB_ENV"
+fi
