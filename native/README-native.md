@@ -83,6 +83,19 @@ JetBrains Mono for values.
   refresh, events per second, tags and peak memory. `--stress` feeds a
   deterministic 10 000-tag synthetic plant through the same store path as
   the WebSocket, without a server, and prints a report when it ends.
+- **Operations pages** in the More menu (and the palette): **Commands**
+  (the write command queue: a History of every command, filtered by status
+  with `[` `]` and paged with ← →, an Active list fetched every 2 s while it
+  is on screen, a side panel with every field and the audit trail, and
+  Cancel for operators with `x`); **Shift handover** (operators: the log by
+  date and shift, new entries written in a dialog with multi-line notes, `n`,
+  where @mentions are highlighted and named; the server's automatic report
+  of the current shift, fetched every 30 s while shown); **Audit log**
+  (operators: search with `/`, action, user and time filters, sort with `s`
+  or the column heads, pages of 50, `e` saves the filtered log as CSV).
+  **Export data…** (palette or View menu) saves telemetry from
+  `/api/v1/data/export`, raw or aggregated, as JSON or CSV, to a file you
+  pick.
 
 The network side runs on its own tokio thread: it signs in, keeps the
 WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s) signing in
@@ -106,8 +119,8 @@ cargo build --release -p voltrus-scada-native
 Options, mainly for kiosks and screenshots:
 
 ```
-voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance] [--tag <key>]
-               [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud] [--overlay palette|help]
+voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance|commands|shift|audit] [--tag <key>]
+               [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud] [--overlay palette|help|<action>]
                [--alarms history|analytics|audit|detail|shelve|confirm]
                [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                          [--stress-seconds N] [--stress-report FILE]]
@@ -117,6 +130,9 @@ voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance] [--t
 `--sign-in` signs in at once with `VOLTRUS_NATIVE_URL` (default
 `http://localhost:3000`), `VOLTRUS_NATIVE_USER` (default `admin`) and
 `VOLTRUS_NATIVE_PASSWORD`. `--tag` opens one tag's detail; `--range` picks the Trends range.
+`--overlay` also runs a palette command by its action name once signed in,
+e.g. `--overlay OpsExportData` (the data export dialog) or
+`--overlay OpsNewHandover` (a new shift handover entry).
 `--alarms` opens the Alarms page on a view (history, analytics, audit) or
 with a dialog open on its worst alarm (detail, shelve) or the
 acknowledge-all confirmation.
@@ -143,6 +159,8 @@ native/src/
   lib.rs            api, runtime, ws_types, stress and perf (no UI; used by the tests)
   api.rs            REST client: login and logout cookies, generic JSON helpers,
                     data sources, alarms, history, password change
+  api/ops.rs        commands, shift handover, audit log and data export: mirrors,
+                    paths, text downloads
   ws_types.rs       MessagePack WebSocket messages (mirror of the server's)
   runtime.rs        the network actor: Command in, Event out, generic calls
   stress.rs         the deterministic synthetic plant
@@ -159,6 +177,7 @@ native/src/
     anim.rs, meter.rs  animation helpers, the frame meter
     store.rs        tags, values, statuses and history; update rate
     config.rs       remembered address and username
+    text_area.rs    the multi-line text field (handover notes)
     views/          one cached view per window part, one module per page
 native/scripts/     CI: the solar-farm plant, app bundle, screenshots
 ```
@@ -191,7 +210,11 @@ it, and changing the admin password and back), and
 `overview`, `tags` (with a tag's detail open), `alarms`, `trends` (5 min) and
 `overview-light`, the Alarms page's views and dialogs (`alarms-history`,
 `-analytics`, `-audit`, `-detail`, `-shelve`, `-confirm`, `alarms-light`),
-plus the `sign-in` screen. The screenshots, a zipped,
+the operations pages (`ops-commands`, `ops-shift`, `ops-shift-new`,
+`ops-audit`, `ops-audit-light`, `ops-export`), plus the `sign-in` screen.
+The end-to-end test also writes a scheduled command and cancels it, writes
+a handover entry and reads it back by date and shift, pages, filters, sorts
+and exports the audit log, and saves a telemetry export. The screenshots, a zipped,
 ad-hoc signed `Voltrus SCADA.app`, and the demo plant
 (`voltrus-demo-plant.tar.gz`: the server, the Modbus simulator,
 `ci-server.sh` and the scenario) are the workflow's artifacts; tagged
@@ -240,3 +263,14 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - Tag keys are register names, so two devices may share one (solar-farm has
   `frequency` twice). The console shows the first; keying by device is future
   work.
+- Shift handover routes (all operator-only) list entries with the author's
+  user id only; the console shows `user #id`. The automatic report places
+  the current shift on the server's UTC clock and does not send its
+  `period_start`/`period_end` (the web client reads them anyway); the
+  console derives the window from the date and shift. Between midnight and
+  06:00 UTC it reports today's night shift (22:00 tonight to 06:00
+  tomorrow), not the one in progress.
+- The audit log's `created_at`, `from` and `to` are Unix seconds (the web
+  client sends milliseconds and reads them as such). An unknown command
+  answers 500 "Command not found", not 404; cancelling a command already
+  sent answers 400.
