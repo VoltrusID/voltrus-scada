@@ -174,8 +174,8 @@ fn form_mut(console: &mut Console) -> Option<&mut Form> {
 
 /// Copy the text fields into the draft.
 fn collect(form: &mut Form, cx: &App) {
-    for (key, input) in &form.inputs {
-        set_text(&mut form.draft, *key, input.read(cx).value().to_owned());
+    for (&key, input) in &form.inputs {
+        set_text(&mut form.draft, key, input.read(cx).value().to_owned());
     }
 }
 
