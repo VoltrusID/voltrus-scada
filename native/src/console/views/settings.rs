@@ -605,7 +605,7 @@ pub fn themes(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                         .font_weight(FontWeight::MEDIUM)
                                         .child(name.clone()),
                                 )
-                                .when(**name == *chosen, |this| {
+                                .when(name.as_str() == chosen, |this| {
                                     this.child(vt_ui::icon(Icon::Check, ICON_MD, theme.accent))
                                 })
                                 .when(focused && active, |this| this.child(focus_ring(&theme))),

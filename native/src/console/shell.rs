@@ -11,9 +11,7 @@ use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{
-    AppContext as _, Bounds, Context, Entity, Keystroke, Pixels, Stateful, Subscription, Window, px,
-};
+use gpui::{Bounds, Context, Entity, Keystroke, Pixels, Stateful, Subscription, Window, px};
 use serde::de::IgnoredAny;
 use time::OffsetDateTime;
 use voltrus_scada_native::api::Method;
