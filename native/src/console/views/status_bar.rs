@@ -31,12 +31,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         Link::SignedOut => (theme.fg_dim, "Signed out".to_owned()),
     };
     let tags = console.store.tags.len();
-    let attention = console
-        .store
-        .tags
-        .iter()
-        .filter(|tag| tag.status.needs_attention())
-        .count();
+    let attention = console.store.attention_count();
     let offline_devices = console
         .devices
         .values()

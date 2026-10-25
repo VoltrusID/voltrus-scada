@@ -786,51 +786,34 @@ impl SortKey {
     }
 }
 
-/// Whether `source` matches the search: in its name, key, unit, source
-/// type or device, ignoring case. `query` is lower case already.
-pub fn matches(source: &DataSource, query: &str) -> bool {
-    query.is_empty()
-        || [
-            &source.name,
-            &source.key,
-            &source.unit,
-            &source.source_type,
-            &source.device_id,
-        ]
-        .iter()
-        .any(|text| text.to_lowercase().contains(query))
-}
-
 fn compare_text(a: &str, b: &str) -> std::cmp::Ordering {
     a.chars()
         .flat_map(char::to_lowercase)
         .cmp(b.chars().flat_map(char::to_lowercase))
 }
 
-/// The table's rows: positions in `sources` (in the server's order) that
-/// match `query`, sorted. `order`, while a reorder waits for the server, is
-/// the order the operator asked for and replaces the server's.
-pub fn rows(
-    sources: &[&DataSource],
-    query: &str,
+/// The table's rows: `filtered` (positions in the server's order, already
+/// matching the search) sorted. `order`, while a reorder waits for the
+/// server, is the order the operator asked for and replaces the server's.
+/// `info` gives the source at a position.
+pub fn sort_rows<'a>(
+    filtered: &[usize],
+    info: impl Fn(usize) -> &'a DataSource,
     sort: SortKey,
     descending: bool,
     order: Option<&[i64]>,
 ) -> Vec<usize> {
-    let query = query.trim().to_lowercase();
-    let mut rows: Vec<usize> = (0..sources.len())
-        .filter(|index| matches(sources[*index], &query))
-        .collect();
+    let mut rows = filtered.to_vec();
     if let Some(order) = order {
         let at: HashMap<i64, usize> = order
             .iter()
             .enumerate()
             .map(|(position, id)| (*id, position))
             .collect();
-        rows.sort_by_key(|index| at.get(&sources[*index].id).copied().unwrap_or(usize::MAX));
+        rows.sort_by_key(|index| at.get(&info(*index).id).copied().unwrap_or(usize::MAX));
     }
     let by = |a: &usize, b: &usize| {
-        let (a, b) = (sources[*a], sources[*b]);
+        let (a, b) = (info(*a), info(*b));
         match sort {
             SortKey::Order => std::cmp::Ordering::Equal,
             SortKey::Name => compare_text(&a.name, &b.name),
@@ -1243,19 +1226,27 @@ mod tests {
     }
 
     #[test]
-    fn rows_search_and_sort_stably() {
+    fn rows_sort_stably_and_show_a_pending_reorder() {
         let list = [
             source(1, "b_key", "beta"),
             source(2, "a_key", "Alpha"),
             source(3, "c_key", "alpha"),
         ];
-        let refs: Vec<&DataSource> = list.iter().collect();
-        assert_eq!(rows(&refs, "", SortKey::Order, false, None), [0, 1, 2]);
-        assert_eq!(rows(&refs, "", SortKey::Name, false, None), [1, 2, 0]);
-        assert_eq!(rows(&refs, "", SortKey::Key, true, None), [2, 0, 1]);
-        assert_eq!(rows(&refs, " ALP ", SortKey::Order, false, None), [1, 2]);
+        let info = |index: usize| &list[index];
+        let all = [0, 1, 2];
         assert_eq!(
-            rows(&refs, "", SortKey::Order, false, Some(&[3, 1, 2])),
+            sort_rows(&all, info, SortKey::Order, false, None),
+            [0, 1, 2]
+        );
+        assert_eq!(sort_rows(&all, info, SortKey::Name, false, None), [1, 2, 0]);
+        assert_eq!(sort_rows(&all, info, SortKey::Key, true, None), [2, 0, 1]);
+        assert_eq!(
+            sort_rows(&[1, 2], info, SortKey::Order, false, None),
+            [1, 2],
+            "only the search's rows"
+        );
+        assert_eq!(
+            sort_rows(&all, info, SortKey::Order, false, Some(&[3, 1, 2])),
             [2, 0, 1],
             "a pending reorder shows at once"
         );

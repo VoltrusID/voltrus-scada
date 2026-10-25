@@ -8,8 +8,7 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, ElementId, Entity, FontWeight, Pixels, SharedString, Window, div, px,
-    uniform_list,
+    AnyElement, Context, ElementId, Entity, FontWeight, Pixels, Window, div, px, uniform_list,
 };
 use voltrus_scada_native::runtime::Link;
 use vt_ui::Icon;
@@ -41,27 +40,12 @@ pub fn side_panel(_: &Console) -> Pixels {
     px(PICKER)
 }
 
-/// The picker's tags, as store positions, matching its filter.
-fn picks(console: &Console, cx: &gpui::App) -> Vec<usize> {
-    let filter = console
-        .inputs
-        .trend_filter
-        .read(cx)
-        .value()
-        .trim()
-        .to_lowercase();
+/// The picker's tags, as store positions, matching its filter; kept by the
+/// store, so the chart's frames do not filter every tag again.
+fn picks(console: &Console, cx: &gpui::App) -> Rc<[usize]> {
     console
         .store
-        .tags
-        .iter()
-        .enumerate()
-        .filter(|(_, tag)| {
-            filter.is_empty()
-                || tag.info.name.to_lowercase().contains(&filter)
-                || tag.info.key.to_lowercase().contains(&filter)
-        })
-        .map(|(index, _)| index)
-        .collect()
+        .filter(console.inputs.trend_filter.read(cx).value())
 }
 
 /// Enter or Space puts the row's tag on the chart or takes it off.
@@ -109,7 +93,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .map(|(position, index)| {
             let tag = &console.store.tags[*index];
             Series {
-                label: SharedString::from(tag.info.name.clone()),
+                label: tag.label.clone(),
                 color: theme.series(position),
                 history: tag.history.clone(),
                 stepped: false,
@@ -149,7 +133,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                     div()
                         .text_size(FONT_SMALL)
                         .text_color(theme.fg_muted)
-                        .child(tag.info.name.clone()),
+                        .child(tag.label.clone()),
                 )
                 .child(
                     div()
@@ -199,7 +183,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     };
 
     // The picker: every tag matching its filter, virtualised.
-    let rows = Rc::new(picks(console, cx));
+    let rows = picks(console, cx);
     let shown = rows.len();
     let list = keyboard_list(
         ListKeys {
@@ -278,7 +262,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                         } else {
                                             theme.fg_muted
                                         })
-                                        .child(tag.info.name.clone()),
+                                        .child(tag.label.clone()),
                                 )
                                 .child(
                                     div()

@@ -1,13 +1,24 @@
 //! The plant at a glance: counts, what needs attention, open alarms, and a
 //! tile per tag. A tile lights up when its value changes and its level bar
 //! glides to the new value; the page asks for frames only while one does.
+//!
+//! The page redraws at the display's rate while tiles flash, so each frame
+//! is kept cheap: counts and the attention list come ready from the store,
+//! and tile rows scrolled well out of view are drawn as empty rows of the
+//! same height (their positions are taken from the last frame's layout).
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, ElementId, FontWeight, Hsla, SharedString, Window, div, px};
+use gpui::{
+    AnyElement, App, Bounds, Context, ElementId, FontWeight, Hsla, Pixels, SharedString, Window,
+    div, px,
+};
+use voltrus_scada_native::stress::PROFILE_TREND;
 use vt_ui::Icon;
-use vt_ui::chart::{format_value, sparkline};
+use vt_ui::chart::{History, Series, format_value, sparkline, trend_chart};
 use vt_ui::components::{Button, pill, status_dot};
 use vt_ui::theme::*;
 
@@ -32,6 +43,30 @@ const ALARM_ROWS: usize = 6;
 /// does when it is younger.
 const SPARK_MS: f64 = 15.0 * 60_000.0;
 const SHORTEST_MS: f64 = 2.0 * 60_000.0;
+/// Room kept around a tile the keyboard cursor scrolls into view.
+const SCROLL_MARGIN: f32 = 16.0;
+/// The stress profile's trend: how far back, and samples kept per line.
+const PROFILE_MS: f64 = 6_000.0;
+const PROFILE_SAMPLES: usize = 2048;
+
+/// Where the tile rows were laid out in the last frame, in the scrolling
+/// content's coordinates (independent of the scroll offset).
+#[derive(Default)]
+struct Layout {
+    /// Top and bottom of each tile row.
+    rows: Vec<(f32, f32)>,
+    /// The height of a row of tiles, as drawn; off-screen rows take it.
+    row_height: Option<f32>,
+}
+
+#[derive(Default)]
+struct State {
+    layout: Rc<RefCell<Layout>>,
+    /// The cursor at the last render, to scroll a moved one into view.
+    cursor: Option<usize>,
+    /// The stress profile's trend lines, sampled every frame.
+    profile: Vec<Rc<History>>,
+}
 
 pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
     console.focus_list(LIST, window, cx);
@@ -69,6 +104,22 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let cursor = nav.cursor;
     let focused = nav.focus.is_focused(window);
     let scroll = console.scroll(LIST);
+    let now = now_ms();
+    let profile = console
+        .stress
+        .as_ref()
+        .is_some_and(|run| run.plan.options.profile);
+    let trend_lines = profile.then(|| profile_series(console, &theme, now));
+    let state = console.state::<State>();
+    let moved = std::mem::replace(&mut state.cursor, cursor) != cursor;
+    let layout = Rc::clone(&state.layout);
+    let tile_rows = tile_count.div_ceil(COLUMNS);
+    let (shown, spacer) = shown_rows(
+        &layout.borrow(),
+        tile_rows,
+        &scroll,
+        cursor.filter(|_| moved && focused).map(|at| at / COLUMNS),
+    );
     let store = &console.store;
     let critical = store.count(Status::Critical);
     let warning = store.count(Status::Warning);
@@ -129,18 +180,10 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             &theme,
         ));
 
-    // Worst first: critical, warning, then offline.
-    let mut attention: Vec<usize> = (0..store.tags.len())
-        .filter(|index| store.tags[*index].status.needs_attention())
-        .collect();
-    attention.sort_by_key(|index| match store.tags[*index].status {
-        Status::Critical => 0,
-        Status::Warning => 1,
-        _ => 2,
-    });
-    let attention_count = attention.len();
-    let attention_rows: Vec<AnyElement> = attention
-        .into_iter()
+    // Worst first: critical, warning, then offline; kept so by the store.
+    let attention_count = store.attention_count();
+    let attention_rows: Vec<AnyElement> = store
+        .attention()
         .take(ATTENTION_ROWS)
         .map(|index| attention_row(&store.tags[index], &theme, cx))
         .collect();
@@ -285,37 +328,66 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             }
         });
 
-    let now = now_ms();
     let instant = Instant::now();
-    let span = fit_span(
-        store
+    let span = fit_span(store.span_ms(now), SHORTEST_MS, SPARK_MS);
+    // A profile run's trend moves on every frame.
+    let mut animating = profile;
+    let mut rows: Vec<AnyElement> = Vec::with_capacity(tile_rows);
+    for (row, shown) in shown.iter().enumerate() {
+        if let (false, Some(height)) = (*shown, spacer) {
+            // Off screen: an empty row of the same height. What flashes
+            // there is not drawn, so it asks for no frames either.
+            rows.push(div().h(px(height)).into_any_element());
+            continue;
+        }
+        let first = row * COLUMNS;
+        let mut tiles = Vec::with_capacity(COLUMNS);
+        for (index, tag) in store
             .tags
             .iter()
-            .filter_map(|tag| tag.span_ms(now))
-            .reduce(f64::max),
-        SHORTEST_MS,
-        SPARK_MS,
-    );
-    let mut animating = false;
-    let tiles: Vec<AnyElement> = store
-        .tags
-        .iter()
-        .take(TILES)
-        .enumerate()
-        .map(|(row, tag)| {
+            .enumerate()
+            .take(tile_count)
+            .skip(first)
+            .take(COLUMNS)
+        {
             let look = TileLook::at(tag, instant);
             animating |= look.flash.is_some() || look.tweening;
-            tile(
-                row,
+            tiles.push(tile(
+                index,
                 tag,
                 look,
                 (now, span, now_secs),
-                focused && cursor == Some(row),
+                focused && cursor == Some(index),
                 &theme,
                 cx,
-            )
-        })
-        .collect();
+            ));
+        }
+        rows.push(
+            div()
+                .grid()
+                .grid_cols(COLUMNS as u16)
+                .gap(SPACE_6)
+                .children(tiles)
+                .into_any_element(),
+        );
+    }
+    let record_layout = {
+        let scroll = scroll.clone();
+        move |bounds: Vec<Bounds<Pixels>>, _: &mut Window, _: &mut App| {
+            let viewport = scroll.bounds();
+            let offset = scroll.offset();
+            let mut layout = layout.borrow_mut();
+            layout.rows.clear();
+            for (row, bounds) in bounds.iter().enumerate() {
+                let top = f32::from(bounds.top() - viewport.top() - offset.y);
+                let height = f32::from(bounds.size.height);
+                layout.rows.push((top, top + height));
+                if shown.get(row).copied().unwrap_or(false) {
+                    layout.row_height = Some(height);
+                }
+            }
+        }
+    };
     let more = store.tags.len().saturating_sub(TILES);
     let tag_total = store.tags.len();
 
@@ -336,6 +408,19 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     if animating {
         anim::request_frame(window, &console.meter);
     }
+    let trend_card = trend_lines.map(|series| profile_card(console, series, now, &theme, cx));
+    let cards = div()
+        .grid()
+        .grid_cols(2)
+        .gap(SPACE_6)
+        .child(attention_card)
+        .child(alarms_card);
+    // The profile shows what moves first: its trend, then the tiles.
+    let (cards_above, cards_below) = if profile {
+        (None, Some(cards))
+    } else {
+        (Some(cards), None)
+    };
 
     div()
         .flex()
@@ -362,14 +447,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                         .p(SPACE_9)
                         .pb(LIST_TAIL)
                         .child(kpis)
-                        .child(
-                            div()
-                                .grid()
-                                .grid_cols(2)
-                                .gap(SPACE_6)
-                                .child(attention_card)
-                                .child(alarms_card),
-                        )
+                        .children(cards_above)
+                        .children(trend_card)
                         .child(
                             div()
                                 .flex()
@@ -397,12 +476,150 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                 }),
                         )
                         .child(
-                            list.grid()
-                                .grid_cols(COLUMNS as u16)
-                                .gap(SPACE_6)
-                                .children(tiles),
-                        ),
+                            list.child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(SPACE_6)
+                                    .on_children_prepainted(record_layout)
+                                    .children(rows),
+                            ),
+                        )
+                        .children(cards_below),
                 ),
+        )
+        .into_any_element()
+}
+
+/// Which tile rows to draw, scrolling the keyboard cursor's row (`reveal`)
+/// into view first, and the height an undrawn row takes. Every row is drawn
+/// until a frame has laid them out.
+fn shown_rows(
+    layout: &Layout,
+    rows: usize,
+    scroll: &gpui::ScrollHandle,
+    reveal: Option<usize>,
+) -> (Vec<bool>, Option<f32>) {
+    let viewport = f32::from(scroll.bounds().size.height);
+    let mut offset = scroll.offset();
+    if let Some(&(top, bottom)) = reveal.and_then(|row| layout.rows.get(row))
+        && let Some(y) = reveal_offset(
+            (top, bottom),
+            f32::from(offset.y),
+            viewport,
+            f32::from(scroll.max_offset().height),
+        )
+    {
+        offset.y = px(y);
+        scroll.set_offset(offset);
+    }
+    let shown = match layout.row_height {
+        Some(_) if viewport > 0.0 => on_screen(&layout.rows, rows, f32::from(offset.y), viewport),
+        _ => vec![true; rows],
+    };
+    (shown, layout.row_height)
+}
+
+/// Rows within a quarter screen of the viewport (`offset_y`, the scroll
+/// offset, is 0 or negative); rows not laid out yet count as on screen.
+/// The offset is the current one (a scroll redraws the page), so the margin
+/// only covers a row growing into view between two frames.
+fn on_screen(laid_out: &[(f32, f32)], rows: usize, offset_y: f32, viewport: f32) -> Vec<bool> {
+    let margin = viewport * 0.25;
+    (0..rows)
+        .map(|row| {
+            laid_out.get(row).is_none_or(|&(top, bottom)| {
+                bottom + offset_y >= -margin && top + offset_y <= viewport + margin
+            })
+        })
+        .collect()
+}
+
+/// The scroll offset that brings a row (`top`, `bottom` in content
+/// coordinates) fully into view with a margin, if it is not; within the
+/// scrollable range (`max`, how far it scrolls).
+fn reveal_offset((top, bottom): (f32, f32), offset_y: f32, viewport: f32, max: f32) -> Option<f32> {
+    if viewport <= 0.0 {
+        return None;
+    }
+    let target = if top + offset_y < 0.0 {
+        SCROLL_MARGIN - top
+    } else if bottom + offset_y > viewport {
+        viewport - bottom - SCROLL_MARGIN
+    } else {
+        return None;
+    };
+    Some(target.clamp(-max.max(0.0), 0.0))
+}
+
+/// The stress profile's trend lines, with this frame's values added: drawn
+/// at the display's rate, each line gains a point whenever its tag moved.
+fn profile_series(console: &mut Console, theme: &Theme, now: f64) -> Vec<Series> {
+    let tags: Vec<(SharedString, f64)> = PROFILE_TREND
+        .filter_map(|index| console.store.tags.get(index))
+        .map(|tag| (tag.label.clone(), tag.value))
+        .collect();
+    let lines = &mut console.state::<State>().profile;
+    lines.resize_with(tags.len(), || History::new(PROFILE_SAMPLES));
+    tags.into_iter()
+        .zip(lines.iter())
+        .enumerate()
+        .map(|(lane, ((label, value), history))| {
+            if history
+                .latest()
+                .is_none_or(|(_, last)| last.to_bits() != value.to_bits())
+            {
+                history.push(now, value);
+            }
+            Series {
+                label,
+                color: theme.series(lane),
+                history: Rc::clone(history),
+                stepped: false,
+            }
+        })
+        .collect()
+}
+
+/// The stress profile's card: the trend, and what the frames cost.
+fn profile_card(
+    console: &Console,
+    series: Vec<Series>,
+    now: f64,
+    theme: &Theme,
+    cx: &Context<Console>,
+) -> AnyElement {
+    let figures = {
+        let meter = console.meter.borrow();
+        let cpu = meter.stats.cpu();
+        format!(
+            "{} fps · display {:.0} Hz · build p95 {:.1} ms",
+            meter.fps(),
+            1000.0 / meter.stats.refresh_ms(),
+            cpu.p95
+        )
+    };
+    card(theme)
+        .h(px(180.0))
+        .child(card_title(
+            "Live trend, drawn every frame",
+            None,
+            Some(
+                div()
+                    .font_family(MONO)
+                    .text_size(FONT_SMALL)
+                    .text_color(theme.fg_dim)
+                    .child(figures)
+                    .into_any_element(),
+            ),
+            theme,
+        ))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .p(SPACE_6)
+                .child(trend_chart(series, now, PROFILE_MS, cx)),
         )
         .into_any_element()
 }
@@ -537,7 +754,7 @@ fn attention_row(tag: &Tag, theme: &Theme, cx: &Context<Console>) -> AnyElement 
                 .flex_col()
                 .flex_1()
                 .min_w_0()
-                .child(div().truncate().child(tag.info.name.clone()))
+                .child(div().truncate().child(tag.label.clone()))
                 .child(
                     div()
                         .truncate()
@@ -641,7 +858,7 @@ fn tile(
                         .truncate()
                         .text_size(FONT_SMALL)
                         .text_color(theme.fg_muted)
-                        .child(tag.info.name.clone()),
+                        .child(tag.label.clone()),
                 )
                 .child(status_dot(status_color(tag.status, theme))),
         )
@@ -652,23 +869,25 @@ fn tile(
             value_color(tag.status, theme),
             theme,
         ))
-        .when_some(look.level, |this, level| {
+        // Always there, empty without a range, so every tile is as tall and
+        // rows scrolled away can be stood in for by their height.
+        .child({
             #[allow(clippy::cast_possible_truncation)]
-            let fill = level as f32;
-            this.child(
-                div()
-                    .h(px(3.0))
-                    .w_full()
-                    .rounded_full()
-                    .bg(theme.border)
-                    .child(
+            let fill = look.level.map(|level| level as f32);
+            div()
+                .h(px(3.0))
+                .w_full()
+                .rounded_full()
+                .when(fill.is_some(), |this| this.bg(theme.border))
+                .when_some(fill, |this, fill| {
+                    this.child(
                         div()
                             .h_full()
                             .w(gpui::relative(fill))
                             .rounded_full()
                             .bg(line),
-                    ),
-            )
+                    )
+                })
         })
         .child(
             div()
@@ -689,11 +908,63 @@ fn tile(
                         .truncate()
                         .font_family(MONO)
                         .when(tag.info.key != tag.info.name, |this| {
-                            this.child(SharedString::from(tag.info.key.clone()))
+                            this.child(tag.key_label.clone())
                         }),
                 )
                 .child(updated),
         )
         .when(ring, |this| this.child(focus_ring(theme)))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_well_off_screen_are_not_drawn() {
+        // Rows 100 px tall from y = 400, a 600 px viewport.
+        let rows: Vec<(f32, f32)> = (0..12)
+            .map(|row| {
+                let top = 400.0 + 124.0 * row as f32;
+                (top, top + 100.0)
+            })
+            .collect();
+        let at_top = on_screen(&rows, 12, 0.0, 600.0);
+        // Up to 600 + 150 px down: rows starting at 400, 524, 648.
+        assert_eq!(at_top.iter().filter(|shown| **shown).count(), 3);
+        assert!(at_top[0] && at_top[2] && !at_top[3]);
+        let scrolled = on_screen(&rows, 12, -1200.0, 600.0);
+        assert!(!scrolled[0] && !scrolled[4], "far above");
+        assert!(scrolled[5] && scrolled[11], "near and in view");
+        // A row not laid out yet (the list grew) is drawn.
+        assert!(on_screen(&rows, 14, -2000.0, 600.0)[13]);
+    }
+
+    #[test]
+    fn the_cursor_row_scrolls_into_view_with_a_margin() {
+        // In view: nothing to do.
+        assert_eq!(reveal_offset((100.0, 200.0), 0.0, 600.0, 2000.0), None);
+        // Below: its bottom lands a margin above the viewport's.
+        assert_eq!(
+            reveal_offset((900.0, 1000.0), 0.0, 600.0, 2000.0),
+            Some(600.0 - 1000.0 - SCROLL_MARGIN)
+        );
+        // Above: its top lands a margin below the viewport's.
+        assert_eq!(
+            reveal_offset((100.0, 200.0), -500.0, 600.0, 2000.0),
+            Some(SCROLL_MARGIN - 100.0)
+        );
+        // Never past the ends.
+        assert_eq!(reveal_offset((5.0, 105.0), -50.0, 600.0, 2000.0), Some(0.0));
+        assert_eq!(
+            reveal_offset((2500.0, 2600.0), 0.0, 600.0, 1500.0),
+            Some(-1500.0)
+        );
+        assert_eq!(
+            reveal_offset((0.0, 10.0), -50.0, 0.0, 100.0),
+            None,
+            "not laid out"
+        );
+    }
 }

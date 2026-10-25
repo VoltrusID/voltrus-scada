@@ -68,6 +68,10 @@ pub(crate) struct State {
     /// A reorder on its way to the server: the store's order when it was
     /// asked for, and the order asked for, shown until the list refreshes.
     pending_order: Option<(Vec<i64>, Vec<i64>)>,
+    /// The last sorted rows, kept while the store's filter answer (the same
+    /// `Rc` until the tag list changes), the sort and the pending order
+    /// stay: a 10 000-tag table is not sorted again every frame.
+    rows_cache: Option<RowsCache>,
     /// Put the cursor on this source once the list has it.
     pub focus_id: Option<i64>,
     /// The source the delete confirmation is about.
@@ -147,31 +151,77 @@ fn ensure_search(console: &mut Console, window: &mut Window, cx: &mut Context<Co
     state._search = Some(subscription);
 }
 
-/// The table's rows (positions in the store) and the ids of the whole list
-/// in the order the operator sees it, for a reorder.
-fn table(console: &mut Console, cx: &App) -> (Vec<usize>, Vec<i64>) {
-    let state = console.state::<State>();
-    let query = state
-        .search
-        .as_ref()
+struct RowsCache {
+    filtered: Rc<[usize]>,
+    sort: SortKey,
+    descending: bool,
+    order: Option<Vec<i64>>,
+    rows: Rc<[usize]>,
+}
+
+/// Whether the store still lists the tags in `ids`' order.
+fn same_order(ids: &[i64], console: &Console) -> bool {
+    ids.len() == console.store.tags.len()
+        && ids
+            .iter()
+            .zip(&console.store.tags)
+            .all(|(id, tag)| *id == tag.info.id)
+}
+
+/// The table's rows: positions in the store, searched by name or key (the
+/// store's cached filter, as the web table searches), sorted.
+fn table(console: &mut Console, cx: &App) -> Rc<[usize]> {
+    let query = console
+        .state_ref::<State>()
+        .and_then(|state| state.search.as_ref())
         .map(|field| field.read(cx).value().to_owned())
         .unwrap_or_default();
-    let (sort, descending) = (state.sort, state.descending);
-    let pending = state.pending_order.clone();
-    let stored: Vec<i64> = console.store.tags.iter().map(|tag| tag.info.id).collect();
+    let filtered = console.store.filter(&query);
     // The list refreshed since the reorder was asked for: it is the truth.
-    let pending = pending.filter(|(before, _)| *before == stored);
-    if pending.is_none() {
-        console.state::<State>().pending_order = None;
+    let stale = console
+        .state_ref::<State>()
+        .and_then(|state| state.pending_order.as_ref())
+        .is_some_and(|(before, _)| !same_order(before, console));
+    let state = console.state::<State>();
+    if stale {
+        state.pending_order = None;
     }
-    let sources: Vec<&DataSource> = console.store.tags.iter().map(|tag| &tag.info).collect();
-    let wanted = pending.map(|(_, wanted)| wanted);
-    let rows = model::rows(&sources, &query, sort, descending, wanted.as_deref());
-    (rows, wanted.unwrap_or(stored))
+    let (sort, descending) = (state.sort, state.descending);
+    let order = state.pending_order.as_ref().map(|(_, wanted)| wanted);
+    if let Some(cache) = &state.rows_cache
+        && Rc::ptr_eq(&cache.filtered, &filtered)
+        && cache.sort == sort
+        && cache.descending == descending
+        && cache.order.as_ref() == order
+    {
+        return Rc::clone(&cache.rows);
+    }
+    let order = order.cloned();
+    let rows: Rc<[usize]> = if sort == SortKey::Order && !descending && order.is_none() {
+        Rc::clone(&filtered)
+    } else {
+        let tags = &console.store.tags;
+        model::sort_rows(
+            &filtered,
+            |index| &tags[index].info,
+            sort,
+            descending,
+            order.as_deref(),
+        )
+        .into()
+    };
+    console.state::<State>().rows_cache = Some(RowsCache {
+        filtered,
+        sort,
+        descending,
+        order,
+        rows: Rc::clone(&rows),
+    });
+    rows
 }
 
 fn row_id(console: &mut Console, row: usize, cx: &App) -> Option<i64> {
-    let (rows, _) = table(console, cx);
+    let rows = table(console, cx);
     rows.get(row)
         .map(|index| console.store.tags[*index].info.id)
 }
@@ -313,7 +363,11 @@ fn move_source(console: &mut Console, id: i64, to: usize, cx: &mut Context<Conso
         console.show_toast("Sort by order to rearrange the sources (S)", false, cx);
         return;
     }
-    let (rows, order) = table(console, cx);
+    let rows = table(console, cx);
+    let order: Vec<i64> = match console.state::<State>().pending_order.as_ref() {
+        Some((_, wanted)) => wanted.clone(),
+        None => console.store.tags.iter().map(|tag| tag.info.id).collect(),
+    };
     let visible: Vec<i64> = rows
         .iter()
         .map(|index| console.store.tags[*index].info.id)
@@ -504,8 +558,7 @@ struct RowLook {
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     ensure_search(console, window, cx);
     let theme = theme(cx).clone();
-    let (rows, _) = table(console, cx);
-    let rows = Rc::new(rows);
+    let rows = table(console, cx);
     let shown = rows.len();
     let total = console.store.tags.len();
     let can_reorder = reorderable(console);
@@ -655,7 +708,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             if total == 0 {
                 "A source is a tag the server reads, simulates or polls. Add one with N."
             } else {
-                "Nothing has this text in its name, key, unit, source type or device."
+                "Nothing has this text in its name or key."
             },
             if total == 0 {
                 vec![

@@ -120,6 +120,11 @@ pub struct Frame {
     pub cpu_ms: f64,
 }
 
+/// Frames between two estimates of the display's refresh once the first
+/// [`SETTLE`] frames have been seen (each estimate sorts the window).
+const ESTIMATE_EVERY: u64 = 32;
+const SETTLE: u64 = 64;
+
 #[derive(Debug, Default)]
 pub struct FrameStats {
     frames: VecDeque<Frame>,
@@ -131,6 +136,10 @@ pub struct FrameStats {
     /// Every interval and build time since the start, for the report.
     all_intervals: Vec<f64>,
     all_cpu: Vec<f64>,
+    /// The refresh interval the display reports, when the platform says.
+    display_ms: Option<f64>,
+    /// The refresh interval measured from back-to-back frames.
+    estimate_ms: Option<f64>,
 }
 
 impl FrameStats {
@@ -149,12 +158,35 @@ impl FrameStats {
             self.frames.pop_front();
         }
         self.frames.push_back(frame);
+        if self.total < SETTLE || self.total.is_multiple_of(ESTIMATE_EVERY) {
+            self.estimate_ms =
+                refresh_interval(self.frames.iter().filter_map(|frame| frame.interval_ms));
+        }
     }
 
-    /// The display's refresh interval as measured so far.
+    /// The display's refresh interval: as the platform reports it, else as
+    /// measured so far.
     pub fn refresh_ms(&self) -> f64 {
-        refresh_interval(self.frames.iter().filter_map(|frame| frame.interval_ms))
+        self.display_ms
+            .or(self.estimate_ms)
             .unwrap_or(DEFAULT_REFRESH_MS)
+    }
+
+    /// Where [`Self::refresh_ms`] comes from, for the report.
+    pub fn refresh_source(&self) -> &'static str {
+        match (self.display_ms, self.estimate_ms) {
+            (Some(_), _) => "reported by the display",
+            (None, Some(_)) => "measured from frame intervals",
+            (None, None) => "assumed",
+        }
+    }
+
+    /// The display's refresh rate as the platform reports it (`None`: not
+    /// known, measure it instead).
+    pub fn set_display_hz(&mut self, hz: Option<f64>) {
+        self.display_ms = hz
+            .filter(|hz| hz.is_finite() && *hz > 0.0)
+            .map(|hz| 1000.0 / hz);
     }
 
     /// Recent back-to-back frame intervals.
@@ -179,9 +211,55 @@ impl FrameStats {
         )
     }
 
-    pub fn reset(&mut self) {
-        *self = Self::default();
+    /// Share of the frames since the start built within `budget_ms`, in
+    /// percent.
+    pub fn built_within(&self, budget_ms: f64) -> f64 {
+        within_percent(&self.all_cpu, budget_ms)
     }
+
+    /// Start afresh; what the display reports stays.
+    pub fn reset(&mut self) {
+        *self = Self {
+            display_ms: self.display_ms,
+            ..Self::default()
+        };
+    }
+}
+
+/// Share of `samples` at or under `budget_ms`, in percent (100 for none).
+#[allow(clippy::cast_precision_loss)]
+pub fn within_percent(samples: &[f64], budget_ms: f64) -> f64 {
+    if samples.is_empty() {
+        return 100.0;
+    }
+    let within = samples.iter().filter(|ms| **ms <= budget_ms).count();
+    within as f64 * 100.0 / samples.len() as f64
+}
+
+/// One page's figures over a run.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PageFigures {
+    pub id: &'static str,
+    /// Frames drawn while the page was shown, and their build times.
+    pub frames: usize,
+    pub frame: Spread,
+    /// The page's own render function (its element tree, before layout and
+    /// paint), each time it ran on screen.
+    pub render: Spread,
+    /// The build time of the frame that first showed the page.
+    pub first_ms: Option<f64>,
+}
+
+/// One of the run's slowest frames.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SlowFrame {
+    pub cpu_ms: f64,
+    pub page: &'static str,
+    /// The page's render function within it (0 when the page replayed its
+    /// last frame): the rest was layout, paint and the other views.
+    pub render_ms: f64,
+    /// What else the frame did: `first show`, `page switch`, or nothing.
+    pub note: &'static str,
 }
 
 /// What a stress run measured, as printed on exit and shown in the HUD.
@@ -202,6 +280,23 @@ pub struct Report {
     pub switches: usize,
     pub switch: Spread,
     pub peak_rss_bytes: Option<u64>,
+    /// `stress`, or `profile` for the animation showcase.
+    pub mode: &'static str,
+    /// Where `refresh_ms` comes from.
+    pub refresh_source: &'static str,
+    /// Shares of the frames built within a 60 Hz and a 120 Hz frame, in
+    /// percent.
+    pub built_60: f64,
+    pub built_120: f64,
+    /// Applying a batch of runtime events to the store (on the UI thread,
+    /// between frames).
+    pub apply: Spread,
+    /// Frames drawn while the pages were warmed after sign-in (each page
+    /// drawn once, hidden), and their build times; not in the figures above.
+    pub warm_up: Option<(usize, Spread)>,
+    pub pages: Vec<PageFigures>,
+    /// Slowest first.
+    pub slowest: Vec<SlowFrame>,
 }
 
 impl fmt::Display for Report {
@@ -210,6 +305,9 @@ impl fmt::Display for Report {
         let seconds = self.duration.as_secs_f64().max(f64::EPSILON);
         let percent = drop_percent(self.dropped, self.expected);
         writeln!(f, "voltrus-native stress report")?;
+        if !self.mode.is_empty() {
+            writeln!(f, "mode: {}", self.mode)?;
+        }
         writeln!(f, "duration_s: {seconds:.1}")?;
         writeln!(
             f,
@@ -225,6 +323,9 @@ impl fmt::Display for Report {
             self.frames as f64 / seconds,
             1000.0 / self.refresh_ms.max(f64::EPSILON)
         )?;
+        if !self.refresh_source.is_empty() {
+            writeln!(f, "display_refresh: {}", self.refresh_source)?;
+        }
         writeln!(f, "frame_interval_ms: {}", self.interval)?;
         writeln!(f, "frame_cpu_ms: {}", self.cpu)?;
         writeln!(
@@ -241,7 +342,63 @@ impl fmt::Display for Report {
         match self.peak_rss_bytes {
             Some(bytes) => writeln!(f, "peak_rss_mb: {:.0}", bytes as f64 / 1_048_576.0),
             None => writeln!(f, "peak_rss_mb: unknown"),
+        }?;
+        if self.frames > 0 {
+            writeln!(
+                f,
+                "frame_budget: {:.1}% of frames built within 16.7 ms (60 Hz), {:.1}% within 8.3 ms (120 Hz)",
+                self.built_60, self.built_120
+            )?;
         }
+        if self.apply.max > 0.0 {
+            writeln!(f, "apply_ms per event batch: {}", self.apply)?;
+        }
+        if let Some((frames, spread)) = &self.warm_up {
+            writeln!(
+                f,
+                "warm_up: {frames} frames from the start until every page was drawn once, build ms {spread} (not counted above)"
+            )?;
+        }
+        if !self.pages.is_empty() {
+            writeln!(
+                f,
+                "pages (frame = whole frame while shown, render = the page's element tree, first = its first frame), ms:"
+            )?;
+            for page in &self.pages {
+                write!(
+                    f,
+                    "  {:<12} frames {:>5}  frame {}  render {}",
+                    page.id, page.frames, page.frame, page.render
+                )?;
+                match page.first_ms {
+                    Some(first) => writeln!(f, "  first {first:.2}")?,
+                    None => writeln!(f)?,
+                }
+            }
+        }
+        if !self.slowest.is_empty() {
+            let slowest: Vec<String> = self
+                .slowest
+                .iter()
+                .map(|frame| {
+                    let page = if frame.page.is_empty() {
+                        "sign-in"
+                    } else {
+                        frame.page
+                    };
+                    let mut text =
+                        format!("{:.2} {page} (render {:.2}", frame.cpu_ms, frame.render_ms);
+                    if !frame.note.is_empty() {
+                        text.push_str(", ");
+                        text.push_str(frame.note);
+                    }
+                    text.push(')');
+                    text
+                })
+                .collect();
+            writeln!(f, "slowest_frames_ms: {}", slowest.join(", "))?;
+        }
+        Ok(())
     }
 }
 
@@ -269,6 +426,111 @@ pub fn peak_rss_bytes() -> Option<u64> {
 #[cfg(not(unix))]
 pub fn peak_rss_bytes() -> Option<u64> {
     None
+}
+
+/// The refresh rate, in Hz, of the display a window is on (`display`, a
+/// `CGDirectDisplayID` on macOS), as the platform reports it; GPUI does not
+/// expose it. A ProMotion panel reports its top rate (120 Hz), which the
+/// display link runs at while frames keep coming.
+pub fn display_refresh_hz(display: Option<u32>) -> Option<f64> {
+    #[cfg(target_os = "macos")]
+    {
+        best_rate(display.and_then(mac::mode_hz), mac::main_screen_max_fps())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = display;
+        None
+    }
+}
+
+/// Of the display mode's rate and the screen's top rate, the higher one
+/// that is plausible (the mode reports 0 for some built-in panels, and the
+/// screen's rate is that of the screen with the key window).
+pub fn best_rate(mode_hz: Option<f64>, screen_hz: Option<f64>) -> Option<f64> {
+    [mode_hz, screen_hz]
+        .into_iter()
+        .flatten()
+        .filter(|hz| hz.is_finite() && (20.0..=1000.0).contains(hz))
+        .reduce(f64::max)
+}
+
+#[cfg(target_os = "macos")]
+mod mac {
+    use std::ffi::{c_char, c_void};
+
+    type Id = *mut c_void;
+    type Sel = *mut c_void;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGDisplayCopyDisplayMode(display: u32) -> *mut c_void;
+        fn CGDisplayModeGetRefreshRate(mode: *mut c_void) -> f64;
+        fn CGDisplayModeRelease(mode: *mut c_void);
+    }
+
+    #[link(name = "AppKit", kind = "framework")]
+    unsafe extern "C" {}
+
+    #[link(name = "objc")]
+    unsafe extern "C" {
+        fn objc_getClass(name: *const c_char) -> Id;
+        fn sel_registerName(name: *const c_char) -> Sel;
+        fn objc_msgSend();
+    }
+
+    /// The refresh rate of the display's current mode.
+    pub fn mode_hz(display: u32) -> Option<f64> {
+        // SAFETY: the mode is checked for null, read once and released; an
+        // unknown display id yields null.
+        unsafe {
+            let mode = CGDisplayCopyDisplayMode(display);
+            if mode.is_null() {
+                return None;
+            }
+            let hz = CGDisplayModeGetRefreshRate(mode);
+            CGDisplayModeRelease(mode);
+            Some(hz)
+        }
+    }
+
+    /// `NSScreen.mainScreen.maximumFramesPerSecond` (macOS 12 and later):
+    /// 120 on a ProMotion panel.
+    pub fn main_screen_max_fps() -> Option<f64> {
+        // SAFETY: `objc_msgSend` is called through the exact signature of
+        // each message (an object, a BOOL, an NSInteger); every receiver is
+        // checked for nil and the selector for support first.
+        unsafe {
+            let send_id = std::mem::transmute::<
+                unsafe extern "C" fn(),
+                unsafe extern "C" fn(Id, Sel) -> Id,
+            >(objc_msgSend);
+            let send_responds = std::mem::transmute::<
+                unsafe extern "C" fn(),
+                unsafe extern "C" fn(Id, Sel, Sel) -> u8,
+            >(objc_msgSend);
+            let send_integer = std::mem::transmute::<
+                unsafe extern "C" fn(),
+                unsafe extern "C" fn(Id, Sel) -> isize,
+            >(objc_msgSend);
+            let class = objc_getClass(c"NSScreen".as_ptr());
+            if class.is_null() {
+                return None;
+            }
+            let screen = send_id(class, sel_registerName(c"mainScreen".as_ptr()));
+            if screen.is_null() {
+                return None;
+            }
+            let max_fps = sel_registerName(c"maximumFramesPerSecond".as_ptr());
+            let responds = sel_registerName(c"respondsToSelector:".as_ptr());
+            if send_responds(screen, responds, max_fps) == 0 {
+                return None;
+            }
+            #[allow(clippy::cast_precision_loss)]
+            let fps = send_integer(screen, max_fps) as f64;
+            (fps > 0.0).then_some(fps)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -378,5 +640,132 @@ mod tests {
     #[test]
     fn the_peak_memory_is_readable() {
         assert!(peak_rss_bytes().is_some_and(|bytes| bytes > 1_048_576));
+    }
+
+    #[test]
+    fn a_reported_refresh_rate_beats_the_estimate_and_survives_a_reset() {
+        let mut stats = FrameStats::default();
+        for _ in 0..10 {
+            stats.record(Frame {
+                interval_ms: Some(16.7),
+                delay_ms: Some(16.7),
+                cpu_ms: 3.0,
+            });
+        }
+        assert!((stats.refresh_ms() - 1000.0 / 60.0).abs() < 1e-9);
+        assert_eq!(stats.refresh_source(), "measured from frame intervals");
+        // A ProMotion panel: frames 16.7 ms apart now miss a vsync each.
+        stats.set_display_hz(Some(120.0));
+        assert!((stats.refresh_ms() - 1000.0 / 120.0).abs() < 1e-9);
+        stats.record(Frame {
+            interval_ms: Some(16.7),
+            delay_ms: Some(16.7),
+            cpu_ms: 3.0,
+        });
+        assert_eq!(stats.dropped, 1);
+        stats.reset();
+        assert_eq!((stats.total, stats.dropped), (0, 0));
+        assert_eq!(stats.refresh_source(), "reported by the display");
+        stats.set_display_hz(Some(f64::NAN));
+        assert_eq!(stats.refresh_source(), "assumed");
+    }
+
+    #[test]
+    fn frame_budgets_count_frames_built_in_time() {
+        assert_eq!(within_percent(&[], 8.3), 100.0);
+        assert_eq!(within_percent(&[2.0, 8.0, 8.4, 20.0], 8.33), 50.0);
+        let mut stats = FrameStats::default();
+        for cpu in [1.0, 5.0, 9.0, 17.0] {
+            stats.record(Frame {
+                interval_ms: None,
+                delay_ms: None,
+                cpu_ms: cpu,
+            });
+        }
+        assert_eq!(stats.built_within(1000.0 / 60.0), 75.0);
+        assert_eq!(stats.built_within(1000.0 / 120.0), 50.0);
+    }
+
+    #[test]
+    fn platform_rates_take_the_higher_plausible_one() {
+        assert_eq!(best_rate(Some(60.0), Some(120.0)), Some(120.0));
+        assert_eq!(
+            best_rate(Some(0.0), Some(120.0)),
+            Some(120.0),
+            "built-in panels report 0"
+        );
+        assert_eq!(best_rate(Some(59.94), None), Some(59.94));
+        assert_eq!(best_rate(None, None), None);
+        assert_eq!(best_rate(Some(f64::NAN), Some(5.0)), None);
+        // Whatever this machine has, it is a plausible rate or unknown.
+        assert!(display_refresh_hz(None).is_none_or(|hz| (20.0..=1000.0).contains(&hz)));
+    }
+
+    #[test]
+    fn the_report_breaks_frames_down_by_page() {
+        let report = Report {
+            duration: Duration::from_secs(10),
+            frames: 600,
+            refresh_ms: 1000.0 / 60.0,
+            mode: "profile",
+            refresh_source: "reported by the display",
+            built_60: 99.5,
+            built_120: 97.3,
+            apply: Spread {
+                p50: 0.1,
+                p95: 0.3,
+                max: 1.0,
+            },
+            warm_up: Some((
+                5,
+                Spread {
+                    p50: 4.0,
+                    p95: 9.0,
+                    max: 9.0,
+                },
+            )),
+            pages: vec![PageFigures {
+                id: "overview",
+                frames: 590,
+                frame: Spread {
+                    p50: 2.0,
+                    p95: 4.0,
+                    max: 7.0,
+                },
+                render: Spread {
+                    p50: 0.5,
+                    p95: 0.9,
+                    max: 1.5,
+                },
+                first_ms: Some(6.5),
+            }],
+            slowest: vec![
+                SlowFrame {
+                    cpu_ms: 7.0,
+                    page: "overview",
+                    render_ms: 1.5,
+                    note: "first show",
+                },
+                SlowFrame {
+                    cpu_ms: 6.0,
+                    page: "tags",
+                    render_ms: 0.25,
+                    note: "",
+                },
+            ],
+            ..Report::default()
+        };
+        let text = report.to_string();
+        for line in [
+            "mode: profile",
+            "display_refresh: reported by the display",
+            "frame_budget: 99.5% of frames built within 16.7 ms (60 Hz), 97.3% within 8.3 ms (120 Hz)",
+            "apply_ms per event batch: p50 0.10  p95 0.30  max 1.00",
+            "warm_up: 5 frames from the start until every page was drawn once",
+            "  overview     frames   590  frame p50 2.00  p95 4.00  max 7.00  render p50 0.50  p95 0.90  max 1.50  first 6.50",
+            "slowest_frames_ms: 7.00 overview (render 1.50, first show), 6.00 tags (render 0.25)",
+        ] {
+            assert!(text.contains(line), "missing “{line}” in\n{text}");
+        }
     }
 }
