@@ -27,24 +27,26 @@ async fn refresh_status(base: &str, refresh: &str) -> reqwest::StatusCode {
         .status()
 }
 
-/// Sign-out revokes the refresh token: a session that signed out cannot
-/// refresh, while one that did not still can.
+/// Sign-out revokes the refresh token. A fresh session's token refreshes
+/// (the control); a fresh session that signs out cannot. Each sign-in
+/// revokes the user's older refresh tokens, so the two run one after the
+/// other and nothing signs in between the sign-out and its check.
 async fn logout_revokes_the_refresh_token(url: &str, user: &str, pass: &str) {
     let mut kept = VoltrusApi::new(url);
     kept.login(user, pass).await.expect("sign in");
+    let kept_refresh = kept.refresh.clone().expect("a refresh cookie");
+    assert!(
+        refresh_status(url, &kept_refresh).await.is_success(),
+        "a live session's refresh token works"
+    );
     let mut left = VoltrusApi::new(url);
     left.login(user, pass).await.expect("sign in");
-    let kept_refresh = kept.refresh.clone().expect("a refresh cookie");
     let left_refresh = left.refresh.clone().expect("a refresh cookie");
     left.logout().await.expect("sign out");
     assert_eq!(
         refresh_status(url, &left_refresh).await,
         reqwest::StatusCode::UNAUTHORIZED,
         "a signed-out session's refresh token is revoked"
-    );
-    assert!(
-        refresh_status(url, &kept_refresh).await.is_success(),
-        "a live session's refresh token still works"
     );
     println!("sign-out revoked the refresh token");
 }
