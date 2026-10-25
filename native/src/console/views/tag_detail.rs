@@ -11,8 +11,8 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, AppContext as _, Context, ElementId, Entity, FontWeight, MouseButton,
-    MouseDownEvent, MouseMoveEvent, SharedString, Subscription, Window, div, px, uniform_list,
+    AnyElement, Context, ElementId, Entity, FontWeight, MouseButton, MouseDownEvent,
+    MouseMoveEvent, SharedString, Subscription, Window, div, px, uniform_list,
 };
 use reqwest::Method;
 use serde::de::IgnoredAny;
