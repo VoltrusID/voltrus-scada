@@ -35,18 +35,24 @@ thread_local! {
     static BOUND: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The keys only a multi-line field has, bound once with the first field.
-fn bind_keys(cx: &mut App) {
-    if BOUND.with(|bound| bound.replace(true)) {
-        return;
-    }
-    cx.bind_keys([
+/// The keys only a multi-line field has. `shortcuts::rebind` includes
+/// them when it rebuilds the keymap.
+pub fn key_bindings() -> Vec<KeyBinding> {
+    vec![
         KeyBinding::new("up", Up, Some(CONTEXT)),
         KeyBinding::new("down", Down, Some(CONTEXT)),
         KeyBinding::new("shift-up", SelectUp, Some(CONTEXT)),
         KeyBinding::new("shift-down", SelectDown, Some(CONTEXT)),
         KeyBinding::new("secondary-enter", Commit, Some(CONTEXT)),
-    ]);
+    ]
+}
+
+/// Bound once with the first field (the keymap may already have them).
+fn bind_keys(cx: &mut App) {
+    if BOUND.with(|bound| bound.replace(true)) {
+        return;
+    }
+    cx.bind_keys(key_bindings());
 }
 
 pub struct TextArea {
