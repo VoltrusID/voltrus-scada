@@ -6,8 +6,7 @@
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, AnyWindowHandle, AppContext as _, Context, Entity, FontWeight, Subscription,
-    Window, div, px,
+    AnyElement, AnyWindowHandle, Context, Entity, FontWeight, Subscription, Window, div, px,
 };
 use time::OffsetDateTime;
 use voltrus_scada_native::api::ops::{

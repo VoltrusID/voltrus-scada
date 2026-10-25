@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, AnyWindowHandle, AppContext as _, Context, ElementId, Entity, FontWeight,
-    HighlightStyle, SharedString, StyledText, Subscription, Window, div, px,
+    AnyElement, AnyWindowHandle, Context, ElementId, Entity, FontWeight, HighlightStyle,
+    SharedString, StyledText, Subscription, Window, div, px,
 };
 use time::{Duration as Days, OffsetDateTime};
 use voltrus_scada_native::api::Method;

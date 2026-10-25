@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, AnyWindowHandle, AppContext as _, Context, Entity, FontWeight, Hsla, SharedString,
-    Subscription, Window, div, px,
+    AnyElement, AnyWindowHandle, Context, Entity, FontWeight, Hsla, SharedString, Subscription,
+    Window, div, px,
 };
 use voltrus_scada_native::api::ops::{Format, Saved};
 use voltrus_scada_native::runtime::{Call, CallKey};
