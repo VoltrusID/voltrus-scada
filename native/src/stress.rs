@@ -73,7 +73,7 @@ impl Wave {
             amplitude: base * (0.05 + unit(mix(hash ^ 1)) * 0.2),
             period: 300.0 + (unit(mix(hash ^ 2)) * 3000.0).round(),
             phase: unit(mix(hash ^ 3)) * std::f64::consts::TAU,
-            offline: hash % 997 == 0,
+            offline: hash.is_multiple_of(997),
         }
     }
 
@@ -131,7 +131,7 @@ impl StressFeed {
                     crit_val: wave.crit(),
                     base_val: wave.base,
                     sort_order: i64::try_from(index).unwrap_or(i64::MAX),
-                    decimals: 1 + i64::from(index % 2 == 0),
+                    decimals: 1 + i64::from(index.is_multiple_of(2)),
                     source_type: "stress".to_owned(),
                     device_id: format!("stress-{device:03}"),
                     chart_type: "sparkline".to_owned(),

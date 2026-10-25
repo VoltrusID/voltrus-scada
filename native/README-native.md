@@ -49,7 +49,23 @@ JetBrains Mono for values.
 - **Toasts** for new alarms, link losses and failed actions: bottom right,
   above the status bar and left of any side panel, up to three stacked
   upward, each gone after 6 seconds.
-- Light or dark (⇧⌘L), ⌘1–⌘4 for the pages, standard Edit menu in text fields.
+- Light or dark (⇧⌘L), standard Edit menu in text fields.
+- **Keyboard first**: ⌘K opens the command palette (every page and
+  command, fuzzy search); `?` lists every shortcut; ⌘1–⌘9 go to pages,
+  ⌘[ and ⌘] go back and forward; in every list j/k or ↑/↓ move a visible
+  cursor, PgUp/PgDn/Home/End jump, Enter opens and Space toggles; `/`
+  focuses the page's filter; Tab walks the controls (trapped inside a
+  dialog) and Esc closes or goes back. Pages beyond the tabs sit in the
+  navbar's More menu; narrow windows show the tabs as icons.
+- **Smooth**: each window part is its own cached view, pages stay alive so
+  switching is instant, and animations (tile flashes and level tweens, the
+  Trends chart scrolling at the display rate while live, page entrances,
+  toast slides) ask for frames only while they move.
+- **Performance HUD** (⇧⌘P) and the **Performance** page: frame rate, frame
+  time and build time percentiles, dropped frames against the display's
+  refresh, events per second, tags and peak memory. `--stress` feeds a
+  deterministic 10 000-tag synthetic plant through the same store path as
+  the WebSocket, without a server, and prints a report when it ends.
 
 The network side runs on its own tokio thread: it signs in, keeps the
 WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s) signing in
@@ -73,13 +89,21 @@ cargo build --release -p voltrus-scada-native
 Options, mainly for kiosks and screenshots:
 
 ```
-voltrus-native [--sign-in] [--page overview|tags|alarms|trends] [--tag <key>] [--range 5m|30m|1h|6h|24h]
-               [--appearance dark|light]
+voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance] [--tag <key>]
+               [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud] [--overlay palette|help]
+               [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
+                         [--stress-seconds N] [--stress-report FILE]]
 ```
 
 `--sign-in` signs in at once with `VOLTRUS_NATIVE_URL` (default
 `http://localhost:3000`), `VOLTRUS_NATIVE_USER` (default `admin`) and
 `VOLTRUS_NATIVE_PASSWORD`. `--tag` opens one tag's detail; `--range` picks the Trends range.
+`--stress-seconds 20 --stress-report report.txt` runs the stress test for
+20 seconds, prints the report (frames, frame time p50/p95/max, drops,
+page-switch time, memory), writes it to the file and quits.
+
+How the console is built, and how to add a page, a REST call, a key, an
+overlay or an animation: [`docs/architecture.md`](docs/architecture.md).
 
 Requires a recent stable Rust (edition 2024). CI builds and tests on macOS;
 GPUI also supports Linux (X11 or Wayland), which is not tested here.
@@ -88,18 +112,24 @@ GPUI also supports Linux (X11 or Wayland), which is not tested here.
 
 ```
 native/src/
-  lib.rs            api, runtime and ws_types (no UI; used by the tests)
-  api.rs            REST client: login (token from Set-Cookie), data sources,
-                    alarms (acknowledge, shelve, unshelve), history, password change
+  lib.rs            api, runtime, ws_types, stress and perf (no UI; used by the tests)
+  api.rs            REST client: login and logout cookies, generic JSON helpers,
+                    data sources, alarms, history, password change
   ws_types.rs       MessagePack WebSocket messages (mirror of the server's)
-  runtime.rs        the network actor: Command in, Event out
+  runtime.rs        the network actor: Command in, Event out, generic calls
+  stress.rs         the deterministic synthetic plant
+  perf.rs           frame statistics and the stress report
   main.rs           command line, window, theme, menus
   console/
-    mod.rs          the Console model: phases, pages, actions, key bindings
+    mod.rs          the Console model: phases, navigation, overlays, stress run
+    pages.rs        the page registry
+    keys.rs         actions, key bindings, menus, the command table
+    nav.rs          keyboard lists
+    overlay.rs      the overlay slot and the palette's search
+    anim.rs, meter.rs  animation helpers, the frame meter
     store.rs        tags, values, statuses and history; update rate
     config.rs       remembered address and username
-    views/          one function per area: sign_in, navbar, status_bar,
-                    overview, tags, alarms, trends
+    views/          one cached view per window part, one module per page
 native/scripts/     CI: the solar-farm plant, app bundle, screenshots
 ```
 
