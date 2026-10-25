@@ -22,6 +22,7 @@ follow these recipes; keep them true when you change the shell.
 | Frame meter | `src/console/meter.rs` | Feeds the HUD (⇧⌘P), the Performance page and the stress report. |
 | Views | `src/console/views/` | Functions over `&mut Console`, each part drawn by its own cached view. |
 | Screens | `src/screens.rs`, `src/console/screens.rs` | The server's screens and card layouts, and the card grid's rules (compaction, drag, resize, auto-arrange) as pure functions; the session's screens (`Screens`: list, active screen, tags, layouts) that the card dashboard and the mimic viewer share. |
+| Mimic | `src/mimic.rs`, `src/console/views/mimic/` | The HMI mimic's model (the server's SCADA rows, the editable `Layout`, the symbol library's geometry, live states, connection routes, the faceplate's command rules, the camera) as pure functions; the page that draws it on a canvas. |
 
 ## Rules
 
@@ -394,3 +395,64 @@ operator routes: check `screens::rights(console.role(), screen)` first.
 Grid geometry and layout edits are in `voltrus_scada_native::screens`
 (`Grid`, `effective`, `place`, `resize`, `nudge`, `grow`, `neighbor`,
 `auto_arrange`), with unit tests beside them.
+
+## The mimic: model, drawing, motion
+
+`voltrus_scada_native::mimic` is the whole HMI model with no UI, tested on
+the server's own row shapes and the CI plant's seed:
+
+```rust
+let equipment: Items<EquipmentRow> = api.get_json(&equipment_path(screen)).await?;
+let connections: Items<ConnectionRow> = api.get_json(&connections_path(screen)).await?;
+let layout: Layout = mimic::parse(&equipment.items, &connections.items);
+// … edit `layout.widgets` / `layout.connections` (plain structs) …
+let (equipment, connections) = mimic::to_rows(&layout);   // the PUT bodies: Items { items }
+```
+
+- **Editable as is.** `Layout` holds `Widget`s in stacking order (`kind`,
+  bound `tags`, box, `config` as a JSON map) and `Connection`s (`from`,
+  `to`, `kind`, `waypoints`). `parse` follows the web client's
+  `loadLayoutFromAPI` (JSON text in `sensor_bindings`, `config`,
+  `waypoints`; order from `config.z`); `to_rows` follows its `toAPI`
+  (`z` back into the config, the rotation column from `config.rotation`), so
+  `parse(to_rows(layout)) == layout` and the editor slice only changes the
+  structs and `PUT`s the rows (operator routes). Unknown widget types and
+  config keys survive the round trip.
+- **Library and rules.** `SYMBOLS` (31 symbols: view box, binding, nozzle
+  ports), `resolve` (legacy pump/valve/motor/tank/pipe widgets → library
+  symbols), `Placement`, `port_point`, `route` and `rounded` (the web's
+  orthogonal connection routing), `symbol_live` / `is_running` / `flowing`
+  (states from bound tags through the `Values` trait), `zone`, `fraction`,
+  `status_light`, `shown_tags` (widget states), `commands`, `write_route`,
+  `Armed` (faceplate commands), `banner` (alarm banner order), `Camera`
+  (fit, zoom about a point, pan, reveal, glide) and `tab_order` /
+  `neighbor` (keyboard order).
+- **Drawing.** `views/mimic/paint.rs` is a small canvas over GPUI's
+  `paint_path` and `paint_quad`: affine transforms (`Xf`), SVG path data
+  (`Shape::svg`, parsed once per string), fills with two-stop gradients,
+  scaling or hairline strokes with caps and moving dashes, convex clips
+  for level fills, and text. Tessellations are cached per shape, transform
+  (without translation) and stroke, so a pan re-uses them. The palette
+  (`Hmi`) derives the web's `--hmi-*` colours from the theme.
+  `symbols.rs` draws the library, `widgets.rs` the other widget types,
+  `faceplate.rs` and `banner.rs` the side panel and the alarm banner.
+- **Frames.** A frame prepares only the widgets and connections in view
+  (`Item`: the widget, its `TagView`s from the store by id, its symbol's
+  live state) and paints them. It asks for the next frame only while
+  something moves (a flowing pipe, a turning impeller or agitator, a
+  camera glide); blinking (faults, critical alarms) redraws at its
+  half-second steps with a timer; pan, zoom and hover notify only the
+  page's view. Motion follows the web's CSS animations
+  (`scene::motion`).
+- **Pinch.** GPUI does not deliver trackpad magnify gestures; on macOS
+  `views/mimic/pinch.rs` reads them with an AppKit local event monitor
+  (passing every event on) into a channel the page drains.
+- **Commands.** The faceplate arms a command (1 / 0, or its buttons) and
+  sends it on confirmation (Enter): `write_route` picks the WebSocket write
+  for an admin (`Command::Write`, answered by `Event::Written`) and the
+  REST write (`POST /tags/{id}/write`, `tag_api::write_request`) for other
+  operators; viewers see no commands. An armed command lapses after
+  `ARM_TIMEOUT`.
+- **CI plant.** `native/scripts/ci-server.sh` seeds the overview's mimic
+  from `native/scripts/mimic-solar-farm.json` (tags by `device/key`) when
+  the plant has none.

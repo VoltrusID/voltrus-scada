@@ -64,6 +64,10 @@ shots=(
   "dashboard-add-tags|--sign-in --page dashboard --screen 2 --edit --overlay add-tags --appearance dark"
   "dashboard-light|--sign-in --page dashboard --screen 2 --appearance light"
   "stress-dashboard|--stress --stress-switch-ms 0 --page dashboard --hud --appearance dark"
+  "mimic|--sign-in --page mimic --appearance dark"
+  "mimic-light|--sign-in --page mimic --appearance light"
+  "mimic-faceplate|--sign-in --page mimic --overlay MimicOpen --appearance dark"
+  "mimic-commands|--sign-in --page mimic --overlay MimicArmOff --appearance dark"
 )
 
 status=0

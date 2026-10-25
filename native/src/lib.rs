@@ -12,7 +12,11 @@
 //!   (compaction, drag, resize, auto-arrange), shared with the mimic viewer.
 //! - [`tag_api`]: tag writes and write policies, the tag tree, naming
 //!   convention, annotations and the tag detail's history queries.
+//! - [`mimic`]: HMI mimic screens: the server's SCADA rows, the editable
+//!   screen model, the symbol library's geometry, live states, connection
+//!   routes and the faceplate's command rules.
 pub mod api;
+pub mod mimic;
 pub mod perf;
 pub mod runtime;
 pub mod screens;

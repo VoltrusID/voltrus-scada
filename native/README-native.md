@@ -116,6 +116,22 @@ JetBrains Mono for values.
   resize it; A arranges the cards by device; T adds tags, Backspace removes
   one; screens are created (N), renamed and deleted. E, Esc or Done saves
   the layout. Only the cards in view are drawn.
+- **Mimic** (⌘7): a screen's HMI mimic, as the web client's SCADA view
+  draws it (`scada-equipment` and `scada-connections`): all 31 widget
+  types and 31 library symbols (pumps, valves, vessels, the electrical
+  kit, instruments, pipes) with their live values and states, process
+  areas, and the connections between them, pipes flowing while their
+  equipment runs. Drag or scroll to pan; pinch, ⌘-scroll, ⌘+/⌘− zoom
+  about the pointer and ⌘0 fits, all at the display's rate. Tab and the
+  arrows walk the equipment, Enter or a click opens its faceplate (state,
+  value against its limits, a 30-minute trend, related run and fault
+  tags), Esc closes it. Operators command from it: 1 arms START/OPEN/ON
+  (or the set point, stepped with ⇧↑/⇧↓), 0 arms STOP/CLOSE/OFF, Enter
+  confirms within 6 s; an admin's command goes over the WebSocket, other
+  operators' through the policy-checked REST write. The alarm banner
+  under the stage lists the newest active alarms, acknowledged in place.
+  Screen tabs and [ / ] as on the Dashboard. Viewer only: mimics are drawn
+  in the web client's editor.
 - **Tag tree** (⌘5): the tags filed by their path (or their device when
   they have none), folded and unfolded with Space or Enter, searched on the
   server as you type (`/`), each tag with its live value; Enter on a tag
