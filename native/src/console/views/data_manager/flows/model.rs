@@ -188,11 +188,10 @@ impl View {
             (size.x - 2.0 * FIT_MARGIN).max(1.0),
             (size.y - 2.0 * FIT_MARGIN).max(1.0),
         );
+        // FIT_LEAST and 1.0 both lie within MIN_ZOOM..=MAX_ZOOM.
         let zoom = (room.x / content.size.x.max(1.0))
             .min(room.y / content.size.y.max(1.0))
-            .min(1.0)
-            .max(FIT_LEAST)
-            .clamp(MIN_ZOOM, MAX_ZOOM);
+            .clamp(FIT_LEAST, 1.0);
         let mut pan = size.scale(0.5) - content.center().scale(zoom);
         if content.size.x * zoom > room.x {
             pan.x = FIT_MARGIN - content.origin.x * zoom;
