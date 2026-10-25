@@ -2123,3 +2123,149 @@ async fn live_mimic_command() {
         .expect("lock the tag again");
     println!("tag {tag} back at {original}, locked");
 }
+
+/// The mimic editor's operations against the live server: on a screen of
+/// its own, place two library symbols bound to plant tags, move one,
+/// connect them, undo and redo, save the rows with `PUT`, read them back
+/// the same, then delete the screen.
+#[tokio::test]
+async fn live_mimic_editor_round_trip() {
+    use serde::de::IgnoredAny;
+    use voltrus_scada_native::api::{DataSource, Method};
+    use voltrus_scada_native::mimic::edit::{self, Edit, History, Placing};
+    use voltrus_scada_native::mimic::{
+        self, ConnectionRow, EquipmentRow, Items, Layout, connections_path, equipment_path,
+    };
+    use voltrus_scada_native::screens::Screen;
+
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    let mut api = VoltrusApi::new(&url);
+    api.login(&user, &pass).await.expect("sign in");
+    let tags: Vec<DataSource> = api.get_json("/api/v1/data-sources").await.expect("tags");
+    assert!(tags.len() >= 2, "the plant has tags to bind");
+
+    let name = format!("Native mimic editor e2e {}", std::process::id());
+    let created: Screen = api
+        .send_json(
+            Method::POST,
+            "/api/v1/screens",
+            &serde_json::json!({ "name": name }),
+        )
+        .await
+        .expect("POST /screens");
+    let empty: Items<EquipmentRow> = api
+        .get_json(&equipment_path(&created.id))
+        .await
+        .expect("a new screen's equipment");
+    assert!(empty.items.is_empty(), "a new screen has no mimic");
+
+    // Add (click-to-add's cascade), bind, move with the grid, connect.
+    let mut history = History::new(Layout::default());
+    let (w, h) = Placing::Symbol("pump").size();
+    let (x, y) = edit::place_at(0, w, h);
+    let mut pump = Placing::Symbol("pump").widget(edit::fresh_id("w"), x, y);
+    pump.tags = vec![tags[0].id];
+    let tank = Placing::Symbol("tank").widget(edit::fresh_id("w"), 200.0, 300.0);
+    let (pump_id, tank_id) = (pump.id.clone(), tank.id.clone());
+    assert!(history.apply(
+        &Edit::Add {
+            widgets: vec![pump, tank],
+            connections: Vec::new(),
+        },
+        None,
+    ));
+    assert!(history.apply(
+        &Edit::Bind {
+            id: tank_id.clone(),
+            tags: vec![tags[1].id],
+        },
+        None,
+    ));
+    let start = edit::Rect::of(history.present().widget(&tank_id).expect("the tank"));
+    let snapped = edit::snap_move(
+        history.present(),
+        std::slice::from_ref(&tank_id),
+        start,
+        123.0,
+        47.0,
+        edit::Snapping {
+            grid: true,
+            threshold: 0.0,
+        },
+    );
+    assert!(history.apply(
+        &Edit::Move(vec![(
+            tank_id.clone(),
+            start.x + snapped.dx,
+            start.y + snapped.dy
+        )]),
+        Some("drag:1"),
+    ));
+    let line = edit::connection(edit::fresh_id("c"), &pump_id, &tank_id, "flow");
+    assert!(history.apply(
+        &Edit::Add {
+            widgets: Vec::new(),
+            connections: vec![line],
+        },
+        None,
+    ));
+    // Undo the connection and redo it.
+    assert!(history.undo());
+    assert!(history.present().connections.is_empty());
+    assert!(history.redo());
+    assert!(history.dirty());
+    let layout = history.present().clone();
+    let moved = layout.widget(&tank_id).expect("the tank");
+    assert_eq!((moved.x, moved.y), (320.0, 350.0), "moved onto the grid");
+
+    // Save as the console does, and read it back the same.
+    let named = edit::named(&layout, |id| {
+        tags.iter()
+            .find(|tag| tag.id == id)
+            .map(|tag| tag.name.clone())
+    });
+    let (rows, lines) = mimic::to_rows(&named);
+    api.send_json::<_, IgnoredAny>(
+        Method::PUT,
+        &equipment_path(&created.id),
+        &Items { items: rows },
+    )
+    .await
+    .expect("PUT scada-equipment");
+    api.send_json::<_, IgnoredAny>(
+        Method::PUT,
+        &connections_path(&created.id),
+        &Items { items: lines },
+    )
+    .await
+    .expect("PUT scada-connections");
+    history.mark_saved(layout.clone());
+    assert!(!history.dirty());
+    let saved: Items<EquipmentRow> = api
+        .get_json(&equipment_path(&created.id))
+        .await
+        .expect("the saved equipment");
+    let saved_lines: Items<ConnectionRow> = api
+        .get_json(&connections_path(&created.id))
+        .await
+        .expect("the saved connections");
+    let read = mimic::parse(&saved.items, &saved_lines.items);
+    assert_eq!(read, named, "the saved mimic reads back unchanged");
+    assert_eq!(read.widgets[0].name, tags[0].name, "named after its tag");
+    assert_eq!(read.connections.len(), 1);
+
+    api.send_empty::<IgnoredAny>(Method::DELETE, &format!("/api/v1/screens/{}", created.id))
+        .await
+        .expect("DELETE /screens/{id}");
+    println!(
+        "mimic editor: {} widgets and {} connection saved to {} and read back",
+        read.widgets.len(),
+        read.connections.len(),
+        created.id
+    );
+}
