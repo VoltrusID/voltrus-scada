@@ -273,6 +273,38 @@ to close a dialog after the server answered, keep the window handle in the
 section's state and close it in `cx.defer` (see
 `data_manager::source_form::close_later`).
 
+### A device table (the Protocols sections)
+
+The Protocols sections are data over one module,
+`data_manager::device_form`: a protocol is a `static PROTOCOL: Protocol`
+(base path, list decoder, write role, `DeviceStatus` key, columns with a
+drop order for narrow windows, form `Field`s, an optional `Child` table,
+`Tool`s, device-file import) and its module calls
+`device_form::section_hooks!()` plus a three-line `on_open` and
+`on_reply`. Call names come from `calls!("<id>")`. The pieces:
+
+- `Field`s (`text`, `mono`, `optional`, `int`, `flag`, `choice`, or a
+  `Kind`) build the form and its body (`device_form::body`, unit tested);
+  a `finish` hook reshapes it (composite choices, fallbacks).
+- `ChildApi::Rest` reads `{device}/{segment}` (or a list inside `GET
+  {device}`), posts and deletes there; `ChildApi::ModbusRegisters`
+  replaces the whole list.
+- A `Tool` is a `POST {device}/{segment}` (`ToolKind::Post`), a probe
+  (`ToolKind::Probe(&ProbeSpec)`: fields, a request, a decoder into
+  `ProbeRow`s, and `on_pick`, usually `pick_devices` or `pick_child`) or a
+  dialog of the protocol's own (`ToolKind::Open`). Probes wait up to their
+  `timeout` (`VoltrusApi::send_slow`), not the client's 10 s.
+- `import: Some(DeviceFileKind)` adds Import… (I) and dropping files on
+  the section (`ExternalPaths`), parsed by `voltrus_scada_native::device_file`.
+- A route the core router lacks answers 404/405 (`api::protocols::not_routed`):
+  set `unrouted` to the reason the section shows instead of the table.
+- A section that polls while on screen uses `device_form::poll_section`
+  (keyed by section, not page) with `data_manager::section_shown`.
+
+Keys are `keys::DATA_DEVICES` rows (N, A, E, D, ⌫, `.`, I, R, T, S, ⇧S);
+one pressed before the list arrived (a launch's `--overlay`) runs on the
+first device once it does.
+
 
 ## The shell: settings, keymap, notifications, edition
 

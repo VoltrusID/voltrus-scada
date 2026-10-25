@@ -1679,3 +1679,20 @@ async fn live_screens_and_layouts() {
         created.id
     );
 }
+
+mod protocols;
+
+/// Data Manager › Protocols: Modbus (import, registers, restart, scans,
+/// simulation profiles and switch), OPC UA, S7, EtherNet/IP, DNP3 and
+/// BACnet (import, objects, discovery), each device created, read,
+/// changed and deleted again; see `tests/protocols/mod.rs`.
+#[tokio::test]
+async fn live_protocol_device_managers() {
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    protocols::run(&url, &user, &pass).await;
+}

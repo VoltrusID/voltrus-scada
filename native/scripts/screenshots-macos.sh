@@ -64,6 +64,21 @@ shots=(
   "dashboard-add-tags|--sign-in --page dashboard --screen 2 --edit --overlay add-tags --appearance dark"
   "dashboard-light|--sign-in --page dashboard --screen 2 --appearance light"
   "stress-dashboard|--stress --stress-switch-ms 0 --page dashboard --hud --appearance dark"
+  "data-modbus|--sign-in --page data --section modbus --appearance dark"
+  "data-modbus-light|--sign-in --page data --section modbus --appearance light"
+  "data-modbus-register|--sign-in --page data --section modbus --overlay DataAddChild --appearance dark"
+  "data-modbus-form|--sign-in --page data --section modbus --overlay DataNewDevice --appearance dark"
+  "data-modbus-menu|--sign-in --page data --section modbus --overlay DataRowActions --appearance dark"
+  "data-modbus-scan|--sign-in --page data --section modbus --overlay DataSectionTool --appearance dark"
+  "data-opcua|--sign-in --page data --section opcua --appearance dark"
+  "data-s7|--sign-in --page data --section s7 --appearance dark"
+  "data-s7-form|--sign-in --page data --section s7 --overlay DataNewDevice --appearance dark"
+  "data-enip|--sign-in --page data --section enip --appearance dark"
+  "data-dnp3|--sign-in --page data --section dnp3 --appearance dark"
+  "data-dnp3-point|--sign-in --page data --section dnp3 --overlay DataAddChild --appearance dark"
+  "data-bacnet|--sign-in --page data --section bacnet --appearance light"
+  "data-bacnet-object|--sign-in --page data --section bacnet --overlay DataAddChild --appearance dark"
+  "data-bacnet-discover|--sign-in --page data --section bacnet --overlay DataSectionTool --appearance dark"
 )
 
 status=0

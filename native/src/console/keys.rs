@@ -88,6 +88,13 @@ actions!(
         DataMoveSourceDown,
         DataSortNext,
         DataReverseSort,
+        DataNewDevice,
+        DataAddChild,
+        DataToggleEnabled,
+        DataRowActions,
+        DataImportFile,
+        DataRefreshSection,
+        DataSectionTool,
     ]
 );
 
@@ -115,6 +122,8 @@ pub const OPS_AUDIT: &str = "OpsAudit && !TextInput";
 pub const ALARM_LIST: &str = "AlarmList";
 /// The Data Manager's sources table has focus.
 pub const DATA_SOURCES: &str = "DataSources";
+/// A Data Manager › Protocols device table has focus.
+pub const DATA_DEVICES: &str = "DataDevices";
 
 /// How the help overlay groups the commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1022,6 +1031,105 @@ pub static COMMANDS: &[CommandSpec] = &[
         ArrowUpDown,
         ["shift-s"],
         DATA_SOURCES,
+        DataReverseSort,
+        false
+    ),
+    command!(
+        "New device",
+        Data,
+        Plus,
+        ["n"],
+        DATA_DEVICES,
+        DataNewDevice,
+        false
+    ),
+    command!(
+        "Add a register, node, tag, point or object",
+        Data,
+        Plus,
+        ["a"],
+        DATA_DEVICES,
+        DataAddChild,
+        false
+    ),
+    command!(
+        "Enable or disable the device",
+        Data,
+        Square,
+        ["e"],
+        DATA_DEVICES,
+        DataToggleEnabled,
+        false
+    ),
+    command!(
+        "Duplicate the device",
+        Data,
+        Copy,
+        ["d"],
+        DATA_DEVICES,
+        DataDuplicateSource,
+        false
+    ),
+    command!(
+        "Delete the device or child",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        DATA_DEVICES,
+        DataDeleteSource,
+        false
+    ),
+    command!(
+        "The device's actions",
+        Data,
+        Ellipsis,
+        ["."],
+        DATA_DEVICES,
+        DataRowActions,
+        false
+    ),
+    command!(
+        "Import device files",
+        Data,
+        Upload,
+        ["i"],
+        DATA_DEVICES,
+        DataImportFile,
+        false
+    ),
+    command!(
+        "Refresh the devices",
+        Data,
+        RefreshCw,
+        ["r"],
+        DATA_DEVICES,
+        DataRefreshSection,
+        false
+    ),
+    command!(
+        "Scan or discover the network",
+        Data,
+        Radio,
+        ["t"],
+        DATA_DEVICES,
+        DataSectionTool,
+        false
+    ),
+    command!(
+        "Sort the devices by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        DATA_DEVICES,
+        DataSortNext,
+        false
+    ),
+    command!(
+        "Reverse the devices' sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        DATA_DEVICES,
         DataReverseSort,
         false
     ),

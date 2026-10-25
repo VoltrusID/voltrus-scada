@@ -84,6 +84,23 @@ JetBrains Mono for values.
   its settings, a Modbus device with one register or an expression); D
   duplicates, ⌫ deletes after a confirmation, ⌥↑/⌥↓ or dragging a row
   reorders (shown at once, saved to the server).
+  **Protocols** (Modbus, OPC UA, Siemens S7, EtherNet/IP, DNP3, BACnet), each
+  a device table like Sources (`/` search, header or S sort, the poller's
+  or the WebSocket's online state per device, columns dropping as the
+  window narrows) whose rows expand (Space) into their registers, nodes,
+  tags, points or objects. N adds a device, Enter edits, A adds a child, E
+  enables or disables, ⌫ removes a device or a child after a confirmation,
+  `.` lists the row's actions (start and stop polling, restart, browse,
+  integrity poll, freeze, simulation), T runs the section's scan or
+  discovery, whose results are picked to add devices, registers, nodes,
+  tags or objects. Modbus also has duplicate (D, registers included),
+  simulation profiles and the simulation switch; Modbus and BACnet import
+  Modbus Poll and BACnet Explorer device files from Import… (I) or dropped
+  on the section, with a report of what was added. Modbus reads are open to
+  every user and its changes to operators; the server's other protocol
+  handlers answer only admins, so only admins see those sections. OPC UA
+  says it is unavailable on the open-core server, whose router has no
+  `GET /api/v1/opcua/devices`.
 - **Dashboard** (⌘6): the server's screens as card dashboards, as the web
   client's card view lays them out (its 24-column grid and saved layouts).
   Screen tabs sit in a bar under the navbar (1–9 jump to them, [ and ] step;

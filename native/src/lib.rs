@@ -12,7 +12,10 @@
 //!   (compaction, drag, resize, auto-arrange), shared with the mimic viewer.
 //! - [`tag_api`]: tag writes and write policies, the tag tree, naming
 //!   convention, annotations and the tag detail's history queries.
+//! - [`device_file`]: Modbus Poll and BACnet Explorer device files, parsed
+//!   for import (a port of the web client's `deviceFileImport.ts`).
 pub mod api;
+pub mod device_file;
 pub mod perf;
 pub mod runtime;
 pub mod screens;

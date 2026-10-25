@@ -14,6 +14,13 @@
 //! section, Esc in the section comes back to the sidebar (and Esc there
 //! goes back in).
 
+pub(crate) mod bacnet;
+pub(crate) mod device_form;
+pub(crate) mod dnp3;
+pub(crate) mod enip;
+pub(crate) mod modbus;
+pub(crate) mod opcua;
+pub(crate) mod s7;
 pub(crate) mod source_form;
 pub(crate) mod source_model;
 pub(crate) mod sources;
@@ -80,18 +87,94 @@ pub struct SectionSpec {
 }
 
 /// Every built section, in sidebar order within its group.
-pub static SECTIONS: &[SectionSpec] = &[SectionSpec {
-    id: "sources",
-    title: "Sources",
-    icon: Icon::Database,
-    group: SectionGroup::Data,
-    role: Role::Operator,
-    render: sources::render,
-    on_open: Some(sources::on_open),
-    focus: Some(sources::focus),
-    on_reply: Some(sources::on_reply),
-    search: Some(sources::search),
-}];
+pub static SECTIONS: &[SectionSpec] = &[
+    SectionSpec {
+        id: "sources",
+        title: "Sources",
+        icon: Icon::Database,
+        group: SectionGroup::Data,
+        role: Role::Operator,
+        render: sources::render,
+        on_open: Some(sources::on_open),
+        focus: Some(sources::focus),
+        on_reply: Some(sources::on_reply),
+        search: Some(sources::search),
+    },
+    // Protocols: Modbus reads are open to every signed-in user (writes need
+    // an operator); the other protocols' handlers all check for admin.
+    SectionSpec {
+        id: "modbus",
+        title: "Modbus",
+        icon: Icon::Cable,
+        group: SectionGroup::Protocols,
+        role: Role::Any,
+        render: modbus::render,
+        on_open: Some(modbus::on_open),
+        focus: Some(modbus::focus),
+        on_reply: Some(modbus::on_reply),
+        search: Some(modbus::search),
+    },
+    SectionSpec {
+        id: "opcua",
+        title: "OPC UA",
+        icon: Icon::Network,
+        group: SectionGroup::Protocols,
+        role: Role::Admin,
+        render: opcua::render,
+        on_open: Some(opcua::on_open),
+        focus: Some(opcua::focus),
+        on_reply: Some(opcua::on_reply),
+        search: Some(opcua::search),
+    },
+    SectionSpec {
+        id: "s7",
+        title: "Siemens S7",
+        icon: Icon::Cpu,
+        group: SectionGroup::Protocols,
+        role: Role::Admin,
+        render: s7::render,
+        on_open: Some(s7::on_open),
+        focus: Some(s7::focus),
+        on_reply: Some(s7::on_reply),
+        search: Some(s7::search),
+    },
+    SectionSpec {
+        id: "enip",
+        title: "EtherNet/IP",
+        icon: Icon::Cable,
+        group: SectionGroup::Protocols,
+        role: Role::Admin,
+        render: enip::render,
+        on_open: Some(enip::on_open),
+        focus: Some(enip::focus),
+        on_reply: Some(enip::on_reply),
+        search: Some(enip::search),
+    },
+    SectionSpec {
+        id: "dnp3",
+        title: "DNP3",
+        icon: Icon::RadioTower,
+        group: SectionGroup::Protocols,
+        role: Role::Admin,
+        render: dnp3::render,
+        on_open: Some(dnp3::on_open),
+        focus: Some(dnp3::focus),
+        on_reply: Some(dnp3::on_reply),
+        search: Some(dnp3::search),
+    },
+    SectionSpec {
+        id: "bacnet",
+        title: "BACnet",
+        icon: Icon::Factory,
+        group: SectionGroup::Protocols,
+        role: Role::Admin,
+        render: bacnet::render,
+        on_open: Some(bacnet::on_open),
+        focus: Some(bacnet::focus),
+        on_reply: Some(bacnet::on_reply),
+        search: Some(bacnet::search),
+    },
+];
 
 /// The sidebar's keyboard list.
 pub(crate) const NAV: &str = "data.sections";
@@ -131,6 +214,13 @@ fn current(console: &Console) -> Option<&'static SectionSpec> {
     chosen
         .and_then(|id| sections.iter().copied().find(|spec| spec.id == id))
         .or_else(|| sections.first().copied())
+}
+
+/// Whether section `id` is on screen (the Data Manager shown, the section
+/// chosen), for a section's own timers.
+pub(crate) fn section_shown(console: &Console, id: &str) -> bool {
+    console.page == crate::console::pages::Page::DataManager
+        && current(console).is_some_and(|spec| spec.id == id)
 }
 
 /// The section a reply belongs to: `data.sources.save` → `sources`.
@@ -429,12 +519,33 @@ mod tests {
 
     #[test]
     fn the_built_sections_are_listed_once_for_operators() {
-        let operator: Vec<_> = visible(SECTIONS, Some(Role::Operator))
-            .iter()
-            .map(|spec| spec.id)
+        let ids = |role: Role| -> Vec<&'static str> {
+            visible(SECTIONS, Some(role))
+                .iter()
+                .map(|spec| spec.id)
+                .collect()
+        };
+        assert!(ids(Role::Operator).contains(&"sources"));
+        assert!(!ids(Role::Any).contains(&"sources"));
+        // Modbus reads are open to all; the other protocols' handlers
+        // answer only admins.
+        assert!(ids(Role::Any).contains(&"modbus"));
+        for admin_only in ["opcua", "s7", "enip", "dnp3", "bacnet"] {
+            assert!(!ids(Role::Operator).contains(&admin_only), "{admin_only}");
+            assert!(ids(Role::Admin).contains(&admin_only), "{admin_only}");
+        }
+        let protocols: Vec<_> = ids(Role::Admin)
+            .into_iter()
+            .filter(|id| {
+                SECTIONS
+                    .iter()
+                    .any(|spec| spec.id == *id && spec.group == SectionGroup::Protocols)
+            })
             .collect();
-        assert_eq!(operator, ["sources"]);
-        assert!(visible(SECTIONS, Some(Role::Any)).is_empty());
+        assert_eq!(
+            protocols,
+            ["modbus", "opcua", "s7", "enip", "dnp3", "bacnet"]
+        );
         let mut all: Vec<_> = SECTIONS.iter().map(|spec| spec.id).collect();
         all.sort_unstable();
         all.dedup();

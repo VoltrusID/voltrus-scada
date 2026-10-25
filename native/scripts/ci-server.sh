@@ -111,6 +111,30 @@ curl -fsS -b cookies.txt "$url/api/v1/data-sources" | jq -r '.[] | "\(.id) \(.ke
     fi
   done
 
+# Devices for the Data Manager's Protocols sections (their screenshots):
+# a DNP3 outstation with points and a BACnet controller with objects, at
+# addresses where nothing answers and never started, so no poller runs
+# and no data source is added (S7 and EtherNet/IP tags would add some).
+post_id() {
+  curl -fsS -b cookies.txt -H "$json" -d "$2" "$url$1" | jq -r .id
+}
+dnp3="$(post_id /api/v1/dnp3/devices '{"name": "RTU substation A", "ip": "127.0.0.1", "port": 20000, "outstation_address": 10}')"
+for point in \
+  '{"name": "feeder_current", "display_name": "Feeder current", "group_num": 30, "variation": 4, "point_index": 0, "data_type": "float32", "scale": 1, "deadband": 0.5}' \
+  '{"name": "breaker_closed", "display_name": "Breaker closed", "group_num": 1, "variation": 2, "point_index": 0, "data_type": "bool", "scale": 1, "deadband": 0}' \
+  '{"name": "energy_import", "display_name": "Energy import", "group_num": 20, "variation": 1, "point_index": 3, "data_type": "uint32", "scale": 0.1, "deadband": 0}'; do
+  post_id "/api/v1/dnp3/devices/$dnp3/points" "$point" > /dev/null
+done
+bacnet="$(post_id /api/v1/bacnet/devices '{"name": "AHU-1 controller", "ip": "127.0.0.1", "port": 47809, "device_instance": 1001, "cov_enabled": true}')"
+for object in \
+  '{"name": "supply_air_temp", "display_name": "Supply air temperature", "object_type": "analogInput", "object_instance": 1, "cov_increment": 0.2}' \
+  '{"name": "fan_command", "display_name": "Fan command", "object_type": "binaryOutput", "object_instance": 1}' \
+  '{"name": "occupancy_mode", "display_name": "Occupancy mode", "object_type": "multiStateValue", "object_instance": 4}'; do
+  post_id "/api/v1/bacnet/devices/$bacnet/objects" "$object" > /dev/null
+done
+post_id /api/v1/s7/devices '{"name": "S7-1500 packaging line", "url": "127.0.0.1:10200", "rack": 0, "slot": 1}' > /dev/null
+post_id /api/v1/enip/devices '{"name": "ControlLogix L85E", "url": "127.0.0.1:44818", "slot": 0, "enabled": false}' > /dev/null
+
 "$bin/modbus-sim" --scenario solar-farm --role inverter --port 5020 > inverter.log 2>&1 &
 echo $! > inverter.pid
 "$bin/modbus-sim" --scenario solar-farm --role grid-meter --port 5021 > meter.log 2>&1 &
