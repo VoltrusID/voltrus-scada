@@ -281,6 +281,18 @@ to close a dialog after the server answered, keep the window handle in the
 section's state and close it in `cx.defer` (see
 `data_manager::source_form::close_later`).
 
+Sections with tabs (System, MQTT, EDR) switch them with keys in their own
+context (`[` `]`, or the operations pages' `OpsTabbed` T on System's root)
+and handle `Dismiss` inside a tab to step back, calling `cx.propagate()`
+when there is nothing to go back to, so Esc then reaches the sidebar.
+
+Canvas editors (Flows › editor): build a scene of only what is in view in
+render, draw it with one GPUI `canvas()`, and register pointer listeners in
+its paint (a hitbox from prepaint; move/up listeners only while a drag
+runs). On pointer work, notify only the page's view. Keep geometry (pan,
+zoom about a point, hit tests, Bézier wires) in a GPUI-free model with unit
+tests (`flows/model.rs`).
+
 
 ## The shell: settings, keymap, notifications, edition
 
@@ -341,7 +353,11 @@ ops_kit::poll_while_shown(console, Page::Commands, Duration::from_secs(2), tick,
 ```
 
 The loop ends by itself when the page goes off screen, the session ends or
-a stress test runs; the next `on_show` starts it again. It only fetches; the
+a stress test runs; the next `on_show` starts it again. Polls are keyed by
+page and tick, so several Data Manager sections may each poll on the one
+page; a section's tick fetches only while
+`data_manager::current_id(console)` is its id.
+It only fetches; the
 answer redraws through `on_reply` like any other. Number each request
 (`CallKey::new("commands.active").with(seq)`) and drop answers whose
 argument is not the newest, so a slow answer never overwrites a fresh one.
@@ -365,6 +381,12 @@ submits); it answers the same `text_input` actions and emits the same
 keys stay off while typing in it. A page reads its own state from
 `&Console` hooks (such as `search`) with `console.state_ref::<State>()`.
 
+`views/data_manager/scripts/code_editor.rs` is a code editor built from
+`TextArea` (monospace, line numbers, no wrap, indent rules, undo, syntax
+colours from a per-line tokenizer, only visible lines shaped). Its key
+context is `TextInput CodeEditor`; `shortcuts::rebind` adds
+`code_editor::key_bindings()` beside `text_area::key_bindings()`.
+
 ## Save a file
 
 `ops_kit::save_download(key, path, suggested_name, format, cancelled, cx)`
@@ -372,6 +394,16 @@ asks where to save (GPUI's `prompt_for_new_path`, in Downloads), then
 fetches `path` as text off the UI thread (`VoltrusApi::download`) and
 answers the page of `key` with an `api::ops::Saved` (file, rows, the
 server's total).
+
+## Upload a file
+
+reqwest is built without `multipart`, so `api::eng_imports::multipart`
+builds the form body. A section picks a file with `cx.prompt_for_paths` or a
+drop (`.on_drop::<ExternalPaths>`, `.drag_over::<ExternalPaths>` for the
+highlight), reads local previews with `cx.background_executor().spawn` and
+the upload inside the `Call` (see `views/data_manager/imports.rs`). Answers
+from a pick or a read compare a token kept in the section's state, so a
+sign-out in between drops them.
 
 ## Build on the screens
 

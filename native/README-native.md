@@ -72,10 +72,11 @@ JetBrains Mono for values.
   link is live the chart moves on once a second. Each tag keeps a day of
   history: live values of the last 15 minutes at full rate, older ones
   thinned to one per 20 seconds.
-- **Data Manager** (More menu, palette; admin, demo and integration roles):
-  a sidebar of sections grouped Data, Protocols, Insights and Admin as in the
-  web client (only built sections are listed; ↑↓ switch, Enter goes in, Esc
-  comes back). **Sources**: every data source in a virtualised table
+- **Data Manager** (More menu, palette; offered to a role that sees at least
+  one section): a sidebar of sections grouped Data, Protocols, Insights,
+  Admin and Engineering as in the web client (only built sections are
+  listed; ↑↓ switch, Enter goes in, Esc comes back; `--section <id>` opens
+  one). **Sources**: every data source in a virtualised table
   (order, name, key, unit, range, limits, source type, card, per-tag
   shortcut), `/` to search, sorting by clicking a header or S (⇧S reverses);
   N or New source and Enter or a double click open the form (General: name,
@@ -84,6 +85,36 @@ JetBrains Mono for values.
   its settings, a Modbus device with one register or an expression); D
   duplicates, ⌫ deletes after a confirmation, ⌥↑/⌥↓ or dragging a row
   reorders (shown at once, saved to the server).
+- **Data Manager › Engineering** (the web client's System panel, its tools
+  menu, `/flows` and `/scripts`):
+  - **System** (any role): host, CPU, memory, disk, database and process
+    figures (every 5 s while shown); generated documentation (topology, tag
+    cross-reference, automation) with an HTML export (E); vertical
+    templates (detail, preview, instantiate after a confirmation); the quick
+    start and project wizard; the health check; SMTP settings with a test
+    email (operators); Voltrus PLC/HMI deep links. T and ⇧T switch tabs.
+  - **Config snapshots** (operators): a searchable table (N new with a
+    label, F/T pick a diff's ends, C compares: per-table added, removed and
+    changed rows and the changed fields; R rolls back after a
+    confirmation).
+  - **MQTT broker** (status for any role, the rest for operators):
+    overview, start/stop (S), configuration (C: port, connections, users),
+    topic tree with recent messages, the live log, publish (P); [ ] switch
+    tabs.
+  - **EDR compatibility** (any role): report, exclusions, the Defender
+    script (copy, save as .ps1 for operators) and the deployment guide.
+  - **Import** (operators; CSV/Excel for admins): the data file wizard
+    (O or a drop picks the file, column mapping over the file's own header,
+    dry run, import, report) and the Node-RED wizard (W switches).
+  - **Flows** (operators): list with Start/Stop, settings, runs, a test
+    with a JSON payload, and a native canvas editor (O or Enter): palette,
+    step settings, drag a step, drag from an output port to a step to run it
+    next, pan, ⌘-scroll or + − 0 zoom about the pointer, arrows nudge, ⌥←→
+    reorder, ⌫ removes, ⌘Z undoes, ⌘S saves.
+  - **Scripts** (operators): list plus a code editor (line numbers,
+    JavaScript colours, Tab/⇧Tab indent, auto-indent, ⌘/ comment, ⌘Z/⇧⌘Z),
+    ⌘S saves, ⌘↵ test-runs the saved script with a JSON input; its runs
+    refresh every 10 s while shown.
 - **Dashboard** (⌘6): the server's screens as card dashboards, as the web
   client's card view lays them out (its 24-column grid and saved layouts).
   Screen tabs sit in a bar under the navbar (1–9 jump to them, [ and ] step;
@@ -412,3 +443,14 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   client sends milliseconds and reads them as such). An unknown command
   answers 500 "Command not found", not 404; cancelling a command already
   sent answers 400.
+- Engineering routes: config snapshots have no DELETE, and a rollback
+  also rewrites the `alarms` table; the MQTT broker's configuration cannot
+  be cleared once set, and a message published through
+  `POST /mqtt-broker/publish` does not reach the broker's own message log
+  on the CI plant. Flows store no wires or positions (process steps run in
+  stored order, then the outputs), so the editor's wires reorder steps and
+  positions last while it is open; `start`/`stop` change only the running
+  engine, not `enabled`. Saving a script with fixed source keeps its old
+  `syntax_error`. CSV/Excel imports write readings only (no route removes
+  them) and replace mode answers 501; the Node-RED import only converts and
+  reports.
