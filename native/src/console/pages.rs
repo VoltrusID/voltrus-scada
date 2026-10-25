@@ -22,6 +22,7 @@ pub enum Page {
     Trends,
     Performance,
     DataManager,
+    TagTree,
     Commands,
     Shift,
     Audit,
@@ -112,7 +113,7 @@ pub static PAGES: &[PageSpec] = &[
         render: views::tags::render,
         badge: None,
         on_show: Some(views::tags::on_show),
-        on_reply: None,
+        on_reply: Some(views::tags::on_reply),
         search: Some(views::tags::search),
         side_panel: views::tags::side_panel,
     },
@@ -175,6 +176,21 @@ pub static PAGES: &[PageSpec] = &[
         on_reply: Some(views::data_manager::on_reply),
         search: Some(views::data_manager::search),
         side_panel: no_panel,
+    },
+    PageSpec {
+        page: Page::TagTree,
+        id: "tagtree",
+        title: "Tag tree",
+        icon: Icon::Network,
+        digit: Some(5),
+        role: Role::Any,
+        placement: Placement::Tab,
+        render: views::tag_tree::render,
+        badge: None,
+        on_show: Some(views::tag_tree::on_show),
+        on_reply: Some(views::tag_tree::on_reply),
+        search: Some(views::tag_tree::search),
+        side_panel: views::tag_tree::side_panel,
     },
     PageSpec {
         page: Page::Commands,
@@ -268,6 +284,7 @@ mod tests {
             Page::Trends,
             Page::Performance,
             Page::DataManager,
+            Page::TagTree,
             Page::Commands,
             Page::Shift,
             Page::Audit,
@@ -288,7 +305,7 @@ mod tests {
         assert_eq!(Page::parse("nowhere"), None);
         assert_eq!(
             ids(),
-            "overview|tags|alarms|trends|performance|data|commands|shift|audit"
+            "overview|tags|alarms|trends|performance|data|tagtree|commands|shift|audit"
         );
     }
 

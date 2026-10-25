@@ -19,6 +19,10 @@ pub(crate) mod performance;
 pub(crate) mod shift;
 mod sign_in;
 pub(crate) mod status_bar;
+pub(crate) mod tag_chart;
+pub(crate) mod tag_detail;
+pub(crate) mod tag_tree;
+pub(crate) mod tag_write;
 pub(crate) mod tags;
 pub(crate) mod toasts;
 pub(crate) mod trends;
@@ -42,6 +46,10 @@ use super::keys::{
     TogglePalette, TogglePerfHud,
 };
 use super::keys::{OpsExportAudit, OpsExportData, OpsNewHandover};
+use super::keys::{
+    TagsAddNote, TagsCompare, TagsCustomRange, TagsExpandDetail, TagsExportCsv, TagsWrite,
+    TagsWritePolicy,
+};
 use super::nav::Move;
 use super::store::Status;
 use super::{Console, Page, Phase, anim, pages, severity_rank};
@@ -212,6 +220,41 @@ impl Render for Console {
             .on_action(cx.listener(|console, _: &StopStress, window, cx| {
                 if console.stress.is_some() {
                     console.sign_out(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsWrite, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Write, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsWritePolicy, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Policy, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsAddNote, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Note, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsCompare, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Compare, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsCustomRange, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Range, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsExportCsv, _, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::export_csv(console, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsExpandDetail, _, cx| {
+                if console.phase == Phase::Console && tag_detail::open_index(console).is_some() {
+                    tag_detail::toggle_expanded(console, cx);
                 }
             }))
             .on_action(cx.listener(|console, _: &OpsExportData, window, cx| {
