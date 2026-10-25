@@ -158,6 +158,7 @@ pub(super) fn export(console: &mut Console, cx: &mut Context<Console>) {
     state.export_seq += 1;
     let seq = state.export_seq;
     save_download(
+        console,
         CallKey::new("data.system.docs.export").with(seq),
         DOCS_EXPORT_PATH.to_owned(),
         DOCS_EXPORT_FILE.to_owned(),

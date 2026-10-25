@@ -274,6 +274,7 @@ fn save_script(console: &mut Console, cx: &mut Context<Console>) {
     // the server sent it. The save panel answers later: the cancel hook
     // and the reply look the state up again (it is new after a sign-out).
     ops_kit::save_download(
+        console,
         CallKey::new("data.edr.save").with(seq),
         PS1.to_owned(),
         PS1_FILE.to_owned(),
