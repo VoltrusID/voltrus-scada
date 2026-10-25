@@ -27,6 +27,7 @@ pub enum Page {
     Commands,
     Shift,
     Audit,
+    Mimic,
 }
 
 /// The least a user's role must be to see a page or run a command; the
@@ -253,6 +254,21 @@ pub static PAGES: &[PageSpec] = &[
         search: None,
         side_panel: no_panel,
     },
+    PageSpec {
+        page: Page::Mimic,
+        id: "mimic",
+        title: "Mimic",
+        icon: Icon::Factory,
+        digit: Some(7),
+        role: Role::Any,
+        placement: Placement::Tab,
+        render: views::mimic::render,
+        badge: None,
+        on_show: Some(views::mimic::on_show),
+        on_reply: Some(views::mimic::on_reply),
+        search: None,
+        side_panel: views::mimic::side_panel,
+    },
 ];
 
 /// The row of `page`. Every variant has one (a unit test checks).
@@ -305,6 +321,7 @@ mod tests {
             Page::Commands,
             Page::Shift,
             Page::Audit,
+            Page::Mimic,
         ] {
             assert_eq!(PAGES.iter().filter(|spec| spec.page == page).count(), 1);
             assert_eq!(Page::parse(spec(page).id), Some(page));
@@ -322,7 +339,7 @@ mod tests {
         assert_eq!(Page::parse("nowhere"), None);
         assert_eq!(
             ids(),
-            "overview|tags|alarms|trends|performance|data|tagtree|commands|shift|audit|dashboard"
+            "overview|tags|alarms|trends|performance|data|tagtree|commands|shift|audit|dashboard|mimic"
         );
     }
 
