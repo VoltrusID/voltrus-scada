@@ -18,7 +18,9 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{App, Window};
-use voltrus_scada_native::perf::{self, Frame, FrameStats, PageFigures, SlowFrame, Spread};
+use voltrus_scada_native::perf::{
+    self, Frame, FrameStats, LateStarts, PageFigures, Phases, SlowFrame, Spread,
+};
 use vt_ui::chart::History;
 
 pub type Meter = Rc<RefCell<FrameMeter>>;
@@ -49,6 +51,17 @@ struct PageLog {
     /// Its render function's time, each time it ran on screen.
     renders: Vec<f64>,
     first_ms: Option<f64>,
+    /// The warm-up frame that drew it out of sight.
+    warmed_ms: Option<f64>,
+}
+
+/// One frame's phase marks, as the root's first and last elements see them.
+#[derive(Default, Clone, Copy)]
+struct Marks {
+    /// The first element's prepaint: every view rendered, layout done.
+    laid_out: Option<Instant>,
+    /// The first element's paint: prepaint done.
+    painting: Option<Instant>,
 }
 
 pub struct FrameMeter {
@@ -86,7 +99,20 @@ pub struct FrameMeter {
     /// `warm_up` instead of the figures.
     warming: bool,
     warm_up: Vec<f64>,
+    /// The page drawn out of sight in the frame being built.
+    warming_page: Option<&'static str>,
     display_checked: Option<Instant>,
+    marks: Marks,
+    /// Per frame, in ms: render and layout, prepaint, paint, present.
+    phases: [Vec<f64>; 4],
+    /// The last frame's start and the end of its paint, until its present
+    /// is done.
+    presenting: Option<(Instant, Instant)>,
+    /// The last frame's build and present, once presented.
+    last_total: Option<f64>,
+    /// When the last batch of events was applied, since the last frame.
+    last_batch: Option<Instant>,
+    late: LateStarts,
 }
 
 impl Default for FrameMeter {
@@ -110,7 +136,14 @@ impl Default for FrameMeter {
             applies: Vec::new(),
             warming: false,
             warm_up: Vec::new(),
+            warming_page: None,
             display_checked: None,
+            marks: Marks::default(),
+            phases: Default::default(),
+            presenting: None,
+            last_total: None,
+            last_batch: None,
+            late: LateStarts::default(),
         }
     }
 }
@@ -154,6 +187,14 @@ impl FrameMeter {
             (Some((at, _)), _) => (Some(ms(at, now)), None),
             (None, _) => (None, None),
         };
+        if let Some(interval) = interval.filter(|_| !self.warming) {
+            let refresh = self.stats.refresh_ms();
+            let batch = self.last_batch.map(|at| ms(at, now));
+            self.late.record(interval, refresh, self.last_total, batch);
+        }
+        self.last_batch = None;
+        self.last_total = None;
+        self.marks = Marks::default();
         self.current = Some((delay, interval));
         self.building = Some(now);
         self.last_start = Some(now);
@@ -194,6 +235,37 @@ impl FrameMeter {
         }
     }
 
+    /// A page was drawn out of sight to warm it; its render took
+    /// `render_ms`.
+    pub fn page_warmed(&mut self, id: &'static str, _render_ms: f64) {
+        self.warming_page = Some(id);
+    }
+
+    /// Every view of the frame rendered and laid out: its prepaint begins.
+    pub fn laid_out(&mut self, now: Instant) {
+        if self.building.is_some() {
+            self.marks.laid_out = Some(now);
+        }
+    }
+
+    /// Prepaint done: its paint begins.
+    pub fn painting(&mut self, now: Instant) {
+        if self.building.is_some() {
+            self.marks.painting = Some(now);
+        }
+    }
+
+    /// The frame painted last was handed to the GPU.
+    pub fn presented(&mut self, now: Instant) {
+        let Some((start, painted)) = self.presenting.take() else {
+            return;
+        };
+        self.last_total = Some(ms(start, now));
+        if !self.warming {
+            keep(&mut self.phases[3], ms(painted, now));
+        }
+    }
+
     /// Drawing the pages hidden after sign-in, so that their first show
     /// finds fonts, text and views ready.
     pub fn set_warming(&mut self, warming: bool) {
@@ -202,6 +274,7 @@ impl FrameMeter {
 
     /// A batch of runtime events took `ms` to apply.
     pub fn batch_applied(&mut self, ms: f64) {
+        self.last_batch = Some(Instant::now());
         if !self.warming {
             keep(&mut self.applies, ms);
         }
@@ -217,12 +290,23 @@ impl FrameMeter {
         let first_show = std::mem::take(&mut self.first_show);
         let render_ms = std::mem::take(&mut self.frame_render);
         let switched = self.switch.take();
+        let warmed = self.warming_page.take();
+        self.presenting = Some((start, now));
         if self.warming {
             keep(&mut self.warm_up, cpu_ms);
             if first_show {
                 self.page_log(self.page).first_ms = Some(cpu_ms);
             }
+            if let Some(id) = warmed {
+                self.page_log(id).warmed_ms = Some(cpu_ms);
+            }
             return;
+        }
+        let marks = self.marks;
+        if let (Some(laid_out), Some(painting)) = (marks.laid_out, marks.painting) {
+            keep(&mut self.phases[0], ms(start, laid_out));
+            keep(&mut self.phases[1], ms(laid_out, painting));
+            keep(&mut self.phases[2], ms(painting, now));
         }
         self.stats.record(Frame {
             interval_ms,
@@ -244,17 +328,25 @@ impl FrameMeter {
                 log.first_ms = Some(cpu_ms);
             }
         }
+        let warmed_before = first_show
+            && self
+                .pages
+                .iter()
+                .any(|page| page.id == self.page && page.warmed_ms.is_some());
+        let note = if warmed_before {
+            "first show, warmed"
+        } else if first_show {
+            "first show, not warmed"
+        } else if switched.is_some() {
+            "page switch"
+        } else {
+            ""
+        };
         self.note_slow(SlowFrame {
             cpu_ms,
             page: self.page,
             render_ms,
-            note: if first_show {
-                "first show"
-            } else if switched.is_some() {
-                "page switch"
-            } else {
-                ""
-            },
+            note,
         });
     }
 
@@ -294,8 +386,24 @@ impl FrameMeter {
                 frame: Spread::of(page.frames.iter().copied()),
                 render: Spread::of(page.renders.iter().copied()),
                 first_ms: page.first_ms,
+                warmed_ms: page.warmed_ms,
             })
             .collect()
+    }
+
+    /// Where the frames' time went, once frames were measured.
+    pub fn phases(&self) -> Option<Phases> {
+        let spread = |index: usize| Spread::of(self.phases[index].iter().copied());
+        (!self.phases[0].is_empty()).then(|| Phases {
+            layout: spread(0),
+            prepaint: spread(1),
+            paint: spread(2),
+            present: spread(3),
+        })
+    }
+
+    pub fn late_starts(&self) -> LateStarts {
+        self.late
     }
 
     pub fn slowest(&self) -> Vec<SlowFrame> {
@@ -336,6 +444,8 @@ impl FrameMeter {
         self.slowest.clear();
         self.applies.clear();
         self.warm_up.clear();
+        self.phases = Default::default();
+        self.late = LateStarts::default();
     }
 }
 
@@ -422,8 +532,8 @@ mod tests {
                 .map(|frame| (frame.cpu_ms, frame.page, frame.note, frame.render_ms))
                 .collect::<Vec<_>>(),
             [
-                (9.0, "overview", "first show", 1.0),
-                (6.0, "tags", "first show", 0.25),
+                (9.0, "overview", "first show, not warmed", 1.0),
+                (6.0, "tags", "first show, not warmed", 0.25),
                 (2.0, "overview", "", 0.5),
                 (1.0, "tags", "", 0.0),
             ]
@@ -466,5 +576,81 @@ mod tests {
         );
         meter.reset();
         assert!(meter.page_figures().is_empty() && meter.warm_up().is_none());
+    }
+
+    #[test]
+    fn a_warmed_page_is_named_so_on_its_first_show() {
+        let mut meter = FrameMeter::default();
+        let mut at = Instant::now();
+        meter.set_warming(true);
+        // The overview on screen, the tags page drawn out of sight.
+        meter.frame_start(at);
+        meter.page_built("overview", 1.0);
+        meter.page_warmed("tags", 2.0);
+        at += Duration::from_millis(30);
+        meter.frame_end(at, 0.0);
+        at += Duration::from_millis(16);
+        meter.set_warming(false);
+        meter.page_switch(at);
+        frame(&mut meter, &mut at, "tags", 0.5, 4);
+        frame(&mut meter, &mut at, "alarms", 0.5, 3);
+        let tags = meter
+            .page_figures()
+            .into_iter()
+            .find(|page| page.id == "tags")
+            .unwrap();
+        assert_eq!((tags.warmed_ms, tags.first_ms), (Some(30.0), Some(4.0)));
+        let notes: Vec<_> = meter.slowest().iter().map(|frame| frame.note).collect();
+        assert_eq!(notes, ["first show, warmed", "first show, not warmed"]);
+    }
+
+    #[test]
+    fn a_frame_splits_into_phases_and_its_present_is_timed() {
+        let mut meter = FrameMeter::default();
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        meter.frame_start(at(0));
+        meter.laid_out(at(3));
+        meter.painting(at(4));
+        meter.frame_end(at(6), 0.0);
+        meter.presented(at(9));
+        let phases = meter.phases().unwrap();
+        assert_eq!(
+            (
+                phases.layout.max,
+                phases.prepaint.max,
+                phases.paint.max,
+                phases.present.max
+            ),
+            (3.0, 1.0, 2.0, 3.0)
+        );
+        meter.presented(at(12));
+        assert_eq!(
+            meter.phases().unwrap().present.max,
+            3.0,
+            "one present per frame"
+        );
+    }
+
+    #[test]
+    fn a_late_frame_after_a_long_one_is_put_down_to_it() {
+        let mut meter = FrameMeter::default();
+        let t0 = Instant::now();
+        let at = |ms: u64| t0 + Duration::from_millis(ms);
+        // Frames asked for back to back (an animation) on a 60 Hz display.
+        meter.stats.set_display_hz(Some(60.0));
+        meter.frame_start(at(0));
+        meter.expect_frame(at(1));
+        meter.frame_end(at(15), 0.0);
+        meter.presented(at(19));
+        meter.frame_start(at(20));
+        meter.expect_frame(at(21));
+        meter.frame_end(at(22), 0.0);
+        meter.presented(at(23));
+        meter.batch_applied(0.5);
+        meter.frame_start(at(39));
+        let late = meter.late_starts();
+        assert_eq!((late.frames, late.late, late.previous_frame), (2, 2, 1));
+        assert_eq!(late.event_batch + late.other, 1);
     }
 }

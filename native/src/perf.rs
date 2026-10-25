@@ -248,6 +248,64 @@ pub struct PageFigures {
     pub render: Spread,
     /// The build time of the frame that first showed the page.
     pub first_ms: Option<f64>,
+    /// The build time of the warm-up frame that drew the page out of sight,
+    /// if it was warmed.
+    pub warmed_ms: Option<f64>,
+}
+
+/// Where a frame's build time goes, and what the presentation after it
+/// took, over a run.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Phases {
+    /// Rendering the views and laying the element tree out.
+    pub layout: Spread,
+    pub prepaint: Spread,
+    pub paint: Spread,
+    /// From the end of paint until the frame was handed to the GPU
+    /// (finishing the scene, encoding, waiting for a drawable).
+    pub present: Spread,
+}
+
+/// Frames that started over a millisecond after their vsync slot (the
+/// previous frame's start plus a refresh), by the likeliest cause.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LateStarts {
+    /// Back-to-back frames looked at.
+    pub frames: u64,
+    pub late: u64,
+    /// The previous frame (build and present) ran past the slot.
+    pub previous_frame: u64,
+    /// A batch of events was being applied up to just before the start.
+    pub event_batch: u64,
+    /// Neither: the display link or the scheduler woke the frame late.
+    pub other: u64,
+}
+
+impl LateStarts {
+    /// Classify a back-to-back frame that started `interval_ms` after the
+    /// previous one: `previous_ms`, the previous frame's build and
+    /// present; `batch_before_ms`, how long before this start the last
+    /// event batch ended (`None`: none since the previous frame).
+    pub fn record(
+        &mut self,
+        interval_ms: f64,
+        refresh_ms: f64,
+        previous_ms: Option<f64>,
+        batch_before_ms: Option<f64>,
+    ) {
+        self.frames += 1;
+        if interval_ms <= refresh_ms + 1.0 {
+            return;
+        }
+        self.late += 1;
+        if previous_ms.is_some_and(|ms| ms > refresh_ms) {
+            self.previous_frame += 1;
+        } else if batch_before_ms.is_some_and(|ms| ms <= 1.5) {
+            self.event_batch += 1;
+        } else {
+            self.other += 1;
+        }
+    }
 }
 
 /// One of the run's slowest frames.
@@ -295,6 +353,8 @@ pub struct Report {
     /// drawn once, hidden), and their build times; not in the figures above.
     pub warm_up: Option<(usize, Spread)>,
     pub pages: Vec<PageFigures>,
+    pub phases: Option<Phases>,
+    pub late: LateStarts,
     /// Slowest first.
     pub slowest: Vec<SlowFrame>,
 }
@@ -353,6 +413,24 @@ impl fmt::Display for Report {
         if self.apply.max > 0.0 {
             writeln!(f, "apply_ms per event batch: {}", self.apply)?;
         }
+        if let Some(phases) = &self.phases {
+            writeln!(
+                f,
+                "frame_phases_ms: render+layout {}  |  prepaint {}  |  paint {}  |  present {}",
+                phases.layout, phases.prepaint, phases.paint, phases.present
+            )?;
+        }
+        if self.late.frames > 0 {
+            writeln!(
+                f,
+                "late_starts: {} of {} back-to-back frames started over 1 ms after their vsync slot: previous frame still drawing {}, event batch just applied {}, other (display link, scheduler) {}",
+                self.late.late,
+                self.late.frames,
+                self.late.previous_frame,
+                self.late.event_batch,
+                self.late.other
+            )?;
+        }
         if let Some((frames, spread)) = &self.warm_up {
             writeln!(
                 f,
@@ -362,7 +440,7 @@ impl fmt::Display for Report {
         if !self.pages.is_empty() {
             writeln!(
                 f,
-                "pages (frame = whole frame while shown, render = the page's element tree, first = its first frame), ms:"
+                "pages (frame = whole frame while shown, render = the page's element tree, first = its first frame on screen, warmed = the warm-up frame that drew it out of sight), ms:"
             )?;
             for page in &self.pages {
                 write!(
@@ -370,8 +448,11 @@ impl fmt::Display for Report {
                     "  {:<12} frames {:>5}  frame {}  render {}",
                     page.id, page.frames, page.frame, page.render
                 )?;
-                match page.first_ms {
-                    Some(first) => writeln!(f, "  first {first:.2}")?,
+                if let Some(first) = page.first_ms {
+                    write!(f, "  first {first:.2}")?;
+                }
+                match page.warmed_ms {
+                    Some(warmed) => writeln!(f, "  warmed {warmed:.2}")?,
                     None => writeln!(f)?,
                 }
             }
@@ -738,7 +819,23 @@ mod tests {
                     max: 1.5,
                 },
                 first_ms: Some(6.5),
+                warmed_ms: None,
             }],
+            phases: Some(Phases {
+                layout: Spread {
+                    p50: 1.0,
+                    p95: 2.0,
+                    max: 3.0,
+                },
+                ..Phases::default()
+            }),
+            late: LateStarts {
+                frames: 100,
+                late: 4,
+                previous_frame: 1,
+                event_batch: 2,
+                other: 1,
+            },
             slowest: vec![
                 SlowFrame {
                     cpu_ms: 7.0,
@@ -764,8 +861,36 @@ mod tests {
             "warm_up: 5 frames from the start until every page was drawn once",
             "  overview     frames   590  frame p50 2.00  p95 4.00  max 7.00  render p50 0.50  p95 0.90  max 1.50  first 6.50",
             "slowest_frames_ms: 7.00 overview (render 1.50, first show), 6.00 tags (render 0.25)",
+            "frame_phases_ms: render+layout p50 1.00  p95 2.00  max 3.00  |  prepaint p50 0.00",
+            "late_starts: 4 of 100 back-to-back frames started over 1 ms after their vsync slot: previous frame still drawing 1, event batch just applied 2, other (display link, scheduler) 1",
         ] {
             assert!(text.contains(line), "missing “{line}” in\n{text}");
         }
+    }
+
+    #[test]
+    fn late_starts_are_put_down_to_their_likeliest_cause() {
+        let refresh = 1000.0 / 60.0;
+        let mut late = LateStarts::default();
+        late.record(16.7, refresh, Some(30.0), Some(0.1));
+        assert_eq!(
+            (late.frames, late.late),
+            (1, 0),
+            "on time whatever came before"
+        );
+        late.record(18.9, refresh, Some(17.5), Some(0.2));
+        late.record(18.9, refresh, Some(6.0), Some(0.4));
+        late.record(18.9, refresh, Some(6.0), Some(9.0));
+        late.record(18.9, refresh, None, None);
+        assert_eq!(
+            late,
+            LateStarts {
+                frames: 5,
+                late: 4,
+                previous_frame: 1,
+                event_batch: 1,
+                other: 2,
+            }
+        );
     }
 }

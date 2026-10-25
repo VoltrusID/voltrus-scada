@@ -111,10 +111,6 @@ jobs:
           native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-report.txt
           STRESS_PROFILE=1 STRESS_SECONDS=10 \
             native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-profile-report.txt
-          # A third, CPU-sampled run: where the frame time goes (slower, so
-          # not checked).
-          STRESS_SAMPLE=dist/stress-sample.txt STRESS_SECONDS=16 \
-            native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-sampled-report.txt
 
       - name: Screenshots
         run: native/scripts/screenshots-macos.sh "dist/Voltrus SCADA.app" dist/screenshots
@@ -140,8 +136,6 @@ jobs:
           path: |
             dist/stress-report.txt
             dist/stress-profile-report.txt
-            dist/stress-sampled-report.txt
-            dist/stress-sample.txt
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

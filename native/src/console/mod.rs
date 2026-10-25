@@ -1377,6 +1377,8 @@ impl Console {
             apply: meter.apply_spread(),
             warm_up: meter.warm_up(),
             pages: meter.page_figures(),
+            phases: meter.phases(),
+            late: meter.late_starts(),
             slowest: meter.slowest(),
         })
     }

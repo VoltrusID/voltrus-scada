@@ -23,19 +23,9 @@ if [ "${STRESS_PROFILE:-0}" = "1" ]; then
   flags+=(--stress-profile)
   title="Native console stress profile (animation showcase)"
 fi
-if [ -n "${STRESS_SAMPLE:-}" ]; then
-  title="${title}, CPU-sampled (slower, not checked)"
-fi
 
 "$binary" "${flags[@]}" &
 pid=$!
-# STRESS_SAMPLE=<file>: a CPU profile of the run's middle (macOS `sample`),
-# for finding where frame time goes. It slows the run, so such a run's
-# figures are not checked against the budget.
-if [ -n "${STRESS_SAMPLE:-}" ]; then
-  sleep 6
-  sample "$pid" 8 1 -mayDie -file "$STRESS_SAMPLE" >/dev/null 2>&1 || echo "::warning::sampling failed"
-fi
 # The run, plus time to open the window and quit.
 limit=$((seconds + 60))
 for _ in $(seq 1 "$limit"); do
@@ -63,13 +53,9 @@ cat "$report"
   echo '```'
 } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-if [ -n "${STRESS_SAMPLE:-}" ]; then
-  echo "sampled run: figures not checked against the budget"
-  exit 0
-fi
 # The budget: under 1% of vsyncs dropped, frame interval p95 within 17.5 ms
 # and no frame over 50 ms (at 60 Hz), a page's first frame within 34 ms of
-# the switch.
+# the switch; in the profile, 95% of frames built within a 120 Hz frame.
 level=warning
 if [ "${STRESS_ENFORCE:-0}" = "1" ]; then level=error; fi
 misses=$(awk '
@@ -81,9 +67,14 @@ misses=$(awk '
     if ($5 + 0 > 17.5) print "frame interval p95 " $5 " ms (budget 17.5 ms)"
     if ($7 + 0 >= 50) print "frame interval max " $7 " ms (budget < 50 ms)"
   }
+  /^mode: profile/ { profile = 1 }
   /^page_switches:/ {
     for (i = 1; i <= NF; i++) if ($i == "p95") p95 = $(i + 1)
     if (p95 + 0 >= 34) print "page switch p95 " p95 " ms (budget < 34 ms)"
+  }
+  /^frame_budget:/ {
+    match($0, /, [0-9.]+% within 8\.3/); share = substr($0, RSTART + 2, RLENGTH - 14)
+    if (profile && share + 0 < 95) print "profile frames built within 8.3 ms " share "% (budget >= 95%)"
   }
 ' "$report")
 if [ -n "$misses" ]; then
