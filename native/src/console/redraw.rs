@@ -6,7 +6,7 @@
 //! notifies those alone: the navbar and the toasts replay their last frame
 //! instead of being rendered, laid out and painted again on every frame.
 
-use gpui::{AppContext as _, Context};
+use gpui::Context;
 use voltrus_scada_native::runtime::Event;
 
 use super::Console;
