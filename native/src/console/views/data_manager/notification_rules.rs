@@ -905,7 +905,7 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
                     .disabled(testing)
                     .on_click(cx.listener(|console, _, window, cx| test_form(console, window, cx))),
                 )
-                .child(match result {
+                .child(div().flex_1().min_w_0().child(match result {
                     Some((line, ok)) => note(
                         line,
                         if ok { theme.success } else { theme.danger },
@@ -916,7 +916,7 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
                         }),
                     ),
                     None => note("A sample alarm to each target, now", theme.fg_dim, None),
-                })
+                }))
                 .into_any_element(),
         );
     } else {

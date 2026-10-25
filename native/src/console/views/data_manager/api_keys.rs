@@ -593,6 +593,14 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         return div()
             .track_focus(&focus)
             .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
+                let own = console
+                    .state::<State>()
+                    .form
+                    .as_ref()
+                    .is_some_and(|form| form.secret_focus.is_focused(window));
+                if !own {
+                    return;
+                }
                 match event.keystroke.key.as_str() {
                     "c" => copy(console, cx),
                     "enter" => done(console, window, cx),

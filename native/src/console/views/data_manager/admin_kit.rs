@@ -78,7 +78,13 @@ fn confirm_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
     div()
         .when_some(focus, |this, focus| this.track_focus(&focus))
         .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "enter" {
+            // Enter on a focused Keep button is that button's.
+            let own = console
+                .state::<Kit>()
+                .focus
+                .as_ref()
+                .is_some_and(|focus| focus.is_focused(window));
+            if own && event.keystroke.key == "enter" {
                 confirmed(console, window, cx);
                 cx.stop_propagation();
             }
@@ -402,17 +408,19 @@ pub(crate) fn dialog_footer(
         )
 }
 
-/// A line of small text, with an icon in front if given.
+/// A line of small text, with an icon in front if given; as wide as its
+/// parent (in a row, give it a `flex_1` parent).
 pub(crate) fn note(text: impl Into<SharedString>, color: Hsla, icon: Option<Icon>) -> AnyElement {
     div()
         .flex()
         .items_center()
         .gap(SPACE_3)
+        .w_full()
         .min_w_0()
         .text_size(FONT_SMALL)
         .text_color(color)
         .children(icon.map(|icon| vt_ui::icon(icon, ICON_SM, color)))
-        .child(div().min_w_0().child(text.into()))
+        .child(div().flex_1().min_w_0().child(text.into()))
         .into_any_element()
 }
 
