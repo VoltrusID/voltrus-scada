@@ -221,6 +221,13 @@ impl Tag {
     pub fn samples(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
         self.samples.iter().copied()
     }
+
+    /// The plotted samples from `since_ms` on (found by binary search, so a
+    /// sparkline over the last minutes does not walk a day of history).
+    pub fn samples_since(&self, since_ms: f64) -> impl Iterator<Item = (f64, f64)> + Clone + '_ {
+        let from = self.samples.partition_point(|(at, _)| *at < since_ms);
+        self.samples.range(from..).copied()
+    }
 }
 
 /// The tag list plus what the views ask of all of it every frame, kept up

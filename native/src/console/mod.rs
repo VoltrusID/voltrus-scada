@@ -14,6 +14,7 @@ mod nav;
 pub mod overlay;
 pub mod pages;
 mod prefs;
+mod redraw;
 pub mod screens;
 mod shell;
 pub mod shortcuts;
@@ -380,6 +381,7 @@ impl Console {
                 }
                 let applied = this.update_in(cx, |console, window, cx| {
                     let started = Instant::now();
+                    let values_only = redraw::values_only(&batch);
                     for event in batch {
                         console.apply(event, window, cx);
                     }
@@ -389,7 +391,11 @@ impl Console {
                     frames.batch_applied(took);
                     frames.expect_frame(now);
                     drop(frames);
-                    cx.notify();
+                    if values_only {
+                        console.values_changed(cx);
+                    } else {
+                        cx.notify();
+                    }
                 });
                 if applied.is_err() {
                     break;
@@ -1468,6 +1474,9 @@ impl Console {
             apply: meter.apply_spread(),
             warm_up: meter.warm_up(),
             pages: meter.page_figures(),
+            phases: meter.phases(),
+            late: meter.late_starts(),
+            on_next_vsync: meter.stats.on_next_vsync(),
             slowest: meter.slowest(),
         })
     }
