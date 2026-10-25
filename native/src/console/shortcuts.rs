@@ -628,7 +628,7 @@ mod tests {
     fn a_key_without_a_modifier_is_no_shortcut_but_a_function_key_is() {
         let tags = map(&[
             ("1", "Enter"),
-            ("2", " "),
+            ("2", "Space"),
             ("3", "ArrowDown"),
             ("4", "J"),
             ("5", "F7"),
