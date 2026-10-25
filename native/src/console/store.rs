@@ -1,7 +1,6 @@
 //! The console's copy of the plant: every tag's latest value, status and
 //! history, fed by the runtime's events. No UI here.
 
-use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -72,7 +71,7 @@ pub struct Tag {
     /// What the charts draw.
     pub history: Rc<History>,
     /// The same samples as `history`, which can only be appended to and
-    /// cleared: thinning and same-second replacements rebuild it from these.
+    /// cleared: thinning and backfill rebuild it from these.
     samples: VecDeque<(f64, f64)>,
     /// Unix ms up to which live samples are already thinned.
     thinned_to: f64,
@@ -109,30 +108,19 @@ impl Tag {
     }
 
     /// Add a sample in time order. The server sends every tag after each
-    /// device poll, all stamped with the same second, so a sample of the
-    /// last sample's second replaces it; an older one (clock skew, replays)
-    /// is not plotted.
+    /// device poll, all stamped with the same second, so only the first
+    /// sample of a second is plotted (the shown value still follows every
+    /// update); an older one (clock skew, replays) is not plotted either.
     fn record(&mut self, at_ms: f64, value: f64) {
-        let Some(&(last_at, last_value)) = self.samples.back() else {
+        let Some(&(last_at, _)) = self.samples.back() else {
             self.thinned_to = at_ms;
             self.append(at_ms, value);
             return;
         };
-        match at_ms.total_cmp(&last_at) {
-            Ordering::Less => {}
-            Ordering::Equal => {
-                if last_value.total_cmp(&value) != Ordering::Equal
-                    && let Some(last) = self.samples.back_mut()
-                {
-                    last.1 = value;
-                    self.rebuild();
-                }
-            }
-            Ordering::Greater => {
-                self.append(at_ms, value);
-                if at_ms - self.thinned_to >= 2.0 * DENSE_MS {
-                    self.thin(at_ms);
-                }
+        if at_ms > last_at {
+            self.append(at_ms, value);
+            if at_ms - self.thinned_to >= 2.0 * DENSE_MS {
+                self.thin(at_ms);
             }
         }
     }
@@ -412,18 +400,24 @@ mod tests {
     }
 
     #[test]
-    fn updates_of_the_same_second_replace_the_last_sample() {
+    fn only_the_first_update_of_a_second_is_plotted_but_the_value_follows_all() {
         let mut store = Store::default();
         store.replace(vec![info("a")]);
         store.apply(&[update("a", 1.0, 100, "normal")]);
         store.apply(&[update("a", 1.0, 100, "normal")]);
-        store.apply(&[update("a", 2.0, 100, "normal")]);
-        let history = &store.tags[0].history;
-        assert_eq!(history.len(), 1, "no duplicates");
-        assert_eq!(history.latest(), Some((100_000.0, 2.0)));
+        store.apply(&[update("a", 2.0, 100, "warning")]);
+        let tag = &store.tags[0];
+        assert_eq!(tag.history.len(), 1, "no duplicates");
+        assert_eq!(tag.history.latest(), Some((100_000.0, 1.0)), "first kept");
+        assert_eq!(
+            (tag.value, tag.status),
+            (2.0, Status::Warning),
+            "the shown value and status follow the newest update"
+        );
         store.apply(&[update("a", 3.0, 101, "normal")]);
         assert_eq!(store.tags[0].history.len(), 2);
         assert_eq!(store.tags[0].samples.len(), 2);
+        assert_eq!(store.tags[0].history.latest(), Some((101_000.0, 3.0)));
     }
 
     #[test]

@@ -625,6 +625,9 @@ impl Console {
         self.send(Command::SignOut);
         self.phase = Phase::SignIn;
         self.user = None;
+        // A password change still in flight is never answered once the
+        // session ends, so nothing else would clear this.
+        self.busy = false;
         self.writing = None;
         self.write_result = None;
         self.store = Store::default();

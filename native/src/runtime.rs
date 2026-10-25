@@ -411,6 +411,9 @@ struct Session {
     socket: Option<mpsc::Sender<ClientMessage>>,
     /// Identifies the current socket; events from older ones are ignored.
     generation: u64,
+    /// The current socket's task. Dropping it (the session ends, or a new
+    /// socket replaces it) closes the connection.
+    reader: AbortOnDrop,
     failures: u32,
     alarms: Refresh,
     writes: Writes,
@@ -662,7 +665,7 @@ impl Actor {
         let id = self.next_id();
         let generation = self.next_id();
         let token = api.token.clone().unwrap_or_default();
-        spawn_socket(self.inputs.clone(), generation, ws_url(&api.base), token);
+        let reader = spawn_socket(self.inputs.clone(), generation, ws_url(&api.base), token);
         let tags = api.clone();
         spawn_rest(&self.inputs, id, async move {
             Rest::Tags(tags.data_sources().await.map_err(|error| error.to_string()))
@@ -676,6 +679,7 @@ impl Actor {
             password,
             socket: None,
             generation,
+            reader,
             failures: 0,
             alarms: Refresh::default(),
             writes: Writes::new(nonce()),
@@ -683,7 +687,7 @@ impl Actor {
         self.refresh_alarms();
     }
 
-    /// Drop the session; its socket closes and its answers are ignored.
+    /// Drop the session: its socket task is aborted and its answers ignored.
     fn end_session(&mut self) -> Option<Session> {
         self.subscribed.clear();
         self.session.take()
@@ -891,7 +895,9 @@ impl Actor {
                 };
                 s.api.token = Some(token.clone());
                 s.generation = generation;
-                spawn_socket(self.inputs.clone(), generation, ws_url(&s.api.base), token);
+                // Replaces (and so aborts) the previous socket's task.
+                s.reader =
+                    spawn_socket(self.inputs.clone(), generation, ws_url(&s.api.base), token);
             }
             Err(error) => {
                 let Some(s) = self.session.as_mut() else {
@@ -1032,10 +1038,24 @@ impl Actor {
     }
 }
 
+/// A task that is aborted when this handle is dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Connect, authenticate, then forward every server message tagged with
-/// `generation` until the socket closes.
-fn spawn_socket(inputs: mpsc::UnboundedSender<Input>, generation: u64, url: String, token: String) {
-    tokio::spawn(async move {
+/// `generation` until the socket closes or the returned handle is dropped.
+fn spawn_socket(
+    inputs: mpsc::UnboundedSender<Input>,
+    generation: u64,
+    url: String,
+    token: String,
+) -> AbortOnDrop {
+    AbortOnDrop(tokio::spawn(async move {
         let reason = match tokio_tungstenite::connect_async(url.as_str()).await {
             Err(error) => format!("Cannot reach {url}: {error}"),
             Ok((socket, _)) => {
@@ -1052,7 +1072,8 @@ fn spawn_socket(inputs: mpsc::UnboundedSender<Input>, generation: u64, url: Stri
                 } else {
                     let (sender, mut queue) = mpsc::channel::<ClientMessage>(64);
                     let _ = inputs.send(Input::Socket(Socket::Open(generation, sender)));
-                    let writer = tokio::spawn(async move {
+                    // Stops with the reader, also when the reader is aborted.
+                    let writer = AbortOnDrop(tokio::spawn(async move {
                         while let Some(message) = queue.recv().await {
                             // Named maps: the encoding the server itself sends.
                             let Ok(bytes) = rmp_serde::to_vec_named(&message) else {
@@ -1062,7 +1083,7 @@ fn spawn_socket(inputs: mpsc::UnboundedSender<Input>, generation: u64, url: Stri
                                 break;
                             }
                         }
-                    });
+                    }));
                     let mut reason = "The server closed the connection".to_owned();
                     while let Some(frame) = stream.next().await {
                         match frame {
@@ -1083,13 +1104,13 @@ fn spawn_socket(inputs: mpsc::UnboundedSender<Input>, generation: u64, url: Stri
                             Ok(_) => {}
                         }
                     }
-                    writer.abort();
+                    drop(writer);
                     reason
                 }
             }
         };
         let _ = inputs.send(Input::Socket(Socket::Closed(generation, reason)));
-    });
+    }))
 }
 
 #[cfg(test)]
@@ -1122,11 +1143,20 @@ mod tests {
         }
 
         fn sign_in(&mut self) -> u64 {
-            let mut api = VoltrusApi::new("http://127.0.0.1:9");
+            self.sign_in_at("http://127.0.0.1:9")
+        }
+
+        fn sign_in_at(&mut self, url: &str) -> u64 {
+            let mut api = VoltrusApi::new(url);
             api.token = Some("token".into());
             let _entered = self.runtime.enter();
             self.actor.begin(api, "admin".into(), "secret".into());
             self.session().id
+        }
+
+        /// Let the spawned tasks run for a while.
+        fn run_for(&self, duration: Duration) {
+            self.runtime.block_on(tokio::time::sleep(duration));
         }
 
         fn session(&self) -> &Session {
@@ -1236,6 +1266,60 @@ mod tests {
             Rest::Tags(Ok(vec![DataSourceSummary::default()])),
         ));
         assert!(matches!(h.events().as_slice(), [Event::Tags(tags)] if tags.len() == 1));
+    }
+
+    /// Accepts connections until the WebSocket upgrade request arrives, then
+    /// waits up to five seconds for the console to close that connection.
+    /// Never answers, so the console's socket task waits on it forever.
+    fn websocket_closed(listener: &std::net::TcpListener) -> bool {
+        use std::io::Read;
+        let mut others = Vec::new();
+        loop {
+            let Ok((mut connection, _)) = listener.accept() else {
+                return false;
+            };
+            if connection
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .is_err()
+            {
+                return false;
+            }
+            let mut head = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match connection.read(&mut byte) {
+                    Ok(1) => head.push(byte[0]),
+                    _ => return false,
+                }
+            }
+            if head.starts_with(b"GET /api/v1/ws ") {
+                // Ok only at end of stream; a timeout is an error.
+                return connection.read_to_end(&mut Vec::new()).is_ok();
+            }
+            // A REST request: keep it open, unanswered.
+            others.push(connection);
+        }
+    }
+
+    #[test]
+    fn signing_out_closes_the_socket() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let url = format!("http://{}", listener.local_addr().expect("address"));
+        let (report, closed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = report.send(websocket_closed(&listener));
+        });
+        let mut h = Harness::new();
+        h.sign_in_at(&url);
+        // The socket task connects and waits for the upgrade answer.
+        h.run_for(Duration::from_millis(300));
+        h.feed(Input::Command(Command::SignOut));
+        h.run_for(Duration::from_millis(300));
+        assert_eq!(
+            closed.recv_timeout(Duration::from_secs(10)),
+            Ok(true),
+            "signing out aborts the socket task, which closes the connection"
+        );
     }
 
     #[test]
