@@ -2,7 +2,9 @@
 //! Opt-in: only runs when VOLTRUS_E2E_URL / VOLTRUS_E2E_PASSWORD are set.
 //!
 //! It acknowledges one open alarm and then all of them, makes a generic
-//! REST call through the runtime, changes the user's password and changes
+//! REST call through the runtime, walks the alarm management paths
+//! (summary, history, analytics, a shelve with a reason and its journal
+//! and audit entries, the unshelve), changes the user's password and changes
 //! it back (the user ends with the password it started with), and checks
 //! that signing out revokes the session's refresh token.
 //!
@@ -14,6 +16,9 @@
 use std::time::Duration;
 
 use voltrus_scada_native::api::{Alarm, REFRESH_COOKIE, Version, VoltrusApi};
+use voltrus_scada_native::api::{
+    AlarmAnalyticsEntry, AlarmAuditEntry, AlarmJournalEntry, AlarmSummary,
+};
 use voltrus_scada_native::runtime::{self, Call, CallKey, Command, Event, Link};
 
 /// `POST /api/v1/auth/refresh` with a refresh token: its status.
@@ -217,6 +222,8 @@ async fn live_login_sensors_ws_stream() {
     let version = version.unwrap_or_else(|error| panic!("the version call failed: {error}"));
     assert!(!version.version.is_empty(), "the server names its version");
     println!("server version {}", version.version);
+
+    alarm_management(&handle, &events, &alarms).await;
 
     // Change the password (the runtime supplies the current one) and back.
     let temporary = format!("{pass}-e2e-temporary");
@@ -552,4 +559,215 @@ async fn shell_preferences_notifications_and_edition(url: &str, user: &str, pass
             .await
             .expect("remove the test user");
     }
+}
+
+/// A generic REST call through the runtime, answered under its key.
+async fn call<T: Send + 'static>(
+    handle: &runtime::Handle,
+    events: &async_channel::Receiver<Event>,
+    key: CallKey,
+    request: Call,
+) -> Result<T, String> {
+    handle.send(Command::Call { key, call: request });
+    wait_for(events, 20, |event| match event {
+        Event::Reply {
+            key: answered,
+            reply,
+        } if answered == key => Some(reply.take::<T>()),
+        _ => None,
+    })
+    .await
+    .unwrap_or_else(|| panic!("no reply to {}", key.name))
+}
+
+/// Wait for the outcome of the runtime action named `action`; it must
+/// have succeeded.
+async fn done(events: &async_channel::Receiver<Event>, action: &str) {
+    let result = wait_for(events, 30, |event| match event {
+        Event::Done {
+            action: finished,
+            result,
+        } if finished == action => Some(result),
+        _ => None,
+    })
+    .await
+    .unwrap_or_else(|| panic!("no answer to “{action}”"));
+    if let Err(error) = result {
+        panic!("“{action}” failed: {error}");
+    }
+}
+
+/// The shelf as the server lists it (`status=shelved`), resolved alarms
+/// too, unlike the console's open alarms.
+async fn shelved(handle: &runtime::Handle, events: &async_channel::Receiver<Event>) -> Vec<Alarm> {
+    call::<Vec<Alarm>>(
+        handle,
+        events,
+        CallKey::new("alarms.shelf"),
+        Call::get::<Vec<Alarm>>("/api/v1/alarms?status=shelved&limit=500"),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the shelved alarms failed: {error}"))
+}
+
+/// The Alarms page's operator paths: the summary, the history, the
+/// analytics, a shelve with a reason (seen on the shelf, in the journal and
+/// in the audit trail) and the unshelve.
+async fn alarm_management(
+    handle: &runtime::Handle,
+    events: &async_channel::Receiver<Event>,
+    open: &[Alarm],
+) {
+    let summary = call::<AlarmSummary>(
+        handle,
+        events,
+        CallKey::new("alarms.summary"),
+        Call::get::<AlarmSummary>("/api/v1/alarms/summary"),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the alarm summary failed: {error}"));
+    println!(
+        "alarm summary: {} critical, {} warning, {} info, {} shelved, {} in 24 h",
+        summary.active_critical,
+        summary.active_warning,
+        summary.active_info,
+        summary.shelved,
+        summary.recent_24h
+    );
+
+    let history = call::<Vec<Alarm>>(
+        handle,
+        events,
+        CallKey::new("alarms.history"),
+        Call::get::<Vec<Alarm>>("/api/v1/alarms?status=all&limit=500"),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the alarm history failed: {error}"));
+    for alarm in open {
+        assert!(
+            history.len() == 500 || history.iter().any(|kept| kept.id == alarm.id),
+            "the history holds open alarm {}",
+            alarm.id
+        );
+    }
+
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("a clock after 1970")
+            .as_secs(),
+    )
+    .expect("seconds fit an i64");
+    let analytics = call::<Vec<AlarmAnalyticsEntry>>(
+        handle,
+        events,
+        CallKey::new("alarms.analytics"),
+        Call::get::<Vec<AlarmAnalyticsEntry>>(format!(
+            "/api/v1/alarms/analytics?from={}&to={now}",
+            now - 86_400
+        )),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the alarm analytics failed: {error}"));
+    let raised_today = history
+        .iter()
+        .filter(|alarm| alarm.triggered_at >= now - 86_400)
+        .count();
+    if raised_today > 0 {
+        assert!(
+            !analytics.is_empty(),
+            "the last day had alarms, so analytics rank their sources"
+        );
+    }
+    assert!(
+        analytics
+            .windows(2)
+            .all(|pair| pair[0].trigger_count >= pair[1].trigger_count),
+        "most frequent first"
+    );
+    assert!(analytics.iter().all(|entry| entry.trigger_count > 0));
+    println!(
+        "alarm history: {} alarms, {raised_today} in 24 h over {} sources",
+        history.len(),
+        analytics.len()
+    );
+
+    let Some(id) = history
+        .iter()
+        .chain(open)
+        .find(|alarm| alarm.resolved_at.is_none() && alarm.state == "active")
+        .map(|alarm| alarm.id)
+    else {
+        eprintln!("note: no open alarm to shelve");
+        return;
+    };
+    let reason = "e2e: native shelve with a reason".to_owned();
+    handle.send(Command::Shelve {
+        alarm: id,
+        seconds: 900,
+        reason: reason.clone(),
+    });
+    done(events, &format!("Shelve alarm {id}")).await;
+    let shelf = shelved(handle, events).await;
+    let on_shelf = shelf
+        .iter()
+        .find(|alarm| alarm.id == id)
+        .unwrap_or_else(|| panic!("alarm {id} is not on the shelf"));
+    assert_eq!(on_shelf.shelved_reason.as_deref(), Some(reason.as_str()));
+    assert!(
+        on_shelf
+            .shelved_until
+            .is_some_and(|until| until > now && until <= now + 960),
+        "shelved for 15 minutes: {:?}",
+        on_shelf.shelved_until
+    );
+
+    let journal = call::<Vec<AlarmJournalEntry>>(
+        handle,
+        events,
+        CallKey::new("alarms.journal").with(id),
+        Call::get::<Vec<AlarmJournalEntry>>(format!("/api/v1/alarms/{id}/journal")),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the journal of alarm {id} failed: {error}"));
+    assert!(
+        journal
+            .iter()
+            .any(|entry| entry.alarm_id == id && entry.event == "shelved"),
+        "the journal records the shelve: {journal:?}"
+    );
+    assert!(
+        journal.windows(2).all(|pair| pair[0].at <= pair[1].at),
+        "oldest first"
+    );
+
+    let audit = call::<Vec<AlarmAuditEntry>>(
+        handle,
+        events,
+        CallKey::new("alarms.audit"),
+        Call::get::<Vec<AlarmAuditEntry>>(format!("/api/v1/alarms/audit?alarm_id={id}&limit=20")),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("the alarm audit failed: {error}"));
+    assert!(
+        audit.iter().all(|entry| entry.alarm_id == id),
+        "filtered to alarm {id}"
+    );
+    assert!(
+        audit
+            .iter()
+            .any(|entry| entry.action == "shelved" && entry.details.contains(&reason)),
+        "the audit trail carries the reason: {audit:?}"
+    );
+
+    handle.send(Command::Unshelve(id));
+    done(events, &format!("Unshelve alarm {id}")).await;
+    assert!(
+        !shelved(handle, events)
+            .await
+            .iter()
+            .any(|alarm| alarm.id == id),
+        "alarm {id} stayed on the shelf"
+    );
+    println!("shelved alarm {id} with a reason, found it in the journal and audit, unshelved it");
 }

@@ -204,6 +204,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                     window.dispatch_action(Box::new(ShellOpenSettings), cx);
                 })),
         )
+        .child(super::alarms::mute_button(console, cx))
         .child(
             IconButton::new("perf-hud", Icon::Activity)
                 .active(console.hud)
