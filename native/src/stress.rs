@@ -8,6 +8,7 @@
 //! the tick number, never on the clock (the timestamp is passed in), so two
 //! runs with the same seed apply the same values in the same order.
 
+use std::ops::Range;
 use std::time::Duration;
 
 use crate::api::DataSource;
@@ -17,6 +18,15 @@ use crate::ws_types::TagUpdateEntry;
 pub const TICK: Duration = Duration::from_millis(10);
 const TICKS_PER_SECOND: u64 = 100;
 
+/// The animation showcase (`--stress-profile`): the first tags, the
+/// Overview's tiles, each change four times a second, staggered so that
+/// flashes ripple across the grid; the next few change on every tick along
+/// quick waves, for a trend drawn at the display's rate.
+pub const PROFILE_TILES: usize = 48;
+pub const PROFILE_TREND: Range<usize> = 48..51;
+/// Ticks between a profile tile's changes: four a second.
+const PROFILE_TILE_EVERY: u64 = 25;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StressOptions {
     /// How many tags the synthetic plant has.
@@ -24,6 +34,8 @@ pub struct StressOptions {
     /// Tag updates per second, spread evenly over the ticks.
     pub rate: u32,
     pub seed: u64,
+    /// Also drive the profile tags (see [`PROFILE_TILES`]).
+    pub profile: bool,
 }
 
 impl Default for StressOptions {
@@ -32,6 +44,7 @@ impl Default for StressOptions {
             tags: 10_000,
             rate: 20_000,
             seed: 0x5CADA,
+            profile: false,
         }
     }
 }
@@ -89,6 +102,8 @@ impl Wave {
 pub struct StressFeed {
     options: StressOptions,
     waves: Vec<Wave>,
+    /// Each tag's key, made once rather than per update.
+    keys: Vec<String>,
     tick: u64,
     /// The next tag to update: batches walk the tags round-robin.
     cursor: usize,
@@ -102,6 +117,7 @@ impl StressFeed {
         Self {
             options,
             waves,
+            keys: (0..options.tags).map(Self::key).collect(),
             tick: 0,
             cursor: 0,
         }
@@ -121,7 +137,7 @@ impl StressFeed {
                 let device = index / 100;
                 DataSource {
                     id: i64::try_from(index + 1).unwrap_or(i64::MAX),
-                    key: Self::key(index),
+                    key: self.keys[index].clone(),
                     name: format!("Stress {device:03}/{:02}", index % 100),
                     unit: UNITS[index % UNITS.len()].to_owned(),
                     color: String::new(),
@@ -163,43 +179,62 @@ impl StressFeed {
             return Vec::new();
         }
         let count = self.updates_in_tick(self.tick);
-        #[allow(clippy::cast_precision_loss)]
-        let at = self.tick as f64;
-        let mut batch = Vec::with_capacity(count);
+        let mut batch = Vec::with_capacity(count + PROFILE_TREND.end);
         for _ in 0..count {
             let index = self.cursor;
             self.cursor = (self.cursor + 1) % tags;
-            let wave = self.waves[index];
-            let (value, quality) = if wave.offline {
-                (f64::NAN, "offline")
-            } else {
-                let noise = (unit(mix(self.options.seed ^ (index as u64) ^ (self.tick << 20)))
-                    - 0.5)
-                    * wave.amplitude
-                    * 0.08;
-                let value = wave.base
-                    + wave.amplitude
-                        * (wave.phase + at * std::f64::consts::TAU / wave.period).sin()
-                    + noise;
-                let quality = if value >= wave.crit() {
-                    "critical"
-                } else if value >= wave.warn() {
-                    "warning"
-                } else {
-                    "normal"
-                };
-                (value, quality)
-            };
-            batch.push(TagUpdateEntry {
-                tag_id: Self::key(index),
-                value,
-                quality: quality.to_owned(),
-                ts: now_secs,
-                simulated: true,
-            });
+            batch.push(self.update(index, now_secs));
+        }
+        if self.options.profile {
+            let tiles = (0..PROFILE_TILES.min(tags))
+                .filter(|index| (self.tick + *index as u64).is_multiple_of(PROFILE_TILE_EVERY));
+            let trend = PROFILE_TREND.start.min(tags)..PROFILE_TREND.end.min(tags);
+            for index in tiles.chain(trend) {
+                batch.push(self.update(index, now_secs));
+            }
         }
         self.tick += 1;
         batch
+    }
+
+    /// Tag `index`'s update in this tick. The profile's trend tags follow
+    /// quick waves (two to three seconds a cycle) so the trend moves.
+    fn update(&self, index: usize, now_secs: i64) -> TagUpdateEntry {
+        let wave = self.waves[index];
+        let period = if self.options.profile && PROFILE_TREND.contains(&index) {
+            #[allow(clippy::cast_precision_loss)]
+            let lane = (index - PROFILE_TREND.start) as f64;
+            200.0 + 50.0 * lane
+        } else {
+            wave.period
+        };
+        #[allow(clippy::cast_precision_loss)]
+        let at = self.tick as f64;
+        let (value, quality) = if wave.offline {
+            (f64::NAN, "offline")
+        } else {
+            let noise = (unit(mix(self.options.seed ^ (index as u64) ^ (self.tick << 20))) - 0.5)
+                * wave.amplitude
+                * 0.08;
+            let value = wave.base
+                + wave.amplitude * (wave.phase + at * std::f64::consts::TAU / period).sin()
+                + noise;
+            let quality = if value >= wave.crit() {
+                "critical"
+            } else if value >= wave.warn() {
+                "warning"
+            } else {
+                "normal"
+            };
+            (value, quality)
+        };
+        TagUpdateEntry {
+            tag_id: self.keys[index].clone(),
+            value,
+            quality: quality.to_owned(),
+            ts: now_secs,
+            simulated: true,
+        }
     }
 }
 
@@ -212,6 +247,7 @@ mod tests {
             tags,
             rate,
             seed: 7,
+            profile: false,
         }
     }
 
@@ -275,5 +311,47 @@ mod tests {
             tags[0].key,
             "round-robin wraps"
         );
+    }
+
+    #[test]
+    fn the_profile_ripples_the_tiles_and_drives_the_trend_every_tick() {
+        let mut feed = StressFeed::new(StressOptions {
+            profile: true,
+            ..options(200, 0)
+        });
+        let mut tile_updates = vec![0_usize; PROFILE_TILES];
+        let mut trend_values: Vec<f64> = Vec::new();
+        for tick in 0..100_u64 {
+            let batch = feed.next_batch(0);
+            let keys: Vec<&str> = batch.iter().map(|update| update.tag_id.as_str()).collect();
+            for (index, count) in tile_updates.iter_mut().enumerate() {
+                if keys.contains(&StressFeed::key(index).as_str()) {
+                    *count += 1;
+                    // Neighbours change one tick apart: a ripple.
+                    assert_eq!((tick + index as u64) % PROFILE_TILE_EVERY, 0);
+                }
+            }
+            for index in PROFILE_TREND {
+                assert!(
+                    keys.contains(&StressFeed::key(index).as_str()),
+                    "tick {tick}"
+                );
+            }
+            let first = StressFeed::key(PROFILE_TREND.start);
+            trend_values.extend(
+                batch
+                    .iter()
+                    .filter(|update| update.tag_id == first)
+                    .map(|update| update.value),
+            );
+        }
+        assert!(
+            tile_updates.iter().all(|count| *count == 4),
+            "four changes a second each: {tile_updates:?}"
+        );
+        trend_values.dedup();
+        assert_eq!(trend_values.len(), 100, "the trend moves on every tick");
+        let plain = StressFeed::new(options(200, 0)).next_batch(0);
+        assert!(plain.is_empty(), "without the profile, only the rate");
     }
 }

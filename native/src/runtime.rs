@@ -1949,6 +1949,7 @@ mod tests {
             tags: 50,
             rate: 5_000,
             seed: 1,
+            ..StressOptions::default()
         };
         // `feed` runs inside the runtime, so the feed task spawns there.
         h.feed(Input::Command(Command::Stress(options)));

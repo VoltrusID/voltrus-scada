@@ -2,7 +2,6 @@
 //! (`tag_detail`, across the page when widened).
 
 use std::ops::Range;
-use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
@@ -142,16 +141,12 @@ impl Columns {
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let width = window.viewport_size().width;
     let theme = theme(cx).clone();
-    // Filtered once per render; the list's rows index into it.
-    let rows = Rc::new(console.visible_tags(cx));
+    // Filtered once per tag list and query (the store keeps it); the
+    // list's rows index into it.
+    let rows = console.visible_tags(cx);
     let visible = rows.len();
     let total = console.store.tags.len();
-    let attention = console
-        .store
-        .tags
-        .iter()
-        .filter(|tag| tag.status.needs_attention())
-        .count();
+    let attention = console.store.attention_count();
     let filtered = visible != total;
     let selected = console.selected.and_then(|id| console.store.position(id));
     // Widened, the detail takes the page and the table steps aside.
@@ -165,16 +160,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let now = now_ms();
     let columns = Columns::fit(
         f32::from(table_width),
-        fit_span(
-            console
-                .store
-                .tags
-                .iter()
-                .filter_map(|tag| tag.span_ms(now))
-                .reduce(f64::max),
-            SHORTEST_MS,
-            SPARK_MS,
-        ),
+        fit_span(console.store.span_ms(now), SHORTEST_MS, SPARK_MS),
     );
 
     let filter = div()

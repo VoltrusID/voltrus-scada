@@ -27,6 +27,7 @@ shots=(
   "trends-hud|--sign-in --page trends --range 5m --hud --appearance dark"
   "stress-performance|--stress --stress-switch-ms 0 --page performance --appearance dark"
   "stress-overview|--stress --stress-switch-ms 0 --page overview --hud --appearance dark"
+  "stress-profile|--stress-profile --page overview --hud --appearance dark"
   "shell-settings|--sign-in --page overview --overlay ShellOpenSettings --appearance dark"
   "shell-settings-light|--sign-in --page alarms --overlay ShellOpenSettings --appearance light"
   "shell-notifications|--sign-in --page overview --overlay ShellToggleNotifications --appearance dark"

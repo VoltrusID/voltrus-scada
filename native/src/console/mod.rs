@@ -20,6 +20,7 @@ pub mod shortcuts;
 pub mod store;
 mod text_area;
 mod views;
+mod warm;
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -271,6 +272,9 @@ pub struct Console {
     pending_overlay: Option<LaunchOverlay>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
+    /// Pages to draw once, hidden, one per frame after sign-in (see
+    /// [`Console::warm_step`]); the next is last.
+    warm: Vec<Page>,
 }
 
 fn input(
@@ -337,10 +341,16 @@ impl Console {
                     batch.push(event);
                 }
                 let applied = this.update_in(cx, |console, window, cx| {
+                    let started = Instant::now();
                     for event in batch {
                         console.apply(event, window, cx);
                     }
-                    console.meter.borrow_mut().expect_frame(Instant::now());
+                    let now = Instant::now();
+                    let took = meter::ms(started, now);
+                    let mut frames = console.meter.borrow_mut();
+                    frames.batch_applied(took);
+                    frames.expect_frame(now);
+                    drop(frames);
                     cx.notify();
                 });
                 if applied.is_err() {
@@ -493,6 +503,7 @@ impl Console {
             pending_overlay: launch.overlay,
             _tasks: vec![pump, ticker],
             _subscriptions: subscriptions,
+            warm: Vec::new(),
         };
         let focus_field = if console.inputs.username.read(cx).value().is_empty() {
             console.inputs.username.clone()
@@ -765,6 +776,7 @@ impl Console {
         self.back.clear();
         self.forward.clear();
         self.switch_to(page, window, cx);
+        self.warm_up();
         match self.pending_overlay.take() {
             Some(LaunchOverlay::Palette) => self.open_palette(window, cx),
             Some(LaunchOverlay::Help) => self.open_help(window, cx),
@@ -1180,20 +1192,10 @@ impl Console {
         }
     }
 
-    /// Tags matching the Tags page's filter, as positions in the store.
-    pub fn visible_tags(&self, cx: &gpui::App) -> Vec<usize> {
-        let filter = self.inputs.filter.read(cx).value().trim().to_lowercase();
-        self.store
-            .tags
-            .iter()
-            .enumerate()
-            .filter(|(_, tag)| {
-                filter.is_empty()
-                    || tag.info.name.to_lowercase().contains(&filter)
-                    || tag.info.key.to_lowercase().contains(&filter)
-            })
-            .map(|(index, _)| index)
-            .collect()
+    /// Tags matching the Tags page's filter, as positions in the store;
+    /// kept by the store until the tag list changes.
+    pub fn visible_tags(&self, cx: &gpui::App) -> Rc<[usize]> {
+        self.store.filter(self.inputs.filter.read(cx).value())
     }
 
     pub fn toggle_trend(&mut self, id: i64, cx: &mut Context<Self>) {
@@ -1263,7 +1265,12 @@ impl Console {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.meter.borrow_mut().reset();
+        // Counting starts afresh; the frames until the synthetic session
+        // shows and every page is warmed are the warm-up, reported apart.
+        let mut meter = self.meter.borrow_mut();
+        meter.reset();
+        meter.set_warming(true);
+        drop(meter);
         self.send(Command::Stress(plan.options));
         // The ticker's alarm refresh would only report "not signed in".
         self.alarms_error = None;
@@ -1348,6 +1355,18 @@ impl Console {
             switches: meter.switches.len(),
             switch: meter.switch_spread(),
             peak_rss_bytes: perf::peak_rss_bytes(),
+            mode: if run.plan.options.profile {
+                "profile"
+            } else {
+                "stress"
+            },
+            refresh_source: meter.stats.refresh_source(),
+            built_60: meter.stats.built_within(1000.0 / 60.0),
+            built_120: meter.stats.built_within(1000.0 / 120.0),
+            apply: meter.apply_spread(),
+            warm_up: meter.warm_up(),
+            pages: meter.page_figures(),
+            slowest: meter.slowest(),
         })
     }
 
