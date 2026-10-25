@@ -796,7 +796,8 @@ fn source_row(
             .text_color(color)
             .child(text)
     };
-    let number = vt_ui::chart::format_value;
+    // Configured values as typed (150000, not the chart's 1.500e5).
+    let number = model::format_number;
     let limit = |value: f64| {
         if value > 0.0 {
             number(value)
