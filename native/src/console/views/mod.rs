@@ -13,7 +13,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Div, FontWeight, Hsla, SharedString, Window, div, px};
 use time::{OffsetDateTime, UtcOffset};
+use voltrus_scada_native::api::Alarm;
 use vt_ui::Icon;
+use vt_ui::chart::format_value;
 use vt_ui::theme::*;
 
 use super::store::Status;
@@ -31,7 +33,10 @@ impl Render for Console {
                 let rate = self.rate.per_second(Instant::now());
                 let page = match self.page {
                     Page::Overview => overview::render(self, rate, cx),
-                    Page::Tags => tags::render(self, cx),
+                    Page::Tags => {
+                        let width = window.viewport_size().width - px(sidebar::WIDTH);
+                        tags::render(self, width, cx)
+                    }
                     Page::Alarms => alarms::render(self, cx),
                     Page::Trends => trends::render(self, window, cx),
                 };
@@ -133,7 +138,13 @@ impl Render for Console {
                             ICON_LG,
                             color,
                         ))
-                        .child(div().text_size(FONT_BODY).child(toast.message.clone())),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(FONT_BODY)
+                                .child(toast.message.clone()),
+                        ),
                 )
             })
     }
@@ -183,6 +194,53 @@ pub(crate) fn age(seconds: i64) -> String {
         seconds @ 3600..86_400 => format!("{} h", seconds / 3600),
         seconds => format!("{} d", seconds / 86_400),
     }
+}
+
+/// A span of time for a caption: `45 s`, `12 min`, `6 h`.
+pub(crate) fn span_label(span_ms: f64) -> String {
+    #[allow(clippy::cast_possible_truncation)]
+    let seconds = (span_ms / 1000.0).round() as i64;
+    age(seconds)
+}
+
+/// The span a small chart covers: as far back as its data reaches, so a
+/// young history still fills it, within `[shortest, longest]`.
+pub(crate) fn fit_span(reach_ms: Option<f64>, shortest: f64, longest: f64) -> f64 {
+    reach_ms.map_or(longest, |reach| reach.clamp(shortest, longest))
+}
+
+/// The tag an alarm is about, by the name the console shows for it.
+pub(crate) fn alarm_source(console: &Console, alarm: &Alarm) -> String {
+    console
+        .store
+        .position(&alarm.source_key)
+        .map(|index| console.store.tags[index].info.name.clone())
+        .filter(|name| !name.is_empty())
+        .or_else(|| (!alarm.source_name.is_empty()).then(|| alarm.source_name.clone()))
+        .unwrap_or_else(|| alarm.source_key.clone())
+}
+
+/// What crossed which limit, with readable numbers: `Critical limit 85,
+/// reached 86.40`. The server's own message carries full float precision.
+pub(crate) fn alarm_summary(alarm: &Alarm) -> String {
+    let severity = capitalized(&alarm.severity);
+    let verb = if alarm.alarm_type.eq_ignore_ascii_case("low") {
+        "fell to"
+    } else {
+        "reached"
+    };
+    format!(
+        "{severity} limit {}, {verb} {}",
+        format_value(alarm.threshold),
+        format_value(alarm.value)
+    )
+}
+
+pub(crate) fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars.as_str().chars()).collect()
+    })
 }
 
 /// A Unix time on the operator's clock: `14:05:09`, or `3 Mar 14:05` when
@@ -360,5 +418,22 @@ mod tests {
         );
         assert_eq!(local_time(0, UtcOffset::UTC), "1 Jan 00:00");
         assert_eq!(host("https://scada.plant:3000"), "scada.plant:3000");
+    }
+
+    #[test]
+    fn spans_and_alarm_lines_read_well() {
+        assert_eq!(span_label(15.0 * 60_000.0), "15 min");
+        assert_eq!(fit_span(Some(30_000.0), 120_000.0, 900_000.0), 120_000.0);
+        assert_eq!(fit_span(Some(400_000.0), 120_000.0, 900_000.0), 400_000.0);
+        assert_eq!(fit_span(None, 120_000.0, 900_000.0), 900_000.0);
+        let alarm = Alarm {
+            severity: "critical".into(),
+            alarm_type: "high".into(),
+            threshold: 85.0,
+            value: 86.395_149_230_957_03,
+            ..Alarm::default()
+        };
+        assert_eq!(alarm_summary(&alarm), "Critical limit 85, reached 86.40");
+        assert_eq!(capitalized(""), "");
     }
 }

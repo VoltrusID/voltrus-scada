@@ -142,19 +142,23 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
         .child(
             div()
                 .flex()
-                .items_center()
+                .items_start()
                 .gap(SPACE_3)
                 .text_size(FONT_CAPTION)
                 .text_color(theme.fg_dim)
-                .child(vt_ui::icon(Icon::Lock, ICON_SM, theme.fg_dim))
-                .child(if changing {
+                .child(
+                    div()
+                        .pt(px(1.0))
+                        .child(vt_ui::icon(Icon::Lock, ICON_SM, theme.fg_dim)),
+                )
+                .child(div().flex_1().min_w_0().child(if changing {
                     format!(
                         "At least 8 characters. Applies to {} at once.",
                         host(&console.server)
                     )
                 } else {
-                    "The address and username are remembered, never the password.".to_owned()
-                }),
+                    "Remembers the server and username, never the password.".to_owned()
+                })),
         );
 
     div()

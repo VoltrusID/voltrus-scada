@@ -10,21 +10,36 @@ use vt_ui::chart::{Series, format_value, sparkline, trend_chart};
 use vt_ui::components::{Button, IconButton, empty_state, field, pill, section_label, status_dot};
 use vt_ui::theme::*;
 
-use super::{age, card, now_ms, page_header, status_color, value_color, value_with_unit};
+use super::{
+    age, card, fit_span, now_ms, page_header, span_label, status_color, value_color,
+    value_with_unit,
+};
 use crate::console::store::Status;
 use crate::console::{Console, time_now_secs};
 
-const KEY: f32 = 200.0;
-const VALUE: f32 = 150.0;
+const KEY: f32 = 180.0;
+const VALUE: f32 = 120.0;
 const STATUS: f32 = 84.0;
-const AGE: f32 = 64.0;
-const SPARK: f32 = 120.0;
-const PANEL: f32 = 360.0;
-/// The table's sparklines and the panel's trend.
+const AGE: f32 = 56.0;
+const SPARK: f32 = 110.0;
+const PANEL: f32 = 340.0;
+/// The table's sparklines reach back this far at most, the panel's trend
+/// an hour; both start where the data does when it is younger.
 const SPARK_MS: f64 = 15.0 * 60_000.0;
 const DETAIL_MS: f64 = 60.0 * 60_000.0;
+const SHORTEST_MS: f64 = 2.0 * 60_000.0;
 
-pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
+/// Which optional columns fit the table's width.
+#[derive(Clone, Copy)]
+struct Columns {
+    key: bool,
+    trend: bool,
+    /// The sparklines' span.
+    span_ms: f64,
+}
+
+/// `width` is the space right of the sidebar.
+pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
     let visible = console.visible_tags(cx).len();
     let total = console.store.tags.len();
@@ -35,12 +50,36 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
         .filter(|tag| tag.status.needs_attention())
         .count();
     let filtered = visible != total;
+    let selected = console
+        .selected
+        .filter(|index| *index < console.store.tags.len());
+
+    let table_width = if selected.is_some() {
+        width - px(PANEL)
+    } else {
+        width
+    };
+    let now = now_ms();
+    let columns = Columns {
+        key: table_width >= px(860.0),
+        trend: table_width >= px(600.0),
+        span_ms: fit_span(
+            console
+                .store
+                .tags
+                .iter()
+                .filter_map(|tag| tag.span_ms(now))
+                .reduce(f64::max),
+            SHORTEST_MS,
+            SPARK_MS,
+        ),
+    };
 
     let filter = div()
         .flex()
         .items_center()
         .gap(SPACE_3)
-        .w(px(260.0))
+        .w(px(240.0))
         .child(vt_ui::icon(Icon::Search, ICON_MD, theme.fg_dim))
         .child(div().flex_1().child(console.inputs.filter.clone()));
 
@@ -50,7 +89,7 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
         .items_center()
         .gap(SPACE_5)
         .h(px(30.0))
-        .px(SPACE_9)
+        .px(SPACE_8)
         .bg(theme.surface)
         .border_b_1()
         .border_color(theme.border)
@@ -58,11 +97,18 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.fg_dim)
         .child(div().flex_1().min_w_0().child("NAME"))
-        .child(div().w(px(KEY)).flex_none().child("KEY"))
+        .when(columns.key, |this| {
+            this.child(div().w(px(KEY)).flex_none().child("KEY"))
+        })
         .child(div().w(px(VALUE)).flex_none().text_right().child("VALUE"))
         .child(div().w(px(STATUS)).flex_none().child("STATUS"))
         .child(div().w(px(AGE)).flex_none().text_right().child("AGE"))
-        .child(div().w(px(SPARK)).flex_none().child("LAST 15 MIN"));
+        .when(columns.trend, |this| {
+            this.child(div().w(px(SPARK)).flex_none().child(format!(
+                "LAST {}",
+                span_label(columns.span_ms).to_uppercase()
+            )))
+        });
 
     let table = if visible == 0 {
         empty_state(
@@ -86,14 +132,14 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
             "tags",
             visible,
             cx.processor(
-                |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
+                move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
                     let rows = console.visible_tags(cx);
                     let now = now_ms();
                     let now_secs = time_now_secs();
                     range
                         .filter_map(|row| rows.get(row).copied())
-                        .map(|index| tag_row(console, index, now, now_secs, &theme, cx))
+                        .map(|index| tag_row(console, index, columns, now, now_secs, &theme, cx))
                         .collect::<Vec<_>>()
                 },
             ),
@@ -102,10 +148,6 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
         .flex_1()
         .into_any_element()
     };
-
-    let selected = console
-        .selected
-        .filter(|index| *index < console.store.tags.len());
 
     div()
         .flex()
@@ -145,6 +187,7 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
 fn tag_row(
     console: &Console,
     index: usize,
+    columns: Columns,
     now: f64,
     now_secs: i64,
     theme: &Theme,
@@ -155,6 +198,8 @@ fn tag_row(
     let hover = theme.hover;
     let color = status_color(tag.status, theme);
     let trended = console.trend.contains(&index);
+    // Without its own column the key follows the name, unless they match.
+    let inline_key = !columns.key && tag.info.key != tag.info.name;
     div()
         .id(ElementId::NamedInteger(
             "tag".into(),
@@ -164,7 +209,7 @@ fn tag_row(
         .items_center()
         .gap(SPACE_5)
         .h(px(34.0))
-        .px(SPACE_9)
+        .px(SPACE_8)
         .border_b_1()
         .border_color(theme.border.alpha(0.6))
         .cursor_pointer()
@@ -176,24 +221,45 @@ fn tag_row(
                 .flex()
                 .flex_1()
                 .min_w_0()
+                .overflow_hidden()
                 .items_center()
                 .gap(SPACE_4)
                 .child(status_dot(color))
-                .child(div().truncate().child(tag.info.name.clone()))
+                .child(
+                    div()
+                        .flex_shrink()
+                        .min_w_0()
+                        .truncate()
+                        .child(tag.info.name.clone()),
+                )
+                .when(inline_key, |this| {
+                    this.child(
+                        div()
+                            .flex_shrink()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(MONO)
+                            .text_size(FONT_CAPTION)
+                            .text_color(theme.fg_dim)
+                            .child(tag.info.key.clone()),
+                    )
+                })
                 .when(trended, |this| {
                     this.child(vt_ui::icon(Icon::ChartLine, ICON_SM, theme.fg_dim))
                 }),
         )
-        .child(
-            div()
-                .w(px(KEY))
-                .flex_none()
-                .truncate()
-                .font_family(MONO)
-                .text_size(FONT_SMALL)
-                .text_color(theme.fg_muted)
-                .child(tag.info.key.clone()),
-        )
+        .when(columns.key, |this| {
+            this.child(
+                div()
+                    .w(px(KEY))
+                    .flex_none()
+                    .truncate()
+                    .font_family(MONO)
+                    .text_size(FONT_SMALL)
+                    .text_color(theme.fg_muted)
+                    .child(tag.info.key.clone()),
+            )
+        })
         .child(
             div()
                 .w(px(VALUE))
@@ -228,16 +294,18 @@ fn tag_row(
                     "—".into()
                 }),
         )
-        .child(div().w(px(SPARK)).h(px(18.0)).flex_none().child(sparkline(
-            tag.history.clone(),
-            if tag.status == Status::Normal {
-                theme.accent
-            } else {
-                color
-            },
-            now,
-            SPARK_MS,
-        )))
+        .when(columns.trend, |this| {
+            this.child(div().w(px(SPARK)).h(px(18.0)).flex_none().child(sparkline(
+                tag.history.clone(),
+                if tag.status == Status::Normal {
+                    theme.accent
+                } else {
+                    color
+                },
+                now,
+                columns.span_ms,
+            )))
+        })
         .into_any_element()
 }
 
@@ -247,7 +315,9 @@ fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl In
     let color = status_color(tag.status, &theme);
     let trended = console.trend.contains(&index);
     let now = now_ms();
-    let summary = tag.history.summary(now - DETAIL_MS);
+    let span = fit_span(tag.span_ms(now), 5.0 * 60_000.0, DETAIL_MS);
+    let span_text = span_label(span);
+    let summary = tag.history.summary(now - span);
     let unit = tag.info.unit.clone();
     let threshold = |value: f64| {
         if value > 0.0 {
@@ -285,13 +355,22 @@ fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl In
         .map(|(_, result)| result.clone());
 
     let facts = [
-        ("Warning at", threshold(tag.info.warn_val)),
-        ("Critical at", threshold(tag.info.crit_val)),
-        ("Lowest, 1 h", stat(summary.map(|summary| summary.min))),
-        ("Highest, 1 h", stat(summary.map(|summary| summary.max))),
-        ("Average, 1 h", stat(summary.map(|summary| summary.mean))),
+        ("Warning at".to_owned(), threshold(tag.info.warn_val)),
+        ("Critical at".to_owned(), threshold(tag.info.crit_val)),
         (
-            "Source",
+            format!("Lowest, {span_text}"),
+            stat(summary.map(|summary| summary.min)),
+        ),
+        (
+            format!("Highest, {span_text}"),
+            stat(summary.map(|summary| summary.max)),
+        ),
+        (
+            format!("Average, {span_text}"),
+            stat(summary.map(|summary| summary.mean)),
+        ),
+        (
+            "Source".to_owned(),
             if tag.info.source_type.is_empty() {
                 "—".to_owned()
             } else {
@@ -425,12 +504,12 @@ fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl In
                 .gap(SPACE_4)
                 .px(SPACE_8)
                 .pb(SPACE_8)
-                .child(section_label("Last hour", cx))
+                .child(section_label(format!("Last {span_text}"), cx))
                 .child(
                     card(&theme)
                         .h(px(180.0))
                         .p(SPACE_4)
-                        .child(trend_chart(series, now, DETAIL_MS, cx)),
+                        .child(trend_chart(series, now, span, cx)),
                 )
                 .child(
                     Button::new(

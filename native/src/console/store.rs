@@ -56,6 +56,10 @@ pub struct Tag {
     pub at_secs: i64,
     pub simulated: bool,
     pub history: Rc<History>,
+    /// Unix ms of the first sample since the history was last filled, NaN
+    /// before any. Once the ring buffer drops samples this is older than
+    /// what it holds, which only matters to spans longer than it keeps.
+    since_ms: f64,
 }
 
 impl Tag {
@@ -67,16 +71,31 @@ impl Tag {
             at_secs: 0,
             simulated: false,
             history: History::new(HISTORY),
+            since_ms: f64::NAN,
         }
     }
 
-    /// The value with the tag's configured decimals and unit.
+    /// The value with the tag's configured decimals (the unit is separate).
     pub fn display(&self) -> String {
         if !self.value.is_finite() {
             return "—".into();
         }
         let decimals = usize::try_from(self.info.decimals.clamp(0, 6)).unwrap_or(2);
         format!("{:.*}", decimals, self.value)
+    }
+
+    /// How far back the history reaches from `now_ms`, if it holds anything.
+    pub fn span_ms(&self, now_ms: f64) -> Option<f64> {
+        self.since_ms
+            .is_finite()
+            .then(|| (now_ms - self.since_ms).max(0.0))
+    }
+
+    fn record(&mut self, at_ms: f64, value: f64) {
+        if self.history.is_empty() {
+            self.since_ms = at_ms;
+        }
+        self.history.push(at_ms, value);
     }
 }
 
@@ -138,37 +157,39 @@ impl Store {
             // Keep the history in time order: an update older than the last
             // sample (clock skew, replays) is shown but not plotted.
             if tag.history.latest().is_none_or(|(last, _)| at_ms >= last) {
-                tag.history.push(
-                    at_ms,
-                    if tag.status == Status::Offline {
-                        f64::NAN
-                    } else {
-                        update.value
-                    },
-                );
+                let value = if tag.status == Status::Offline {
+                    f64::NAN
+                } else {
+                    update.value
+                };
+                tag.record(at_ms, value);
             }
             applied += 1;
         }
         applied
     }
 
-    /// Load server history, replacing what each tag had.
+    /// Load server history, replacing what each tag had. A tag the server
+    /// has no samples for keeps its own.
     pub fn backfill(&mut self, series: &HashMap<String, HistorySeries>) {
         for tag in &mut self.tags {
-            let Some(samples) = series.get(&tag.info.key) else {
+            let Some(samples) = series
+                .get(&tag.info.key)
+                .filter(|series| !series.values.is_empty())
+            else {
                 continue;
             };
             let latest = tag.history.latest();
             tag.history.clear();
             for (at_ms, value) in samples.samples() {
                 #[allow(clippy::cast_precision_loss)]
-                tag.history.push(at_ms as f64, value);
+                tag.record(at_ms as f64, value);
             }
             // Keep the newest live sample if the history ends before it.
             if let Some((at, value)) = latest
                 && tag.history.latest().is_none_or(|(last, _)| at > last)
             {
-                tag.history.push(at, value);
+                tag.record(at, value);
             }
         }
     }
@@ -290,6 +311,21 @@ mod tests {
         let history = &store.tags[0].history;
         assert_eq!(history.len(), 3);
         assert_eq!(history.latest(), Some((100_000.0, 9.0)));
+    }
+
+    #[test]
+    fn the_span_starts_at_the_first_sample_and_empty_history_keeps_live_values() {
+        let mut store = Store::default();
+        store.replace(vec![info("a")]);
+        assert_eq!(store.tags[0].span_ms(1000.0), None);
+        store.apply(&[
+            update("a", 1.0, 100, "normal"),
+            update("a", 2.0, 160, "normal"),
+        ]);
+        assert_eq!(store.tags[0].span_ms(200_000.0), Some(100_000.0));
+        let empty = HashMap::from([("a".to_string(), HistorySeries::default())]);
+        store.backfill(&empty);
+        assert_eq!(store.tags[0].history.len(), 2);
     }
 
     #[test]

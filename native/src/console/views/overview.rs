@@ -4,13 +4,13 @@
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, ElementId, FontWeight, Hsla, SharedString, div, px};
 use vt_ui::Icon;
-use vt_ui::chart::sparkline;
+use vt_ui::chart::{format_value, sparkline};
 use vt_ui::components::{Button, pill, status_dot};
 use vt_ui::theme::*;
 
 use super::{
-    age, card, card_title, local_time, now_ms, page_header, severity_color, status_color,
-    value_color, value_with_unit,
+    age, alarm_source, alarm_summary, card, card_title, fit_span, local_time, now_ms, page_header,
+    severity_color, span_label, status_color, value_color, value_with_unit,
 };
 use crate::console::store::{Status, Tag};
 use crate::console::{Console, Page, is_shelved, time_now_secs};
@@ -19,8 +19,10 @@ use crate::console::{Console, Page, is_shelved, time_now_secs};
 const TILES: usize = 48;
 const ATTENTION_ROWS: usize = 8;
 const ALARM_ROWS: usize = 6;
-/// The sparklines' span.
+/// The sparklines reach back this far at most, and start where the data
+/// does when it is younger.
 const SPARK_MS: f64 = 15.0 * 60_000.0;
+const SHORTEST_MS: f64 = 2.0 * 60_000.0;
 
 pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
@@ -120,11 +122,7 @@ pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> AnyE
         .map(|alarm| {
             let id = alarm.id;
             let color = severity_color(&alarm.severity, &theme);
-            let source = if alarm.source_name.is_empty() {
-                alarm.source_key.clone()
-            } else {
-                alarm.source_name.clone()
-            };
+            let source = alarm_source(console, alarm);
             div()
                 .flex()
                 .items_center()
@@ -140,11 +138,12 @@ pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> AnyE
                         .flex_col()
                         .flex_1()
                         .min_w_0()
+                        .overflow_hidden()
                         .child(
                             div()
                                 .truncate()
                                 .font_weight(FontWeight::MEDIUM)
-                                .child(alarm.message.clone()),
+                                .child(source),
                         )
                         .child(
                             div()
@@ -152,12 +151,12 @@ pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> AnyE
                                 .text_size(FONT_CAPTION)
                                 .text_color(theme.fg_dim)
                                 .child(format!(
-                                    "{source} · {}",
+                                    "{} · {}",
+                                    alarm_summary(alarm),
                                     local_time(alarm.triggered_at, console.utc_offset)
                                 )),
                         ),
                 )
-                .child(pill(alarm.severity.to_uppercase(), color))
                 .map(|this| {
                     if alarm.acknowledged_at.is_none() {
                         this.child(
@@ -220,7 +219,7 @@ pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> AnyE
             "Open alarms",
             Some(alarm_count),
             Some(
-                Button::new("alarms-all", "Alarms")
+                Button::new("alarms-all", "View all")
                     .ghost()
                     .compact()
                     .on_click(cx.listener(|console, _, _, cx| console.show(Page::Alarms, cx)))
@@ -241,12 +240,21 @@ pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> AnyE
         });
 
     let now = now_ms();
+    let span = fit_span(
+        store
+            .tags
+            .iter()
+            .filter_map(|tag| tag.span_ms(now))
+            .reduce(f64::max),
+        SHORTEST_MS,
+        SPARK_MS,
+    );
     let tiles: Vec<AnyElement> = store
         .tags
         .iter()
         .enumerate()
         .take(TILES)
-        .map(|(index, tag)| tile(index, tag, now, now_secs, &theme, cx))
+        .map(|(index, tag)| tile(index, tag, now, span, now_secs, &theme, cx))
         .collect();
     let more = store.tags.len().saturating_sub(TILES);
 
@@ -311,7 +319,7 @@ pub fn render(console: &Console, rate: usize, cx: &mut Context<Console>) -> AnyE
                                     div()
                                         .text_size(FONT_SMALL)
                                         .text_color(theme.fg_dim)
-                                        .child("last 15 minutes"),
+                                        .child(format!("last {}", span_label(span))),
                                 )
                                 .child(div().flex_1())
                                 .when(more > 0, |this| {
@@ -430,10 +438,9 @@ fn attention_row(index: usize, tag: &Tag, theme: &Theme, cx: &Context<Console>) 
                 .child(
                     div()
                         .truncate()
-                        .font_family(MONO)
                         .text_size(FONT_CAPTION)
                         .text_color(theme.fg_dim)
-                        .child(tag.info.key.clone()),
+                        .child(attention_detail(tag)),
                 ),
         )
         .child(value_with_unit(
@@ -453,10 +460,29 @@ fn attention_row(index: usize, tag: &Tag, theme: &Theme, cx: &Context<Console>) 
         .into_any_element()
 }
 
+fn attention_detail(tag: &Tag) -> String {
+    let limit = |label: &str, value: f64| {
+        format!("{label} limit {} {}", format_value(value), tag.info.unit)
+            .trim_end()
+            .to_owned()
+    };
+    let what = match tag.status {
+        Status::Critical => limit("Critical", tag.info.crit_val),
+        Status::Warning => limit("Warning", tag.info.warn_val),
+        _ => "No values from the device".to_owned(),
+    };
+    if tag.info.key == tag.info.name {
+        what
+    } else {
+        format!("{} · {what}", tag.info.key)
+    }
+}
+
 fn tile(
     index: usize,
     tag: &Tag,
     now_ms: f64,
+    span_ms: f64,
     now_secs: i64,
     theme: &Theme,
     cx: &Context<Console>,
@@ -520,7 +546,7 @@ fn tile(
         .child(
             div()
                 .h(px(28.0))
-                .child(sparkline(tag.history.clone(), line, now_ms, SPARK_MS)),
+                .child(sparkline(tag.history.clone(), line, now_ms, span_ms)),
         )
         .child(
             div()
@@ -535,7 +561,9 @@ fn tile(
                         .min_w_0()
                         .truncate()
                         .font_family(MONO)
-                        .child(SharedString::from(tag.info.key.clone())),
+                        .when(tag.info.key != tag.info.name, |this| {
+                            this.child(SharedString::from(tag.info.key.clone()))
+                        }),
                 )
                 .child(updated),
         )

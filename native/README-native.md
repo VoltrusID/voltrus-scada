@@ -30,7 +30,7 @@ JetBrains Mono for values.
 - **Alarms**: open, to-acknowledge and shelved alarms, worst first, with
   Acknowledge, Acknowledge all (⇧⌘A), Shelve for one hour and Unshelve.
   Alarm times show on the computer's clock.
-- **Trends**: the chosen tags on one time axis over 30 min, 1 h, 6 h or 24 h,
+- **Trends**: the chosen tags on one time axis over 5 min, 30 min, 1 h, 6 h or 24 h,
   filled from the server's history and extended by live values. The chart
   scrolls every frame only while the link is live.
 - **Status bar**: link state (live, reconnecting with the reason, offline),
@@ -53,13 +53,13 @@ cargo build --release -p voltrus-scada-native
 Options, mainly for kiosks and screenshots:
 
 ```
-voltrus-native [--sign-in] [--page overview|tags|alarms|trends] [--tag <key>]
+voltrus-native [--sign-in] [--page overview|tags|alarms|trends] [--tag <key>] [--range 5m|30m|1h|6h|24h]
                [--appearance dark|light]
 ```
 
 `--sign-in` signs in at once with `VOLTRUS_NATIVE_URL` (default
 `http://localhost:3000`), `VOLTRUS_NATIVE_USER` (default `admin`) and
-`VOLTRUS_NATIVE_PASSWORD`. `--tag` opens one tag's detail.
+`VOLTRUS_NATIVE_PASSWORD`. `--tag` opens one tag's detail; `--range` picks the Trends range.
 
 Requires a recent stable Rust (edition 2024). CI builds and tests on macOS;
 GPUI also supports Linux (X11 or Wayland), which is not tested here.

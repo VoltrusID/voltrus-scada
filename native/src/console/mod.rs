@@ -142,8 +142,10 @@ pub enum AlarmFilter {
     Shelved,
 }
 
-/// Trend ranges the server stores, as its `range` parameter.
-pub const RANGES: [(&str, &str); 4] = [
+/// Trend ranges: an id and its label. Five minutes is drawn from the
+/// server's shortest history (see [`history_range`]) plus live values.
+pub const RANGES: [(&str, &str); 5] = [
+    ("5m", "5 min"),
     ("30m", "30 min"),
     ("1h", "1 h"),
     ("6h", "6 h"),
@@ -152,11 +154,22 @@ pub const RANGES: [(&str, &str); 4] = [
 
 pub fn range_ms(range: &str) -> f64 {
     match range {
+        "5m" => 5.0 * 60_000.0,
         "30m" => 30.0 * 60_000.0,
         "6h" => 6.0 * 3_600_000.0,
         "24h" => 24.0 * 3_600_000.0,
         _ => 3_600_000.0,
     }
+}
+
+/// The server's `range` parameter that covers a trend range.
+pub fn history_range(range: &str) -> &str {
+    if range == "5m" { "30m" } else { range }
+}
+
+/// A range id as `--range` gives it, if the console offers it.
+pub fn parse_range(text: &str) -> Option<&'static str> {
+    RANGES.iter().map(|(id, _)| *id).find(|id| *id == text)
 }
 
 pub struct Inputs {
@@ -181,6 +194,8 @@ pub struct Launch {
     pub page: Option<Page>,
     /// A tag key to open on the Tags page once the tag list arrives.
     pub tag: Option<String>,
+    /// The trend range to start with, one of [`RANGES`].
+    pub range: Option<&'static str>,
     /// Read before any thread started: `time` cannot ask the system later.
     pub utc_offset: UtcOffset,
 }
@@ -370,7 +385,7 @@ impl Console {
             page: Page::Overview,
             selected: None,
             trend: BTreeSet::new(),
-            range: "1h",
+            range: launch.range.unwrap_or("1h"),
             alarm_filter: AlarmFilter::Active,
             inputs,
             busy: false,
@@ -470,7 +485,7 @@ impl Console {
                     self.selected = None;
                 }
                 self.send(Command::Subscribe(self.store.keys()));
-                self.send(Command::History(self.range.to_owned()));
+                self.send(Command::History(history_range(self.range).to_owned()));
                 if let Some(index) = self
                     .pending_tag
                     .take()
@@ -491,14 +506,12 @@ impl Console {
                     .map_or(alarm.tag_id.clone(), |index| {
                         self.store.tags[index].info.name.clone()
                     });
-                self.show_toast(
-                    format!("{} alarm on {name}: {}", alarm.severity, alarm.message),
-                    true,
-                    cx,
-                );
+                let severity = views::capitalized(&alarm.severity);
+                let value = vt_ui::chart::format_value(alarm.value);
+                self.show_toast(format!("{severity} alarm: {name} at {value}"), true, cx);
             }
             Event::History { range, series } => {
-                if range == self.range {
+                if range == history_range(self.range) {
                     self.store.backfill(&series);
                 }
             }
@@ -667,7 +680,7 @@ impl Console {
     pub fn set_range(&mut self, range: &'static str, cx: &mut Context<Self>) {
         if self.range != range {
             self.range = range;
-            self.send(Command::History(range.to_owned()));
+            self.send(Command::History(history_range(range).to_owned()));
         }
         cx.notify();
     }

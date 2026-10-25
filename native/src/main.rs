@@ -16,12 +16,13 @@ use console::{Console, Launch, Page};
 
 const USAGE: &str = "\
 usage: voltrus-native [--sign-in] [--page overview|tags|alarms|trends] [--tag <key>]
-                      [--appearance dark|light]
+                      [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
 
   --sign-in      sign in at once with VOLTRUS_NATIVE_URL (default http://localhost:3000),
                  VOLTRUS_NATIVE_USER (default admin) and VOLTRUS_NATIVE_PASSWORD
   --page         the page to open after signing in
   --tag          a tag key to open on the Tags page
+  --range        the Trends range to start with (default 1h)
   --appearance   dark or light instead of following the system";
 
 /// What the command line asks for.
@@ -30,6 +31,7 @@ struct Options {
     sign_in: bool,
     page: Option<Page>,
     tag: Option<String>,
+    range: Option<&'static str>,
     dark: Option<bool>,
 }
 
@@ -38,6 +40,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         sign_in: false,
         page: None,
         tag: None,
+        range: None,
         dark: None,
     };
     let mut args = args.iter();
@@ -53,6 +56,12 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 Some(key) if !key.is_empty() => options.tag = Some(key.clone()),
                 _ => return Err("--tag takes a tag key".into()),
             },
+            "--range" => {
+                let text = args.next().map_or("", String::as_str);
+                options.range = Some(
+                    console::parse_range(text).ok_or_else(|| format!("unknown range “{text}”"))?,
+                );
+            }
             "--appearance" => {
                 options.dark = Some(match args.next().map(String::as_str) {
                     Some("dark") => true,
@@ -109,6 +118,7 @@ fn main() -> ExitCode {
         sign_in,
         page: options.page,
         tag: options.tag,
+        range: options.range,
         utc_offset,
     };
     let appearance = options.dark;
@@ -195,6 +205,7 @@ mod tests {
                 sign_in: true,
                 page: Some(Page::Alarms),
                 tag: None,
+                range: None,
                 dark: Some(false),
             })
         );

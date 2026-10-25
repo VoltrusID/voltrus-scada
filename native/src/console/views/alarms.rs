@@ -10,14 +10,13 @@ use vt_ui::chart::format_value;
 use vt_ui::components::{Button, Segment, empty_state, pill, segmented};
 use vt_ui::theme::*;
 
-use super::{age, local_time, page_header, severity_color, value_with_unit};
+use super::{age, alarm_source, local_time, page_header, severity_color, value_with_unit};
 use crate::console::{AlarmFilter, Console, is_shelved, time_now_secs};
 
-const SEVERITY: f32 = 92.0;
-const VALUE: f32 = 150.0;
-const RAISED: f32 = 104.0;
-const STATE: f32 = 168.0;
-const ACTIONS: f32 = 196.0;
+const SEVERITY: f32 = 96.0;
+const VALUE: f32 = 104.0;
+const RAISED: f32 = 88.0;
+const ACTIONS: f32 = 172.0;
 const SHELVE_SECS: u64 = 3600;
 
 pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
@@ -70,7 +69,7 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
         .items_center()
         .gap(SPACE_5)
         .h(px(30.0))
-        .px(SPACE_9)
+        .px(SPACE_8)
         .bg(theme.surface)
         .border_b_1()
         .border_color(theme.border)
@@ -81,7 +80,6 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> AnyElement {
         .child(div().flex_1().min_w_0().child("ALARM"))
         .child(div().w(px(VALUE)).flex_none().text_right().child("VALUE"))
         .child(div().w(px(RAISED)).flex_none().child("RAISED"))
-        .child(div().w(px(STATE)).flex_none().child("STATE"))
         .child(div().w(px(ACTIONS)).flex_none());
 
     let body = if shown == 0 {
@@ -159,11 +157,8 @@ fn alarm_row(
         .position(&alarm.source_key)
         .map(|index| console.store.tags[index].info.unit.clone())
         .unwrap_or_default();
-    let source = if alarm.source_name.is_empty() {
-        alarm.source_key.clone()
-    } else {
-        format!("{} · {}", alarm.source_name, alarm.source_key)
-    };
+    let source = alarm_source(console, alarm);
+    let key_differs = alarm.source_key != source;
 
     let (state_icon, state_text, state_color) = if shelved {
         (
@@ -221,7 +216,7 @@ fn alarm_row(
         .items_center()
         .gap(SPACE_5)
         .h(px(54.0))
-        .px(SPACE_9)
+        .px(SPACE_8)
         .border_b_1()
         .border_color(theme.border.alpha(0.6))
         .when(!acknowledged && !shelved, |this| this.bg(color.alpha(0.04)))
@@ -239,21 +234,47 @@ fn alarm_row(
             div()
                 .flex()
                 .flex_col()
+                .gap(SPACE_1)
                 .flex_1()
                 .min_w_0()
+                .overflow_hidden()
                 .child(
                     div()
-                        .truncate()
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(alarm.message.clone()),
+                        .flex()
+                        .items_baseline()
+                        .gap(SPACE_3)
+                        .min_w_0()
+                        .child(
+                            div()
+                                .flex_shrink()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(source),
+                        )
+                        .when(key_differs, |this| {
+                            this.child(
+                                div()
+                                    .flex_shrink()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_family(MONO)
+                                    .text_size(FONT_CAPTION)
+                                    .text_color(theme.fg_dim)
+                                    .child(alarm.source_key.clone()),
+                            )
+                        }),
                 )
                 .child(
                     div()
-                        .truncate()
-                        .font_family(MONO)
-                        .text_size(FONT_CAPTION)
-                        .text_color(theme.fg_dim)
-                        .child(source),
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_2)
+                        .min_w_0()
+                        .text_size(FONT_SMALL)
+                        .text_color(state_color)
+                        .child(vt_ui::icon(state_icon, ICON_SM, state_color))
+                        .child(div().min_w_0().truncate().child(state_text)),
                 ),
         )
         .child(
@@ -295,18 +316,6 @@ fn alarm_row(
                         .text_color(theme.fg_dim)
                         .child(format!("{} ago", age(now - alarm.triggered_at))),
                 ),
-        )
-        .child(
-            div()
-                .w(px(STATE))
-                .flex_none()
-                .flex()
-                .items_center()
-                .gap(SPACE_3)
-                .text_size(FONT_SMALL)
-                .text_color(state_color)
-                .child(vt_ui::icon(state_icon, ICON_SM, state_color))
-                .child(div().truncate().child(state_text)),
         )
         .child(
             div()

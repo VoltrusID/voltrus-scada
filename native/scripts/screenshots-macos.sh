@@ -19,7 +19,7 @@ shots=(
   "tags|--sign-in --page tags --tag ac_current_l1 --appearance dark"
   "alarms|--sign-in --page alarms --appearance dark"
   "trends|--sign-in --page trends --appearance dark"
-  "overview-light|--sign-in --page overview --appearance light"
+  "trends|--sign-in --page trends --range 5m --appearance dark"
   "sign-in|--appearance dark"
 )
 

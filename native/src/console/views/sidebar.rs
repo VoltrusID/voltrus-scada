@@ -6,11 +6,11 @@ use vt_ui::Icon;
 use vt_ui::components::{IconButton, kbd, monogram, section_label};
 use vt_ui::theme::*;
 
-use super::host;
 use super::sign_in::brand_mark;
+use super::{capitalized, host};
 use crate::console::{Console, Page};
 
-const WIDTH: f32 = 232.0;
+pub const WIDTH: f32 = 232.0;
 
 pub fn render(console: &Console, cx: &mut Context<Console>) -> impl IntoElement {
     let theme = theme(cx).clone();
@@ -204,9 +204,9 @@ pub fn render(console: &Console, cx: &mut Context<Console>) -> impl IntoElement 
 }
 
 fn role_label(role: &str) -> String {
-    let mut chars = role.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => "Signed in".into(),
+    if role.is_empty() {
+        "Signed in".into()
+    } else {
+        capitalized(role)
     }
 }
