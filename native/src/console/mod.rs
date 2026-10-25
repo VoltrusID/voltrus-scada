@@ -12,6 +12,7 @@ mod nav;
 pub mod overlay;
 pub mod pages;
 pub mod store;
+mod text_area;
 mod views;
 
 use std::any::{Any, TypeId};
@@ -130,6 +131,9 @@ pub struct DeviceLink {
 pub enum LaunchOverlay {
     Palette,
     Help,
+    /// Run a command of [`keys::COMMANDS`] by its action's name
+    /// (`--overlay ShellOpenSettings`).
+    Action(&'static str),
 }
 
 /// How a stress run goes (`--stress …` or the palette).
@@ -526,6 +530,14 @@ impl Console {
             .expect("states are keyed by their type")
     }
 
+    /// A page module's state, if it has been made: for `&Console` hooks
+    /// such as a page's `search`.
+    pub fn state_ref<S: 'static>(&self) -> Option<&S> {
+        self.states
+            .get(&TypeId::of::<S>())
+            .and_then(|state| state.downcast_ref::<S>())
+    }
+
     /// The keyboard list `id`, made on first use.
     pub fn list(&mut self, id: &'static str, cx: &mut gpui::App) -> &mut ListNav {
         self.lists.entry(id).or_insert_with(|| ListNav::new(cx))
@@ -733,6 +745,14 @@ impl Console {
         match self.pending_overlay.take() {
             Some(LaunchOverlay::Palette) => self.open_palette(window, cx),
             Some(LaunchOverlay::Help) => self.open_help(window, cx),
+            Some(LaunchOverlay::Action(name)) => {
+                if let Some(command) = keys::COMMANDS
+                    .iter()
+                    .find(|command| (command.action)().name() == name)
+                {
+                    window.dispatch_action((command.action)(), cx);
+                }
+            }
             None => {}
         }
     }

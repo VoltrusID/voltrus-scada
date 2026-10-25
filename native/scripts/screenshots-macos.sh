@@ -27,6 +27,12 @@ shots=(
   "trends-hud|--sign-in --page trends --range 5m --hud --appearance dark"
   "stress-performance|--stress --stress-switch-ms 0 --page performance --appearance dark"
   "stress-overview|--stress --stress-switch-ms 0 --page overview --hud --appearance dark"
+  "ops-commands|--sign-in --page commands --appearance dark"
+  "ops-shift|--sign-in --page shift --appearance dark"
+  "ops-shift-new|--sign-in --page shift --overlay OpsNewHandover --appearance dark"
+  "ops-audit|--sign-in --page audit --appearance dark"
+  "ops-audit-light|--sign-in --page audit --appearance light"
+  "ops-export|--sign-in --page overview --overlay OpsExportData --appearance dark"
 )
 
 status=0

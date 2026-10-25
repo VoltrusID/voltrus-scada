@@ -21,6 +21,9 @@ pub enum Page {
     Alarms,
     Trends,
     Performance,
+    Commands,
+    Shift,
+    Audit,
 }
 
 /// The least a user's role must be to see a page or run a command; the
@@ -157,6 +160,51 @@ pub static PAGES: &[PageSpec] = &[
         search: None,
         side_panel: no_panel,
     },
+    PageSpec {
+        page: Page::Commands,
+        id: "commands",
+        title: "Commands",
+        icon: Icon::Send,
+        digit: None,
+        role: Role::Any,
+        placement: Placement::More,
+        render: views::commands::render,
+        badge: None,
+        on_show: Some(views::commands::on_show),
+        on_reply: Some(views::commands::on_reply),
+        search: None,
+        side_panel: views::commands::side_panel,
+    },
+    PageSpec {
+        page: Page::Shift,
+        id: "shift",
+        title: "Shift handover",
+        icon: Icon::Clock,
+        digit: None,
+        role: Role::Operator,
+        placement: Placement::More,
+        render: views::shift::render,
+        badge: None,
+        on_show: Some(views::shift::on_show),
+        on_reply: Some(views::shift::on_reply),
+        search: Some(views::shift::search),
+        side_panel: no_panel,
+    },
+    PageSpec {
+        page: Page::Audit,
+        id: "audit",
+        title: "Audit log",
+        icon: Icon::ScrollText,
+        digit: None,
+        role: Role::Operator,
+        placement: Placement::More,
+        render: views::audit::render,
+        badge: None,
+        on_show: Some(views::audit::on_show),
+        on_reply: Some(views::audit::on_reply),
+        search: Some(views::audit::search),
+        side_panel: views::audit::side_panel,
+    },
 ];
 
 /// The row of `page`. Every variant has one (a unit test checks).
@@ -203,6 +251,9 @@ mod tests {
             Page::Alarms,
             Page::Trends,
             Page::Performance,
+            Page::Commands,
+            Page::Shift,
+            Page::Audit,
         ] {
             assert_eq!(PAGES.iter().filter(|spec| spec.page == page).count(), 1);
             assert_eq!(Page::parse(spec(page).id), Some(page));
@@ -218,7 +269,10 @@ mod tests {
         digits.dedup();
         assert_eq!(digits.len(), count, "each ⌘ digit once");
         assert_eq!(Page::parse("nowhere"), None);
-        assert_eq!(ids(), "overview|tags|alarms|trends|performance");
+        assert_eq!(
+            ids(),
+            "overview|tags|alarms|trends|performance|commands|shift|audit"
+        );
     }
 
     #[test]
