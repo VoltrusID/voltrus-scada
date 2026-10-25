@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(Page::parse("nowhere"), None);
         assert_eq!(
             ids(),
-            "overview|tags|alarms|trends|performance|dashboard|commands|shift|audit"
+            "overview|tags|alarms|trends|performance|commands|shift|audit|dashboard"
         );
     }
 
