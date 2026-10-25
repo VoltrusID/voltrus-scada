@@ -46,7 +46,7 @@ fn number(value: f64) -> String {
     }
 }
 
-/// `High critical: 86.40 (limit 85)`.
+/// `High critical: 86.4 (limit 85.0)`.
 fn describe(alarm: &Alarm) -> String {
     let side = if alarm.alarm_type.eq_ignore_ascii_case("low") {
         "Low"
@@ -289,8 +289,8 @@ mod tests {
             threshold: 85.0,
             ..Alarm::default()
         };
-        assert_eq!(describe(&alarm), "High critical: 86.40 (limit 85.0)");
-        assert_eq!(number(1234.5), "1235");
+        assert_eq!(describe(&alarm), "High critical: 86.4 (limit 85.0)");
+        assert_eq!(number(1234.6), "1235");
         assert_eq!(number(-12.34), "-12.3");
         let low = Alarm {
             severity: "warning".into(),

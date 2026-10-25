@@ -1038,7 +1038,17 @@ struct Frame {
 }
 
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
-    sync(console);
+    // No REST from render (pages are drawn hidden to warm them): on show,
+    // and when the screen on show changed elsewhere (the dashboard's tabs,
+    // `--screen`), fetch after this frame.
+    if console.page == Page::Mimic
+        && console.phase == Phase::Console
+        && !console
+            .state_ref::<State>()
+            .is_some_and(|state| state.layouts.contains_key(&active(console)))
+    {
+        cx.defer(|console, _| sync(console));
+    }
     let theme = theme(cx).clone();
     let hmi = Hmi::new(&theme);
     let now = Instant::now();
