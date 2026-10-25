@@ -14,6 +14,7 @@ mod nav;
 pub mod overlay;
 pub mod pages;
 pub mod store;
+mod text_area;
 mod views;
 
 use std::any::{Any, TypeId};
@@ -128,6 +129,9 @@ pub enum LaunchOverlay {
     Help,
     /// A dialog of the Tags page's detail, once `--tag` opened a tag.
     Tags(TagDialog),
+    /// Run a command of [`keys::COMMANDS`] by its action's name
+    /// (`--overlay ShellOpenSettings`).
+    Action(&'static str),
     /// A view or dialog of the Alarms page (`--alarms`).
     Alarms(alarms::Launch),
 }
@@ -740,6 +744,23 @@ impl Console {
             Some(LaunchOverlay::Palette) => self.open_palette(window, cx),
             Some(LaunchOverlay::Help) => self.open_help(window, cx),
             Some(LaunchOverlay::Tags(dialog)) => views::tag_detail::launch(self, dialog),
+            Some(LaunchOverlay::Action(name)) => {
+                if let Some(command) = keys::COMMANDS
+                    .iter()
+                    .find(|command| (command.action)().name() == name)
+                {
+                    // Not before the console's first frame is drawn: until
+                    // then the page's focus is not in the drawn frame, and
+                    // the action would reach no handler. Frame callbacks
+                    // run before the frame draws, hence two.
+                    let action = command.action;
+                    window.on_next_frame(move |window, _| {
+                        window.on_next_frame(move |window, cx| {
+                            window.dispatch_action(action(), cx);
+                        });
+                    });
+                }
+            }
             Some(LaunchOverlay::Alarms(view)) => views::alarms::launch(self, view, window, cx),
             None => {}
         }

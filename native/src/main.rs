@@ -21,7 +21,7 @@ fn usage() -> String {
         "\
 usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
-                      [--hud] [--overlay palette|help|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
+                      [--hud] [--overlay palette|help|<action>|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
                       [--alarms history|analytics|audit|detail|shelve|confirm]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
@@ -33,8 +33,9 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --range            the Trends range to start with (default 1h)
   --appearance       dark or light instead of following the system
   --hud              show the performance HUD (also ⇧⌘P)
-  --overlay          open the command palette or the shortcut help once signed in; tag-…
-                     opens a dialog of the --tag tag's detail (tag-expand widens the detail)
+  --overlay          open the command palette, the shortcut help, or run a command by its
+                     action name (e.g. ShellOpenSettings) once signed in; tag-… opens a
+                     dialog of the --tag tag's detail (tag-expand widens the detail)
   --alarms           open the Alarms page with this view or dialog once signed in
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
   --stress-tags      how many synthetic tags
@@ -111,13 +112,28 @@ fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--hud" => options.hud = true,
             "--overlay" => {
-                let name = args.next().map_or("", String::as_str);
-                options.overlay = Some(match name {
-                    "palette" => LaunchOverlay::Palette,
-                    "help" => LaunchOverlay::Help,
-                    other => LaunchOverlay::Tags(TagDialog::parse(other).ok_or_else(|| {
-                        format!("--overlay takes palette, help or a tag-… dialog, not “{other}”")
-                    })?),
+                options.overlay = Some(match args.next().map(String::as_str) {
+                    Some("palette") => LaunchOverlay::Palette,
+                    Some("help") => LaunchOverlay::Help,
+                    other => {
+                        let name = other.unwrap_or("");
+                        if let Some(dialog) = TagDialog::parse(name) {
+                            LaunchOverlay::Tags(dialog)
+                        } else {
+                            match console::keys::COMMANDS
+                                .iter()
+                                .map(|command| (command.action)().name())
+                                .find(|action| action.rsplit("::").next() == Some(name))
+                            {
+                                Some(action) => LaunchOverlay::Action(action),
+                                None => {
+                                    return Err(format!(
+                                        "--overlay takes palette, help, a tag-… dialog or a command's action name, not “{name}”"
+                                    ));
+                                }
+                            }
+                        }
+                    }
                 });
             }
             "--alarms" => {
