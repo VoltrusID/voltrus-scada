@@ -849,8 +849,10 @@ fn source_row(
             .text_color(color)
             .child(text)
     };
-    // Configured values as typed (150000, not the chart's 1.500e5).
-    let number = model::format_number;
+    // Configured values plain and at the source's decimals (150000, not
+    // the chart's 1.500e5; 932.63, not every digit of the float).
+    let decimals = source.decimals;
+    let number = |value: f64| model::format_limit(value, decimals);
     let limit = |value: f64| {
         if value > 0.0 {
             number(value)

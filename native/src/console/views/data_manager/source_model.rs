@@ -321,6 +321,18 @@ pub fn format_number(value: f64) -> String {
     format!("{value}")
 }
 
+/// A configured value for the table, plain (150000, never 1.5e5) and at
+/// most `decimals` places with trailing zeros dropped: `932.63`, `61000`.
+pub fn format_limit(value: f64, decimals: i64) -> String {
+    let places = usize::try_from(decimals.clamp(0, 6)).unwrap_or(0);
+    let text = format!("{value:.places$}");
+    if text.contains('.') {
+        text.trim_end_matches('0').trim_end_matches('.').to_owned()
+    } else {
+        text
+    }
+}
+
 /// The JSON object in a `source_config` text, or an empty one.
 pub fn parse_config(text: &str) -> Map<String, Value> {
     match serde_json::from_str::<Value>(text) {
@@ -1318,6 +1330,15 @@ mod tests {
 
     #[test]
     fn categories_colours_and_charts() {
+        assert_eq!(format_limit(932.630_380_095_3, 2), "932.63");
+        assert_eq!(format_limit(61_000.0, 1), "61000");
+        assert_eq!(format_limit(150_000.0, 0), "150000");
+        assert_eq!(
+            format_limit(0.5, 0),
+            "0",
+            "rounded to the source's decimals"
+        );
+        assert_eq!(format_limit(50.15, 2), "50.15");
         assert_eq!(source_type("modbus").unwrap().category, Category::Real);
         assert_eq!(type_label("opcua"), "opcua");
         assert_eq!(parse_hex("#8B5CF6"), Some(0x8b5cf6));
