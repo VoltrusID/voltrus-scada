@@ -92,8 +92,9 @@ pub fn nav_label(target: &str) -> String {
 /// A web combo (`Mod+Shift+ArrowUp`) as a GPUI keystroke
 /// (`secondary-shift-up`); `None` if it names a key GPUI does not know.
 pub fn to_keystroke(combo: &str) -> Option<String> {
-    let combo = combo.trim();
-    if combo.is_empty() {
+    // A trailing space is the Space key (`Mod+ `), not padding.
+    let combo = combo.trim_start();
+    if combo.trim().is_empty() {
         return None;
     }
     // The key itself may be `+` (`Mod++`).
