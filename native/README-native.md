@@ -124,8 +124,25 @@ JetBrains Mono for values.
   confirms within 6 s; an admin's command goes over the WebSocket, other
   operators' through the policy-checked REST write. The alarm banner
   under the stage lists the newest active alarms, acknowledged in place.
-  Screen tabs and [ / ] as on the Dashboard. Viewer only: mimics are drawn
-  in the web client's editor.
+  Screen tabs and [ / ] as on the Dashboard.
+- **Mimic editor** (E on the mimic, or Edit; operators), as the web
+  client's SCADA editor: a palette of the 31 library symbols by category
+  (drawn by the stage's painter) and the widget types, searchable (/),
+  click to add at the centre or drag onto the stage; click, ⇧-click, a
+  rubber band (⌥ anywhere) or ⌘A select; drags move the selection and the
+  eight handles resize, snapping to the 10-pixel grid (dots every 20) and
+  lining up with other widgets' edges and centres (guide lines; ⌘ held:
+  free), on the 1920×1080 stage; the knob (R, ⇧R) turns a symbol a
+  quarter, H mirrors it. The connect tool (C; V back) joins a source and a
+  target as a process pipe, power line or signal. The inspector edits
+  position and size, the type's settings, tag bindings (searched in the
+  store), z-order ([ ]), duplicate and delete; a connection's type; or
+  shows the screen's summary. ⌘Z / ⇧⌘Z (100 steps, typing in one field
+  is one), ⌘C / ⌘V / ⌘D, arrows nudge 1 (⇧ 10), ⌫ deletes. ⌘S saves the
+  rows (`PUT scada-equipment` and `scada-connections`); a failure keeps
+  the edits. Done, another screen, another page or signing out with
+  unsaved edits asks Save / Discard / Cancel (the web client saves on a
+  screen switch without asking).
 - **Tag tree** (⌘5): the tags filed by their path (or their device when
   they have none), folded and unfolded with Space or Enter, searched on the
   server as you type (`/`), each tag with its live value; Enter on a tag

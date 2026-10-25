@@ -1,5 +1,5 @@
 {
-  "about": "The solar farm's HMI mimic for the overview screen (__overview), seeded by ci-server.sh when the screen has none. Tags are named \"<device>/<key>\" and resolved to data source ids when seeded; a config value \"@<device>/<key>\" is a tag setting (runSensorId, faultSensorId). Stage: 1920 x 1080.",
+  "about": "The solar farm's HMI mimic for the overview screen (__overview), seeded by ci-server.sh when the screen has none. Tags are named \"<device>/<key>\" and resolved to data source ids when seeded; a config value \"@<device>/<key>\" is a tag setting (runSensorId, faultSensorId). Stage: 1920 x 1080. INV-1 takes commands: it is bound to sma_inv_1/remote_run, the inverter's run register ci-server.sh adds (1 running, 0 stopped), which the simulator keeps as written.",
   "equipment": [
     { "equipment_id": "area_pv", "equipment_type": "area", "equipment_name": "PV field", "x": 40, "y": 110, "width": 520, "height": 560, "tags": [], "config": { "title": "PV field", "subtitle": "strings A · B" } },
     { "equipment_id": "area_inverter", "equipment_type": "area", "equipment_name": "Inverter", "x": 600, "y": 110, "width": 560, "height": 560, "tags": [], "config": { "title": "Inverter", "subtitle": "SMA STP 60" } },
@@ -21,7 +21,7 @@
 
     { "equipment_id": "dc_power", "equipment_type": "big_number", "equipment_name": "DC power", "x": 630, "y": 150, "width": 220, "height": 96, "tags": ["sma_inv_1/dc_power"], "config": { "fontSize": 30, "decimals": 0 } },
     { "equipment_id": "ac_power", "equipment_type": "big_number", "equipment_name": "AC power", "x": 910, "y": 150, "width": 220, "height": 96, "tags": ["sma_inv_1/ac_power"], "config": { "fontSize": 30, "decimals": 0 } },
-    { "equipment_id": "inv", "equipment_type": "symbol", "equipment_name": "INV-1", "x": 810, "y": 262, "width": 140, "height": 175, "tags": ["sma_inv_1/ac_power"], "config": { "symbol": "inverter", "label": "INV-1", "onThreshold": 500, "showStatus": true, "writable": true } },
+    { "equipment_id": "inv", "equipment_type": "symbol", "equipment_name": "INV-1", "x": 810, "y": 262, "width": 140, "height": 175, "tags": ["sma_inv_1/remote_run"], "config": { "symbol": "inverter", "label": "INV-1", "onThreshold": 0.5, "showStatus": true, "writable": true } },
     { "equipment_id": "l1_light", "equipment_type": "status_light", "equipment_name": "L1 current", "x": 1050, "y": 290, "width": 60, "height": 60, "tags": ["sma_inv_1/ac_current_l1"], "config": {} },
     { "equipment_id": "l1_light_label", "equipment_type": "label", "equipment_name": "L1 label", "x": 1020, "y": 350, "width": 120, "height": 22, "tags": [], "config": { "text": "AC L1", "fontSize": 11, "muted": true } },
     { "equipment_id": "heatsink_label", "equipment_type": "label", "equipment_name": "Heatsink label", "x": 630, "y": 462, "width": 240, "height": 22, "tags": [], "config": { "text": "HEATSINK", "fontSize": 11, "muted": true, "align": "left" } },

@@ -73,6 +73,11 @@ shots=(
   "mimic-light|--sign-in --page mimic --appearance light"
   "mimic-faceplate|--sign-in --page mimic --overlay MimicOpen --appearance dark"
   "mimic-commands|--sign-in --page mimic --overlay MimicArmOff --appearance dark"
+  "mimic-edit|--sign-in --page mimic --edit --appearance dark"
+  "mimic-edit-light|--sign-in --page mimic --edit --appearance light"
+  "mimic-edit-inspector|--sign-in --page mimic --edit --overlay MimicEditNext --appearance dark"
+  "mimic-edit-palette|--sign-in --page mimic --edit --overlay MimicEditFind --appearance dark"
+  "mimic-edit-connect|--sign-in --page mimic --edit --overlay MimicEditConnectTool --appearance dark"
 )
 
 status=0
