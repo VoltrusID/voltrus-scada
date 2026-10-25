@@ -223,7 +223,10 @@ mod tests {
         let found = search(&all, "trends");
         assert_eq!(all[found[0]].title.as_ref(), "Go to Trends");
         assert_eq!(search(&all, "").len(), all.len());
-        assert_eq!(more_pages(Some(Role::Any)), [Page::Performance]);
+        assert_eq!(
+            more_pages(Some(Role::Any)),
+            [Page::Performance, Page::Commands]
+        );
         assert!(more_pages(None).is_empty());
     }
 }

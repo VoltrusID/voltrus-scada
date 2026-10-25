@@ -18,6 +18,8 @@ pub use reqwest::Method;
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 
+pub mod ops;
+
 /// A request the server answered with an error status.
 #[derive(Debug, Clone)]
 pub struct ServerError {

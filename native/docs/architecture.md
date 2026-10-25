@@ -191,6 +191,50 @@ charts the last ten seconds. `--stress` feeds 10 000 synthetic tags at
 and writes it. CI runs a 20 s pass (`native/scripts/stress-macos.sh`) and
 prints the report in the job log and summary.
 
+## Poll while a page is on screen
+
+A list the server changes without a WebSocket message (the Commands
+page's Active list, every 2 s; the shift report, every 30 s) is fetched
+again only while its page is on screen:
+
+```rust
+// in on_show
+ops_kit::poll_while_shown(console, Page::Commands, Duration::from_secs(2), tick, cx);
+```
+
+The loop ends by itself when the page goes off screen, the session ends or
+a stress test runs; the next `on_show` starts it again. It only fetches; the
+answer redraws through `on_reply` like any other. Number each request
+(`CallKey::new("commands.active").with(seq)`) and drop answers whose
+argument is not the newest, so a slow answer never overwrites a fresh one.
+
+## Page keys
+
+Keys that only make sense on one page bind to a key context its root
+carries: the Commands page's root has `key_context("OpsCommands OpsPaged
+…")`, and `keys::COMMANDS` binds `x` in `"OpsCommands && !TextInput"`, so
+the key works wherever focus is inside the page except in a text field.
+Handle the action on the page's root (`.on_action(...)`); handle it on the
+window's root (`views/mod.rs`) only when the palette should offer it from
+any page.
+
+## Text fields
+
+`vt_ui::text_input::TextInput` is one line. `console::text_area::TextArea`
+is the multi-line field (Enter is a new line, ↑/↓ move between lines, ⌘↵
+submits); it answers the same `text_input` actions and emits the same
+`InputEvent`s, and its key context includes `TextInput`, so `!TextInput`
+keys stay off while typing in it. A page reads its own state from
+`&Console` hooks (such as `search`) with `console.state_ref::<State>()`.
+
+## Save a file
+
+`ops_kit::save_download(key, path, suggested_name, format, cancelled, cx)`
+asks where to save (GPUI's `prompt_for_new_path`, in Downloads), then
+fetches `path` as text off the UI thread (`VoltrusApi::download`) and
+answers the page of `key` with an `api::ops::Saved` (file, rows, the
+server's total).
+
 ## Build on the screens
 
 A page that draws a screen (the card dashboard, the mimic viewer) shares

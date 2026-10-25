@@ -21,7 +21,7 @@ fn usage() -> String {
         "\
 usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
-                      [--hud] [--overlay palette|help|add-tags]
+                      [--hud] [--overlay palette|help|add-tags|<action>]
                       [--alarms history|analytics|audit|detail|shelve|confirm]
                       [--screen N|ID] [--edit]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
@@ -34,8 +34,9 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --range            the Trends range to start with (default 1h)
   --appearance       dark or light instead of following the system
   --hud              show the performance HUD (also ⇧⌘P)
-  --overlay          open the command palette, the shortcut help or the dashboard's
-                     tag picker once signed in
+  --overlay          open the command palette, the shortcut help, the dashboard's tag
+                     picker (add-tags), or run a command by its action name
+                     (e.g. ShellOpenSettings) once signed in
   --alarms           open the Alarms page with this view or dialog once signed in
   --screen           the dashboard's screen: its id, or 1 for the overview, 2 for the first
   --edit             open the dashboard in edit mode (operator roles)
@@ -123,10 +124,19 @@ fn parse(args: &[String]) -> Result<Options, String> {
                     Some("help") => LaunchOverlay::Help,
                     Some("add-tags") => LaunchOverlay::AddTags,
                     other => {
-                        return Err(format!(
-                            "--overlay takes palette, help or add-tags, not “{}”",
-                            other.unwrap_or("")
-                        ));
+                        let name = other.unwrap_or("");
+                        match console::keys::COMMANDS
+                            .iter()
+                            .map(|command| (command.action)().name())
+                            .find(|action| action.rsplit("::").next() == Some(name))
+                        {
+                            Some(action) => LaunchOverlay::Action(action),
+                            None => {
+                                return Err(format!(
+                                    "--overlay takes palette, help or a command's action name, not “{name}”"
+                                ));
+                            }
+                        }
                     }
                 });
             }
