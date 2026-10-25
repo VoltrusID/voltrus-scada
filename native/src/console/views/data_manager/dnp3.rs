@@ -9,9 +9,7 @@ use std::time::Duration;
 
 use gpui::Context;
 use serde_json::{Map, Value, json};
-use voltrus_scada_native::api::protocols::{
-    DNP3_GROUP_VARIATIONS, DiscoveredDnp3, Dnp3DeviceRow, Dnp3PointRow, rows,
-};
+use voltrus_scada_native::api::protocols::{DiscoveredDnp3, Dnp3DeviceRow, Dnp3PointRow, rows};
 use voltrus_scada_native::runtime::{CallKey, Reply};
 use vt_ui::Icon;
 
@@ -298,6 +296,7 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
 mod tests {
     use super::*;
     use crate::console::views::data_manager::device_form::{body, values_of};
+    use voltrus_scada_native::api::protocols::DNP3_GROUP_VARIATIONS;
 
     #[test]
     fn the_choices_are_the_servers_group_variations() {
