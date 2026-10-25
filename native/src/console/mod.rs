@@ -18,6 +18,10 @@ pub mod screens;
 mod shell;
 pub mod shortcuts;
 pub mod store;
+#[cfg(test)]
+mod testing;
+#[cfg(test)]
+mod tests;
 mod text_area;
 mod views;
 mod warm;
@@ -67,6 +71,21 @@ const HUD_REFRESH: Duration = Duration::from_millis(250);
 
 /// Pages remembered for ⌘[ and ⌘].
 const HISTORY_DEPTH: usize = 32;
+
+/// How long quitting waits for the runtime to sign the session out.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(3);
+
+/// Console state that is the operator's own, not the session's: kept when
+/// a session ends (see [`Console::reset_session`]). Everything else in
+/// `Console::state` goes.
+fn kept_across_sessions(id: TypeId) -> bool {
+    [
+        TypeId::of::<shell::Shell>(),
+        TypeId::of::<views::ops_kit::Polls>(),
+        TypeId::of::<audio::Annunciator>(),
+    ]
+    .contains(&id)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -287,6 +306,13 @@ pub struct Console {
     /// Pages to draw once, hidden, one per frame after sign-in (see
     /// [`Console::warm_step`]); the next is last.
     warm: Vec<Page>,
+    /// Counts session resets (see [`Console::session_epoch`]).
+    session_epoch: u64,
+    /// Counts sign-ins: a later one resets what the earlier left.
+    sessions: u64,
+    /// A status had more open alarms than a fetch lists
+    /// ([`runtime::OPEN_ALARMS_LIMIT`](voltrus_scada_native::runtime::OPEN_ALARMS_LIMIT)).
+    pub(crate) alarms_capped: bool,
 }
 
 fn input(
@@ -516,6 +542,9 @@ impl Console {
             _tasks: vec![pump, ticker],
             _subscriptions: subscriptions,
             warm: Vec::new(),
+            session_epoch: 0,
+            sessions: 0,
+            alarms_capped: false,
         };
         let focus_field = if console.inputs.username.read(cx).value().is_empty() {
             console.inputs.username.clone()
@@ -617,6 +646,11 @@ impl Console {
                     // The session ended; the sign-in card says why too.
                     self.busy = false;
                     self.error = Some(reason.clone());
+                    let open = self.overlay.is_some();
+                    self.reset_session(window, cx);
+                    if open {
+                        window.focus(&self.focus);
+                    }
                     if self.phase == Phase::Console {
                         self.show_toast(reason.clone(), true, cx);
                     }
@@ -631,6 +665,12 @@ impl Console {
             } => {
                 self.busy = false;
                 self.error = None;
+                // Before the pages show: what an earlier session left must
+                // not reach this one, and what they fetch now must stay.
+                if self.sessions > 0 {
+                    self.reset_session(window, cx);
+                }
+                self.sessions += 1;
                 // A stress run's synthetic server is not worth remembering.
                 if self.stress.is_none() {
                     config::save(&server, &username);
@@ -674,6 +714,7 @@ impl Console {
             }
             Event::Tags(list) => {
                 self.store.replace(list);
+                views::dashboard::tags_changed(self);
                 self.trend.retain(|id| self.store.position(*id).is_some());
                 if self.trend.is_empty() {
                     self.trend = self
@@ -710,9 +751,10 @@ impl Console {
                     run.applied += applied as u64;
                 }
             }
-            Event::Alarms(alarms) => {
+            Event::Alarms { alarms, capped } => {
                 self.alarms = alarms;
                 self.alarms_error = None;
+                self.alarms_capped = capped;
                 views::alarms::alarms_changed(self, window, cx);
             }
             Event::AlarmsFailed(error) => self.alarms_error = Some(error),
@@ -741,6 +783,9 @@ impl Console {
                 }
                 if self.writing == Some(tag) {
                     self.writing = None;
+                }
+                if result.is_ok() {
+                    views::tag_write::written(self, tag, cx);
                 }
                 self.write_result = Some((tag, result));
             }
@@ -788,6 +833,8 @@ impl Console {
 
     fn enter_console(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.phase = Phase::Console;
+        // The kiosk lock holds from here on.
+        shortcuts::rebind(self, cx);
         let page = self.pending_page.take().unwrap_or(self.page);
         let page = if pages::opens(pages::spec(page), self.role()) {
             page
@@ -887,17 +934,11 @@ impl Console {
         // A password change still in flight is never answered once the
         // session ends, so nothing else would clear this.
         self.busy = false;
-        self.writing = None;
-        self.write_result = None;
         self.store = Store::default();
-        self.alarms.clear();
-        self.alarms_error = None;
-        views::alarms::signed_out(self);
         self.devices.clear();
         self.selected = None;
         self.trend.clear();
-        self.overlay = None;
-        self.palette = None;
+        self.reset_session(window, cx);
         for nav in self.lists.values_mut() {
             nav.cursor = None;
         }
@@ -907,8 +948,35 @@ impl Console {
         self.inputs
             .password
             .update(cx, |field, _| field.focus(window));
-        shell::signed_out(self, window, cx);
         cx.notify();
+    }
+
+    /// Forget what the ended session left, so none of it reaches the next
+    /// user or server and no request it never answered keeps a page busy:
+    /// every page's state but the operator's own ([`kept_across_sessions`]),
+    /// the alarms (which silences the annunciator), a write in flight, the
+    /// overlay and the shell's session data. On sign-out, on a failed link
+    /// and before a later sign-in shows the pages.
+    fn reset_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session_epoch += 1;
+        self.states.retain(|id, _| kept_across_sessions(*id));
+        self.writing = None;
+        self.write_result = None;
+        self.alarms.clear();
+        self.alarms_error = None;
+        self.alarms_capped = false;
+        views::alarms::signed_out(self);
+        self.overlay = None;
+        self.palette = None;
+        self.return_focus = None;
+        shell::signed_out(self, window, cx);
+    }
+
+    /// Changes whenever a session's state is reset: work started in one
+    /// session (a save panel, a timer) compares it to know the session it
+    /// served has ended.
+    pub fn session_epoch(&self) -> u64 {
+        self.session_epoch
     }
 
     // ── Roles ─────────────────────────────────────────────────────────────
@@ -942,6 +1010,12 @@ impl Console {
     /// Strictly admin: tag writes over the WebSocket, users, roles, keys.
     pub fn is_admin(&self) -> bool {
         self.allows(Role::Admin)
+    }
+
+    /// Whether a stress run may start: it replaces the session, so not
+    /// under the kiosk lock, and only for an admin or before signing in.
+    pub fn may_start_stress(&self) -> bool {
+        !self.kiosk_locked() && (self.user.is_none() || self.is_admin())
     }
 
     // ── Navigation ────────────────────────────────────────────────────────
@@ -1198,6 +1272,7 @@ impl Console {
                 .update(cx, |field, cx| field.set_text("", cx));
         }
         self.selected = Some(id);
+        views::tag_detail::fetch_open(self);
         cx.notify();
     }
 
@@ -1242,9 +1317,12 @@ impl Console {
     // ── Commands to the server ────────────────────────────────────────────
 
     /// Enter in the write field: the write dialog's mode decides how the
-    /// value goes (`views::tag_write`).
+    /// value goes (`views::tag_write`). The field writes only from its
+    /// dialog, which each opening starts empty.
     pub fn write_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        views::tag_write::submit(self, window, cx);
+        if self.overlay_is("tag-write") {
+            views::tag_write::submit(self, window, cx);
+        }
     }
 
     pub fn acknowledge(&mut self, alarm: i64) {
@@ -1269,13 +1347,13 @@ impl Console {
     }
 
     /// The window closes or the console quits: report a stress run, stop
-    /// the runtime.
+    /// the runtime, which signs the session out of the server first.
     pub fn shutdown(&mut self) {
         if let Some(report) = self.stress_report() {
             println!("{report}");
             self.write_report(&report);
         }
-        self.send(Command::Shutdown);
+        self.runtime.shutdown(SHUTDOWN_WAIT);
     }
 
     // ── Stress test ───────────────────────────────────────────────────────

@@ -9,6 +9,7 @@ use std::any::TypeId;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
 use gpui::{Bounds, Context, Entity, Keystroke, Pixels, Stateful, Subscription, Window, px};
@@ -88,19 +89,22 @@ pub struct Shell {
     pub picker: Option<Picker>,
     themes: Vec<ThemeEntry>,
     pub bell_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
-    /// Alarms already announced to the system.
-    notified: HashSet<i64>,
+    /// Critical alarms announced to the system, and those waiting.
+    announcer: Announcer,
     subscriptions: Vec<Subscription>,
 }
 
 impl Console {
     /// The kiosk lock: quitting, signing out and closing the window are
-    /// blocked.
+    /// blocked, while in the console only (at the sign-in card the app can
+    /// be quit, as Settings, where the lock turns off, needs a session).
     pub fn kiosk_locked(&self) -> bool {
-        self.states
-            .get(&TypeId::of::<Shell>())
-            .and_then(|state| state.downcast_ref::<Shell>())
-            .is_some_and(|shell| shell.prefs.kiosk)
+        self.phase == Phase::Console
+            && self
+                .states
+                .get(&TypeId::of::<Shell>())
+                .and_then(|state| state.downcast_ref::<Shell>())
+                .is_some_and(|shell| shell.prefs.kiosk)
     }
 
     /// Unread user notifications: the bell's badge.
@@ -213,6 +217,7 @@ pub fn signed_out(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
     shell.cooldown = None;
     shell.picker = None;
     shell.editor = None;
+    shell.announcer = Announcer::default();
     stop_recording(console, cx);
     shortcuts::rebind(console, cx);
 }
@@ -222,10 +227,13 @@ pub fn tick(console: &mut Console, tick: u64, _: &mut Context<Console>) {
     if tick.is_multiple_of(NOTIFICATIONS_REFRESH_SECS) && console.stress.is_none() {
         refresh_notifications(console);
     }
+    if let Some((title, body)) = console.state::<Shell>().announcer.flush(Instant::now()) {
+        os_notify(&title, &body);
+    }
 }
 
 /// A new alarm: a system notification when it is critical and the
-/// operator asked for them.
+/// operator asked for them; during a flood one now and then counts them.
 pub fn alarm_raised(console: &mut Console, alarm: &RaisedAlarm, _: &mut Context<Console>) {
     let name = console
         .store
@@ -236,19 +244,86 @@ pub fn alarm_raised(console: &mut Console, alarm: &RaisedAlarm, _: &mut Context<
     let shell = console.state::<Shell>();
     let wanted =
         OS_NOTIFICATIONS && shell.prefs.os_notifications && severity_rank(&alarm.severity) == 0;
-    // Each alarm once, even if the server raises it again.
-    if !(wanted && shell.notified.insert(alarm.alarm_id)) {
+    if !wanted {
         return;
     }
     let value = vt_ui::chart::format_value(alarm.value);
-    os_notify(
-        &format!("Critical alarm: {name}"),
-        &if alarm.message.is_empty() {
-            format!("Value {value}")
+    let body = if alarm.message.is_empty() {
+        format!("Value {value}")
+    } else {
+        format!("{} (value {value})", alarm.message)
+    };
+    if let Some((title, body)) = shell.announcer.raise(
+        alarm.alarm_id,
+        format!("Critical alarm: {name}"),
+        body,
+        Instant::now(),
+    ) {
+        os_notify(&title, &body);
+    }
+}
+
+/// At most one system notification this often; alarms raised meanwhile are
+/// counted in the next.
+const ANNOUNCE_EVERY: Duration = Duration::from_secs(2);
+
+/// Critical alarms for the system's notification centre: each alarm once,
+/// and at most one notification per [`ANNOUNCE_EVERY`], naming the alarm
+/// when it is alone and counting them otherwise, so a flood costs a few
+/// notifications, not one process per alarm.
+#[derive(Default)]
+struct Announcer {
+    /// Alarms already announced or waiting, for the session.
+    notified: HashSet<i64>,
+    /// The first waiting alarm's title and text, and how many wait.
+    first: Option<(String, String)>,
+    waiting: usize,
+    last: Option<Instant>,
+}
+
+impl Announcer {
+    /// A new critical alarm; the notification to show now, if one is due.
+    fn raise(
+        &mut self,
+        id: i64,
+        title: String,
+        body: String,
+        now: Instant,
+    ) -> Option<(String, String)> {
+        // Each alarm once, even if the server raises it again.
+        if !self.notified.insert(id) {
+            return None;
+        }
+        self.waiting += 1;
+        self.first.get_or_insert((title, body));
+        self.flush(now)
+    }
+
+    /// The notification for the alarms waiting, once the last one is
+    /// [`ANNOUNCE_EVERY`] old.
+    fn flush(&mut self, now: Instant) -> Option<(String, String)> {
+        if self.waiting == 0
+            || self
+                .last
+                .is_some_and(|last| now.duration_since(last) < ANNOUNCE_EVERY)
+        {
+            return None;
+        }
+        self.last = Some(now);
+        let waiting = std::mem::take(&mut self.waiting);
+        let (title, body) = self.first.take()?;
+        Some(if waiting == 1 {
+            (title, body)
         } else {
-            format!("{} (value {value})", alarm.message)
-        },
-    );
+            (
+                format!("{waiting} new critical alarms"),
+                format!(
+                    "The first: {}",
+                    title.trim_start_matches("Critical alarm: ")
+                ),
+            )
+        })
+    }
 }
 
 /// The answer to a call under `shell.*`.
@@ -429,7 +504,7 @@ pub fn actions(root: Stateful<gpui::Div>, cx: &mut Context<Console>) -> Stateful
         }
     }))
     .capture_action(cx.listener(|console, _: &SignOut, _, cx| {
-        if console.kiosk_locked() && console.phase == Phase::Console {
+        if console.kiosk_locked() {
             cx.stop_propagation();
             kiosk_refused(console, cx);
         }
@@ -975,13 +1050,27 @@ fn os_notify(title: &str, body: &str) {
         .stderr(std::process::Stdio::null())
         .spawn();
     match spawned {
-        // Reaped off the UI thread.
-        Ok(mut child) => {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
+        Ok(child) => reap(child),
         Err(error) => eprintln!("voltrus-native: no system notification: {error}"),
+    }
+}
+
+/// Wait for a notification's process off the UI thread: one thread for
+/// all of them, started with the first.
+fn reap(child: std::process::Child) {
+    static REAPER: std::sync::LazyLock<
+        std::sync::Mutex<std::sync::mpsc::Sender<std::process::Child>>,
+    > = std::sync::LazyLock::new(|| {
+        let (children, waiting) = std::sync::mpsc::channel::<std::process::Child>();
+        std::thread::spawn(move || {
+            for mut child in waiting {
+                let _ = child.wait();
+            }
+        });
+        std::sync::Mutex::new(children)
+    });
+    if let Ok(children) = REAPER.lock() {
+        let _ = children.send(child);
     }
 }
 
@@ -1058,6 +1147,47 @@ mod tests {
             applescript_string(r#"Tank "A" \ high"#),
             r#""Tank \"A\" \\ high""#
         );
+    }
+
+    #[test]
+    fn a_flood_of_critical_alarms_makes_few_notifications() {
+        let mut announcer = Announcer::default();
+        let start = Instant::now();
+        let raise = |announcer: &mut Announcer, id: i64, at: Duration| {
+            announcer.raise(
+                id,
+                format!("Critical alarm: tag {id}"),
+                "Value 1".into(),
+                start + at,
+            )
+        };
+        assert_eq!(
+            raise(&mut announcer, 1, Duration::ZERO),
+            Some(("Critical alarm: tag 1".into(), "Value 1".into())),
+            "the first after a quiet spell shows at once"
+        );
+        let shown = (2..=300)
+            .filter_map(|id| raise(&mut announcer, id, Duration::from_millis(5)))
+            .count();
+        assert_eq!(shown, 0, "the flood waits for the next notification");
+        assert_eq!(raise(&mut announcer, 2, Duration::from_millis(10)), None);
+        assert_eq!(announcer.flush(start + Duration::from_secs(1)), None);
+        assert_eq!(
+            announcer.flush(start + ANNOUNCE_EVERY),
+            Some(("299 new critical alarms".into(), "The first: tag 2".into()))
+        );
+        assert_eq!(
+            announcer.flush(start + ANNOUNCE_EVERY * 3),
+            None,
+            "nothing waits"
+        );
+        assert_eq!(
+            raise(&mut announcer, 1, ANNOUNCE_EVERY * 4),
+            None,
+            "each alarm once in a session"
+        );
+        let mut next_session = Announcer::default();
+        assert!(raise(&mut next_session, 1, Duration::ZERO).is_some());
     }
 
     #[test]

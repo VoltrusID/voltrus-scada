@@ -449,15 +449,18 @@ pub static COMMANDS: &[CommandSpec] = &[
         TogglePerfHud,
         true
     ),
-    command!(
-        "Start the stress test",
-        View,
-        Zap,
-        [],
-        CONSOLE,
-        StartStress,
-        true
-    ),
+    // A stress run replaces the session: offered to admins only (the
+    // handler refuses it otherwise, and under the kiosk lock).
+    CommandSpec {
+        label: "Start the stress test",
+        group: Group::View,
+        icon: Icon::Zap,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(StartStress) },
+        palette: true,
+        role: Role::Admin,
+    },
     command!(
         "Stop the stress test",
         View,
@@ -625,24 +628,26 @@ pub static COMMANDS: &[CommandSpec] = &[
         TagsWrite,
         true
     ),
-    command!(
-        "Edit the tag's write policy…",
-        View,
-        Settings,
-        [],
-        CONSOLE,
-        TagsWritePolicy,
-        true
-    ),
-    command!(
-        "Add a note to the tag's chart…",
-        View,
-        Pencil,
-        ["secondary-shift-n"],
-        CONSOLE,
-        TagsAddNote,
-        true
-    ),
+    CommandSpec {
+        label: "Edit the tag's write policy…",
+        group: Group::View,
+        icon: Icon::Settings,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(TagsWritePolicy) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Add a note to the tag's chart…",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &["secondary-shift-n"],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(TagsAddNote) },
+        palette: true,
+        role: Role::Operator,
+    },
     command!(
         "Compare the tag with another…",
         View,
