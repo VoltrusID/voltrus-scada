@@ -21,9 +21,10 @@ use vt_ui::theme::*;
 
 use crate::console::{Console, Page, Phase, pages};
 
-/// The pages whose poll runs now.
+/// The pages whose poll runs now. Kept across sessions: a loop ends on its
+/// own once its session has.
 #[derive(Default)]
-struct Polls(HashSet<&'static str>);
+pub(crate) struct Polls(HashSet<&'static str>);
 
 /// Run `tick` every `every` while `page` is on screen in a signed-in
 /// console (not in a stress test), from the page's `on_show`. The loop ends
@@ -189,8 +190,11 @@ pub(crate) fn command_status_color(status: &str, theme: &Theme) -> Hsla {
 /// Ask where to save a download (`suggested` as the name, in Downloads),
 /// then fetch `path` into it off the UI thread. The answer comes back to
 /// the page of `key` as a [`Saved`]; `cancelled` runs if the operator
-/// closes the save panel instead.
+/// closes the save panel instead. A panel still open when the session
+/// changes (sign-out, a failed link, another sign-in) saves nothing: the
+/// new session's data must not land where the earlier one asked.
 pub(crate) fn save_download(
+    console: &Console,
     key: CallKey,
     path: String,
     suggested: String,
@@ -201,10 +205,12 @@ pub(crate) fn save_download(
     let directory = dirs::download_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."));
+    let epoch = console.session_epoch();
     let prompt = cx.prompt_for_new_path(&directory, Some(&suggested));
     cx.spawn(async move |this, cx| {
         let chosen = prompt.await;
         let _ = this.update(cx, |console, cx| match chosen {
+            _ if console.session_epoch() != epoch => {}
             Ok(Ok(Some(file))) => console.call(
                 key,
                 Call::new(move |api| async move { api.download(&path, &file, format).await }),
@@ -279,7 +285,40 @@ pub(crate) fn notice(text: impl Into<SharedString>, error: bool, theme: &Theme) 
 
 #[cfg(test)]
 mod tests {
+    use voltrus_scada_native::runtime::Command;
+
     use super::*;
+    use crate::console::testing::Harness;
+    use crate::console::views::audit;
+
+    fn exported(h: &mut Harness) -> bool {
+        h.commands().iter().any(
+            |command| matches!(command, Command::Call { key, .. } if key.name == "audit.export"),
+        )
+    }
+
+    #[gpui::test]
+    fn a_save_panel_saves_where_the_operator_picks(cx: &mut gpui::TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(audit::export_csv);
+        h.commands();
+        h.cx.simulate_new_path_selection(|directory| Some(directory.join("audit.csv")));
+        h.draw();
+        assert!(exported(&mut h));
+    }
+
+    #[gpui::test]
+    fn a_save_panel_left_open_across_sessions_saves_nothing(cx: &mut gpui::TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(audit::export_csv);
+        // Signed in again while the panel is open: another session.
+        h.sign_in("admin");
+        h.cx.simulate_new_path_selection(|directory| Some(directory.join("audit.csv")));
+        h.draw();
+        assert!(!exported(&mut h));
+    }
 
     #[test]
     fn saved_messages_say_what_the_server_held_back() {

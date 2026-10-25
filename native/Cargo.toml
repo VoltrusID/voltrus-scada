@@ -42,3 +42,5 @@ block = "0.1"
 
 [dev-dependencies]
 http = "1"
+# The console's tests run it in GPUI's test platform (`console::testing`).
+gpui = { version = "0.2.2", features = ["test-support"] }

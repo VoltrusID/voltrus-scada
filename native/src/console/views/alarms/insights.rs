@@ -146,7 +146,11 @@ pub(super) fn analytics(
                     .collect::<Vec<AlarmAnalyticsEntry>>(),
                 entries.iter().map(|entry| entry.trigger_count).sum::<i64>(),
                 entries.len(),
-                flood(entries, now),
+                state
+                    .history
+                    .as_ref()
+                    .and_then(|history| history.as_ref().ok())
+                    .and_then(|history| flood(history, now)),
                 state
                     .summary
                     .as_ref()
@@ -233,7 +237,7 @@ pub(super) fn analytics(
             .font_weight(FontWeight::MEDIUM)
             .child(vt_ui::icon(Icon::CircleAlert, ICON_MD, theme.danger))
             .child(format!(
-                "Alarm flood: {count} alarms in the last 5 minutes from the busiest sources"
+                "Alarm flood: {count} alarms raised in the last 5 minutes"
             ))
     });
 
