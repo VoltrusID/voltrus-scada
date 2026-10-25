@@ -12,11 +12,18 @@ JetBrains Mono for values.
 
 ## What it does
 
-- **Sign in** with the server address, username and password. The address and
-  username are remembered in `<config dir>/voltrus-native/config.toml`
+- **Sign in** under the Voltrus logo, with the server address, username and
+  password. The address and username are remembered in
+  `<config dir>/voltrus-native/config.toml`
   (`~/Library/Application Support/voltrus-native/` on macOS); the password
   never is. When the server flags a generated or reset password, the console
   asks for a new one before anything else.
+- **Top navbar**, in the window's title bar row (right of the macOS traffic
+  lights, and the window's drag area): the Voltrus logo, "Voltrus SCADA" and
+  the server's address; the Overview, Tags, Alarms and Trends tabs (⌘1–⌘4,
+  shown in each tab's tooltip; Alarms carries the count still to
+  acknowledge); then the light/dark switch, who is signed in with their role,
+  and Sign out. Pages span the full width below it.
 - **Overview**: tag count, tags that need attention, alarms to acknowledge and
   live updates per second; the worst tags and the open alarms (with
   Acknowledge); a tile per tag with its value, status and a 15-minute
@@ -88,7 +95,7 @@ native/src/
     mod.rs          the Console model: phases, pages, actions, key bindings
     store.rs        tags, values, statuses and history; update rate
     config.rs       remembered address and username
-    views/          one function per area: sign_in, sidebar, status_bar,
+    views/          one function per area: sign_in, navbar, status_bar,
                     overview, tags, alarms, trends
 native/scripts/     CI: the solar-farm plant, app bundle, screenshots
 ```
@@ -115,9 +122,11 @@ solar-farm scenario, resets the admin password with
 plant-like alarm limits. The end-to-end test runs against that server
 (signing in, tags, history, live values, acknowledging an open alarm, and
 changing the admin password and back), and
-`native/scripts/screenshots-macos.sh` captures every page of the signed-in
-console. The screenshots and a zipped, ad-hoc signed `Voltrus SCADA.app` are
-the workflow's artifacts; tagged releases attach the zip as well.
+`native/scripts/screenshots-macos.sh` captures the signed-in console:
+`overview`, `tags` (with a tag's detail open), `alarms`, `trends` (5 min) and
+`overview-light`, plus the `sign-in` screen. The screenshots and a zipped,
+ad-hoc signed `Voltrus SCADA.app` are the workflow's artifacts; tagged
+releases attach the zip as well.
 
 Manual WebSocket debugging:
 

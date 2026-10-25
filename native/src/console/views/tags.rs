@@ -70,7 +70,7 @@ impl Columns {
     }
 }
 
-/// `width` is the space right of the sidebar.
+/// `width` is the window's width: the page spans it.
 pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
     // Filtered once per render; the list's rows index into it.

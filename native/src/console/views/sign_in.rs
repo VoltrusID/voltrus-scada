@@ -3,7 +3,7 @@
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, div, px};
 use vt_ui::Icon;
-use vt_ui::components::{Button, field};
+use vt_ui::components::{Button, brand_mark, field};
 use vt_ui::theme::*;
 
 use super::host;
@@ -85,25 +85,18 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
             div()
                 .flex()
                 .flex_col()
-                .gap(SPACE_6)
-                .child(brand_mark(&theme))
+                .gap(SPACE_2)
                 .child(
                     div()
-                        .flex()
-                        .flex_col()
-                        .gap(SPACE_2)
-                        .child(
-                            div()
-                                .text_size(FONT_DISPLAY)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(title),
-                        )
-                        .child(
-                            div()
-                                .text_size(FONT_BODY)
-                                .text_color(theme.fg_muted)
-                                .child(subtitle),
-                        ),
+                        .text_size(FONT_DISPLAY)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(FONT_BODY)
+                        .text_color(theme.fg_muted)
+                        .child(subtitle),
                 ),
         )
         .child(fields)
@@ -170,6 +163,20 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
         .justify_center()
         .gap(SPACE_8)
         .bg(theme.chrome)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(SPACE_5)
+                .child(brand_mark(px(64.0)))
+                .child(
+                    div()
+                        .text_size(FONT_TITLE)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Voltrus SCADA"),
+                ),
+        )
         .child(card)
         .child(
             div()
@@ -178,19 +185,4 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                 .child(concat!("Voltrus SCADA console ", env!("CARGO_PKG_VERSION"))),
         )
         .into_any_element()
-}
-
-/// The product mark: a pulse in the accent colour.
-pub fn brand_mark(theme: &Theme) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(40.0))
-        .rounded(RADIUS_LG)
-        .bg(theme.accent_soft)
-        .border_1()
-        .border_color(theme.accent.alpha(0.3))
-        .child(vt_ui::icon(Icon::Activity, px(20.0), theme.accent))
 }

@@ -1,8 +1,8 @@
 //! Views are functions over `&mut Console`; this is the window's root.
 
 mod alarms;
+mod navbar;
 mod overview;
-mod sidebar;
 mod sign_in;
 mod status_bar;
 mod tags;
@@ -31,14 +31,11 @@ impl Render for Console {
             Phase::SignIn | Phase::ChangePassword => sign_in::render(self, cx),
             Phase::Console => {
                 let rate = self.rate.per_second(Instant::now());
-                // Counted once: the sidebar, status bar and page all show it.
+                // Counted once: the navbar, status bar and page all show it.
                 let unacknowledged = self.unacknowledged();
                 let page = match self.page {
                     Page::Overview => overview::render(self, rate, unacknowledged, cx),
-                    Page::Tags => {
-                        let width = window.viewport_size().width - px(sidebar::WIDTH);
-                        tags::render(self, width, cx)
-                    }
+                    Page::Tags => tags::render(self, window.viewport_size().width, cx),
                     Page::Alarms => alarms::render(self, unacknowledged, cx),
                     Page::Trends => trends::render(self, cx),
                 };
@@ -46,14 +43,8 @@ impl Render for Console {
                     .flex()
                     .flex_col()
                     .size_full()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .min_h_0()
-                            .child(sidebar::render(self, unacknowledged, cx))
-                            .child(div().flex().flex_col().flex_1().min_w_0().child(page)),
-                    )
+                    .child(navbar::render(self, unacknowledged, cx))
+                    .child(div().flex().flex_col().flex_1().min_h_0().child(page))
                     .child(status_bar::render(self, rate, unacknowledged, cx))
                     .into_any_element()
             }
@@ -115,8 +106,8 @@ impl Render for Console {
                 } else {
                     theme.success
                 };
-                // Under the page header, and left of the tag detail panel
-                // when it is open, so it never covers a control.
+                // Under the navbar and the page header, and left of the tag
+                // detail panel when it is open, so it never covers a control.
                 let panel_open = self.phase == Phase::Console
                     && self.page == Page::Tags
                     && self.selected.is_some();
@@ -128,7 +119,7 @@ impl Render for Console {
                 this.child(
                     div()
                         .absolute()
-                        .top(px(68.0))
+                        .top(TITLE_BAR_HEIGHT + px(68.0))
                         .right(right)
                         .max_w(px(440.0))
                         .flex()

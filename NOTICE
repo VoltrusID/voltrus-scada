@@ -82,7 +82,7 @@ project's own licence text is in its source package.
 
   [GPL-3.0-or-later]
     vt-ui  https://github.com/VoltrusID/voltrus-explorers (apps/voltrus-tools/crates/vt-ui,
-           rev 30678b76835285d62457762189b54f568b453adc)
+           rev 2d91988da3e69fd7020da579bdf466ef989f5b08)
 
   [MPL-2.0]
     async-opcua  https://github.com/freeopcua/async-opcua
@@ -127,7 +127,7 @@ project's own licence text is in its source package.
 === Native console (voltrus-native, Voltrus SCADA.app) ===
   The app bundle carries these licence texts in Contents/Resources/Licenses/.
   vt-ui (GPL-3.0-or-later), the Voltrus design system. Complete corresponding source:
-    https://github.com/VoltrusID/voltrus-explorers/tree/30678b76835285d62457762189b54f568b453adc/apps/voltrus-tools/crates/vt-ui
+    https://github.com/VoltrusID/voltrus-explorers/tree/2d91988da3e69fd7020da579bdf466ef989f5b08/apps/voltrus-tools/crates/vt-ui
     Its third-party notices (muxy MIT notice included) are in Licenses/NOTICE-voltrus-tools.md.
   gpui (Apache-2.0), Zed Industries, via https://github.com/VoltrusID/gpui
     rev 6c718f33b99b8d27e5987b746fe4b00dc6051a7c (fork of muxy-app/gpui).

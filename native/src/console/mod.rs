@@ -857,7 +857,7 @@ impl Console {
         self.has_role(&["admin", "demo", "integration"])
     }
 
-    /// Open alarms nobody has acknowledged yet: the sidebar badge.
+    /// Open alarms nobody has acknowledged yet: the Alarms tab's badge.
     pub fn unacknowledged(&self) -> usize {
         self.alarms
             .iter()
