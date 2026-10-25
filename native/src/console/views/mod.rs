@@ -13,6 +13,7 @@ mod dashboard_cards;
 pub(crate) mod edition;
 pub(crate) mod export;
 pub(crate) mod hud;
+pub(crate) mod mimic;
 pub(crate) mod navbar;
 pub(crate) mod notifications;
 pub(crate) mod ops_kit;
