@@ -151,9 +151,9 @@ impl Render for Console {
                     console.history_step(true, window, cx);
                 }
             }))
-            .on_action(cx.listener(|console, _: &AcknowledgeAll, _, _| {
+            .on_action(cx.listener(|console, _: &AcknowledgeAll, window, cx| {
                 if console.phase == Phase::Console && console.is_signed_in() {
-                    console.acknowledge_all();
+                    alarms::confirm_acknowledge_all(console, window, cx);
                 }
             }))
             .on_action(cx.listener(|console, _: &ToggleAppearance, _, cx| {
@@ -208,6 +208,7 @@ impl Render for Console {
                     console.sign_out(window, cx);
                 }
             }))
+            .map(|root| alarms::root_actions(root, cx))
             .on_action(
                 cx.listener(|console, _: &super::keys::DataNewSource, window, cx| {
                     if console.phase == Phase::Console {
