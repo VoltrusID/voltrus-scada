@@ -834,13 +834,23 @@ struct AggregateView {
 #[allow(clippy::too_many_lines)]
 fn aggregate_view(view: AggregateView, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let (Some(span), Some(buckets)) = (view.span, view.buckets) else {
-        return notice("Fetching the buckets…", false, &theme);
+    let (Some(span), Some(Ok(buckets))) = (view.span, &view.buckets) else {
+        // The chart keeps the focus and its keys while a drill fetches,
+        // so ⌫ and Esc still come back out.
+        let text = match &view.buckets {
+            Some(Err(error)) => format!("Analytics: {error}"),
+            _ => "Fetching the buckets…".to_owned(),
+        };
+        let error = matches!(&view.buckets, Some(Err(_)));
+        let frame = div()
+            .id("analytics-chart")
+            .key_context(ANALYTICS_CHART)
+            .track_focus(&view.focus)
+            .flex_1()
+            .child(notice(text, error, &theme));
+        return keyed(frame, cx).into_any_element();
     };
-    let buckets = match buckets {
-        Ok(buckets) => buckets,
-        Err(error) => return notice(format!("Analytics: {error}"), true, &theme),
-    };
+    let buckets = Rc::clone(buckets);
     let offset = view.offset;
     let shown_at = view.hover.or(view.cursor);
     let unit = view.unit;
@@ -1012,6 +1022,36 @@ fn aggregate_view(view: AggregateView, cx: &mut Context<Console>) -> AnyElement 
                 cx.notify();
             }),
         )
+        .child(bar_chart(spec, cx));
+    let chart = keyed(chart, cx);
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(SPACE_6)
+        .size_full()
+        .child(figures)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(SPACE_4)
+                .text_size(FONT_SMALL)
+                .text_color(theme.fg_muted)
+                .child(place)
+                .when(view.depth > 0, |this| {
+                    this.child(kbd("⌫", cx)).child("back out")
+                })
+                .child(div().flex_1())
+                .child(readout),
+        )
+        .child(chart)
+        .into_any_element()
+}
+
+/// The chart's keys on its frame: bars, drilling in and out, the metric.
+fn keyed(frame: gpui::Stateful<gpui::Div>, cx: &mut Context<Console>) -> gpui::Stateful<gpui::Div> {
+    frame
         .on_action(cx.listener(|console, _: &AnalyticsPreviousBar, _, cx| {
             move_bar(console, BarMove::Previous, cx);
         }))
@@ -1041,30 +1081,6 @@ fn aggregate_view(view: AggregateView, cx: &mut Context<Console>) -> AnyElement 
                 cx.propagate();
             }
         }))
-        .child(bar_chart(spec, cx));
-
-    div()
-        .flex()
-        .flex_col()
-        .gap(SPACE_6)
-        .size_full()
-        .child(figures)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(SPACE_4)
-                .text_size(FONT_SMALL)
-                .text_color(theme.fg_muted)
-                .child(place)
-                .when(view.depth > 0, |this| {
-                    this.child(kbd("⌫", cx)).child("back out")
-                })
-                .child(div().flex_1())
-                .child(readout),
-        )
-        .child(chart)
-        .into_any_element()
 }
 
 fn with_unit(value: f64, unit: &str) -> String {
@@ -1518,6 +1534,8 @@ mod tests {
         );
         let finer = sent(&h.calls(), "data.analytics.aggregate").expect("its buckets");
         assert_eq!(finer.arg, aggregate.arg + 1);
+        // While the finer buckets are on their way the chart keeps its keys.
+        h.draw();
         h.keys("backspace");
         assert_eq!(state(&mut h), (0, Some(3600)), "back out, as it was");
         assert_eq!(h.update(|console, _, _| buckets_of(console).len()), 3);
