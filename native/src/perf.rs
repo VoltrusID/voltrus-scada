@@ -340,7 +340,53 @@ pub struct SlowFrame {
     pub render_ms: f64,
     /// What else the frame did: `first show`, `page switch`, or nothing.
     pub note: &'static str,
+    /// The UI thread's own CPU time within the frame: far below `cpu_ms`,
+    /// the thread was waiting or taken off the CPU, not working.
+    pub on_cpu_ms: Option<f64>,
+    /// Views (render, layout, prepaint) and paint within the frame.
+    pub views_ms: Option<f64>,
+    pub paint_ms: Option<f64>,
 }
+
+/// The calling thread's CPU time so far, in ms (user and system).
+#[cfg(unix)]
+pub fn thread_cpu_ms() -> Option<f64> {
+    let mut time = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `clock_gettime` writes the struct it is given.
+    let status = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &raw mut time) };
+    #[allow(clippy::cast_precision_loss)]
+    (status == 0).then(|| time.tv_sec as f64 * 1000.0 + time.tv_nsec as f64 / 1_000_000.0)
+}
+
+#[cfg(not(unix))]
+pub fn thread_cpu_ms() -> Option<f64> {
+    None
+}
+
+/// Put the calling thread below the UI in the scheduler's eyes (macOS QoS
+/// "utility"; elsewhere nothing). The network runtime and the stress feed
+/// run so: on a machine with few cores they would otherwise take the CPU
+/// from the UI thread in the middle of a frame (the report's `stalls`).
+pub fn below_the_ui() {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn pthread_set_qos_class_self_np(class: u32, relative_priority: i32) -> i32;
+        }
+        /// `QOS_CLASS_UTILITY` from `<sys/qos.h>`.
+        const UTILITY: u32 = 0x11;
+        // SAFETY: changes only the calling thread's scheduling class; a
+        // failure leaves it as it was.
+        let _ = unsafe { pthread_set_qos_class_self_np(UTILITY, 0) };
+    }
+}
+
+/// Frames that took over [`STALL_MS`] longer than the UI thread worked in
+/// them: it waited (a lock, the GPU, I/O) or was taken off the CPU.
+pub const STALL_MS: f64 = 20.0;
 
 /// What a stress run measured, as printed on exit and shown in the HUD.
 #[derive(Debug, Clone, Default)]
@@ -377,6 +423,9 @@ pub struct Report {
     pub pages: Vec<PageFigures>,
     pub phases: Option<Phases>,
     pub late: LateStarts,
+    /// Frames the UI thread spent over [`STALL_MS`] off the CPU or
+    /// waiting, and the longest such wait.
+    pub stalls: (usize, f64),
     /// Share of back-to-back frames that started one vsync after the
     /// previous, in percent.
     pub on_next_vsync: f64,
@@ -462,6 +511,13 @@ impl fmt::Display for Report {
                 self.on_next_vsync
             )?;
         }
+        if self.stalls.0 > 0 {
+            writeln!(
+                f,
+                "stalls: {} frames took over {STALL_MS:.0} ms longer than the UI thread worked in them (longest wait {:.2} ms)",
+                self.stalls.0, self.stalls.1
+            )?;
+        }
         if let Some((frames, spread)) = &self.warm_up {
             writeln!(
                 f,
@@ -500,6 +556,12 @@ impl fmt::Display for Report {
                     };
                     let mut text =
                         format!("{:.2} {page} (render {:.2}", frame.cpu_ms, frame.render_ms);
+                    if let (Some(views), Some(paint)) = (frame.views_ms, frame.paint_ms) {
+                        text.push_str(&format!(", views {views:.2}, paint {paint:.2}"));
+                    }
+                    if let Some(on_cpu) = frame.on_cpu_ms {
+                        text.push_str(&format!(", on-CPU {on_cpu:.2}"));
+                    }
                     if !frame.note.is_empty() {
                         text.push_str(", ");
                         text.push_str(frame.note);
@@ -869,18 +931,23 @@ mod tests {
                 nothing_due: 3,
             },
             on_next_vsync: 97.5,
+            stalls: (2, 41.5),
             slowest: vec![
                 SlowFrame {
                     cpu_ms: 7.0,
                     page: "overview",
                     render_ms: 1.5,
                     note: "first show",
+                    on_cpu_ms: Some(6.5),
+                    views_ms: Some(3.0),
+                    paint_ms: Some(1.0),
                 },
                 SlowFrame {
                     cpu_ms: 6.0,
                     page: "tags",
                     render_ms: 0.25,
                     note: "",
+                    ..SlowFrame::default()
                 },
             ],
             ..Report::default()
@@ -893,10 +960,11 @@ mod tests {
             "apply_ms per event batch: p50 0.10  p95 0.30  max 1.00",
             "warm_up: 5 frames from the start until every page was drawn once",
             "  overview     frames   590  frame p50 2.00  p95 4.00  max 7.00  render p50 0.50  p95 0.90  max 1.50  first 6.50",
-            "slowest_frames_ms: 7.00 overview (render 1.50, first show), 6.00 tags (render 0.25)",
+            "slowest_frames_ms: 7.00 overview (render 1.50, views 3.00, paint 1.00, on-CPU 6.50, first show), 6.00 tags (render 0.25)",
             "frame_phases_ms: root layout p50 1.00  p95 2.00  max 3.00  |  views render+layout+prepaint p50 0.00",
             "late_starts: 4 of 100 back-to-back frames started over 1 ms after their vsync slot: previous frame still drawing 1, event batch just applied 2, other (display link, scheduler) 1; 3 more after a pause in the data",
             "frame_pacing: 97.5% of back-to-back frames came one vsync after the previous",
+            "stalls: 2 frames took over 20 ms longer than the UI thread worked in them (longest wait 41.50 ms)",
         ] {
             assert!(text.contains(line), "missing “{line}” in\n{text}");
         }
@@ -930,5 +998,17 @@ mod tests {
         late.record_unowed(33.3, refresh);
         late.record_unowed(16.9, refresh);
         assert_eq!((late.frames, late.nothing_due), (5, 1));
+    }
+
+    #[test]
+    fn a_thread_below_the_ui_still_runs() {
+        let worked = std::thread::spawn(|| {
+            below_the_ui();
+            (0..1000_u64).sum::<u64>()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(worked, 499_500);
+        assert!(thread_cpu_ms().is_some_and(|ms| ms >= 0.0));
     }
 }

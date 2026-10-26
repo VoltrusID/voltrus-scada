@@ -409,11 +409,14 @@ pub fn start() -> std::io::Result<(Handle, async_channel::Receiver<Event>)> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_name("scada-io")
+        // Network and the stress feed must not take the CPU from frames.
+        .on_thread_start(crate::perf::below_the_ui)
         .enable_all()
         .build()?;
     std::thread::Builder::new()
         .name("scada-runtime".into())
         .spawn(move || {
+            crate::perf::below_the_ui();
             runtime.block_on(actor(command_rx, Out(event_tx)));
             let _ = stopped_tx.send(());
         })?;
