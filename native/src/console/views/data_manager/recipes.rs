@@ -1359,6 +1359,7 @@ fn recipe_row(
         .id(("recipe-row", row))
         .group("recipe-row")
         .relative()
+        .w_full()
         .flex()
         .items_center()
         .gap(SPACE_5)

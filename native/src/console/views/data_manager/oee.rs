@@ -59,7 +59,7 @@ const CLOSE: &str = "oee-close";
 const NEW_SHIFT: &str = "oee-new-shift";
 const DELETE_SHIFT: &str = "oee-delete-shift";
 const ROW_HEIGHT_PX: f32 = 34.0;
-const DETAIL: f32 = 340.0;
+const DETAIL: f32 = 300.0;
 /// Fetched again this often while on screen: downtime opens and closes
 /// without a WebSocket message.
 const REFRESH: Duration = Duration::from_secs(15);
@@ -223,15 +223,21 @@ pub fn on_open(console: &mut Console, cx: &mut Context<Console>) {
     if console.stress.is_some() {
         return;
     }
-    if !console.state::<State>().device_chosen {
-        let first = devices(console).first().cloned();
-        let state = console.state::<State>();
+    // A first look picks the first device; with the page shown at sign-in
+    // the tag list may not be there yet, so the pick waits for it.
+    let first = devices(console).first().cloned();
+    let state = console.state::<State>();
+    let pick = !state.device_chosen && first.is_some();
+    if pick {
         state.device = first;
         state.device_chosen = true;
     }
-    if !console.state::<State>().asked {
-        console.state::<State>().asked = true;
+    let first_look = !state.asked;
+    state.asked = true;
+    if first_look || pick {
         fetch(console);
+    }
+    if first_look {
         fetch_shifts(console);
     }
     every_while_shown(console, ID, REFRESH, tick, cx);
@@ -977,6 +983,14 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let theme = theme(cx).clone();
     let operator = console.is_operator();
     let options = devices(console);
+    // The tag list came after the section opened: pick its first device
+    // now (after this frame; render itself never fetches).
+    if !console.state::<State>().device_chosen
+        && !options.is_empty()
+        && super::section_shown(console, ID)
+    {
+        cx.defer_in(window, |console, _, cx| on_open(console, cx));
+    }
     let cards = cards_focus(console, cx);
     let state = console.state::<State>();
     let (device, range, span) = (state.device.clone(), state.range, state.span);
@@ -1500,9 +1514,9 @@ fn detail_card(
         .into_any_element()
 }
 
-const STATE_W: f32 = 96.0;
+const STATE_W: f32 = 84.0;
 const DEVICE_W: f32 = 110.0;
-const TIME_W: f32 = 96.0;
+const TIME_W: f32 = 76.0;
 const DURATION_W: f32 = 72.0;
 const ACTION_W: f32 = 64.0;
 
@@ -1550,6 +1564,8 @@ fn events_list(
     let (cursor, focused, scroll) = (nav.cursor, nav.focus.is_focused(window), nav.scroll.clone());
     let device_column = every_device && width > 620.0;
     let ended_column = width > 540.0;
+    // The Close column only while an event is open.
+    let any_open = rows.iter().any(DowntimeEvent::is_open);
     let header = div()
         .flex()
         .flex_none()
@@ -1562,6 +1578,7 @@ fn events_list(
         .text_size(FONT_CAPTION)
         .font_weight(FontWeight::SEMIBOLD)
         .text_color(theme.fg_dim)
+        .whitespace_nowrap()
         .child(div().w(px(STATE_W)).flex_none().child("STATE"))
         .when(device_column, |this| {
             this.child(div().w(px(DEVICE_W)).flex_none().child("DEVICE"))
@@ -1578,7 +1595,9 @@ fn events_list(
                 .child("DURATION"),
         )
         .child(div().flex_1().min_w_0().child("REASON"))
-        .child(div().w(px(ACTION_W)).flex_none());
+        .when(any_open, |this| {
+            this.child(div().w(px(ACTION_W)).flex_none())
+        });
     let now = time_now_secs();
     let body = uniform_list(
         "oee-events",
@@ -1598,6 +1617,7 @@ fn events_list(
                             div()
                                 .id(("oee-event", row))
                                 .relative()
+                                .w_full()
                                 .flex()
                                 .items_center()
                                 .gap(SPACE_5)
@@ -1678,31 +1698,37 @@ fn events_list(
                                         })
                                         .child(event.reason.clone().unwrap_or_else(|| "—".into())),
                                 )
-                                .child(div().w(px(ACTION_W)).flex_none().flex().justify_end().when(
-                                    open,
-                                    |this| {
-                                        this.child(
-                                            Button::new(("oee-close", row), "Close")
-                                                .compact()
-                                                .tooltip(if operator {
-                                                    "Close with a reason  ↵"
-                                                } else {
-                                                    "Needs the operator role"
-                                                })
-                                                .disabled(!operator)
-                                                .on_click(cx.listener(
-                                                    move |console, _, window, cx| {
-                                                        ask_close(
-                                                            console,
-                                                            target.clone(),
-                                                            window,
-                                                            cx,
-                                                        );
-                                                    },
-                                                )),
-                                        )
-                                    },
-                                ))
+                                .when(any_open, |this| {
+                                    this.child(
+                                        div()
+                                            .w(px(ACTION_W))
+                                            .flex_none()
+                                            .flex()
+                                            .justify_end()
+                                            .when(open, |this| {
+                                                this.child(
+                                                    Button::new(("oee-close", row), "Close")
+                                                        .compact()
+                                                        .tooltip(if operator {
+                                                            "Close with a reason  ↵"
+                                                        } else {
+                                                            "Needs the operator role"
+                                                        })
+                                                        .disabled(!operator)
+                                                        .on_click(cx.listener(
+                                                            move |console, _, window, cx| {
+                                                                ask_close(
+                                                                    console,
+                                                                    target.clone(),
+                                                                    window,
+                                                                    cx,
+                                                                );
+                                                            },
+                                                        )),
+                                                )
+                                            }),
+                                    )
+                                })
                                 .into_any_element()
                         }
                     })
@@ -1771,6 +1797,7 @@ fn shifts_list(
                             div()
                                 .id(("oee-shift", row))
                                 .relative()
+                                .w_full()
                                 .flex()
                                 .items_center()
                                 .gap(SPACE_5)

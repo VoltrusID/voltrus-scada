@@ -166,10 +166,11 @@ pub fn on_open(console: &mut Console, cx: &mut Context<Console>) {
     if console.stress.is_some() {
         return;
     }
-    if !console.state::<State>().device_chosen {
-        let first = devices(console).first().cloned();
-        console.state::<State>().device_chosen = true;
-        pick_device(console, first, cx);
+    // A first look picks the first device, once the tag list names one.
+    if !console.state::<State>().device_chosen
+        && let Some(first) = devices(console).first().cloned()
+    {
+        pick_device(console, Some(first), cx);
     }
 }
 
@@ -497,6 +498,14 @@ pub(crate) fn bucket_label(interval: i64) -> String {
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
     let options = devices(console);
+    // The tag list came after the section opened: pick its first device
+    // now (after this frame; render itself never fetches).
+    if !console.state::<State>().device_chosen
+        && !options.is_empty()
+        && super::section_shown(console, ID)
+    {
+        cx.defer_in(window, |console, _, cx| on_open(console, cx));
+    }
     let rows = metric_rows(console);
     let chart = chart_focus(console, cx);
     let state = console.state::<State>();
