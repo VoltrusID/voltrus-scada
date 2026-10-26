@@ -229,7 +229,7 @@ fn add_scanned(
     let id = row_id(&device);
     let name = name_of(&device);
     console.call(
-        CallKey::new(protocol.calls.save),
+        CallKey::new(protocol.calls.scan_add),
         Call::new(move |api| async move {
             let mut current = device_form::modbus_registers(&api, &path).await?;
             let mut added = 0;

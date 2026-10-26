@@ -104,11 +104,7 @@ fn make_fields(
     let mut fields = Vec::with_capacity(slots.len());
     let mut subscriptions = Vec::with_capacity(slots.len());
     for slot in slots {
-        let numeric = match slot {
-            Slot::Config(key) => field_of(widget, key)
-                .is_some_and(|field| matches!(field.kind, FieldKind::Number { .. })),
-            _ => true,
-        };
+        let numeric = is_numeric(widget, slot);
         let text = text_of(widget, slot);
         let field = cx.new(|cx| {
             let field = TextInput::new(cx).text(text);
@@ -132,6 +128,43 @@ fn make_fields(
         editor._field_subscriptions = subscriptions;
         editor.fields_for = Some(widget.id.clone());
         editor.picking = None;
+    }
+}
+
+/// Whether the field for `slot` takes a number (committed on Enter or
+/// leaving the field) rather than text (applied as typed).
+fn is_numeric(widget: &Widget, slot: Slot) -> bool {
+    match slot {
+        Slot::Config(key) => field_of(widget, key)
+            .is_some_and(|field| matches!(field.kind, FieldKind::Number { .. })),
+        _ => true,
+    }
+}
+
+/// Commit the number being typed in a focused field, now: a press on the
+/// stage moves focus and maybe the selection before the field's blur is
+/// heard, and the number would be lost or land on another widget.
+pub(super) fn commit_typing(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    let Some(editor) = edits_ref(console) else {
+        return;
+    };
+    let Some(widget) = editor.single().cloned() else {
+        return;
+    };
+    let typing = editor.fields.iter().find_map(|(slot, field)| {
+        let field = field.read(cx);
+        field
+            .focus_handle(cx)
+            .is_focused(window)
+            .then(|| (*slot, field.value().to_owned()))
+    });
+    let Some((slot, text)) = typing else {
+        return;
+    };
+    if is_numeric(&widget, slot)
+        && let Some(typed) = commit_number(&widget, slot, &text)
+    {
+        apply(console, &typed, None, window, cx);
     }
 }
 
@@ -180,7 +213,13 @@ fn on_field(
             field.update(cx, |field, cx| field.set_text(text_of(&widget, slot), cx));
             focus_stage(console, window, cx);
         }
-        _ => {}
+        // The typing in a text field is over: the next edit is a new step.
+        InputEvent::Submitted | InputEvent::Blurred => {
+            if let Some(editor) = edits(console) {
+                editor.history.seal();
+            }
+        }
+        InputEvent::Changed => {}
     }
 }
 

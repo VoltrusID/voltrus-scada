@@ -99,6 +99,18 @@ fn url(item: Item, server: &str) -> Option<String> {
     }
 }
 
+/// Why a tool row can't open now: no server, or a stress run's synthetic
+/// `stress://` one that no browser or app can reach.
+fn unreachable(server: &str, stress: bool) -> Option<&'static str> {
+    if stress {
+        Some("A stress test has no server")
+    } else if server.is_empty() {
+        Some("Not signed in to a server")
+    } else {
+        None
+    }
+}
+
 pub(super) fn focus(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> bool {
     console.focus_list(LIST, window, cx);
     true
@@ -118,8 +130,8 @@ fn activate(
         Item::Docs => set_tab(console, Tab::Docs, window, cx),
         Item::Snapshots => open_snapshots(console, window, cx),
         _ => {
-            if console.server.is_empty() {
-                console.show_toast("Not signed in to a server", true, cx);
+            if let Some(why) = unreachable(&console.server, console.stress.is_some()) {
+                console.show_toast(why, true, cx);
                 return;
             }
             if let Some(url) = url(item, &console.server) {
@@ -264,5 +276,12 @@ mod tests {
         );
         assert_eq!(url(Item::Docs, server), None);
         assert_eq!(Item::Tool(1).title(), "Voltrus HMI");
+    }
+
+    #[test]
+    fn a_stress_run_opens_no_tool() {
+        assert!(unreachable("stress://plant", true).is_some());
+        assert!(unreachable("", false).is_some());
+        assert_eq!(unreachable("http://plant.local:3000/", false), None);
     }
 }

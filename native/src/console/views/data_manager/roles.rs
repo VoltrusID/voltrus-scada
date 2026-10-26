@@ -48,6 +48,9 @@ struct Form {
     chosen: Vec<String>,
     error: Option<String>,
     busy: bool,
+    /// This form's number: its save's key, so an older form's answer
+    /// leaves it alone.
+    seq: i64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -59,6 +62,8 @@ pub(crate) struct State {
     _search: Option<Subscription>,
     focus_name: Option<String>,
     form: Option<Form>,
+    /// How many forms were opened.
+    form_seq: i64,
     deleting: Option<RbacRole>,
 }
 
@@ -151,12 +156,16 @@ fn open_form(
         .as_ref()
         .map(RbacRole::permission_list)
         .unwrap_or_default();
-    console.state::<State>().form = Some(Form {
+    let state = console.state::<State>();
+    state.form_seq += 1;
+    let seq = state.form_seq;
+    state.form = Some(Form {
         original,
         name: name.clone(),
         chosen,
         error: None,
         busy: false,
+        seq,
         _subscriptions: subscriptions,
     });
     console.list(PICKS, cx).cursor = Some(0);
@@ -271,6 +280,7 @@ fn submit(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
         Ok(body) => {
             form.busy = true;
             form.error = None;
+            let seq = form.seq;
             let (method, path, done) = match &original {
                 Some(role) => (
                     Method::PUT,
@@ -284,7 +294,7 @@ fn submit(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
                 ),
             };
             console.call(
-                CallKey::new("data.roles.save"),
+                CallKey::new("data.roles.save").with(seq),
                 Call::new(move |api| async move {
                     api.send_json::<_, IgnoredAny>(method, &path, &body).await?;
                     anyhow::Ok((done, name))
@@ -299,23 +309,35 @@ fn submit(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
 pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Context<Console>) {
     match key.name {
         "data.roles.list" => console.state::<State>().roles = Some(reply.take::<Vec<RbacRole>>()),
-        "data.roles.save" => match reply.take::<(String, String)>() {
-            Ok((done, name)) => {
-                let state = console.state::<State>();
-                state.form = None;
-                state.focus_name = Some(name);
-                kit::close_later(console, FORM, cx);
-                fetch(console, true);
-                console.show_toast(done, false, cx);
-            }
-            Err(error) => match console.state::<State>().form.as_mut() {
-                Some(form) => {
-                    form.busy = false;
-                    form.error = Some(error);
+        "data.roles.save" => {
+            let current = console
+                .state::<State>()
+                .form
+                .as_ref()
+                .is_some_and(|form| form.seq == key.arg);
+            match reply.take::<(String, String)>() {
+                Ok((done, name)) => {
+                    let state = console.state::<State>();
+                    state.focus_name = Some(name);
+                    // A form opened since then keeps its edits.
+                    if current {
+                        state.form = None;
+                        kit::close_later(console, FORM, cx);
+                    }
+                    fetch(console, true);
+                    console.show_toast(done, false, cx);
                 }
-                None => console.show_toast(format!("Saving the role failed: {error}"), true, cx),
-            },
-        },
+                Err(error) => match console.state::<State>().form.as_mut().filter(|_| current) {
+                    Some(form) => {
+                        form.busy = false;
+                        form.error = Some(error);
+                    }
+                    None => {
+                        console.show_toast(format!("Saving the role failed: {error}"), true, cx);
+                    }
+                },
+            }
+        }
         "data.roles.delete" => match reply.take::<String>() {
             Ok(name) => {
                 fetch(console, true);
@@ -748,4 +770,63 @@ fn form_dialog(
             cx,
         ))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::console::testing::Harness;
+    use gpui::TestAppContext;
+
+    fn fill(h: &mut Harness, name: &'static str) {
+        h.update(|console, _, cx| {
+            let form = console
+                .state::<State>()
+                .form
+                .as_mut()
+                .expect("the form is open");
+            form.chosen = vec![PERMISSIONS[0].to_owned()];
+            let field = form.name.clone();
+            field.update(cx, |field, cx| field.set_text(name, cx));
+        });
+    }
+
+    #[gpui::test]
+    fn an_older_forms_save_answer_leaves_the_new_form_alone(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| open_form(console, None, window, cx));
+        fill(&mut h, "Shift lead");
+        h.update(submit);
+        let first = *h
+            .calls()
+            .iter()
+            .find(|key| key.name == "data.roles.save")
+            .expect("saved");
+        // Esc while it saves, then another form.
+        h.update(|console, window, cx| {
+            console.close_overlay(window, cx);
+            open_form(console, None, window, cx);
+        });
+        h.reply(first, Reply::failed("taken"));
+        h.draw();
+        assert!(
+            h.update(|console, _, _| {
+                let form = console.state::<State>().form.as_ref().expect("still open");
+                form.error.is_none() && !form.busy && form.seq != first.arg
+            }),
+            "the old error does not land on the new form"
+        );
+        h.reply(
+            first,
+            Reply::ok(("Created Shift lead".to_owned(), "Shift lead".to_owned())),
+        );
+        h.draw();
+        assert!(
+            h.update(
+                |console, _, _| console.overlay_is(FORM) && console.state::<State>().form.is_some()
+            ),
+            "the old success does not close the new form"
+        );
+    }
 }

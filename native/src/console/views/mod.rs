@@ -189,21 +189,27 @@ impl Render for Console {
             .on_action(cx.listener(|console, _: &TogglePalette, window, cx| {
                 if console.overlay_is("palette") {
                     console.close_overlay(window, cx);
-                } else if console.phase == Phase::Console {
+                } else if console.phase == Phase::Console
+                    && !data_manager::api_keys::secret_shown(console)
+                {
                     console.open_palette(window, cx);
                 }
             }))
             .on_action(cx.listener(|console, _: &ToggleHelp, window, cx| {
                 if console.overlay_is("help") {
                     console.close_overlay(window, cx);
-                } else if console.phase == Phase::Console {
+                } else if console.phase == Phase::Console
+                    && !data_manager::api_keys::secret_shown(console)
+                {
                     console.open_help(window, cx);
                 }
             }))
             .on_action(cx.listener(|console, _: &ShowMore, window, cx| {
                 if console.overlay_is("more") {
                     console.close_overlay(window, cx);
-                } else if console.phase == Phase::Console {
+                } else if console.phase == Phase::Console
+                    && !data_manager::api_keys::secret_shown(console)
+                {
                     console.open_more(window, cx);
                 }
             }))

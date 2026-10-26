@@ -255,16 +255,29 @@ pub(crate) fn every_while_shown(
 }
 
 /// Ask where to save `text` (`suggested` as the name, in Downloads) and
-/// write it there; a toast says how it went.
-pub(crate) fn save_text(suggested: String, text: String, cx: &mut Context<Console>) {
+/// write it there; a toast says how it went. A panel still open when the
+/// session changes saves nothing, as `ops_kit::save_download`.
+pub(crate) fn save_text(
+    console: &Console,
+    suggested: String,
+    text: String,
+    cx: &mut Context<Console>,
+) {
     let directory = dirs::download_dir()
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."));
+    let epoch = console.session_epoch();
     let prompt = cx.prompt_for_new_path(&directory, Some(&suggested));
     cx.spawn(async move |this, cx| {
         let Ok(Ok(Some(file))) = prompt.await else {
             return;
         };
+        let same = this
+            .update(cx, |console, _| console.session_epoch() == epoch)
+            .unwrap_or(false);
+        if !same {
+            return;
+        }
         let written = cx
             .background_executor()
             .spawn({
@@ -337,5 +350,37 @@ mod tests {
         assert_eq!(at(Some("a"), false).as_deref(), Some("c"));
         assert_eq!(at(Some("gone"), true).as_deref(), Some("a"));
         assert!(step(&[], None, true).is_none());
+    }
+
+    fn save_across(cx: &mut gpui::TestAppContext, again: bool) -> bool {
+        let mut h = crate::console::testing::Harness::new(cx);
+        h.sign_in("admin");
+        let file = std::env::temp_dir().join(format!(
+            "voltrus-save-text-{}-{again}.csv",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&file);
+        h.update(|console, _, cx| save_text(console, "x.csv".into(), "a,b\n".into(), cx));
+        if again {
+            // Signed in again while the panel is open: another session.
+            h.sign_in("admin");
+        }
+        let target = file.clone();
+        h.cx.simulate_new_path_selection(move |_| Some(target.clone()));
+        h.cx.run_until_parked();
+        h.draw();
+        let saved = file.exists();
+        let _ = std::fs::remove_file(&file);
+        saved
+    }
+
+    #[gpui::test]
+    fn saved_text_lands_where_the_operator_picks(cx: &mut gpui::TestAppContext) {
+        assert!(save_across(cx, false));
+    }
+
+    #[gpui::test]
+    fn a_text_panel_left_open_across_sessions_saves_nothing(cx: &mut gpui::TestAppContext) {
+        assert!(!save_across(cx, true));
     }
 }

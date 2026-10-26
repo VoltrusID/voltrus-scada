@@ -225,7 +225,7 @@ pub(crate) static PROTOCOL: Protocol = Protocol {
         flag("enable_unsolicited", "Unsolicited responses", "true"),
         flag("enabled", "Enabled", "true"),
     ],
-    finish: None,
+    finish: Some(finish_outstation),
     child: Some(&POINTS),
     tools: &[
         Tool {
@@ -284,6 +284,26 @@ pub(crate) static PROTOCOL: Protocol = Protocol {
 
 section_hooks!();
 
+/// The interval the server's poller scans events at when none is stored
+/// (`src/dnp3/mod.rs`: `event_scan_interval_ms.unwrap_or(1000)`).
+const DEFAULT_EVENT_SCAN_MS: u64 = 1000;
+
+/// An edit cannot clear the event scan: the server's update reads `null`
+/// as "keep what is stored". A cleared field on an edit sends the
+/// interval the poller uses when none is stored, so clearing takes effect.
+fn finish_outstation(body: &mut Map<String, Value>, editing: bool) {
+    if editing
+        && body
+            .get("event_scan_interval_ms")
+            .is_some_and(Value::is_null)
+    {
+        body.insert(
+            "event_scan_interval_ms".into(),
+            Value::from(DEFAULT_EVENT_SCAN_MS),
+        );
+    }
+}
+
 pub fn on_open(console: &mut Console, _: &mut Context<Console>) {
     device_form::on_open(&PROTOCOL, console);
 }
@@ -338,6 +358,29 @@ mod tests {
             body(PROTOCOL.fields, &values, false).unwrap()["event_scan_interval_ms"],
             500
         );
+    }
+
+    #[test]
+    fn clearing_the_event_scan_on_an_edit_sends_the_servers_default() {
+        let finish = PROTOCOL.finish.expect("an outstation finish");
+        let stored = json!({"id": 1, "name": "RTU", "ip": "10.0.0.3",
+            "event_scan_interval_ms": 500});
+        let mut values = values_of(PROTOCOL.fields, Some(&stored));
+        assert_eq!(values["event_scan_interval_ms"], "500");
+        values.insert("event_scan_interval_ms", String::new());
+        let mut sent = body(PROTOCOL.fields, &values, true).unwrap();
+        finish(&mut sent, true);
+        // `null` would keep the stored 500.
+        assert_eq!(sent["event_scan_interval_ms"], 1000);
+        // A new outstation may leave it unset.
+        let mut created = body(PROTOCOL.fields, &values, false).unwrap();
+        finish(&mut created, false);
+        assert_eq!(created["event_scan_interval_ms"], Value::Null);
+        // A value typed on an edit goes as typed.
+        values.insert("event_scan_interval_ms", "250".into());
+        let mut typed = body(PROTOCOL.fields, &values, true).unwrap();
+        finish(&mut typed, true);
+        assert_eq!(typed["event_scan_interval_ms"], 250);
     }
 
     #[test]

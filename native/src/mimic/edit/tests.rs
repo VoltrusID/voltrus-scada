@@ -8,6 +8,7 @@ fn boxed(id: &str, kind: &str, (x, y, width, height): (f64, f64, f64, f64)) -> W
         kind: WidgetKind::parse(kind),
         name: String::new(),
         tags: Vec::new(),
+        signals: Vec::new(),
         x,
         y,
         width,

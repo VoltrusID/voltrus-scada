@@ -10,12 +10,11 @@
 //! of the shift handover): it answers the same `text_input` actions, so its
 //! key context is `TextInput CodeEditor` and the `!TextInput` keys stay off
 //! while typing; its own keys live in the `CodeEditor` context
-//! ([`key_bindings`], which `shortcuts::rebind` must include, and which are
-//! bound once with the first editor). Emits `Changed`, `Submitted` (⌘↵),
+//! ([`key_bindings`], which `shortcuts::rebind` includes in the keymap).
+//! Emits `Changed`, `Submitted` (⌘↵),
 //! `Cancelled` (Esc) and `Blurred` like `TextInput`. IME-aware through
 //! `EntityInputHandler`.
 
-use std::cell::Cell;
 use std::ops::Range;
 
 use gpui::prelude::*;
@@ -74,10 +73,6 @@ pub(crate) const INDENT: usize = 2;
 /// Undo steps kept.
 const HISTORY: usize = 200;
 
-thread_local! {
-    static BOUND: Cell<bool> = const { Cell::new(false) };
-}
-
 /// The keys only the code editor has. `shortcuts::rebind` must include
 /// them when it rebuilds the keymap.
 pub fn key_bindings() -> Vec<KeyBinding> {
@@ -126,14 +121,6 @@ pub fn key_bindings() -> Vec<KeyBinding> {
     bindings
 }
 
-/// Bound once with the first editor (the keymap may already have them).
-fn bind_keys(cx: &mut App) {
-    if BOUND.with(|bound| bound.replace(true)) {
-        return;
-    }
-    cx.bind_keys(key_bindings());
-}
-
 /// What an edit was, so a run of typing undoes as one step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditKind {
@@ -179,7 +166,6 @@ impl EventEmitter<InputEvent> for CodeEditor {}
 
 impl CodeEditor {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        bind_keys(cx);
         Self {
             focus_handle: cx.focus_handle().tab_stop(true),
             content: String::new(),
@@ -215,7 +201,7 @@ impl CodeEditor {
     /// Replace the whole text (a script opened): caret at the start, no
     /// undo history, nothing emitted.
     pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.content = text.replace("\r\n", "\n").replace('\r', "\n");
+        self.content = super::model::unix_lines(text);
         self.reindex(0);
         self.selected_range = 0..0;
         self.selection_reversed = false;
@@ -1776,20 +1762,17 @@ pub(crate) mod text {
         let block = touched_lines(text, &selection);
         let lines: Vec<&str> = text[block.clone()].split('\n').collect();
         let filled = || lines.iter().filter(|line| !line.trim().is_empty());
-        let commented =
-            filled().count() > 0 && filled().all(|line| line.trim_start().starts_with("//"));
+        let commented = filled().count() > 0
+            && filled().all(|line| line[leading_blank(line)..].starts_with("//"));
         let indent = filled().map(|line| leading_blank(line)).min().unwrap_or(0);
         let mut changes = Vec::new();
         let mut start = block.start;
         for line in &lines {
             let blank = leading_blank(line);
+            let body = &line[blank..];
             if commented {
-                if line.trim_start().starts_with("//") {
-                    let removed = if line[blank + 2..].starts_with(' ') {
-                        3
-                    } else {
-                        2
-                    };
+                if body.starts_with("//") {
+                    let removed = if body[2..].starts_with(' ') { 3 } else { 2 };
                     changes.push(Change {
                         at: start + blank,
                         removed,
@@ -1978,6 +1961,16 @@ mod tests {
         let edit = toggle_comment(text, 2..2);
         assert_eq!(applied(text, &edit), "// x = 1");
         assert_eq!(edit.selection, 5..5);
+    }
+
+    #[test]
+    fn comments_toggle_past_unicode_blanks() {
+        // Not indent blanks: they stay in the body, and must not be
+        // sliced through.
+        for text in ["\u{3000}// a", "\u{a0}// a"] {
+            let edit = toggle_comment(text, 0..text.len());
+            assert_eq!(applied(text, &edit), format!("// {text}"));
+        }
     }
 
     #[test]

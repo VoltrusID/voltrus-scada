@@ -4,6 +4,8 @@
 //! keyboard list searched with `/`, and the whole of it as one HTML file
 //! (`GET /api/v1/docs/export?format=html`, saved where the operator picks).
 
+use std::rc::Rc;
+
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, ElementId, Hsla, SharedString, Window, div, px};
 use voltrus_scada_native::api::eng_system::{
@@ -61,7 +63,10 @@ impl View {
 struct State {
     view: View,
     topology: Option<Result<Topology, String>>,
-    tags: Option<Result<TagXref, String>>,
+    tags: Option<Result<Rc<TagXref>, String>>,
+    /// The rows of `tags` the search shows, and that search: worked out
+    /// again only when either changes, never per frame.
+    tags_shown: Option<(String, Rc<[usize]>)>,
     automation: Option<Result<Automation, String>>,
     asked: bool,
     /// The last refresh; older answers are dropped.
@@ -87,6 +92,12 @@ pub(super) fn open(console: &mut Console) {
     if !console.state::<State>().asked {
         refresh(console);
     }
+}
+
+/// After a config rollback: the documentation is asked for afresh when
+/// next opened.
+pub(super) fn stale(console: &mut Console) {
+    console.state::<State>().asked = false;
 }
 
 /// The three views, as the web panel asks for them together.
@@ -214,7 +225,9 @@ pub(super) fn on_reply(
             console.state::<State>().topology = Some(reply.take::<Topology>());
         }
         "data.system.docs.tags" => {
-            console.state::<State>().tags = Some(reply.take::<TagXref>());
+            let state = console.state::<State>();
+            state.tags = Some(reply.take::<TagXref>().map(Rc::new));
+            state.tags_shown = None;
         }
         "data.system.docs.automation" => {
             console.state::<State>().automation = Some(reply.take::<Automation>());
@@ -527,13 +540,7 @@ fn tags(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -
         return div().into_any_element();
     };
     let search = query(console, cx);
-    let shown: Vec<usize> = data
-        .tags
-        .iter()
-        .enumerate()
-        .filter(|(_, tag)| tag.matches(&search))
-        .map(|(index, _)| index)
-        .collect();
+    let shown = shown_tags(console.state::<State>(), &data, search.clone());
     let len = shown.len();
     let line = div()
         .flex()
@@ -668,6 +675,25 @@ fn tags(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -
         .child(header)
         .child(list)
         .into_any_element()
+}
+
+/// The rows of the cross-reference `search` shows, kept in `state` until
+/// the answer or the search changes.
+fn shown_tags(state: &mut State, data: &TagXref, search: String) -> Rc<[usize]> {
+    if let Some((at, shown)) = &state.tags_shown
+        && *at == search
+    {
+        return shown.clone();
+    }
+    let shown: Rc<[usize]> = data
+        .tags
+        .iter()
+        .enumerate()
+        .filter(|(_, tag)| tag.matches(&search))
+        .map(|(index, _)| index)
+        .collect();
+    state.tags_shown = Some((search, shown.clone()));
+    shown
 }
 
 /// A limit as the server stores it, without float noise.
@@ -849,5 +875,29 @@ mod tests {
             ["Topology", "Tag xref", "Automation"]
         );
         assert_eq!(View::Tags.list(), TAGS_LIST);
+    }
+
+    #[test]
+    fn the_tag_search_is_worked_out_once_per_search() {
+        use voltrus_scada_native::api::eng_system::TagXrefEntry;
+        let data = TagXref {
+            tags: vec![
+                TagXrefEntry {
+                    key: "pump_1".to_owned(),
+                    ..TagXrefEntry::default()
+                },
+                TagXrefEntry {
+                    key: "tank_1".to_owned(),
+                    ..TagXrefEntry::default()
+                },
+            ],
+            ..TagXref::default()
+        };
+        let mut state = State::default();
+        let first = shown_tags(&mut state, &data, "pump".to_owned());
+        assert_eq!(&*first, &[0]);
+        let again = shown_tags(&mut state, &data, "pump".to_owned());
+        assert!(Rc::ptr_eq(&first, &again), "kept, not filtered again");
+        assert_eq!(&*shown_tags(&mut state, &data, String::new()), &[0, 1]);
     }
 }

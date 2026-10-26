@@ -18,7 +18,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -30,6 +30,7 @@ use gpui::{
 };
 use serde::de::IgnoredAny;
 use serde_json::{Map, Value, json};
+use voltrus_scada_native::api::eng_imports::read_upload;
 use voltrus_scada_native::api::ops::encode;
 use voltrus_scada_native::api::protocols::{CreatedId, ModbusRegisterRow, not_routed};
 use voltrus_scada_native::api::{Method, VoltrusApi};
@@ -70,6 +71,8 @@ pub(crate) struct Calls {
     pub probe: &'static str,
     pub import: &'static str,
     pub duplicate: &'static str,
+    /// Modbus: scanned registers added to a device.
+    pub scan_add: &'static str,
 }
 
 macro_rules! calls {
@@ -84,6 +87,7 @@ macro_rules! calls {
             probe: concat!("data.", $id, ".probe"),
             import: concat!("data.", $id, ".import"),
             duplicate: concat!("data.", $id, ".duplicate"),
+            scan_add: concat!("data.", $id, ".scan-add"),
         }
     };
 }
@@ -680,8 +684,9 @@ pub(crate) struct Section {
     expanded: HashSet<String>,
     /// Sorted by this device column, descending when set.
     sort: Option<(usize, bool)>,
-    /// The import's report, shown until dismissed.
-    notice: Vec<String>,
+    /// The import's report (capped at [`NOTICE_LINES`]), shown until
+    /// dismissed; shared so a render does not copy it.
+    notice: Rc<[String]>,
     importing: bool,
     /// Devices with a tool or toggle on its way.
     busy: HashSet<String>,
@@ -691,6 +696,21 @@ pub(crate) struct Section {
     focus_id: Option<String>,
     /// A key pressed before the list arrived (a launch's `--overlay`).
     pending: Option<Pending>,
+}
+
+/// The most report lines an import notice shows.
+const NOTICE_LINES: usize = 200;
+/// The largest device file an import reads.
+const DEVICE_FILE_LIMIT: u64 = 10 * 1024 * 1024;
+
+/// An import's report, at most [`NOTICE_LINES`] lines, the rest counted.
+fn capped_notice(mut lines: Vec<String>) -> Rc<[String]> {
+    if lines.len() > NOTICE_LINES {
+        let more = lines.len() - (NOTICE_LINES - 1);
+        lines.truncate(NOTICE_LINES - 1);
+        lines.push(format!("… and {more} more lines"));
+    }
+    lines.into()
 }
 
 /// What a key asked for before there was a row to do it on.
@@ -755,6 +775,10 @@ struct Form {
     values: Values,
     error: Option<String>,
     saving: bool,
+    /// This form among those opened (`Devices.seq`); its save and its
+    /// duplicate's children answer under it, so a late answer for an
+    /// earlier form is dropped (Rule 10).
+    seq: i64,
     /// A duplicate's children, sent with the new device.
     carry: Option<Vec<Value>>,
     /// Shown above the fields.
@@ -828,6 +852,27 @@ impl Devices {
 
 pub(crate) fn section<'a>(console: &'a mut Console, protocol: &Protocol) -> &'a mut Section {
     console.state::<Devices>().section(protocol.id)
+}
+
+/// After a config rollback: every protocol section lists afresh when next
+/// opened.
+pub(crate) fn stale(console: &mut Console) {
+    for section in console.state::<Devices>().sections.values_mut() {
+        section.asked = false;
+    }
+}
+
+/// The open form whose answers carry `seq`; a form whose overlay was
+/// closed (Esc, Cancel, another dialog) is dropped first.
+fn form_for(console: &mut Console, seq: i64) -> Option<&mut Form> {
+    if !console.overlay_is(FORM) {
+        console.state::<Devices>().form = None;
+    }
+    console
+        .state::<Devices>()
+        .form
+        .as_mut()
+        .filter(|form| form.seq == seq)
 }
 
 const FORM: &str = "data-device-form";
@@ -1003,6 +1048,9 @@ pub(crate) fn on_reply(
             section(console, protocol).children.insert(id, answer);
         }
     } else if name == calls.save {
+        // Only this form's own answer closes it or shows its error; one
+        // for a form since closed (Esc) still refreshes what it changed.
+        let mine = form_for(console, key.arg).is_some();
         match reply.take::<Saved>() {
             Ok(saved) => {
                 after_change(protocol, console, saved.device.as_deref());
@@ -1013,15 +1061,32 @@ pub(crate) fn on_reply(
                     section(console, protocol).focus_id = Some(id);
                 }
                 console.show_toast(saved.message, false, cx);
-                close_later(console, FORM, cx);
+                if mine {
+                    close_later(console, FORM, cx);
+                }
             }
-            Err(error) => match console.state::<Devices>().form.as_mut() {
+            Err(error) => match form_for(console, key.arg) {
                 Some(form) => {
                     form.saving = false;
                     form.error = Some(error);
                 }
                 None => console.show_toast(format!("Saving failed: {error}"), true, cx),
             },
+        }
+    } else if name == calls.scan_add {
+        match reply.take::<Saved>() {
+            Ok(saved) => {
+                after_change(protocol, console, saved.device.as_deref());
+                if protocol.child.is_some_and(|child| child.makes_tags) {
+                    console.refresh_tags();
+                }
+                console.show_toast(saved.message, false, cx);
+            }
+            Err(error) => console.show_toast(
+                format!("Adding the scanned registers failed: {error}"),
+                true,
+                cx,
+            ),
         }
     } else if name == calls.delete {
         match reply.take::<Saved>() {
@@ -1038,14 +1103,18 @@ pub(crate) fn on_reply(
             }
         }
     } else if name == calls.toggle || name == calls.action {
-        match reply.take::<(String, String)>() {
-            Ok((id, message)) => {
+        // The device id comes back either way, so a failure frees only
+        // that device's buttons.
+        match reply.take::<(String, Result<String, String>)>() {
+            Ok((id, outcome)) => {
                 section(console, protocol).busy.remove(&id);
                 fetch(protocol, console);
-                console.show_toast(message, false, cx);
+                match outcome {
+                    Ok(message) => console.show_toast(message, false, cx),
+                    Err(error) => console.show_toast(error, true, cx),
+                }
             }
             Err(error) => {
-                section(console, protocol).busy.clear();
                 fetch(protocol, console);
                 console.show_toast(error, true, cx);
             }
@@ -1064,26 +1133,38 @@ pub(crate) fn on_reply(
         state.importing = false;
         match reply.take::<Vec<String>>() {
             Ok(lines) => {
-                state.notice = lines;
+                state.notice = capped_notice(lines);
                 fetch(protocol, console);
                 console.refresh_tags();
             }
-            Err(error) => console.show_toast(format!("Import failed: {error}"), true, cx),
+            Err(error) => {
+                state.notice = Rc::from([]);
+                console.show_toast(format!("Import failed: {error}"), true, cx);
+            }
         }
     } else if name == calls.duplicate {
-        if let Ok((id, Ok(children))) = reply.take::<(String, Result<Vec<Value>, String>)>()
-            && let Some(form) = console.state::<Devices>().form.as_mut()
-            && form.carry.is_some()
-        {
-            form.note = Some(format!(
-                "Copies the {} {} of {id}.",
-                children.len(),
-                form.protocol
-                    .child
-                    .map_or("children", |child| child.title)
-                    .to_lowercase()
-            ));
-            form.carry = Some(children);
+        let answer = reply
+            .take::<(String, Result<Vec<Value>, String>)>()
+            .and_then(|(id, children)| children.map(|children| (id, children)));
+        // Children for a form since closed or replaced are dropped.
+        let Some(form) = form_for(console, key.arg).filter(|form| form.carry.is_some()) else {
+            return;
+        };
+        let title = form
+            .protocol
+            .child
+            .map_or("children", |child| child.title)
+            .to_lowercase();
+        match answer {
+            Ok((id, children)) => {
+                form.note = Some(format!("Copies the {} {title} of {id}.", children.len()));
+                form.carry = Some(children);
+            }
+            Err(error) => {
+                form.carry = None;
+                form.note = Some(format!("Its {title} were not read, so the copy has none."));
+                console.show_toast(format!("Reading the {title} failed: {error}"), true, cx);
+            }
         }
     } else {
         return;
@@ -1356,12 +1437,13 @@ fn toggle_enabled(
     console.call(
         CallKey::new(protocol.calls.toggle),
         Call::new(move |api| async move {
-            api.send_json::<_, IgnoredAny>(Method::PUT, &path, &json!({ "enabled": now }))
-                .await?;
-            anyhow::Ok((
-                id,
-                format!("{name} {}", if now { "enabled" } else { "disabled" }),
-            ))
+            let done = if now { "enabled" } else { "disabled" };
+            let outcome = api
+                .send_json::<_, IgnoredAny>(Method::PUT, &path, &json!({ "enabled": now }))
+                .await
+                .map(|_| format!("{name} {done}"))
+                .map_err(|error| format!("{name} was not {done}: {error}"));
+            anyhow::Ok((id, outcome))
         }),
     );
     cx.notify();
@@ -1392,16 +1474,17 @@ pub(crate) fn run_tool(
             console.call(
                 CallKey::new(protocol.calls.action),
                 Call::new(move |api| async move {
-                    match api.send_empty::<Value>(Method::POST, &path).await {
+                    let outcome = match api.send_empty::<Value>(Method::POST, &path).await {
                         Ok(answer) => {
                             let message = answer
                                 .get("message")
                                 .and_then(Value::as_str)
                                 .unwrap_or(done);
-                            anyhow::Ok((id, format!("{name}: {message}")))
+                            Ok(format!("{name}: {message}"))
                         }
-                        Err(error) => anyhow::bail!("{name}: {error}"),
-                    }
+                        Err(error) => Err(format!("{name}: {error}")),
+                    };
+                    anyhow::Ok((id, outcome))
                 }),
             );
             cx.notify();
@@ -1528,6 +1611,10 @@ pub(crate) fn render(
 ) -> AnyElement {
     ensure_search(protocol, console, window, cx);
     console.state::<Devices>().window = Some(window.window_handle());
+    // A form closed by Esc or Cancel goes with its typed values.
+    if !console.overlay_is(FORM) {
+        console.state::<Devices>().form = None;
+    }
     let theme = theme(cx).clone();
     let (rows, list) = table(protocol, console, cx);
     let writable = may_write(protocol, console);
@@ -1539,7 +1626,7 @@ pub(crate) fn render(
         _ => None,
     };
     let unavailable = state.unavailable.clone();
-    let notice = state.notice.clone();
+    let notice = Rc::clone(&state.notice);
     let importing = state.importing;
     let sort = state.sort;
     let focus_id = state.focus_id.clone();
@@ -1856,7 +1943,7 @@ pub(crate) fn render(
                 )
                 .tooltip("Dismiss")
                 .on_click(cx.listener(move |console, _, _, cx| {
-                    section(console, protocol).notice.clear();
+                    section(console, protocol).notice = Rc::from([]);
                     cx.notify();
                 })),
             )
@@ -2575,6 +2662,8 @@ fn open_form(
         .find_map(|field| inputs.get(field.key).cloned());
     let state = console.state::<Devices>();
     state.window = Some(window.window_handle());
+    state.seq += 1;
+    let seq = state.seq;
     state.form = Some(Form {
         protocol,
         target,
@@ -2583,6 +2672,7 @@ fn open_form(
         values,
         error: None,
         saving: false,
+        seq,
         carry,
         note: None,
         _subscriptions: subscriptions,
@@ -2626,9 +2716,11 @@ fn duplicate(
         window,
         cx,
     );
-    if let Some(form) = console.state::<Devices>().form.as_mut() {
-        form.note = Some(format!("A copy of {}.", name_of(&device)));
-    }
+    let Some(form) = console.state::<Devices>().form.as_mut() else {
+        return;
+    };
+    form.note = Some(format!("A copy of {}.", name_of(&device)));
+    let seq = form.seq;
     if let Some(child) = protocol.child {
         let path = device_path(protocol, &device);
         let id = row_id(&device);
@@ -2638,7 +2730,7 @@ fn duplicate(
             ChildApi::Rest { within, .. } => within,
         };
         console.call(
-            CallKey::new(protocol.calls.duplicate),
+            CallKey::new(protocol.calls.duplicate).with(seq),
             Call::new(move |api| async move {
                 let mut answer: Value = api.get_json(&path).await?;
                 let list = match within {
@@ -2663,7 +2755,7 @@ fn save(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
         Ok(call) => {
             form.saving = true;
             form.error = None;
-            let key = CallKey::new(form.protocol.calls.save);
+            let key = CallKey::new(form.protocol.calls.save).with(form.seq);
             console.call(key, call);
         }
         Err(error) => form.error = Some(error),
@@ -2762,14 +2854,33 @@ pub(crate) async fn modbus_registers(
     api: &VoltrusApi,
     device_path: &str,
 ) -> anyhow::Result<Vec<Value>> {
+    let rows = modbus_register_rows(api, device_path).await?;
+    Ok(rows.iter().map(ModbusRegisterRow::input).collect())
+}
+
+/// A Modbus device's registers as the server stores them, ids included.
+async fn modbus_register_rows(
+    api: &VoltrusApi,
+    device_path: &str,
+) -> anyhow::Result<Vec<ModbusRegisterRow>> {
     let mut answer: Value = api.get_json(device_path).await?;
-    let rows: Vec<ModbusRegisterRow> = serde_json::from_value(
+    Ok(serde_json::from_value(
         answer
             .get_mut("registers")
             .map(Value::take)
             .unwrap_or_default(),
-    )?;
-    Ok(rows.iter().map(ModbusRegisterRow::input).collect())
+    )?)
+}
+
+/// `rows` as `ModbusRegisterInput`s without register `id` (others with
+/// its name stay); `None` when it is not among them.
+fn without_register(rows: &[ModbusRegisterRow], id: i64) -> Option<Vec<Value>> {
+    rows.iter().any(|row| row.id == id).then(|| {
+        rows.iter()
+            .filter(|row| row.id != id)
+            .map(ModbusRegisterRow::input)
+            .collect()
+    })
 }
 
 pub(crate) async fn replace_registers(
@@ -2850,26 +2961,38 @@ fn choice_control(
                 .into_any_element()
         }
         Kind::Choice(options) => {
-            let at = options
-                .iter()
-                .position(|(option, _)| *option == value)
-                .unwrap_or(0);
+            // A value not among the options (a browsed BACnet object of a
+            // type the server does not poll) is shown as it is, none of
+            // the options lit, rather than passed off as the first one.
+            let at = choice_at(options, value);
+            let unknown = (at.is_none() && !value.is_empty()).then(|| {
+                div()
+                    .h(px(24.0))
+                    .px(SPACE_4)
+                    .flex()
+                    .items_center()
+                    .rounded(RADIUS_SM)
+                    .border_1()
+                    .border_color(theme.danger)
+                    .text_color(theme.danger)
+                    .text_size(FONT_SMALL)
+                    .child(format!("{value} (not offered)"))
+            });
             div()
                 .id(SharedString::from(format!("data-field-{key}")))
                 .flex()
                 .flex_wrap()
                 .gap(SPACE_2)
                 .on_key_down(cx.listener(move |console, event: &KeyDownEvent, _, cx| {
-                    let next = match event.keystroke.key.as_str() {
-                        "left" => at.checked_sub(1).unwrap_or(options.len() - 1),
-                        "right" => (at + 1) % options.len(),
-                        _ => return,
+                    let Some(next) = choice_step(options.len(), at, &event.keystroke.key) else {
+                        return;
                     };
                     set(console, key, options[next].0.to_owned(), cx);
                     cx.stop_propagation();
                 }))
+                .children(unknown)
                 .children(options.iter().enumerate().map(|(index, (option, label))| {
-                    let chosen = index == at;
+                    let chosen = Some(index) == at;
                     let hover = theme.hover;
                     div()
                         .id(ElementId::NamedInteger(
@@ -2902,6 +3025,25 @@ fn choice_control(
                 .into_any_element()
         }
         _ => div().into_any_element(),
+    }
+}
+
+/// Where `value` is among `options`.
+fn choice_at(options: &[(&str, &str)], value: &str) -> Option<usize> {
+    options.iter().position(|(option, _)| *option == value)
+}
+
+/// The option ← or → moves to from `at` (from none: the last or the first).
+fn choice_step(len: usize, at: Option<usize>, key: &str) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    match (key, at) {
+        ("left", Some(at)) => Some(at.checked_sub(1).unwrap_or(len - 1)),
+        ("left", None) => Some(len - 1),
+        ("right", Some(at)) => Some((at + 1) % len),
+        ("right", None) => Some(0),
+        _ => None,
     }
 }
 
@@ -3214,15 +3356,17 @@ fn delete_confirmed(console: &mut Console, window: &mut Window, cx: &mut Context
                     );
                 }
                 ChildApi::ModbusRegisters => {
-                    let gone = value_text(&item, "name");
+                    // By id: register names need not be unique.
+                    let Some(gone) = item.get("id").and_then(Value::as_i64) else {
+                        console.show_toast(format!("{name} has no register id"), true, cx);
+                        return;
+                    };
                     console.call(
                         key,
                         Call::new(move |api| async move {
-                            let registers: Vec<Value> = modbus_registers(&api, &device_path)
-                                .await?
-                                .into_iter()
-                                .filter(|register| value_text(register, "name") != gone)
-                                .collect();
+                            let rows = modbus_register_rows(&api, &device_path).await?;
+                            let registers = without_register(&rows, gone)
+                                .ok_or_else(|| anyhow::anyhow!("{name} is no longer there"))?;
                             replace_registers(&api, &device_path, registers).await?;
                             anyhow::Ok(Saved::child(id, format!("Removed {name}")))
                         }),
@@ -3676,7 +3820,7 @@ pub(crate) fn pick_devices(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    if refuse(protocol, console, cx) {
+    if import_running(protocol, console, cx) || refuse(protocol, console, cx) {
         return;
     }
     let path = protocol.base.to_owned();
@@ -3700,6 +3844,20 @@ pub(crate) fn pick_devices(
             anyhow::Ok(lines)
         }),
     );
+}
+
+/// Whether an import (or a probe's pick) is still on its way; a second
+/// one would add the same devices twice, so it is refused.
+fn import_running(
+    protocol: &'static Protocol,
+    console: &mut Console,
+    cx: &mut Context<Console>,
+) -> bool {
+    if !section(console, protocol).importing {
+        return false;
+    }
+    console.show_toast("An import is still running", true, cx);
+    true
 }
 
 /// A probe's pick: the child form, filled from the payload's fields.
@@ -3933,7 +4091,10 @@ pub(crate) fn prompt_import(
     console: &mut Console,
     cx: &mut Context<Console>,
 ) {
-    if protocol.import.is_none() || refuse(protocol, console, cx) {
+    if protocol.import.is_none()
+        || import_running(protocol, console, cx)
+        || refuse(protocol, console, cx)
+    {
         return;
     }
     let prompt = cx.prompt_for_paths(PathPromptOptions {
@@ -3968,12 +4129,12 @@ pub(crate) fn import_paths(
     let Some(kind) = protocol.import else {
         return;
     };
-    if paths.is_empty() || refuse(protocol, console, cx) {
+    if paths.is_empty() || import_running(protocol, console, cx) || refuse(protocol, console, cx) {
         return;
     }
     let state = section(console, protocol);
     state.importing = true;
-    state.notice = vec![format!("Importing {} file(s)…", paths.len())];
+    state.notice = Rc::from([format!("Importing {} file(s)…", paths.len())]);
     let base = protocol.base.to_owned();
     console.call(
         CallKey::new(protocol.calls.import),
@@ -3984,8 +4145,15 @@ pub(crate) fn import_paths(
                     || path.display().to_string(),
                     |name| name.to_string_lossy().into_owned(),
                 );
-                let text = match std::fs::read_to_string(&path) {
-                    Ok(text) => text,
+                // Off the runtime's threads: a file on a slow disk or share
+                // must not hold up other calls.
+                let read = tokio::task::spawn_blocking(move || read_device_file(&path)).await;
+                let text = match read {
+                    Ok(Ok(text)) => text,
+                    Ok(Err(error)) => {
+                        lines.push(error);
+                        continue;
+                    }
                     Err(error) => {
                         lines.push(format!("{file}: not read: {error}"));
                         continue;
@@ -4039,6 +4207,14 @@ pub(crate) fn import_paths(
         }),
     );
     cx.notify();
+}
+
+/// A device file's text, refused unread when over
+/// [`DEVICE_FILE_LIMIT`] (its size taken from the file system first).
+fn read_device_file(path: &Path) -> Result<String, String> {
+    let (name, bytes) =
+        read_upload(path, DEVICE_FILE_LIMIT).map_err(|error| format!("{error:#}"))?;
+    String::from_utf8(bytes).map_err(|_| format!("{name}: not a text file"))
 }
 
 /// What importing one file does, in order.
@@ -4390,5 +4566,300 @@ mod tests {
                     .into()
             )]
         );
+    }
+
+    fn register(id: i64, name: &str) -> ModbusRegisterRow {
+        ModbusRegisterRow {
+            id,
+            device_id: "plc".into(),
+            name: name.into(),
+            address: u16::try_from(id).unwrap(),
+            register_type: "uint16".into(),
+            register_area: "holding".into(),
+            scale: 1.0,
+            sort_order: id,
+            zero_based: false,
+        }
+    }
+
+    #[test]
+    fn removing_a_register_keeps_others_of_the_same_name() {
+        let rows = [register(1, "kw"), register(2, "kw"), register(3, "kv")];
+        let left = without_register(&rows, 2).expect("register 2 is there");
+        let addresses: Vec<u64> = left
+            .iter()
+            .map(|register| register["address"].as_u64().unwrap())
+            .collect();
+        assert_eq!(addresses, [1, 3]);
+        assert_eq!(left[0]["name"], "kw");
+        assert_eq!(without_register(&rows, 9), None, "a gone register");
+    }
+
+    #[test]
+    fn an_import_notice_is_capped() {
+        let short = capped_notice(vec!["a".into(), "b".into()]);
+        assert_eq!(short.to_vec(), ["a".to_owned(), "b".to_owned()]);
+        let long = capped_notice((0..1000).map(|line| line.to_string()).collect());
+        assert_eq!(long.len(), NOTICE_LINES);
+        assert_eq!(long[NOTICE_LINES - 2], (NOTICE_LINES - 2).to_string());
+        assert_eq!(
+            long[NOTICE_LINES - 1],
+            format!("… and {} more lines", 1000 - (NOTICE_LINES - 1))
+        );
+    }
+
+    #[test]
+    fn a_device_file_over_the_limit_is_not_read() {
+        let dir = std::env::temp_dir().join(format!("vt-device-file-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.csv");
+        // Sparse: the size is all the check looks at.
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(DEVICE_FILE_LIMIT + 1)
+            .unwrap();
+        let refused = read_device_file(&big).unwrap_err();
+        assert!(refused.starts_with("big.csv: "), "{refused}");
+        assert!(refused.contains("limit"), "{refused}");
+        let small = dir.join("small.csv");
+        std::fs::write(&small, "name,ip\n").unwrap();
+        assert_eq!(read_device_file(&small).unwrap(), "name,ip\n");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unoffered_choice_lights_no_option() {
+        assert_eq!(choice_at(KINDS, "little"), Some(1));
+        assert_eq!(choice_at(KINDS, "lightingOutput"), None);
+        assert_eq!(choice_step(2, None, "right"), Some(0));
+        assert_eq!(choice_step(2, None, "left"), Some(1));
+        assert_eq!(choice_step(2, Some(1), "right"), Some(0));
+        assert_eq!(choice_step(2, Some(0), "left"), Some(1));
+        assert_eq!(choice_step(2, Some(0), "up"), None);
+    }
+
+    mod harness {
+        use super::*;
+        use crate::console::testing::Harness;
+        use crate::console::views::data_manager::modbus::PROTOCOL;
+
+        fn form_seq(h: &mut Harness) -> Option<i64> {
+            h.update(|console, _, _| {
+                console
+                    .state::<Devices>()
+                    .form
+                    .as_ref()
+                    .map(|form| form.seq)
+            })
+        }
+
+        fn form_error(h: &mut Harness) -> Option<String> {
+            h.update(|console, _, _| {
+                console
+                    .state::<Devices>()
+                    .form
+                    .as_ref()
+                    .and_then(|form| form.error.clone())
+            })
+        }
+
+        fn last_toast(h: &mut Harness) -> Option<(String, bool)> {
+            h.update(|console, _, _| {
+                console
+                    .toasts
+                    .last()
+                    .map(|toast| (toast.message.to_string(), toast.error))
+            })
+        }
+
+        #[gpui::test]
+        fn a_late_save_answer_leaves_a_newer_form_open(cx: &mut gpui::TestAppContext) {
+            let mut h = Harness::new(cx);
+            h.sign_in("admin");
+            h.update(|console, window, cx| {
+                open_device_form(&PROTOCOL, console, None, window, cx);
+            });
+            let first = form_seq(&mut h).expect("the first form");
+            // Esc while it saves, then another form.
+            h.update(|console, window, cx| {
+                console.close_overlay(window, cx);
+                open_device_form(&PROTOCOL, console, None, window, cx);
+            });
+            let second = form_seq(&mut h).expect("the second form");
+            assert_ne!(first, second);
+            h.reply(
+                CallKey::new(PROTOCOL.calls.save).with(first),
+                Reply::ok(Saved::device("Added plc".into())),
+            );
+            h.draw();
+            assert!(h.update(|console, _, _| console.overlay_is(FORM)), "open");
+            assert_eq!(form_seq(&mut h), Some(second));
+            // A late failure is a toast, not the new form's error.
+            h.reply(
+                CallKey::new(PROTOCOL.calls.save).with(first),
+                Reply::failed("refused"),
+            );
+            h.draw();
+            assert_eq!(form_error(&mut h), None);
+            assert_eq!(
+                last_toast(&mut h),
+                Some(("Saving failed: refused".into(), true))
+            );
+            h.reply(
+                CallKey::new(PROTOCOL.calls.save).with(second),
+                Reply::ok(Saved::device("Added plc2".into())),
+            );
+            h.draw();
+            assert_eq!(form_seq(&mut h), None, "its own answer closes it");
+        }
+
+        #[gpui::test]
+        fn a_form_closed_with_esc_is_dropped(cx: &mut gpui::TestAppContext) {
+            let mut h = Harness::new(cx);
+            h.sign_in("admin");
+            let seq = h.update(|console, window, cx| {
+                open_device_form(&PROTOCOL, console, None, window, cx);
+                let seq = console
+                    .state::<Devices>()
+                    .form
+                    .as_ref()
+                    .map(|form| form.seq);
+                console.close_overlay(window, cx);
+                seq.expect("a form")
+            });
+            h.reply(
+                CallKey::new(PROTOCOL.calls.save).with(seq),
+                Reply::failed("refused"),
+            );
+            h.draw();
+            assert_eq!(form_seq(&mut h), None);
+            assert_eq!(
+                last_toast(&mut h),
+                Some(("Saving failed: refused".into(), true))
+            );
+        }
+
+        #[gpui::test]
+        fn a_failed_scan_add_is_a_toast(cx: &mut gpui::TestAppContext) {
+            let mut h = Harness::new(cx);
+            h.sign_in("admin");
+            h.update(|console, window, cx| {
+                open_device_form(&PROTOCOL, console, None, window, cx);
+            });
+            let open = form_seq(&mut h);
+            h.reply(
+                CallKey::new(PROTOCOL.calls.scan_add),
+                Reply::failed("timed out"),
+            );
+            h.draw();
+            assert_eq!(
+                last_toast(&mut h),
+                Some((
+                    "Adding the scanned registers failed: timed out".into(),
+                    true
+                ))
+            );
+            assert_eq!(form_seq(&mut h), open, "the open form is untouched");
+            assert_eq!(form_error(&mut h), None);
+        }
+
+        #[gpui::test]
+        fn duplicate_children_answer_their_own_form(cx: &mut gpui::TestAppContext) {
+            let mut h = Harness::new(cx);
+            h.sign_in("admin");
+            let device = json!({"id": "plc", "name": "PLC", "ip": "10.0.0.2"});
+            h.update(|console, window, cx| duplicate(&PROTOCOL, console, device, window, cx));
+            let seq = form_seq(&mut h).expect("the copy's form");
+            assert!(
+                h.calls()
+                    .contains(&CallKey::new(PROTOCOL.calls.duplicate).with(seq))
+            );
+            // Another form's children are dropped.
+            h.reply(
+                CallKey::new(PROTOCOL.calls.duplicate).with(seq + 100),
+                Reply::ok(("old".to_owned(), Ok::<_, String>(vec![json!({"id": 1})]))),
+            );
+            h.draw();
+            let carry = h.update(|console, _, _| {
+                console
+                    .state::<Devices>()
+                    .form
+                    .as_ref()
+                    .and_then(|form| form.carry.as_ref().map(Vec::len))
+            });
+            assert_eq!(carry, Some(0));
+            // Its own failure says so.
+            h.reply(
+                CallKey::new(PROTOCOL.calls.duplicate).with(seq),
+                Reply::ok(("plc".to_owned(), Err::<Vec<Value>, _>("gone".to_owned()))),
+            );
+            h.draw();
+            let (message, error) = last_toast(&mut h).expect("a toast");
+            assert!(error && message.ends_with("failed: gone"), "{message}");
+            let dropped = h.update(|console, _, _| {
+                console
+                    .state::<Devices>()
+                    .form
+                    .as_ref()
+                    .map(|form| form.carry.is_none())
+            });
+            assert_eq!(dropped, Some(true));
+        }
+
+        #[gpui::test]
+        fn a_failed_tool_frees_only_its_device(cx: &mut gpui::TestAppContext) {
+            let mut h = Harness::new(cx);
+            h.sign_in("admin");
+            h.update(|console, _, _| {
+                let state = section(console, &PROTOCOL);
+                state.busy.insert("a".into());
+                state.busy.insert("b".into());
+            });
+            h.reply(
+                CallKey::new(PROTOCOL.calls.action),
+                Reply::ok(("a".to_owned(), Err::<String, _>("a: refused".to_owned()))),
+            );
+            h.draw();
+            let busy = h.update(|console, _, _| {
+                let state = section(console, &PROTOCOL);
+                (state.busy.contains("a"), state.busy.contains("b"))
+            });
+            assert_eq!(busy, (false, true));
+            assert_eq!(last_toast(&mut h), Some(("a: refused".into(), true)));
+        }
+
+        #[gpui::test]
+        fn a_second_import_while_one_runs_is_refused(cx: &mut gpui::TestAppContext) {
+            let mut h = Harness::new(cx);
+            h.sign_in("admin");
+            let import = CallKey::new(PROTOCOL.calls.import);
+            h.update(|console, _, cx| {
+                import_paths(&PROTOCOL, console, vec![PathBuf::from("a.csv")], cx);
+            });
+            assert!(h.calls().contains(&import));
+            // A drop, the I key or a scan pick while it runs.
+            h.update(|console, window, cx| {
+                import_paths(&PROTOCOL, console, vec![PathBuf::from("a.csv")], cx);
+                pick_devices(
+                    console,
+                    &PROTOCOL,
+                    None,
+                    vec![json!({"id": "x"})],
+                    window,
+                    cx,
+                );
+            });
+            assert!(!h.calls().contains(&import));
+            assert_eq!(
+                last_toast(&mut h),
+                Some(("An import is still running".into(), true))
+            );
+            // Once it answered, another may start.
+            h.reply(import, Reply::ok(vec!["a.csv: added plc".to_owned()]));
+            h.update(|console, _, cx| {
+                import_paths(&PROTOCOL, console, vec![PathBuf::from("b.csv")], cx);
+            });
+            assert!(h.calls().contains(&import));
+        }
     }
 }

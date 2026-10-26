@@ -253,6 +253,9 @@ pub struct Widget {
     pub name: String,
     /// The bound data source ids; the first is the primary tag.
     pub tags: Vec<i64>,
+    /// Stored bindings that are not ids (a FEED template's signal names):
+    /// not drawn, but saved back after [`Self::tags`] so a save keeps them.
+    pub signals: Vec<Value>,
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -405,7 +408,8 @@ fn truthy(value: &Value) -> bool {
 /// `loadLayoutFromAPI`: widgets sorted by `config.z` (row order where it is
 /// missing), `z` taken out of the config, bindings and waypoints parsed.
 /// Malformed JSON text reads as empty rather than failing the screen, and
-/// bindings that are not ids (a FEED template's signal names) are left out.
+/// bindings that are not ids (a FEED template's signal names) go to
+/// [`Widget::signals`], kept for the save.
 pub fn parse(equipment: &[EquipmentRow], connections: &[ConnectionRow]) -> Layout {
     let mut parsed: Vec<(f64, Widget)> = equipment
         .iter()
@@ -420,15 +424,26 @@ pub fn parse(equipment: &[EquipmentRow], connections: &[ConnectionRow]) -> Layou
                 .remove("z")
                 .and_then(|z| z.as_f64())
                 .unwrap_or(index as f64);
-            let tags = match serde_json::from_str::<Value>(&row.sensor_bindings) {
-                Ok(Value::Array(items)) => items.iter().filter_map(id).collect(),
-                _ => Vec::new(),
+            let (tags, signals) = match serde_json::from_str::<Value>(&row.sensor_bindings) {
+                Ok(Value::Array(items)) => {
+                    let mut tags = Vec::new();
+                    let mut signals = Vec::new();
+                    for item in items {
+                        match id(&item) {
+                            Some(tag) => tags.push(tag),
+                            None => signals.push(item),
+                        }
+                    }
+                    (tags, signals)
+                }
+                _ => (Vec::new(), Vec::new()),
             };
             let widget = Widget {
                 id: row.equipment_id.clone(),
                 kind: WidgetKind::parse(&row.equipment_type),
                 name: row.equipment_name.clone(),
                 tags,
+                signals,
                 x: row.x,
                 y: row.y,
                 width: row.width,
@@ -476,7 +491,7 @@ pub fn to_rows(layout: &Layout) -> (Vec<EquipmentRow>, Vec<ConnectionRow>) {
                 width: widget.width,
                 height: widget.height,
                 rotation: widget.number("rotation").unwrap_or(0.0),
-                sensor_bindings: Value::from(widget.tags.clone()).to_string(),
+                sensor_bindings: bindings(widget),
                 config: Value::Object(config).to_string(),
             }
         })
@@ -495,6 +510,17 @@ pub fn to_rows(layout: &Layout) -> (Vec<EquipmentRow>, Vec<ConnectionRow>) {
         })
         .collect();
     (equipment, connections)
+}
+
+/// `sensor_bindings` as JSON text: the ids, then the bindings that are not.
+fn bindings(widget: &Widget) -> String {
+    let items: Vec<Value> = widget
+        .tags
+        .iter()
+        .map(|tag| Value::from(*tag))
+        .chain(widget.signals.iter().cloned())
+        .collect();
+    Value::Array(items).to_string()
 }
 
 // ── The symbol library (`hmi/symbols.tsx`) ───────────────────────────────

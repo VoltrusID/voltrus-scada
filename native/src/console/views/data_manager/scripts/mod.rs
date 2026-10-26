@@ -771,7 +771,10 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                     }
                     state.focus_id = Some(id);
                     recheck_dirty(console, cx);
-                    fetch_executions(console, id);
+                    // Only for the open script (another may have opened since).
+                    if editor_id(console) == Some(id) {
+                        fetch_executions(console, id);
+                    }
                     console.show_toast(format!("Created {name}"), false, cx);
                 }
                 Err(error) => state.error = Some(error),
@@ -856,7 +859,9 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             match answer {
                 Ok((result, dirty)) => {
                     state.test = Some((key.arg, result, dirty));
-                    fetch_executions(console, key.arg);
+                    if editor_id(console) == Some(key.arg) {
+                        fetch_executions(console, key.arg);
+                    }
                 }
                 Err(error) => state.error = Some(format!("Test failed: {error}")),
             }
@@ -2047,4 +2052,101 @@ fn confirm_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
                 ),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::console::testing::Harness;
+    use gpui::TestAppContext;
+
+    fn saved(id: i64, source: &str) -> Script {
+        Script {
+            id,
+            name: format!("Script {id}"),
+            source: source.into(),
+            syntax_error: None,
+            cpu_limit_ms: 5000,
+            memory_limit_bytes: 32 * 1024 * 1024,
+            enabled: true,
+            created_at: 1_761_390_000,
+            updated_at: 1_761_390_000,
+        }
+    }
+
+    /// Signed in with scripts 1 and 2 listed and `open` in the editor.
+    fn with_open(cx: &mut TestAppContext, open_id: Option<i64>, source: &str) -> Harness {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        let source = source.to_owned();
+        h.update(move |console, window, cx| {
+            console.state::<State>().scripts = Some(Ok(vec![
+                saved(1, &source),
+                saved(2, "function main(i) { return i; }"),
+            ]));
+            open(console, open_id, window, cx);
+        });
+        h.calls();
+        h
+    }
+
+    fn asked_executions(h: &mut Harness) -> bool {
+        h.calls()
+            .iter()
+            .any(|key| key.name == "data.scripts.executions")
+    }
+
+    #[gpui::test]
+    fn a_test_answer_refetches_runs_only_for_the_open_script(cx: &mut TestAppContext) {
+        let mut h = with_open(cx, Some(1), "function main(i) { return i; }");
+        h.update(|console, _, _| console.state::<State>().testing = true);
+        h.reply(
+            CallKey::new("data.scripts.test").with(2),
+            Reply::ok((TestResult::default(), false)),
+        );
+        assert!(!asked_executions(&mut h), "script 2 is not open");
+
+        h.update(|console, _, _| console.state::<State>().testing = true);
+        h.reply(
+            CallKey::new("data.scripts.test").with(1),
+            Reply::ok((TestResult::default(), false)),
+        );
+        assert!(asked_executions(&mut h), "script 1 is open");
+    }
+
+    #[gpui::test]
+    fn a_create_answer_refetches_runs_only_for_the_open_script(cx: &mut TestAppContext) {
+        // Script 1 opened while the new one was being created.
+        let mut h = with_open(cx, Some(1), "function main(i) { return i; }");
+        h.update(|console, _, _| console.state::<State>().saving = true);
+        h.reply(
+            CallKey::new("data.scripts.create"),
+            Reply::ok(saved(3, "function main(i) { return i; }")),
+        );
+        assert!(!asked_executions(&mut h), "script 3 is not open");
+
+        let mut h = with_open(cx, None, "function main(i) { return i; }");
+        h.update(|console, _, _| console.state::<State>().saving = true);
+        h.reply(
+            CallKey::new("data.scripts.create"),
+            Reply::ok(saved(4, "function main(i) { return i; }")),
+        );
+        assert!(asked_executions(&mut h), "the new script is open as 4");
+    }
+
+    #[gpui::test]
+    fn a_crlf_script_opens_unedited(cx: &mut TestAppContext) {
+        let mut h = with_open(cx, Some(1), "function main(i) {\r\n  return i;\r\n}\r\n");
+        let dirty = h.update(|console, _, cx| {
+            // As any field's change works it out: the editor's text
+            // against the server's.
+            recheck_dirty(console, cx);
+            console
+                .state::<State>()
+                .editor
+                .as_ref()
+                .map(|editor| editor.dirty)
+        });
+        assert_eq!(dirty, Some(false));
+    }
 }

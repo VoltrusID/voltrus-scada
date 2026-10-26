@@ -21,6 +21,7 @@
 //! ([`parse_flows`]) with the server's node categories before upload.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -136,8 +137,24 @@ pub fn read_upload(path: &Path, limit: u64) -> Result<(String, Vec<u8>)> {
     if let Some(problem) = too_large(size, limit) {
         return Err(anyhow!("{name}: {problem}"));
     }
-    let bytes = std::fs::read(path).map_err(|error| anyhow!("could not read {name}: {error}"))?;
+    let bytes = std::fs::File::open(path)
+        .and_then(|file| read_within(file, limit))
+        .map_err(|error| anyhow!("could not read {name}: {error}"))?;
+    if let Some(problem) = too_large(bytes.len() as u64, limit) {
+        return Err(anyhow!("{name}: {problem}"));
+    }
     Ok((name, bytes))
+}
+
+/// At most one byte past `limit` from `reader`: the file can grow between
+/// the size check and the read, and an over-limit file must never fill
+/// memory (the caller refuses anything longer than `limit`).
+fn read_within(reader: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader
+        .take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    Ok(bytes)
 }
 
 // ── Multipart ────────────────────────────────────────────────────────────
@@ -1144,6 +1161,29 @@ mod tests {
 
     fn strings(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn an_upload_read_stops_one_byte_past_the_limit() {
+        // An endless source (a file still growing past its checked size)
+        // ends at the cap instead of filling memory.
+        let bytes = read_within(std::io::repeat(7), 10).unwrap();
+        assert_eq!(bytes.len(), 11);
+        assert!(too_large(bytes.len() as u64, 10).is_some());
+        assert_eq!(read_within(&b"abc"[..], 10).unwrap(), b"abc");
+        assert_eq!(read_within(&b"abc"[..], 3).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn read_upload_refuses_an_over_limit_file() {
+        let path =
+            std::env::temp_dir().join(format!("voltrus-native-upload-{}.csv", std::process::id()));
+        std::fs::write(&path, b"name,value\na,1\n").unwrap();
+        let (name, bytes) = read_upload(&path, 1024).unwrap();
+        assert!(name.starts_with("voltrus-native-upload-"));
+        assert_eq!(bytes, b"name,value\na,1\n");
+        assert!(read_upload(&path, 4).is_err());
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

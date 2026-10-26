@@ -1392,8 +1392,8 @@ impl Encryption {
 }
 
 /// `GET /api/v1/settings/smtp`: `{"configured": false}`, or the settings
-/// with the password masked.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+/// with the password masked. Debug leaves the password out.
+#[derive(Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SmtpSettings {
     pub configured: bool,
@@ -1406,9 +1406,25 @@ pub struct SmtpSettings {
     pub encryption: Option<Encryption>,
 }
 
+impl std::fmt::Debug for SmtpSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpSettings")
+            .field("configured", &self.configured)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("from_address", &self.from_address)
+            .field("from_name", &self.from_name)
+            .field("encryption", &self.encryption)
+            .finish()
+    }
+}
+
 /// `PUT /api/v1/settings/smtp`'s body: `SmtpUpdateRequest`. A missing
-/// password, or the mask, keeps the stored one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// password, or the mask, keeps the stored one. Debug leaves the password
+/// out.
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct SmtpUpdate {
     pub host: String,
     pub port: u16,
@@ -1420,6 +1436,20 @@ pub struct SmtpUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub from_name: Option<String>,
     pub encryption: Encryption,
+}
+
+impl std::fmt::Debug for SmtpUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpUpdate")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("from_address", &self.from_address)
+            .field("from_name", &self.from_name)
+            .field("encryption", &self.encryption)
+            .finish()
+    }
 }
 
 impl SmtpSettings {
@@ -1460,8 +1490,8 @@ impl SmtpSettings {
     }
 }
 
-/// The SMTP form as typed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The SMTP form as typed. Debug leaves the password out.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SmtpDraft {
     pub host: String,
     pub port: String,
@@ -1470,6 +1500,20 @@ pub struct SmtpDraft {
     pub from_address: String,
     pub from_name: String,
     pub encryption: Encryption,
+}
+
+impl std::fmt::Debug for SmtpDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SmtpDraft")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .field("from_address", &self.from_address)
+            .field("from_name", &self.from_name)
+            .field("encryption", &self.encryption)
+            .finish()
+    }
 }
 
 impl Default for SmtpDraft {
@@ -1999,6 +2043,30 @@ mod tests {
         assert!(plausible_email("a@b.co"));
         assert!(!plausible_email("a@b"));
         assert!(!plausible_email("@b.co"));
+    }
+
+    #[test]
+    fn smtp_debug_never_prints_the_password() {
+        let draft = SmtpDraft {
+            host: "smtp.example.com".to_owned(),
+            port: "587".to_owned(),
+            password: "s3cret-pw".to_owned(),
+            ..SmtpDraft::default()
+        };
+        let update = draft.validate().unwrap();
+        let settings = SmtpSettings {
+            configured: true,
+            password: Some("s3cret-pw".to_owned()),
+            ..SmtpSettings::default()
+        };
+        for printed in [
+            format!("{draft:?}"),
+            format!("{update:?}"),
+            format!("{settings:?}"),
+        ] {
+            assert!(!printed.contains("s3cret-pw"), "{printed}");
+            assert!(printed.contains("<redacted>"), "{printed}");
+        }
     }
 
     #[test]

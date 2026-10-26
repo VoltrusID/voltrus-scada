@@ -579,13 +579,18 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
     };
     let name = screen_name(console, &editor.screen);
     let focus = editor.dialog_focus.clone();
+    let own = focus.clone();
     div()
         .track_focus(&focus)
-        .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "enter" {
-                answer(console, Answer::Save, window, cx);
-            }
-        }))
+        .on_key_down(
+            cx.listener(move |console, event: &KeyDownEvent, window, cx| {
+                // Enter on a focused button (Cancel, Discard) is that button's.
+                if event.keystroke.key == "enter" && own.is_focused(window) {
+                    answer(console, Answer::Save, window, cx);
+                    cx.stop_propagation();
+                }
+            }),
+        )
         .flex()
         .flex_col()
         .child(
@@ -691,20 +696,24 @@ fn save(console: &mut Console, after: Option<Leave>, cx: &mut Context<Console>) 
                 &Items { items: rows },
             )
             .await?;
-            api.send_json::<_, IgnoredAny>(
-                Method::PUT,
-                &connections_path(&screen),
-                &Items { items: lines },
-            )
-            .await?;
-            Ok(())
+            // The equipment is in by now: a failure here leaves the
+            // server half-saved, which the answer says.
+            let lines = api
+                .send_json::<_, IgnoredAny>(
+                    Method::PUT,
+                    &connections_path(&screen),
+                    &Items { items: lines },
+                )
+                .await;
+            Ok(lines.err().map(|error| error.to_string()))
         }),
     );
     cx.notify();
 }
 
 /// The save's answer: marked saved (the viewer shows the saved layout),
-/// or a toast and the edits kept.
+/// or a toast and the edits kept. A leave waiting on it runs only when
+/// nothing was edited while the save was on its way.
 pub(super) fn on_reply(
     console: &mut Console,
     key: CallKey,
@@ -714,7 +723,7 @@ pub(super) fn on_reply(
     if key.name != SAVE {
         return;
     }
-    let result = reply.take::<()>();
+    let result = reply.take::<Option<String>>();
     let state = console.state::<State>();
     let Some(editor) = state.edit.as_deref_mut() else {
         return;
@@ -726,17 +735,34 @@ pub(super) fn on_reply(
     let after = editor.after.take();
     let sent = editor.sent.take();
     match result {
-        Ok(()) => {
+        Ok(None) => {
             if let Some((screen, snapshot, named)) = sent {
                 if editor.screen == screen {
                     editor.history.mark_saved(snapshot);
                 }
                 state.layouts.insert(screen, Loaded::Ready(Rc::new(named)));
             }
-            console.show_toast("Screen saved", false, cx);
-            if let Some(leave) = after {
-                proceed_later(console, leave, cx);
+            let clean = edits_ref(console).is_none_or(|editor| !editor.history.dirty());
+            match after {
+                Some(_) if !clean => {
+                    console.show_toast("Edited while saving; save again", true, cx);
+                }
+                Some(leave) => {
+                    console.show_toast("Screen saved", false, cx);
+                    proceed_later(console, leave, cx);
+                }
+                None => console.show_toast("Screen saved", false, cx),
             }
+        }
+        Ok(Some(error)) => {
+            console.show_toast(
+                format!(
+                    "Screen half saved: the equipment is in, the connections are not \
+                     ({error}). The edits are kept; save again."
+                ),
+                true,
+                cx,
+            );
         }
         Err(error) => {
             console.show_toast(
@@ -1080,6 +1106,9 @@ fn on_press(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
+    // A number typed in the inspector belongs to the widget it was typed
+    // for: commit it before the press moves focus and the selection.
+    inspector::commit_typing(console, window, cx);
     focus_stage(console, window, cx);
     let Some(((x, y), zoom)) = stage_at(console, event.position) else {
         return;
@@ -1121,6 +1150,8 @@ fn on_press(
         let knob = edit::turns(widget) && near((x, y), knob_at(rect, zoom), HANDLE_HIT / zoom);
         if knob {
             editor.gesture = Some(Gesture::Knob);
+            // The paint with `pressing` adds the window's move and release.
+            changed(console, window, cx);
             return;
         }
         if let Some(handle) = edit::hit_handle(rect, x, y, HANDLE_HIT / zoom) {
@@ -1132,6 +1163,7 @@ fn on_press(
                 start: rect,
                 handle,
             });
+            changed(console, window, cx);
             return;
         }
     }
@@ -1288,6 +1320,8 @@ fn on_release(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     };
     editor.guides.clear();
     editor.band = None;
+    // A gesture is one undo step; the next edit starts another.
+    editor.history.seal();
     match gesture {
         Gesture::Move {
             moved: false,
@@ -1939,4 +1973,226 @@ pub(super) fn edit_button(cx: &mut Context<Console>) -> AnyElement {
         .tooltip("Edit the screen  E")
         .on_click(cx.listener(|console, _, window, cx| run(console, Cmd::Toggle, window, cx)))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Modifiers, TestAppContext, point};
+    use voltrus_scada_native::mimic::{Widget, WidgetKind};
+
+    use super::*;
+    use crate::console::testing::Harness;
+
+    fn tank(id: &str, x: f64) -> Widget {
+        Widget {
+            id: id.into(),
+            kind: WidgetKind::parse("tank_level"),
+            name: String::new(),
+            tags: Vec::new(),
+            signals: Vec::new(),
+            x,
+            y: 200.0,
+            width: 100.0,
+            height: 100.0,
+            config: serde_json::Map::new(),
+        }
+    }
+
+    /// Editing a screen with tanks `a` (x 200) and `b` (x 600), `a`
+    /// selected, the stage focused and drawn.
+    fn editing_a(cx: &mut TestAppContext) -> Harness {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| console.show(Page::Mimic, window, cx));
+        h.draw();
+        h.update(|console, window, cx| {
+            let screen = active(console);
+            let layout = Layout {
+                widgets: vec![tank("a", 200.0), tank("b", 600.0)],
+                connections: Vec::new(),
+            };
+            console
+                .state::<State>()
+                .layouts
+                .insert(screen, Loaded::Ready(Rc::new(layout)));
+            enter(console, window, cx);
+            if let Some(editor) = edits(console) {
+                editor.selection = vec!["a".into()];
+            }
+            changed(console, window, cx);
+        });
+        h.draw();
+        h.calls();
+        h
+    }
+
+    fn widget(h: &mut Harness, id: &str) -> Widget {
+        h.update(|console, _, _| {
+            edits_ref(console)
+                .and_then(|editor| editor.layout().widget(id).cloned())
+                .expect("the widget")
+        })
+    }
+
+    /// A stage point in window pixels, as last drawn.
+    fn on_window(h: &mut Harness, (x, y): (f64, f64)) -> Point<Pixels> {
+        let drawn = h
+            .update(|console, _, _| console.state::<State>().drawn.get())
+            .expect("the stage is drawn");
+        let camera = drawn.camera;
+        #[allow(clippy::cast_possible_truncation)]
+        let at = |origin: Pixels, offset: f64, value: f64| {
+            origin + px((offset + value * camera.zoom) as f32)
+        };
+        point(
+            at(drawn.bounds.origin.x, camera.x, x),
+            at(drawn.bounds.origin.y, camera.y, y),
+        )
+    }
+
+    fn click(h: &mut Harness, at: Point<Pixels>) {
+        h.cx.simulate_mouse_down(at, MouseButton::Left, Modifiers::none());
+        h.cx.simulate_mouse_up(at, MouseButton::Left, Modifiers::none());
+    }
+
+    fn dirty(h: &mut Harness) -> bool {
+        h.update(|console, _, _| edits_ref(console).is_some_and(|e| e.history.dirty()))
+    }
+
+    fn move_a(h: &mut Harness, x: f64) {
+        h.update(|console, window, cx| {
+            let moved = Edit::Move(vec![("a".into(), x, 200.0)]);
+            apply(console, &moved, None, window, cx);
+        });
+    }
+
+    fn saves(h: &mut Harness) -> Vec<CallKey> {
+        h.calls()
+            .into_iter()
+            .filter(|key| key.name == SAVE)
+            .collect()
+    }
+
+    fn last_toast(h: &mut Harness) -> String {
+        h.update(|console, _, _| {
+            console
+                .toasts
+                .last()
+                .map(|toast| toast.message.to_string())
+                .unwrap_or_default()
+        })
+    }
+
+    /// Done with an unsaved edit: the dialog, focused.
+    fn asking(h: &mut Harness) {
+        move_a(h, 300.0);
+        h.update(|console, window, cx| run(console, Cmd::Toggle, window, cx));
+        h.draw();
+    }
+
+    #[gpui::test]
+    fn enter_on_the_unsaved_dialog_saves(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        asking(&mut h);
+        h.keys("enter");
+        assert_eq!(saves(&mut h).len(), 1);
+    }
+
+    #[gpui::test]
+    fn enter_on_the_focused_cancel_saves_nothing(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        asking(&mut h);
+        h.keys("tab");
+        h.keys("enter");
+        assert!(saves(&mut h).is_empty(), "Cancel is not Save");
+        assert!(h.update(|console, _, _| editing(console)), "still editing");
+        assert!(dirty(&mut h), "the edit is kept");
+    }
+
+    #[gpui::test]
+    fn enter_on_the_focused_discard_discards(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        asking(&mut h);
+        h.keys("tab tab");
+        h.keys("enter");
+        assert!(saves(&mut h).is_empty(), "the discarded edit is not PUT");
+        assert!(
+            !h.update(|console, _, _| editing(console)),
+            "left the editor"
+        );
+    }
+
+    #[gpui::test]
+    fn an_edit_while_saving_to_leave_stays_in_the_editor(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        asking(&mut h);
+        h.keys("enter");
+        let save = saves(&mut h).pop().expect("the save");
+        move_a(&mut h, 400.0);
+        h.reply(save, Reply::ok(None::<String>));
+        h.draw();
+        assert!(h.update(|console, _, _| editing(console)), "not left");
+        assert!(dirty(&mut h), "the later edit is unsaved");
+        assert_eq!(last_toast(&mut h), "Edited while saving; save again");
+    }
+
+    #[gpui::test]
+    fn a_half_written_save_says_so(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        move_a(&mut h, 300.0);
+        h.update(|console, _, cx| save(console, None, cx));
+        let save = saves(&mut h).pop().expect("the save");
+        h.reply(save, Reply::ok(Some("500 connections".to_owned())));
+        assert!(dirty(&mut h), "not marked saved");
+        let toast = last_toast(&mut h);
+        assert!(toast.contains("half saved"), "{toast}");
+    }
+
+    #[gpui::test]
+    fn pressing_a_resize_handle_starts_the_drag(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        let rect = Rect::of(&widget(&mut h, "a"));
+        let from = on_window(&mut h, Handle::SouthEast.point(rect));
+        let to = point(from.x + px(40.0), from.y + px(40.0));
+        h.cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+        h.cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+        h.cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+        assert!(widget(&mut h, "a").width > 100.0, "the drag resized");
+    }
+
+    #[gpui::test]
+    fn separate_nudge_runs_are_separate_undo_steps(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        let nudge = |h: &mut Harness| {
+            h.update(|console, window, cx| run(console, Cmd::Nudge(1, 0), window, cx));
+        };
+        nudge(&mut h);
+        nudge(&mut h);
+        // A click on the selected widget ends the run.
+        let centre = on_window(&mut h, (250.0, 250.0));
+        click(&mut h, centre);
+        nudge(&mut h);
+        h.update(|console, window, cx| run(console, Cmd::Undo, window, cx));
+        assert_eq!(widget(&mut h, "a").x, 202.0, "one undo takes back one run");
+    }
+
+    #[gpui::test]
+    fn a_typed_number_survives_a_click_on_another_widget(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        h.update(|console, window, cx| {
+            let field = edits_ref(console)
+                .and_then(|editor| editor.fields.iter().find(|(slot, _)| *slot == Slot::X))
+                .map(|(_, field)| field.clone())
+                .expect("the X field");
+            field.read(cx).focus(window);
+            field.update(cx, |field, cx| field.set_text("50", cx));
+        });
+        let on_b = on_window(&mut h, (650.0, 250.0));
+        click(&mut h, on_b);
+        assert_eq!(widget(&mut h, "a").x, 50.0, "the number went to a");
+        assert_eq!(widget(&mut h, "b").x, 600.0);
+        let selected =
+            h.update(|console, _, _| edits_ref(console).map(|editor| editor.selection.clone()));
+        assert_eq!(selected, Some(vec!["b".to_owned()]));
+    }
 }

@@ -144,6 +144,18 @@ fn a_text_area_adds_no_key_bindings(cx: &mut TestAppContext) {
     assert_eq!(count(&mut h), before, "the keymap already has its keys");
 }
 
+#[gpui::test]
+fn a_code_editor_adds_no_key_bindings(cx: &mut TestAppContext) {
+    use super::views::data_manager::scripts::code_editor::CodeEditor;
+    let mut h = Harness::new(cx);
+    let count = |h: &mut Harness| {
+        h.cx.update(|_, cx| cx.key_bindings().borrow().bindings().len())
+    };
+    let before = count(&mut h);
+    let _editor = h.cx.update(|_, cx| cx.new(CodeEditor::new));
+    assert_eq!(count(&mut h), before, "the keymap already has its keys");
+}
+
 /// Every call key name written out in the console's source.
 fn call_key_names(dir: &Path, names: &mut Vec<(String, String)>) {
     for entry in std::fs::read_dir(dir).expect("the console's source") {

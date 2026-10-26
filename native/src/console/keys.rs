@@ -2725,8 +2725,17 @@ pub fn menus() -> Vec<Menu> {
 pub fn display(keys: &str) -> String {
     let mac = cfg!(target_os = "macos");
     let mut modifiers = String::new();
-    let mut parts: Vec<&str> = keys.split('-').collect();
-    let key = parts.pop().unwrap_or("");
+    // A literal `-` key (`-`, `secondary--`) leaves an empty last part.
+    let (keys, dash) = match keys.strip_suffix('-') {
+        Some(rest) if rest.is_empty() || rest.ends_with('-') => (rest.trim_end_matches('-'), true),
+        _ => (keys, false),
+    };
+    let mut parts: Vec<&str> = if keys.is_empty() {
+        Vec::new()
+    } else {
+        keys.split('-').collect()
+    };
+    let key = if dash { "-" } else { parts.pop().unwrap_or("") };
     let mut names: Vec<&str> = Vec::new();
     for modifier in parts {
         let (symbol, name) = match modifier {
@@ -2839,6 +2848,10 @@ mod tests {
         assert_eq!(display("j"), "J");
         assert_eq!(display("?"), "?");
         assert_eq!(display("pagedown"), "PgDn");
+        assert_eq!(display("-"), "-");
+        if cfg!(target_os = "macos") {
+            assert_eq!(display("secondary--"), "⌘-");
+        }
     }
 
     #[test]

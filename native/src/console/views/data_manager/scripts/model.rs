@@ -45,12 +45,17 @@ impl Draft {
     pub(crate) fn of(script: &Script) -> Self {
         Self {
             name: script.name.clone(),
-            source: script.source.clone(),
+            source: unix_lines(&script.source),
             cpu_ms: script.cpu_limit_ms.to_string(),
             memory_mb: memory_mb(script.memory_limit_bytes).to_string(),
             enabled: script.enabled,
         }
     }
+}
+
+/// `text` with `\n` line breaks, as the code editor holds it.
+pub(crate) fn unix_lines(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
 /// A memory limit in whole MiB, rounded as the web client shows it.
@@ -112,7 +117,7 @@ pub(crate) fn update_body(draft: &Draft, script: &Script) -> Result<Option<Updat
     let (cpu, memory) = limits(draft, Some(script))?;
     let body = UpdateScript {
         name: (name != script.name).then(|| name.to_owned()),
-        source: (draft.source != script.source).then(|| draft.source.clone()),
+        source: (draft.source != unix_lines(&script.source)).then(|| draft.source.clone()),
         cpu_limit_ms: (cpu != script.cpu_limit_ms).then_some(cpu),
         memory_limit_bytes: (memory != script.memory_limit_bytes).then_some(memory),
         enabled: (draft.enabled != script.enabled).then_some(draft.enabled),
@@ -327,6 +332,17 @@ mod tests {
             update_body(&draft, &saved).unwrap_err(),
             "Script name is required"
         );
+    }
+
+    #[test]
+    fn crlf_source_opens_clean() {
+        let mut saved = script(3, "Scale");
+        saved.source = "function main(input) {\r\n  return input;\r\n}\r".into();
+        // What the code editor holds once it is opened.
+        let mut draft = Draft::of(&saved);
+        draft.source = "function main(input) {\n  return input;\n}\n".into();
+        assert!(!is_dirty(&draft, Some(&saved)));
+        assert_eq!(update_body(&draft, &saved), Ok(None));
     }
 
     #[test]

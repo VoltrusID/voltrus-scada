@@ -54,9 +54,14 @@ struct Form {
     username: Entity<TextInput>,
     password: Entity<TextInput>,
     again: Entity<TextInput>,
-    role: &'static str,
+    /// `None` for a role outside `USER_ROLES` (a legacy row): kept as is
+    /// unless one is picked.
+    role: Option<&'static str>,
     error: Option<String>,
     busy: bool,
+    /// This form's number: its save's key, so an older form's answer
+    /// leaves it alone.
+    seq: i64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -69,6 +74,8 @@ pub(crate) struct State {
     /// Put the cursor on this user once listed.
     focus_name: Option<String>,
     form: Option<Form>,
+    /// How many forms were opened.
+    form_seq: i64,
     deleting: Option<User>,
 }
 
@@ -165,16 +172,17 @@ fn open_form(console: &mut Console, kind: Kind, window: &mut Window, cx: &mut Co
         .map(|input| on_field(input, submit, window, cx))
         .collect();
     let role = match &kind {
-        Kind::New => "viewer",
-        Kind::Edit(user) | Kind::Password(user) => {
-            user_role(&user.role).map_or("viewer", |role| role.id)
-        }
+        Kind::New => Some("viewer"),
+        Kind::Edit(user) | Kind::Password(user) => user_role(&user.role).map(|role| role.id),
     };
     let first = match kind {
         Kind::New => username.clone(),
         _ => password.clone(),
     };
-    console.state::<State>().form = Some(Form {
+    let state = console.state::<State>();
+    state.form_seq += 1;
+    let seq = state.form_seq;
+    state.form = Some(Form {
         kind,
         username,
         password,
@@ -182,6 +190,7 @@ fn open_form(console: &mut Console, kind: Kind, window: &mut Window, cx: &mut Co
         role,
         error: None,
         busy: false,
+        seq,
         _subscriptions: subscriptions,
     });
     kit::remember_window(console, window);
@@ -267,7 +276,8 @@ fn build(form: &Form, me: &str, users: &[User], cx: &gpui::App) -> Result<Save, 
     match &form.kind {
         Kind::New => {
             let name = form.username.read(cx).value().trim().to_owned();
-            let body = new_user_body(&name, &password, &again, form.role, users)?;
+            let role = form.role.unwrap_or("viewer");
+            let body = new_user_body(&name, &password, &again, role, users)?;
             Ok(Save {
                 method: Method::POST,
                 path: "/api/v1/users".to_owned(),
@@ -277,7 +287,11 @@ fn build(form: &Form, me: &str, users: &[User], cx: &gpui::App) -> Result<Save, 
             })
         }
         Kind::Edit(user) | Kind::Password(user) => {
-            let role = (form.role != user.role).then_some(form.role);
+            // A password reset never sends a role; an edit only a picked one.
+            let role = match form.kind {
+                Kind::Password(_) => None,
+                _ => form.role.filter(|role| *role != user.role),
+            };
             if let Some(role) = role
                 && let Some(refused) = role_change_refused(me, user, role, users)
             {
@@ -325,6 +339,7 @@ fn submit(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
         Ok(save) => {
             form.busy = true;
             form.error = None;
+            let seq = form.seq;
             let Save {
                 method,
                 path,
@@ -336,7 +351,7 @@ fn submit(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
                 api.send_json::<_, IgnoredAny>(method, &path, &body).await?;
                 anyhow::Ok((done, name))
             });
-            console.call(CallKey::new("data.users.save"), call);
+            console.call(CallKey::new("data.users.save").with(seq), call);
         }
         Err(error) => form.error = Some(error),
     }
@@ -348,23 +363,35 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
         "data.users.list" => {
             console.state::<State>().users = Some(reply.take::<Vec<User>>());
         }
-        "data.users.save" => match reply.take::<(String, String)>() {
-            Ok((done, name)) => {
-                let state = console.state::<State>();
-                state.form = None;
-                state.focus_name = Some(name);
-                kit::close_later(console, FORM, cx);
-                fetch(console, true);
-                console.show_toast(done, false, cx);
-            }
-            Err(error) => match console.state::<State>().form.as_mut() {
-                Some(form) => {
-                    form.busy = false;
-                    form.error = Some(error);
+        "data.users.save" => {
+            let current = console
+                .state::<State>()
+                .form
+                .as_ref()
+                .is_some_and(|form| form.seq == key.arg);
+            match reply.take::<(String, String)>() {
+                Ok((done, name)) => {
+                    let state = console.state::<State>();
+                    state.focus_name = Some(name);
+                    // A form opened since then keeps its edits.
+                    if current {
+                        state.form = None;
+                        kit::close_later(console, FORM, cx);
+                    }
+                    fetch(console, true);
+                    console.show_toast(done, false, cx);
                 }
-                None => console.show_toast(format!("Saving the user failed: {error}"), true, cx),
-            },
-        },
+                Err(error) => match console.state::<State>().form.as_mut().filter(|_| current) {
+                    Some(form) => {
+                        form.busy = false;
+                        form.error = Some(error);
+                    }
+                    None => {
+                        console.show_toast(format!("Saving the user failed: {error}"), true, cx);
+                    }
+                },
+            }
+        }
         "data.users.delete" => match reply.take::<String>() {
             Ok(name) => {
                 fetch(console, true);
@@ -680,10 +707,10 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
             let id = choice.id;
             Segment::new(
                 choice.label,
-                role == id,
+                role == Some(id),
                 cx.listener(move |console, _, _, cx| {
                     if let Some(form) = console.state::<State>().form.as_mut() {
-                        form.role = id;
+                        form.role = Some(id);
                         form.error = None;
                     }
                     cx.notify();
@@ -692,7 +719,7 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         })
         .collect();
     let role_picker = |cx: &mut Context<Console>| {
-        let reach = user_role(role).map_or("", |role| role.reach);
+        let reach = role.and_then(user_role).map_or("", |role| role.reach);
         div()
             .flex()
             .flex_col()
@@ -731,7 +758,7 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
             body.push(role_picker(cx));
         }
         Kind::Edit(user) => {
-            let refused = role_change_refused(&me, user, role, &list);
+            let refused = role.and_then(|role| role_change_refused(&me, user, role, &list));
             body.push(role_picker(cx));
             if let Some(refused) = refused {
                 body.push(note(refused, theme.warning, Some(Icon::CircleAlert)));
@@ -888,6 +915,85 @@ mod tests {
             "another user: confirm first"
         );
         assert!(h.calls().is_empty(), "nothing is deleted before the yes");
+    }
+
+    fn built(h: &mut Harness) -> Result<serde_json::Value, String> {
+        h.update(|console, _, cx| {
+            let me = me(console);
+            let list = users(console);
+            let form = console
+                .state::<State>()
+                .form
+                .as_ref()
+                .expect("the form is open");
+            build(form, &me, &list, cx).map(|save| save.body)
+        })
+    }
+
+    #[gpui::test]
+    fn a_legacy_role_is_never_sent_back_as_viewer(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        let legacy = account(2, "old", "supervisor");
+        let reset = legacy.clone();
+        h.update(move |console, window, cx| reset_password(console, reset, window, cx));
+        type_into(&mut h, |form| form.password.clone(), "secret-123");
+        type_into(&mut h, |form| form.again.clone(), "secret-123");
+        let body = built(&mut h).expect("a password reset");
+        assert!(body.get("role").is_none(), "a reset sends no role: {body}");
+        assert!(body.get("password").is_some());
+
+        // An edit of the same row keeps the unknown role unless one is picked.
+        h.update(move |console, window, cx| open_form(console, Kind::Edit(legacy), window, cx));
+        assert_eq!(
+            h.update(|console, _, _| console.state::<State>().form.as_ref().map(|f| f.role)),
+            Some(None)
+        );
+        assert_eq!(built(&mut h), Err("Nothing changed".to_owned()));
+    }
+
+    #[gpui::test]
+    fn an_older_forms_save_answer_leaves_the_new_form_alone(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.cx.dispatch_action(DataNewUser);
+        h.reply(
+            CallKey::new("data.users.list"),
+            Reply::ok(vec![account(1, "op", "admin")]),
+        );
+        type_into(&mut h, |form| form.username.clone(), "ana");
+        type_into(&mut h, |form| form.password.clone(), "secret-123");
+        type_into(&mut h, |form| form.again.clone(), "secret-123");
+        h.update(submit);
+        let calls = h.calls();
+        assert_eq!(calls.len(), 1);
+        let first = calls[0];
+        assert_eq!(first.name, "data.users.save");
+        // Esc while it saves, then another form.
+        h.update(|console, window, cx| {
+            console.close_overlay(window, cx);
+            open_form(console, Kind::New, window, cx);
+        });
+        h.reply(first, Reply::failed("taken"));
+        h.draw();
+        assert!(
+            h.update(|console, _, _| {
+                let form = console.state::<State>().form.as_ref().expect("still open");
+                form.error.is_none() && !form.busy && form.seq != first.arg
+            }),
+            "the old error does not land on the new form"
+        );
+        h.reply(
+            first,
+            Reply::ok(("Created ana".to_owned(), "ana".to_owned())),
+        );
+        h.draw();
+        assert!(
+            h.update(
+                |console, _, _| console.overlay_is(FORM) && console.state::<State>().form.is_some()
+            ),
+            "the old success does not close the new form"
+        );
     }
 
     #[test]

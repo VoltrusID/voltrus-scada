@@ -1792,7 +1792,8 @@ async fn with_key(
 /// Data Manager › Admin against the live plant, through the runtime as the
 /// console sends it: a throwaway user (create, sign in as them, change
 /// their role and password, sign in again, delete), the server's own
-/// refusals (a viewer and a demo user on admin routes, deleting yourself),
+/// refusals (a viewer and a demo user on admin routes, a throwaway admin
+/// deleting themselves),
 /// a role (create, edit its permissions, delete; an unknown permission
 /// refused), a throwaway API key (create with its secret shown once, use
 /// it, see it refused on an operator route, revoke it, see it refused) and
@@ -1835,17 +1836,75 @@ async fn admin_users_roles_keys_and_notification_rules(url: &str, user: &str, pa
         admin::delete_refused(user, &me, &before).is_some(),
         "the console refuses deleting yourself"
     );
-    let refused = call::<IgnoredAny>(
+
+    // The server's own refusal, asked by a throwaway admin signed in as
+    // themselves: a server that wrongly allows deleting yourself then
+    // deletes only the throwaway, never the admin running the suite.
+    let self_name = format!("e2e_self_{suffix}");
+    let self_pass = format!("E2e-{suffix}-self");
+    let body = admin::new_user_body(&self_name, &self_pass, &self_pass, "admin", &before)
+        .expect("a valid admin");
+    answer::<IgnoredAny>(
         &handle,
         &events,
-        CallKey::new("data.users.delete").with(me.id),
-        Call::send_empty::<IgnoredAny>(Method::DELETE, format!("/api/v1/users/{}", me.id)),
+        "data.users.save",
+        Call::send::<IgnoredAny>(Method::POST, "/api/v1/users", body),
     )
     .await;
+    let listed: Vec<User> = answer(&handle, &events, "data.users.list", list_users()).await;
+    let throwaway = listed
+        .iter()
+        .find(|row| row.username == self_name)
+        .expect("the throwaway admin is listed")
+        .clone();
+    assert!(throwaway.is_admin());
+    assert!(
+        admin::delete_refused(&self_name, &throwaway, &listed).is_some(),
+        "the console refuses the throwaway deleting themselves"
+    );
+    let (self_handle, self_events) = runtime::start().expect("runtime");
+    self_handle.send(Command::SignIn {
+        url: url.to_owned(),
+        username: self_name.clone(),
+        password: self_pass.clone(),
+    });
+    wait_for(&self_events, 30, |event| match event {
+        Event::SignInFailed(error) => panic!("the throwaway admin's sign-in failed: {error}"),
+        Event::Tags(list) => Some(list),
+        _ => None,
+    })
+    .await
+    .expect("the tag list after the throwaway admin signs in");
+    let refused = call::<IgnoredAny>(
+        &self_handle,
+        &self_events,
+        CallKey::new("data.users.delete").with(throwaway.id),
+        Call::send_empty::<IgnoredAny>(Method::DELETE, format!("/api/v1/users/{}", throwaway.id)),
+    )
+    .await;
+    self_handle.send(Command::Shutdown);
+    let still: Vec<User> = answer(&handle, &events, "data.users.list", list_users()).await;
+    let kept = still.iter().any(|row| row.id == throwaway.id);
+    // Remove the throwaway admin before asserting, so a failure leaves no
+    // admin account with a known password behind.
+    if kept {
+        answer::<IgnoredAny>(
+            &handle,
+            &events,
+            "data.users.delete",
+            Call::send_empty::<IgnoredAny>(
+                Method::DELETE,
+                format!("/api/v1/users/{}", throwaway.id),
+            ),
+        )
+        .await;
+    }
     assert!(
         refused.is_err_and(|error| error.contains("yourself")),
         "the server refuses it too"
     );
+    assert!(kept, "the refused admin was not deleted");
+    println!("user {self_name}: refused deleting themselves, then deleted");
 
     let name = format!("e2e_admin_{suffix}");
     let first = format!("E2e-{suffix}-first");

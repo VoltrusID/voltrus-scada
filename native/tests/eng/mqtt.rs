@@ -3,10 +3,8 @@
 //! published message looked for in the log, the topic list and the
 //! topic's own messages.
 //!
-//! The server's message log is fed by a tracker thread
-//! (`src/mqtt_broker/mod.rs`) that does not record what the broker's own
-//! link publishes (the REST publish) on the CI plant: the reads are
-//! exercised and checked when the message shows, and reported otherwise.
+//! The published message must show in the log, the topic list and the
+//! topic's own messages; a message that never shows fails the test.
 //!
 //! A broker with no configuration (none in the server's file) cannot go
 //! back to none: the server has no route to clear it, so it keeps the
@@ -64,33 +62,30 @@ async fn publish_and_read(api: &VoltrusApi) {
         .mqtt_topic_messages(TOPIC)
         .await
         .expect("the topic's messages");
-    if seen {
-        let info = topics
-            .topics
+    assert!(
+        seen,
+        "the REST-published message never reached the broker's log ({} topics, {} messages on {TOPIC})",
+        topics.topics.len(),
+        own.messages.len()
+    );
+    let info = topics
+        .topics
+        .iter()
+        .find(|info| info.topic == TOPIC)
+        .expect("the topic is listed");
+    assert!(info.message_count >= 1);
+    assert_eq!(info.last_payload, payload);
+    assert_eq!(own.topic, TOPIC);
+    assert!(
+        own.messages
             .iter()
-            .find(|info| info.topic == TOPIC)
-            .expect("the topic is listed");
-        assert!(info.message_count >= 1);
-        assert_eq!(info.last_payload, payload);
-        assert_eq!(own.topic, TOPIC);
-        assert!(
-            own.messages
-                .iter()
-                .any(|message| message.payload == payload)
-        );
-        println!(
-            "mqtt: read back from the log, {} topics, {} messages on {TOPIC}",
-            topics.topics.len(),
-            own.messages.len()
-        );
-    } else {
-        println!(
-            "mqtt: server gap: the REST-published message never reached the broker's log \
-             ({} topics, {} messages on {TOPIC})",
-            topics.topics.len(),
-            own.messages.len()
-        );
-    }
+            .any(|message| message.payload == payload)
+    );
+    println!(
+        "mqtt: read back from the log, {} topics, {} messages on {TOPIC}",
+        topics.topics.len(),
+        own.messages.len()
+    );
 }
 
 /// PUT a test configuration, check it, and put `original` back (the broker

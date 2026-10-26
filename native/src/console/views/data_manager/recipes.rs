@@ -35,12 +35,13 @@ use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use voltrus_scada_native::tag_api::WriteAccepted;
 use vt_ui::Icon;
 use vt_ui::chart::format_value;
-use vt_ui::components::{Button, IconButton, field, pill};
+use vt_ui::components::{Button, IconButton, field, kbd, pill};
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
 use vt_ui::theme::*;
 
 use super::insights_kit::{self, chips, devices, every_while_shown};
 use super::sidebar_width;
+use crate::console::keys::Dismiss;
 use crate::console::overlay::Overlay;
 use crate::console::views::commands;
 use crate::console::views::ops_kit::{close_overlay_in, command_status_color, notice};
@@ -60,6 +61,7 @@ const NEW: &str = "recipe-new";
 const SHEET: &str = "recipe-sheet";
 const LOAD: &str = "recipe-load";
 const DELETE: &str = "recipe-delete";
+const DISCARD: &str = "recipe-discard";
 const ROW_HEIGHT_PX: f32 = 34.0;
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 
@@ -96,8 +98,12 @@ struct Sheet {
     name: Entity<TextInput>,
     category: Entity<TextInput>,
     description: Entity<TextInput>,
-    /// The saved values with the store position of the tag each writes.
-    values: Vec<(String, f64, Option<usize>)>,
+    /// The saved values with the data source id of the tag each writes,
+    /// looked up in the store by id on every render (positions shift when
+    /// the tag list is replaced).
+    values: Vec<(String, f64, Option<i64>)>,
+    /// Focus of the "discard the changes?" dialog while it is open.
+    discard_focus: Option<FocusHandle>,
     error: Option<String>,
     sending: bool,
     _subscriptions: Vec<Subscription>,
@@ -143,6 +149,8 @@ pub(crate) struct State {
     /// The category shown; `None` for every category.
     category: Option<String>,
     list: Option<Result<Rc<Vec<Recipe>>, String>>,
+    /// Each listed recipe's number of saved values, parsed once per list.
+    counts: Rc<HashMap<i64, usize>>,
     seq: i64,
     asked: bool,
     new: Option<NewForm>,
@@ -160,6 +168,11 @@ pub fn on_open(console: &mut Console, cx: &mut Context<Console>) {
     console.state::<State>().asked = true;
     fetch(console);
     cx.notify();
+}
+
+/// After a config rollback: the recipes list afresh when next opened.
+pub(crate) fn stale(console: &mut Console) {
+    console.state::<State>().asked = false;
 }
 
 pub fn focus(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
@@ -252,7 +265,24 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
     let state = console.state::<State>();
     match key.name {
         "data.recipes.list" if key.arg == state.seq => {
-            state.list = Some(reply.take::<Vec<Recipe>>().map(Rc::new));
+            let list = reply.take::<Vec<Recipe>>().map(Rc::new);
+            if let Ok(list) = &list {
+                state.counts = Rc::new(
+                    list.iter()
+                        .map(|recipe| (recipe.id, recipe.values().len()))
+                        .collect(),
+                );
+                // A category none of the recipes has any more would hide
+                // every row behind a filter with no chip to clear it.
+                if state
+                    .category
+                    .as_ref()
+                    .is_some_and(|category| !categories(list).contains(category))
+                {
+                    state.category = None;
+                }
+            }
+            state.list = Some(list);
         }
         "data.recipes.create" => match reply.take::<Recipe>() {
             Ok(recipe) => {
@@ -607,18 +637,19 @@ fn open_sheet(
         .into_iter()
         .map(|input| on_field(input, submit_sheet, window, cx))
         .collect();
-    // Where each value goes: the device's tag with the register's key,
-    // looked up once here.
+    // Where each value goes: the data source id of the device's tag with
+    // the register's key; the render finds it in the store by id.
     let values = recipe
         .values()
         .into_iter()
         .map(|(key, value)| {
-            let at = console
+            let id = console
                 .store
                 .tags
                 .iter()
-                .position(|tag| tag.info.device_id == recipe.device_id && tag.info.key == key);
-            (key, value, at)
+                .find(|tag| tag.info.device_id == recipe.device_id && tag.info.key == key)
+                .map(|tag| tag.info.id);
+            (key, value, id)
         })
         .collect();
     let state = console.state::<State>();
@@ -629,6 +660,7 @@ fn open_sheet(
         category,
         description,
         values,
+        discard_focus: None,
         error: None,
         sending: false,
         _subscriptions: subscriptions,
@@ -636,6 +668,153 @@ fn open_sheet(
     let overlay = Overlay::sheet(SHEET, px(500.0), sheet_view, cx);
     console.open_overlay(overlay, window, cx);
     name.read(cx).focus(window);
+}
+
+/// Per saved value: its key, the value, and its tag's unit and value now
+/// (looked up by id, so a replaced tag list never points elsewhere).
+fn live_values(console: &Console, sheet: &Sheet) -> Vec<(String, f64, Option<Now>)> {
+    sheet
+        .values
+        .iter()
+        .map(|(key, value, id)| {
+            let now = id
+                .and_then(|id| console.store.get(id))
+                .map(|tag| (tag.info.unit.clone(), tag.value));
+            (key.clone(), *value, now)
+        })
+        .collect()
+}
+
+/// Whether the fields differ from the recipe as opened.
+fn sheet_dirty(sheet: &Sheet, cx: &gpui::App) -> bool {
+    let changed =
+        |input: &Entity<TextInput>, was: &str| input.read(cx).value().trim() != was.trim();
+    changed(&sheet.name, &sheet.recipe.name)
+        || changed(&sheet.category, sheet.recipe.category().unwrap_or(""))
+        || changed(&sheet.description, sheet.recipe.description().unwrap_or(""))
+}
+
+/// Close the sheet, asking first when its fields have unsaved edits.
+fn close_sheet(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    let Some(sheet) = console.state::<State>().sheet.as_ref() else {
+        console.close_overlay(window, cx);
+        return;
+    };
+    if !sheet_dirty(sheet, cx) || sheet.sending {
+        console.state::<State>().sheet = None;
+        console.close_overlay(window, cx);
+        return;
+    }
+    let focus = cx.focus_handle();
+    if let Some(sheet) = console.state::<State>().sheet.as_mut() {
+        sheet.discard_focus = Some(focus.clone());
+    }
+    let overlay = Overlay::modal(DISCARD, px(420.0), discard_dialog, cx);
+    console.open_overlay(overlay, window, cx);
+    window.focus(&focus);
+}
+
+fn discard_sheet(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    console.state::<State>().sheet = None;
+    console.close_overlay(window, cx);
+}
+
+/// Back to the sheet with its edits as they were.
+fn keep_editing(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    let Some(sheet) = console.state::<State>().sheet.as_mut() else {
+        console.close_overlay(window, cx);
+        return;
+    };
+    sheet.discard_focus = None;
+    let name = sheet.name.clone();
+    let overlay = Overlay::sheet(SHEET, px(500.0), sheet_view, cx);
+    console.open_overlay(overlay, window, cx);
+    name.read(cx).focus(window);
+}
+
+fn discard_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> AnyElement {
+    let theme = theme(cx).clone();
+    let Some(sheet) = console
+        .state_ref::<State>()
+        .and_then(|state| state.sheet.as_ref())
+    else {
+        return div().into_any_element();
+    };
+    let (focus, name) = (sheet.discard_focus.clone(), sheet.recipe.name.clone());
+    div()
+        .when_some(focus, |this, focus| this.track_focus(&focus))
+        .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
+            // Enter only while the dialog itself has focus (not a button).
+            let own = console
+                .state::<State>()
+                .sheet
+                .as_ref()
+                .and_then(|sheet| sheet.discard_focus.as_ref())
+                .is_some_and(|focus| focus.is_focused(window));
+            if own && event.keystroke.key == "enter" {
+                discard_sheet(console, window, cx);
+                cx.stop_propagation();
+            }
+        }))
+        .on_action(cx.listener(|console, _: &Dismiss, window, cx| {
+            keep_editing(console, window, cx);
+        }))
+        .flex()
+        .flex_col()
+        .gap(SPACE_6)
+        .p(SPACE_8)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(SPACE_4)
+                .child(vt_ui::icon(Icon::CircleAlert, ICON_LG, theme.warning))
+                .child(
+                    div()
+                        .text_size(FONT_TITLE)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Discard the changes to {name}?")),
+                ),
+        )
+        .child(
+            div()
+                .text_color(theme.fg_muted)
+                .child("The server keeps the recipe as it was last saved."),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(SPACE_4)
+                .child(
+                    div()
+                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .gap(SPACE_2)
+                        .text_size(FONT_CAPTION)
+                        .text_color(theme.fg_dim)
+                        .child(kbd("↵", cx))
+                        .child("discard")
+                        .child(kbd("Esc", cx))
+                        .child("keep editing"),
+                )
+                .child(
+                    Button::new("recipe-discard-keep", "Keep editing")
+                        .ghost()
+                        .on_click(cx.listener(|console, _, window, cx| {
+                            keep_editing(console, window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("recipe-discard-confirm", "Discard")
+                        .danger()
+                        .on_click(cx.listener(|console, _, window, cx| {
+                            discard_sheet(console, window, cx);
+                        })),
+                ),
+        )
+        .into_any_element()
 }
 
 fn submit_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
@@ -680,18 +859,8 @@ fn sheet_view(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         return div().into_any_element();
     };
     let recipe = sheet.recipe.clone();
-    // Per value: its key, the saved value, and the tag's unit and value now.
-    let live: Vec<(String, f64, Option<Now>)> = sheet
-        .values
-        .iter()
-        .map(|(key, value, at)| {
-            let now = at.map(|at| {
-                let tag = &console.store.tags[at];
-                (tag.info.unit.clone(), tag.value)
-            });
-            (key.clone(), *value, now)
-        })
-        .collect();
+    let sheet_count = sheet.values.len();
+    let live = live_values(console, sheet);
     let (name, category, description, error, sending) = (
         sheet.name.clone(),
         sheet.category.clone(),
@@ -752,8 +921,11 @@ fn sheet_view(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
                         .child(live),
                 )
         });
-    let count = recipe.values().len();
+    let count = sheet_count;
     div()
+        .on_action(cx.listener(|console, _: &Dismiss, window, cx| {
+            close_sheet(console, window, cx);
+        }))
         .flex()
         .flex_col()
         .size_full()
@@ -873,8 +1045,7 @@ fn sheet_view(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
                     Button::new("recipe-sheet-cancel", "Close")
                         .ghost()
                         .on_click(cx.listener(|console, _, window, cx| {
-                            console.state::<State>().sheet = None;
-                            console.close_overlay(window, cx);
+                            close_sheet(console, window, cx);
                         })),
                 )
                 .child(
@@ -1138,6 +1309,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let (device, category) = (state.device.clone(), state.category.clone());
     let search_field = state.search.clone();
     let list = state.list.clone();
+    let counts = state.counts.clone();
     let category_options: Vec<SharedString> = match &list {
         Some(Ok(list)) => categories(list).into_iter().map(Into::into).collect(),
         _ => Vec::new(),
@@ -1202,7 +1374,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             pick_device,
             cx,
         ))
-        .when(!category_options.is_empty(), |this| {
+        // Shown while a category is chosen too, so "All" can always clear it.
+        .when(!category_options.is_empty() || category.is_some(), |this| {
             this.child(
                 div()
                     .pl(SPACE_6)
@@ -1288,7 +1461,10 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                         .map(|row| match shown_rows.get(row) {
                             None => tail_row(ROW_HEIGHT_PX),
                             Some(recipe) => {
-                                recipe_row(recipe, row, cursor, focused, wide, offset, &theme, cx)
+                                let values = counts.get(&recipe.id).copied().unwrap_or_default();
+                                recipe_row(
+                                    recipe, values, row, cursor, focused, wide, offset, &theme, cx,
+                                )
                             }
                         })
                         .collect::<Vec<_>>()
@@ -1342,6 +1518,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 fn recipe_row(
     recipe: &Recipe,
+    values: usize,
     row: usize,
     cursor: Option<usize>,
     focused: bool,
@@ -1428,7 +1605,7 @@ fn recipe_row(
                 .text_right()
                 .font_family(MONO)
                 .text_color(theme.fg_muted)
-                .child(recipe.values().len().to_string()),
+                .child(values.to_string()),
         )
         .when(wide, |this| {
             this.child(
@@ -1697,6 +1874,136 @@ mod tests {
     use super::super::{SECTIONS, visible};
     use super::*;
     use crate::console::pages::Role;
+    use crate::console::testing::Harness;
+    use voltrus_scada_native::runtime::Event;
+
+    /// The recipes page with `recipes` listed and the first one's sheet open.
+    fn sheet_of(cx: &mut gpui::TestAppContext, recipes: Vec<Recipe>) -> Harness {
+        let mut h = signed_in(cx, "demo");
+        open(&mut h, ID);
+        let list = sent(&h.calls(), "data.recipes.list").expect("the recipes");
+        h.reply(list, Reply::ok(recipes));
+        h.draw();
+        h.keys("down enter");
+        assert!(h.update(|console, _, _| console.overlay_is(SHEET)));
+        h.draw();
+        h.calls();
+        h
+    }
+
+    #[gpui::test]
+    fn a_replaced_tag_list_never_points_the_sheet_elsewhere(cx: &mut gpui::TestAppContext) {
+        let mut h = sheet_of(cx, vec![summer()]);
+        let q = h.update(|console, _, _| {
+            console
+                .store
+                .tags
+                .iter()
+                .find(|tag| tag.info.device_id == "plts_1" && tag.info.key == "q")
+                .map(|tag| tag.info.id)
+                .expect("the demo has plts_1.q")
+        });
+        // Fewer tags, in another order: q is first now and p is gone.
+        let mut tag = Harness::tag(q, "q");
+        tag.device_id = "plts_1".into();
+        tag.unit = "kvar".into();
+        h.event(Event::Tags(vec![tag]));
+        // A stored position would index past the one tag left.
+        h.draw();
+        let live = h.update(|console, _, _| {
+            let state = console.state_ref::<State>().expect("made");
+            live_values(console, state.sheet.as_ref().expect("open"))
+        });
+        assert_eq!(live.len(), 2);
+        assert_eq!(live[0].0, "p");
+        assert!(live[0].2.is_none(), "p's tag is gone");
+        assert_eq!(live[1].0, "q");
+        assert_eq!(
+            live[1].2.as_ref().map(|(unit, _)| unit.as_str()),
+            Some("kvar"),
+            "q reads its own tag"
+        );
+    }
+
+    #[gpui::test]
+    fn closing_an_edited_sheet_asks_first(cx: &mut gpui::TestAppContext) {
+        let mut h = sheet_of(cx, vec![summer()]);
+        // Untouched: Esc closes at once.
+        h.keys("escape");
+        assert!(h.update(|console, _, _| console.overlay.is_none()));
+        h.draw();
+        h.keys("enter");
+        assert!(h.update(|console, _, _| console.overlay_is(SHEET)));
+        h.update(|console, _, cx| {
+            let name = console
+                .state::<State>()
+                .sheet
+                .as_ref()
+                .expect("open")
+                .name
+                .clone();
+            name.update(cx, |field, cx| field.set_text("Winter".to_owned(), cx));
+        });
+        h.draw();
+        // Edited: Esc asks; Esc again goes back to the edits.
+        h.keys("escape");
+        assert!(h.update(|console, _, _| console.overlay_is(DISCARD)));
+        h.draw();
+        h.keys("escape");
+        assert!(h.update(|console, _, _| console.overlay_is(SHEET)));
+        let kept = h.update(|console, _, cx| {
+            let sheet = console.state::<State>().sheet.as_ref().expect("kept");
+            sheet.name.read(cx).value().to_string()
+        });
+        assert_eq!(kept, "Winter");
+        // Close asks too; Enter on the dialog discards.
+        h.draw();
+        h.update(close_sheet);
+        assert!(h.update(|console, _, _| console.overlay_is(DISCARD)));
+        h.draw();
+        h.keys("enter");
+        assert!(h.update(|console, _, _| console.overlay.is_none()));
+        assert!(h.update(|console, _, _| console.state::<State>().sheet.is_none()));
+        assert!(h.calls().is_empty(), "nothing is saved");
+    }
+
+    #[gpui::test]
+    fn a_category_that_matches_nothing_is_cleared(cx: &mut gpui::TestAppContext) {
+        let mut h = signed_in(cx, "demo");
+        open(&mut h, ID);
+        let list = sent(&h.calls(), "data.recipes.list").expect("the recipes");
+        let seasonal = Recipe {
+            category: Some("seasonal".into()),
+            ..summer()
+        };
+        h.reply(list, Reply::ok(vec![seasonal]));
+        h.update(|console, _, cx| {
+            pick_category(console, Some("seasonal".into()), cx);
+            fetch(console);
+        });
+        assert_eq!(rows_now(&mut h), 1);
+        // The next list has no recipe of that category.
+        let list = sent(&h.calls(), "data.recipes.list").expect("fetched again");
+        h.reply(list, Reply::ok(vec![summer()]));
+        h.draw();
+        assert!(h.update(|console, _, _| console.state::<State>().category.is_none()));
+        assert_eq!(rows_now(&mut h), 1, "the recipe shows again");
+    }
+
+    fn rows_now(h: &mut Harness) -> usize {
+        h.update(|console, _, cx| rows(console, cx).len())
+    }
+
+    #[gpui::test]
+    fn value_counts_are_parsed_once_per_list(cx: &mut gpui::TestAppContext) {
+        let mut h = signed_in(cx, "demo");
+        open(&mut h, ID);
+        let list = sent(&h.calls(), "data.recipes.list").expect("the recipes");
+        h.reply(list, Reply::ok(vec![summer()]));
+        h.draw();
+        let counts = h.update(|console, _, _| console.state::<State>().counts.clone());
+        assert_eq!(counts.get(&4), Some(&2));
+    }
 
     fn summer() -> Recipe {
         Recipe {

@@ -10,8 +10,8 @@ use gpui::{
     Window, div, px,
 };
 use voltrus_scada_native::api::eng_flows::{
-    Flow, FlowGraph, FlowRun, TEST_PAYLOAD, TRIGGER_KINDS, TestResult, TriggerKind, label_of,
-    parse_json, pretty, validate_meta,
+    Category, Flow, FlowGraph, FlowRun, TEST_PAYLOAD, TRIGGER_KINDS, TestResult, TriggerKind,
+    category_of, label_of, parse_json, pretty, validate_meta,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use vt_ui::Icon;
@@ -716,6 +716,11 @@ pub(crate) struct Test {
     labels: HashMap<String, String>,
     /// The editor has changes the server does not have yet.
     unsaved: bool,
+    /// The labels of the output steps (writes, HTTP, alarms): a test runs
+    /// them for real, so it needs a second, explicit "Run anyway".
+    outputs: Vec<String>,
+    /// The operator saw the outputs warning; the next run goes.
+    armed: bool,
     _subscription: Subscription,
 }
 
@@ -743,21 +748,32 @@ pub(super) fn open_test(
         |console, _, event: &InputEvent, window, cx| match event {
             InputEvent::Submitted => run_test(console, cx),
             InputEvent::Cancelled => console.close_overlay(window, cx),
-            InputEvent::Changed | InputEvent::Blurred => {}
+            InputEvent::Changed => {
+                if let Some(test) = console.state::<State>().test.as_mut()
+                    && test.armed
+                {
+                    test.armed = false;
+                    cx.notify();
+                }
+            }
+            InputEvent::Blurred => {}
         },
     );
-    let labels = FlowGraph::of(flow)
-        .map(|graph| {
-            graph
-                .nodes
-                .iter()
-                .map(|node| {
-                    let id = node.get("id").and_then(|id| id.as_str()).unwrap_or("");
-                    (id.to_owned(), label_of(node))
-                })
-                .collect()
-        })
+    let nodes = FlowGraph::of(flow)
+        .map(|graph| graph.nodes)
         .unwrap_or_default();
+    let labels = nodes
+        .iter()
+        .map(|node| {
+            let id = node.get("id").and_then(|id| id.as_str()).unwrap_or("");
+            (id.to_owned(), label_of(node))
+        })
+        .collect();
+    let outputs = nodes
+        .iter()
+        .filter(|node| category_of(node) == Category::Output)
+        .map(label_of)
+        .collect();
     let state = console.state::<State>();
     state.window = Some(window.window_handle());
     state.test = Some(Test {
@@ -769,6 +785,8 @@ pub(super) fn open_test(
         seq: 0,
         labels,
         unsaved,
+        outputs,
+        armed: false,
         _subscription: subscription,
     });
     let overlay = Overlay::modal(TEST, px(640.0), render_test, cx);
@@ -783,6 +801,14 @@ fn run_test(console: &mut Console, cx: &mut Context<Console>) {
         return;
     };
     if test.running {
+        return;
+    }
+    if !test.outputs.is_empty() && !test.armed {
+        // The first ⌘↵ only warns: outputs act on the plant.
+        if let Some(test) = state.test.as_mut() {
+            test.armed = true;
+        }
+        cx.notify();
         return;
     }
     let text = test.payload.read(cx).value().to_owned();
@@ -801,6 +827,7 @@ fn run_test(console: &mut Console, cx: &mut Context<Console>) {
         }
     };
     test.running = true;
+    test.armed = false;
     test.seq = seq;
     test.result = None;
     let id = test.id.clone();
@@ -833,6 +860,7 @@ fn render_test(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         test.labels.clone(),
         test.unsaved,
     );
+    let (outputs, armed) = (test.outputs.join(", "), test.armed);
 
     let result_view = match result {
         None if running => Some(notice("Running the stored steps…", false, &theme)),
@@ -973,6 +1001,22 @@ fn render_test(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
                             .child("The editor has unsaved changes: the server tests the stored steps. Save with ⌘S first."),
                     )
                 })
+                .when(!outputs.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .id("data-flow-test-outputs")
+                            .p(SPACE_5)
+                            .rounded(RADIUS_MD)
+                            .bg(theme.warning.opacity(0.08))
+                            .text_size(FONT_SMALL)
+                            .text_color(theme.warning)
+                            .child(if armed {
+                                format!("Run anyway? The output steps ({outputs}) will act for real. Press ⌘↵ again to run.")
+                            } else {
+                                format!("This flow has output steps ({outputs}): a test writes, posts and raises alarms for real.")
+                            }),
+                    )
+                })
                 .children(result_view),
         )
         .child(
@@ -1008,7 +1052,13 @@ fn render_test(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
                 .child(
                     Button::new(
                         "data-flow-test-run",
-                        if running { "Running…" } else { "Run test" },
+                        if running {
+                            "Running…"
+                        } else if armed {
+                            "Run anyway"
+                        } else {
+                            "Run test"
+                        },
                     )
                     .primary()
                     .icon(Icon::Play)
@@ -1045,5 +1095,62 @@ pub(super) fn on_reply(
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use voltrus_scada_native::api::eng_flows::trigger_kind;
+
+    use super::*;
+    use crate::console::testing::Harness;
+
+    const RUN: &str = if cfg!(target_os = "macos") {
+        "cmd-enter"
+    } else {
+        "ctrl-enter"
+    };
+
+    fn flow(nodes: &str) -> Flow {
+        Flow {
+            nodes: nodes.to_owned(),
+            ..Flow::blank("f", "F", true, trigger_kind("timer").unwrap(), 1)
+        }
+    }
+
+    fn tests_sent(h: &mut Harness) -> usize {
+        h.calls()
+            .iter()
+            .filter(|key| key.name == "data.flows.test")
+            .count()
+    }
+
+    #[gpui::test]
+    fn a_test_with_outputs_runs_only_after_run_anyway(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        let with_outputs = flow(r#"[{"id": "w", "type": "write_out"}]"#);
+        h.update(|console, window, cx| open_test(console, &with_outputs, false, window, cx));
+        h.draw();
+        h.keys(RUN);
+        assert_eq!(tests_sent(&mut h), 0, "the first ⌘↵ only warns");
+        assert!(h.update(|console, _, _| {
+            console
+                .state::<State>()
+                .test
+                .as_ref()
+                .is_some_and(|test| test.armed && test.outputs.len() == 1)
+        }));
+        h.draw();
+        h.keys(RUN);
+        assert_eq!(tests_sent(&mut h), 1, "Run anyway runs it");
+        h.update(|console, window, cx| console.close_overlay(window, cx));
+
+        let plain = flow(r#"[{"id": "t", "type": "filter"}]"#);
+        h.update(|console, window, cx| open_test(console, &plain, false, window, cx));
+        h.draw();
+        h.keys(RUN);
+        assert_eq!(tests_sent(&mut h), 1, "no outputs: no second ask");
     }
 }
