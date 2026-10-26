@@ -342,10 +342,10 @@ fn main() -> ExitCode {
             // The window's minimum: room for every page (the navbar steps
             // down to fit far narrower). `--window` may ask for less.
             let minimum = size(px(1024.0), px(640.0));
-            let bounds = match wanted {
-                Some(wanted) => Bounds::new(point(px(0.0), px(0.0)), wanted),
-                None => Bounds::centered(None, size(px(1440.0), px(900.0)), cx),
-            };
+            // `--window` resizes the window once open (below): a window
+            // opened at a size that needs no fitting to the screen first
+            // draws at the wrong scale on the CI runner's display.
+            let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
@@ -396,9 +396,8 @@ fn main() -> ExitCode {
                     cx.quit();
                     return;
                 }
-                // AppKit fits a new window to the screen; a size asked for
-                // on a smaller screen (a CI runner's) is set again once open,
-                // the window running past the screen's edge.
+                // AppKit fits a new window to the screen (a taller one than
+                // the screen keeps the screen's height).
                 Ok(handle) => {
                     if let Some(wanted) = wanted {
                         let _ = handle.update(cx, |_, window, _| {
