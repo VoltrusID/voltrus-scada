@@ -366,6 +366,24 @@ pub fn thread_cpu_ms() -> Option<f64> {
     None
 }
 
+/// Put the calling thread below the UI in the scheduler's eyes (macOS QoS
+/// "utility"; elsewhere nothing). The network runtime and the stress feed
+/// run so: on a machine with few cores they would otherwise take the CPU
+/// from the UI thread in the middle of a frame (the report's `stalls`).
+pub fn below_the_ui() {
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn pthread_set_qos_class_self_np(class: u32, relative_priority: i32) -> i32;
+        }
+        /// `QOS_CLASS_UTILITY` from `<sys/qos.h>`.
+        const UTILITY: u32 = 0x11;
+        // SAFETY: changes only the calling thread's scheduling class; a
+        // failure leaves it as it was.
+        let _ = unsafe { pthread_set_qos_class_self_np(UTILITY, 0) };
+    }
+}
+
 /// Frames that took over [`STALL_MS`] longer than the UI thread worked in
 /// them: it waited (a lock, the GPU, I/O) or was taken off the CPU.
 pub const STALL_MS: f64 = 20.0;
@@ -980,5 +998,17 @@ mod tests {
         late.record_unowed(33.3, refresh);
         late.record_unowed(16.9, refresh);
         assert_eq!((late.frames, late.nothing_due), (5, 1));
+    }
+
+    #[test]
+    fn a_thread_below_the_ui_still_runs() {
+        let worked = std::thread::spawn(|| {
+            below_the_ui();
+            (0..1000_u64).sum::<u64>()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(worked, 499_500);
+        assert!(thread_cpu_ms().is_some_and(|ms| ms >= 0.0));
     }
 }

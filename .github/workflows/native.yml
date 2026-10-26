@@ -108,6 +108,12 @@ jobs:
       # the animation showcase (--stress-profile).
       - name: Stress pass
         run: |
+          # The stress test needs no server: the plant (server, simulators)
+          # is paused for it, so its polling does not share the runner's few
+          # cores with the measured window, and resumed for the screenshots.
+          pause() { for pid in "$RUNNER_TEMP"/plant/*.pid; do kill -"$1" "$(cat "$pid")" 2>/dev/null || true; done; }
+          pause STOP
+          trap 'pause CONT' EXIT
           STRESS_ENFORCE=1 \
             native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-report.txt
           # The showcase's figures are reported and warned about, not
