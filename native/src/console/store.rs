@@ -221,6 +221,13 @@ impl Tag {
     pub fn samples(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
         self.samples.iter().copied()
     }
+
+    /// The plotted samples from `since_ms` on (found by binary search, so a
+    /// sparkline over the last minutes does not walk a day of history).
+    pub fn samples_since(&self, since_ms: f64) -> impl Iterator<Item = (f64, f64)> + Clone + '_ {
+        let from = self.samples.partition_point(|(at, _)| *at < since_ms);
+        self.samples.range(from..).copied()
+    }
 }
 
 /// The tag list plus what the views ask of all of it every frame, kept up
@@ -251,6 +258,8 @@ pub struct Store {
     /// The oldest sample of any tag: `None` until worked out again,
     /// `Some(None)` with no samples at all.
     earliest: Cell<Option<Option<f64>>>,
+    /// Counts tag list changes ([`Store::replace`]), for view caches.
+    generation: u64,
 }
 
 impl Store {
@@ -259,6 +268,7 @@ impl Store {
     pub fn replace(&mut self, list: Vec<DataSource>) {
         let mut previous: HashMap<i64, Tag> =
             self.tags.drain(..).map(|tag| (tag.info.id, tag)).collect();
+        self.generation += 1;
         self.by_id.clear();
         self.by_key.clear();
         for info in list {
@@ -298,6 +308,11 @@ impl Store {
         self.all = (0..self.tags.len()).collect();
         self.filters.borrow_mut().clear();
         self.earliest.set(None);
+    }
+
+    /// Counts tag list changes, for view caches keyed on the tag list.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// The position in `tags` of the tag with data source id `id`.

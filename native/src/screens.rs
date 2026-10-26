@@ -47,6 +47,12 @@ pub const GAP: f32 = 12.0;
 /// The smallest card a resize leaves, in cells.
 pub const MIN_W: u32 = 2;
 pub const MIN_H: u32 = 2;
+/// The lowest row a saved card may start on, and the tallest it may be:
+/// together they stay far inside `u32`, so a card's bottom row never
+/// overflows.
+pub const MAX_ROWS: u32 = 1_000_000;
+/// The largest image card picture fetched, in bytes.
+pub const MAX_IMAGE: usize = 5 * 1024 * 1024;
 
 /// Mirrors `voltrus::models::Device`, which the server lists as screens.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -416,9 +422,9 @@ pub fn effective(layouts: &ScreenLayouts, bp: Breakpoint, cards: &[Card]) -> Vec
         items.push(LayoutItem {
             i: item.i.clone(),
             x: item.x.min(cols - w),
-            y: item.y,
+            y: item.y.min(MAX_ROWS),
             w,
-            h: item.h.max(1),
+            h: item.h.clamp(1, MAX_ROWS),
         });
     }
     compact(&mut items);
@@ -809,14 +815,30 @@ pub fn image_mime(content_type: Option<&str>, bytes: &[u8]) -> Option<&'static s
     })
 }
 
+/// Whether an image card's `url` is on the session's server at `base`, so
+/// the session's cookie may go with it: a path from the server's root
+/// (`/x.png`, not the protocol-relative `//host/x.png`), or an absolute URL
+/// with the server's scheme, host and port and no user name or password.
+pub fn is_own(base: &str, url: &str) -> bool {
+    if url.starts_with('/') {
+        return !url.starts_with("//");
+    }
+    let (Ok(base), Ok(url)) = (reqwest::Url::parse(base), reqwest::Url::parse(url)) else {
+        return false;
+    };
+    url.username().is_empty() && url.password().is_none() && url.origin() == base.origin()
+}
+
 /// Fetch an image card's picture: `url` absolute, or a path on the server
-/// (sent with the session's cookie, like the browser would). The answer:
-/// the bytes and their MIME type.
+/// (sent with the session's cookie, like the browser would, but only to
+/// the server itself: see [`is_own`]). Redirects are not followed and a
+/// picture over [`MAX_IMAGE`] bytes is refused. The answer: the bytes and
+/// their MIME type.
 pub async fn fetch_image(
     api: &crate::api::VoltrusApi,
     url: &str,
 ) -> anyhow::Result<(Vec<u8>, &'static str)> {
-    let own = url.starts_with('/') || url.starts_with(&api.base);
+    let own = is_own(&api.base, url);
     let full = if url.starts_with('/') {
         format!("{}{url}", api.base)
     } else {
@@ -824,22 +846,36 @@ pub async fn fetch_image(
     };
     let mut request = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()?
         .get(&full);
     if own && let Some(token) = &api.token {
         request = request.header("Cookie", format!("{}={token}", crate::api::TOKEN_COOKIE));
     }
-    let response = request.send().await?;
+    let mut response = request.send().await?;
     let status = response.status();
     if !status.is_success() {
         anyhow::bail!("the image answered {status}");
+    }
+    let too_big = || anyhow::anyhow!("the image is over {} MiB", MAX_IMAGE / (1024 * 1024));
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_IMAGE as u64)
+    {
+        return Err(too_big());
     }
     let content_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let bytes = response.bytes().await?.to_vec();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > MAX_IMAGE {
+            return Err(too_big());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
     let mime = image_mime(content_type.as_deref(), &bytes)
         .ok_or_else(|| anyhow::anyhow!("not an image the console can draw"))?;
     Ok((bytes, mime))
@@ -1162,5 +1198,136 @@ mod tests {
         );
         assert_eq!(image_mime(None, b"  <svg xmlns=..."), Some("image/svg+xml"));
         assert_eq!(image_mime(None, b"<html>"), None);
+    }
+
+    #[test]
+    fn huge_saved_cells_do_not_overflow_the_grid() {
+        let layouts = ScreenLayouts {
+            lg: vec![
+                item(1, 0, u32::MAX, 6, u32::MAX),
+                item(2, 0, 3, 6, u32::MAX),
+            ],
+            ..ScreenLayouts::default()
+        };
+        let list = cards(&[
+            (1, "a", CardKind::Gauge),
+            (2, "a", CardKind::Gauge),
+            (3, "a", CardKind::Gauge),
+        ]);
+        let shown = effective(&layouts, Breakpoint::Lg, &list);
+        assert_eq!(at(&shown, 2), (0, 0, 6, MAX_ROWS), "floated up, capped");
+        assert_eq!(at(&shown, 1), (0, MAX_ROWS, 6, MAX_ROWS));
+        assert_eq!(bottom(&shown), at(&shown, 3).1 + at(&shown, 3).3);
+        assert!(at(&shown, 3).1 >= 2 * MAX_ROWS, "the new card goes below");
+        let moved = place(&shown, "3", 0, 0, 24);
+        assert_eq!(at(&moved, 3), (0, 0, 4, 4));
+    }
+
+    #[test]
+    fn only_the_sessions_own_server_gets_the_cookie() {
+        let base = "http://scada:3000";
+        assert!(is_own(base, "/uploads/plant.png"));
+        assert!(is_own(base, "http://scada:3000/uploads/plant.png"));
+        assert!(
+            is_own("http://scada", "http://scada:80/x.png"),
+            "default port"
+        );
+        assert!(
+            !is_own(base, "http://scada:3000@evil.tld/x.png"),
+            "user info"
+        );
+        assert!(!is_own(base, "http://scada:3000.evil.tld/x"));
+        assert!(!is_own(base, "http://scada:30001/x"));
+        assert!(!is_own(base, "http://scada:3000.evil.tld:3000/x"));
+        assert!(!is_own(base, "//evil/x"), "protocol-relative");
+        assert!(!is_own(base, "https://scada:3000/x"), "another scheme");
+        assert!(!is_own(base, "http://admin@scada:3000/x"));
+        assert!(!is_own(base, "uploads/x.png"));
+        assert!(!is_own("not a url", "http://scada:3000/x"));
+    }
+
+    /// Answer one HTTP request on a local port with `response`; the
+    /// request's head comes back on the channel.
+    fn serve_once(response: Vec<u8>) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let base = format!("http://{}", listener.local_addr().expect("address"));
+        let (report, head) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            while !request.ends_with(b"\r\n\r\n") {
+                match stream.read(&mut buffer) {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => request.extend_from_slice(&buffer[..read]),
+                }
+            }
+            let _ = report.send(String::from_utf8_lossy(&request).into_owned());
+            let _ = stream.write_all(&response);
+        });
+        (base, head)
+    }
+
+    fn fetch(api: &crate::api::VoltrusApi, url: &str) -> anyhow::Result<(Vec<u8>, &'static str)> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime")
+            .block_on(fetch_image(api, url))
+    }
+
+    #[test]
+    fn image_fetches_send_the_cookie_only_home_and_follow_no_redirect() {
+        let png = b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 6\r\nConnection: close\r\n\r\n\x89PNG\r\n".to_vec();
+        let (base, head) = serve_once(png.clone());
+        let mut api = crate::api::VoltrusApi::new(&base);
+        api.token = Some("secret".into());
+        let (bytes, mime) = fetch(&api, "/plant.png").expect("the server's picture");
+        assert_eq!((bytes.as_slice(), mime), (&b"\x89PNG\r\n"[..], "image/png"));
+        assert!(
+            head.recv()
+                .expect("request")
+                .contains("voltrus_token=secret")
+        );
+
+        let (other, head) = serve_once(png);
+        fetch(&api, &format!("{other}/plant.png")).expect("another server's picture");
+        assert!(
+            !head.recv().expect("request").contains("secret"),
+            "another port is another server"
+        );
+
+        let (moved, _) = serve_once(
+            b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/x.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec(),
+        );
+        api.base = moved;
+        let error = fetch(&api, "/x.png").expect_err("a redirect is not followed");
+        assert!(error.to_string().contains("302"), "{error}");
+    }
+
+    #[test]
+    fn image_fetches_refuse_oversized_pictures() {
+        let mut streamed =
+            b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nConnection: close\r\n\r\n".to_vec();
+        streamed.resize(streamed.len() + MAX_IMAGE + 1, b'x');
+        let (base, _) = serve_once(streamed);
+        let api = crate::api::VoltrusApi::new(&base);
+        let error = fetch(&api, "/big.png").expect_err("too big while streaming");
+        assert!(error.to_string().contains("MiB"), "{error}");
+
+        let (base, _) = serve_once(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                MAX_IMAGE + 1
+            )
+            .into_bytes(),
+        );
+        let api = crate::api::VoltrusApi::new(&base);
+        let error = fetch(&api, "/big.png").expect_err("declared too big");
+        assert!(error.to_string().contains("MiB"), "{error}");
     }
 }

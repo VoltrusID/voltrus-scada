@@ -48,6 +48,31 @@ follow these recipes; keep them true when you change the shell.
 6. **Roles**: gate on `console.is_operator()` (admin, demo, integration:
    the server's `demo_protected` routes) or `console.is_admin()`; never a
    list of role names.
+7. **No REST from render.** A render function never sends a call or a
+   command: every page is drawn hidden after sign-in (the warm-up), so a
+   call there runs for pages nobody opened, and a failed one loops. Fetch
+   in `on_show`, on a selection, or from a reply.
+8. **Page state ends with the session.** On sign-out, on a failed link
+   and before a later sign-in, the console drops every `Console::state`
+   entry but the operator's own (`kept_across_sessions` in
+   `console/mod.rs`: the shell, the polls, the annunciator), so a request
+   the old session never answered cannot leave a page busy and nothing
+   reaches the next user. Keep session data in page state; keep a new
+   UI-only state in that list. Async work that outlives a frame (a save
+   panel) compares `console.session_epoch()` before acting.
+9. **Enter belongs to what has focus.** A dialog confirms on Enter only
+   when its own focus handle is focused (`focus.is_focused(window)`), and a
+   list activates a row only when the list has focus, so Enter on a focused
+   Cancel, Keep or row button does only what that button does.
+10. **Answers name their target.** A call whose answer belongs to one tag,
+    form or page of results carries it: `CallKey::new("tags.notes").with(seq)`,
+    and the reply is dropped unless its `arg` is the current one. Every
+    call key's scope must be a page (or `data.<section>`) with an
+    `on_reply`, or `shell`; a unit test checks it.
+11. **URLs from the server are checked by origin.** Parse them
+    (`reqwest::Url`) and compare scheme, host and port with the session's
+    base before sending the session cookie (`screens::is_own`); never a
+    string prefix. Follow no redirects with the cookie.
 
 ## Add a page
 
@@ -200,8 +225,17 @@ events applied to the store, and gives the share of frames built within a
 (tiles flashing in ripples, a trend redrawn every frame). CI runs a 20 s
 pass and a 10 s profile (`native/scripts/stress-macos.sh`), prints both
 reports in the job log and summary, and checks the budget: under 1% of
-vsyncs dropped, frame interval p95 within 17.5 ms, no frame over 50 ms, a
-page's first frame within 34 ms of the switch.
+vsyncs dropped, at least 97% of back-to-back frames one vsync after the
+previous (`frame_pacing`), no frame interval over 50 ms, a page's first
+frame within 34 ms of the switch, and in the profile 95% of frames built
+within a 120 Hz frame. The frame interval p95 is information only: frames
+start when the display link wakes the main thread, and on the CI runner
+that wake jitters by a millisecond or two with no cause in the console
+(`late_starts` splits late starts into a long previous frame, an event
+batch, a pause in the data, and other). The report also splits each frame
+into the root's layout, the cached views' render, layout and prepaint
+(GPUI does all three for a cached view in its prepaint), paint, and
+present (handing the frame to the GPU).
 
 ## Keep frames cheap
 
@@ -225,7 +259,8 @@ flash, Trends while live), so its render must not scale with the plant:
 
 The Data Manager (`views/data_manager/`, `--page data`) is one page with a
 sidebar of sections grouped Data, Protocols, Insights and Admin, as the web
-client's `DataManager.tsx`. A section is one module plus one row:
+client's `DataManager.tsx`, then Engineering (the web's System panel, its
+header tools, `/flows` and `/scripts`). A section is one module plus one row:
 
 1. Write `views/data_manager/<section>.rs` with
    `pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement`
@@ -239,7 +274,7 @@ client's `DataManager.tsx`. A section is one module plus one row:
        id: "modbus",                  // calls are named data.modbus.<what>
        title: "Modbus",
        icon: Icon::Cable,
-       group: SectionGroup::Protocols, // Data, Protocols, Insights or Admin
+       group: SectionGroup::Protocols, // Data, Protocols, Insights, Admin or Engineering
        role: Role::Operator,          // web `admin` items; `strictAdmin` is Role::Admin
        render: modbus::render,
        on_open: Some(modbus::on_open), // shown (page opened, sidebar moved): fetch once
@@ -251,12 +286,18 @@ client's `DataManager.tsx`. A section is one module plus one row:
 
 That is all: the sidebar lists the row for users whose role allows it, a
 group appears once it has a row, and nothing is listed for a section that is
-not built. The page routes the answer of every `CallKey` named
+not built. The page itself is open to every role (`Role::Any`), but
+`pages::opens` offers it (More menu, palette, `--page`) only to a role that
+sees at least one section, so nobody gets an empty page. The page routes the
+answer of every `CallKey` named
 `data.<id>.<what>` to that section's `on_reply`, so a section sends
 `console.call(CallKey::new("data.modbus.list"), Call::get::<…>(…))` and
 matches on `key.name` there. Keep the section's state in its module
 (`console.state::<State>()`, and `console.state_ref::<State>()` in hooks
-that get `&Console`).
+that get `&Console`). A section that polls checks
+`data_manager::current_id(console)` in its tick, so it fetches only while it
+is the one on screen. `--page data --section <id>` opens a section from the
+command line (screenshots).
 
 Keys: j/k or ↑↓ in the sidebar switch sections (`on_open` runs), Enter goes
 in (`focus` runs), Esc anywhere in the section comes back to the sidebar
@@ -305,6 +346,27 @@ drop order for narrow windows, form `Field`s, an optional `Child` table,
 Keys are `keys::DATA_DEVICES` rows (N, A, E, D, ⌫, `.`, I, R, T, S, ⇧S);
 one pressed before the list arrived (a launch's `--overlay`) runs on the
 first device once it does.
+Sections with tabs (System, MQTT, EDR) switch them with keys in their own
+context (`[` `]`, or the operations pages' `OpsTabbed` T on System's root)
+and handle `Dismiss` inside a tab to step back, calling `cx.propagate()`
+when there is nothing to go back to, so Esc then reaches the sidebar.
+
+Canvas editors (Flows › editor): build a scene of only what is in view in
+render, draw it with one GPUI `canvas()`, and register pointer listeners in
+its paint (a hitbox from prepaint; move/up listeners only while a drag
+runs). On pointer work, notify only the page's view. Keep geometry (pan,
+zoom about a point, hit tests, Bézier wires) in a GPUI-free model with unit
+tests (`flows/model.rs`).
+The Admin sections (Users, Roles, Notifications, API keys) share
+`data_manager::admin_kit`: `ask` (a confirmation before a destructive call;
+the section keeps its target in its state), `search_field`, the table
+`header`/`row_frame`/`cell`/`actions`, a dialog's `dialog_header`,
+`dialog_body` and `dialog_footer`, and `close_later`/`focus_later` for a
+dialog the server's answer ends or changes. Their tables set
+`keys::DATA_ADMIN_*` key contexts: `DataAdmin` (⌫) plus the section's own
+(`DataUsers` N and P, `DataRoles` N, `DataApiKeys` N, `DataRules` N and T).
+A dialog that holds a secret (passwords, a new API key) is dropped from the
+section's state as soon as its overlay is no longer open.
 
 
 ## The shell: settings, keymap, notifications, edition
@@ -330,9 +392,13 @@ edition}`.
   come from `keys::COMMANDS` or the page registry, never from a separate
   `cx.bind_keys`. After changing `/shortcuts` or `/nav-shortcuts` on the
   server, call `shortcuts::reload(console)`.
-- **Kiosk lock**: `Console::kiosk_locked()`; the root captures `Quit` and
-  `SignOut` before their handlers, the menus and keymap drop them, and the
-  window refuses to close.
+- **Kiosk lock**: `Console::kiosk_locked()`, in the console only (the
+  sign-in card can always be quit); the root captures `Quit` and `SignOut`
+  before their handlers, the menus and keymap drop them, the window refuses
+  to close, and a stress test (which replaces the session) neither starts
+  nor stops.
+- **Server shortcuts** need ⌘, ⌥ or ⇧ (or are a function key): a bare
+  Enter, Space or arrow would take the key from lists and dialogs.
 - **Themes**: `shell::apply_theme` shows the theme chosen for the wanted
   brightness (server appearance, unless `--appearance` pinned one); never
   call `theme::set_theme` directly for the console's own theme.
@@ -366,7 +432,11 @@ ops_kit::poll_while_shown(console, Page::Commands, Duration::from_secs(2), tick,
 ```
 
 The loop ends by itself when the page goes off screen, the session ends or
-a stress test runs; the next `on_show` starts it again. It only fetches; the
+a stress test runs; the next `on_show` starts it again. Polls are keyed by
+page and tick, so several Data Manager sections may each poll on the one
+page; a section's tick fetches only while
+`data_manager::current_id(console)` is its id.
+It only fetches; the
 answer redraws through `on_reply` like any other. Number each request
 (`CallKey::new("commands.active").with(seq)`) and drop answers whose
 argument is not the newest, so a slow answer never overwrites a fresh one.
@@ -390,6 +460,12 @@ submits); it answers the same `text_input` actions and emits the same
 keys stay off while typing in it. A page reads its own state from
 `&Console` hooks (such as `search`) with `console.state_ref::<State>()`.
 
+`views/data_manager/scripts/code_editor.rs` is a code editor built from
+`TextArea` (monospace, line numbers, no wrap, indent rules, undo, syntax
+colours from a per-line tokenizer, only visible lines shaped). Its key
+context is `TextInput CodeEditor`; `shortcuts::rebind` adds
+`code_editor::key_bindings()` beside `text_area::key_bindings()`.
+
 ## Save a file
 
 `ops_kit::save_download(key, path, suggested_name, format, cancelled, cx)`
@@ -398,13 +474,23 @@ fetches `path` as text off the UI thread (`VoltrusApi::download`) and
 answers the page of `key` with an `api::ops::Saved` (file, rows, the
 server's total).
 
+## Upload a file
+
+reqwest is built without `multipart`, so `api::eng_imports::multipart`
+builds the form body. A section picks a file with `cx.prompt_for_paths` or a
+drop (`.on_drop::<ExternalPaths>`, `.drag_over::<ExternalPaths>` for the
+highlight), reads local previews with `cx.background_executor().spawn` and
+the upload inside the `Call` (see `views/data_manager/imports.rs`). Answers
+from a pick or a read compare a token kept in the section's state, so a
+sign-out in between drops them.
+
 ## Build on the screens
 
 A page that draws a screen (the card dashboard, the mimic viewer) shares
 one model, `console::screens::Screens`:
 
 ```rust
-screens::sync(console);                       // in on_show and render: fetches what is missing, once
+screens::sync(console);                       // in on_show (select calls it): fetches what is missing, once
 let model = console.state_ref::<Screens>();   // list, active, tags, layouts, error, generation
 let ids = model.map(|m| m.tag_ids(&console.store, &m.active));
 screens::select(console, "plts_1");           // or screens::OVERVIEW ("all")
@@ -413,7 +499,10 @@ screens::select(console, "plts_1");           // or screens::OVERVIEW ("all")
 Its calls answer under `dashboard.*` keys, which the dashboard page's
 `on_reply` hands to `screens::on_reply` whatever page is on show. Changes
 (`create`, `rename`, `delete`, `add_tag`, `remove_tag`, `save_layouts`) are
-operator routes: check `screens::rights(console.role(), screen)` first.
+operator routes: check `screens::rights(console.role(), screen)` first. A
+fetch that failed is not asked again until `screens::reload`; a screen
+whose layouts did not load has none (`Screens::layout_known` is false) and
+must not be edited, or a save would replace its stored layouts.
 Grid geometry and layout edits are in `voltrus_scada_native::screens`
 (`Grid`, `effective`, `place`, `resize`, `nudge`, `grow`, `neighbor`,
 `auto_arrange`), with unit tests beside them.
@@ -474,7 +563,42 @@ let (equipment, connections) = mimic::to_rows(&layout);   // the PUT bodies: Ite
   for an admin (`Command::Write`, answered by `Event::Written`) and the
   REST write (`POST /tags/{id}/write`, `tag_api::write_request`) for other
   operators; viewers see no commands. An armed command lapses after
-  `ARM_TIMEOUT`.
+  `ARM_TIMEOUT`. An arm key that comes before its screen and values
+  (`--overlay MimicArmOn`/`MimicArmOff` at launch) waits for the first
+  equipment whose asked-for choice is enabled (else its other choice),
+  opens its faceplate and arms it, and holds it armed for `LAUNCH_HOLD`
+  (20 s) so a launch's screenshot catches it; any arm, confirm, dismiss or
+  other faceplate ends the hold, and the usual lapse follows.
 - **CI plant.** `native/scripts/ci-server.sh` seeds the overview's mimic
   from `native/scripts/mimic-solar-farm.json` (tags by `device/key`) when
-  the plant has none.
+  the plant has none. Its command target is INV-1 on `sma_inv_1/remote_run`,
+  a uint16 register the script adds at 45, the low word of the inverter
+  simulator's operating-hours counter: the simulator keeps a written word
+  there (the counter creeps by 1/3600 a second), the data source's
+  `source_config` address lets both writes reach it, and the script starts
+  it at 1 and leaves it locked (the e2e `live_mimic_command` unlocks it,
+  commands STOP/START over both routes and restores both).
+- **Editing.** `voltrus_scada_native::mimic::edit` holds the editor's
+  rules with no UI: the widget manifests (`MANIFESTS`, the web's
+  `registry.ts`) and the inspector's schemas (`schema`, `symbol_fields`),
+  `Edit` (the reducer's actions) applied through `History` (undo, redo,
+  coalescing by key, `dirty`, `mark_saved`), the grid and stage rules
+  (`snap`, `clamp_pos`, `place_at`, `drop_at`), `snap_move` /
+  `snap_resize` with their `Guide`s, hit tests (`hit_widget`,
+  `hit_handle`, `hit_connection`), the rubber band (`enclosed`), `Clip`
+  copy and paste with `fresh_id`s, `rotate` / `mirror`, and `named` for the
+  rows' `equipment_name`. `views/mimic/editor/` draws it: the page's
+  render hands over to `editor::render` in edit mode (the viewer's own
+  `Frame` and `paint_frame`, with the grid, then the marks of
+  `editor/stage.rs` in window pixels); the palette and the inspector are
+  cached views, so a drag redraws only the stage. A drag applies its move
+  as one coalesced history step per frame from window-wide pointer
+  listeners; nothing else asks for frames. The editor's actions sit on the
+  window's root (`editor::actions`), so the palette and `--overlay` reach
+  them; keys bind in `editor::KEYS` (`MimicEdit && !TextInput`) and ⌘S in
+  `KEYS_ANYWHERE`. `--edit` with `--page mimic` enters edit mode once the
+  screen is in (commands sent meanwhile wait for it). Leaving with unsaved
+  edits goes through `editor::holds` (called by `Console::show`,
+  `history_step`, `sign_out` and the mimic's screen switch): the dialog
+  answers Save (the leave runs once the server has the rows), Discard or
+  Cancel.

@@ -15,7 +15,6 @@
 //! rules in [`voltrus_scada_native::screens`].
 
 use std::collections::{HashMap, HashSet};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -102,11 +101,13 @@ struct Tween {
 }
 
 impl Tween {
+    /// A tween already over: the card stands at `at` and asks for no
+    /// frames.
     fn still(at: Rect, now: Instant) -> Self {
         Self {
             from: at,
             to: at,
-            since: now,
+            since: now.checked_sub(MOVE).unwrap_or(now),
         }
     }
 
@@ -151,9 +152,14 @@ struct Drag {
     drawn: Rect,
 }
 
-/// The layout the grid shows, cached until its inputs change.
+/// The layout the grid shows, cached until its inputs change: the screen,
+/// and `key`: the breakpoint and the revisions of the screens, the tag list
+/// and the draft.
 struct Laid {
-    key: u64,
+    screen: String,
+    key: (Breakpoint, Option<u64>, u64, u64),
+    /// The screen's tags (data source ids), in its order.
+    ids: Vec<i64>,
     items: Vec<LayoutItem>,
     by_id: HashMap<String, usize>,
     rows: u32,
@@ -207,7 +213,6 @@ struct Scene {
     screen: String,
     bp: Breakpoint,
     grid: Grid,
-    ids: Vec<i64>,
     laid: Rc<Laid>,
 }
 
@@ -260,38 +265,35 @@ fn layouts_of(console: &mut Console, screen: &str) -> ScreenLayouts {
     })
 }
 
-fn laid(console: &mut Console, screen: &str, bp: Breakpoint, ids: &[i64]) -> Rc<Laid> {
-    let generation = console
-        .state_ref::<Screens>()
-        .map_or(0, |screens| screens.generation);
-    let revision = console.state::<State>().revision;
-    let mut hasher = DefaultHasher::new();
-    (screen, bp, generation, revision).hash(&mut hasher);
-    for id in ids {
-        id.hash(&mut hasher);
-        if let Some(tag) = tag_of(&console.store, *id) {
-            tag.info.device_id.hash(&mut hasher);
-            tag.info.chart_type.hash(&mut hasher);
-        }
-    }
-    let key = hasher.finish();
+fn laid(console: &mut Console, screen: &str, bp: Breakpoint) -> Rc<Laid> {
+    let key = (
+        bp,
+        console
+            .state_ref::<Screens>()
+            .map(|screens| screens.generation),
+        console.store.generation(),
+        console.state::<State>().revision,
+    );
     if let Some(laid) = console
         .state::<State>()
         .laid
         .as_ref()
-        .filter(|laid| laid.key == key)
+        .filter(|laid| laid.key == key && laid.screen == screen)
     {
         return laid.clone();
     }
+    let ids = ids(console, screen);
     let layouts = layouts_of(console, screen);
-    let items = grid::effective(&layouts, bp, &cards_of(&console.store, ids));
+    let items = grid::effective(&layouts, bp, &cards_of(&console.store, &ids));
     let by_id = items
         .iter()
         .enumerate()
         .map(|(index, item)| (item.i.clone(), index))
         .collect();
     let laid = Rc::new(Laid {
+        screen: screen.to_owned(),
         key,
+        ids,
         rows: grid::bottom(&items),
         items,
         by_id,
@@ -304,31 +306,32 @@ fn scene(console: &mut Console, window: &Window) -> Scene {
     let screen = active(console);
     let width = grid_width(window);
     let bp = Breakpoint::for_width(width);
-    let ids = ids(console, &screen);
-    let laid = laid(console, &screen, bp, &ids);
+    let laid = laid(console, &screen, bp);
     Scene {
         screen,
         bp,
         grid: Grid::new(bp, width),
-        ids,
         laid,
     }
 }
 
 /// Put `items` in the draft as `bp`'s layout; the first edit starts the
-/// draft from every breakpoint as shown.
+/// draft from every breakpoint as shown. Another screen's draft is saved,
+/// never dropped.
 fn edit(console: &mut Console, scene: &Scene, items: Vec<LayoutItem>) {
-    let drafted = console
-        .state::<State>()
-        .draft
-        .take()
-        .filter(|(screen, _)| *screen == scene.screen)
-        .map(|(_, layouts)| layouts);
+    let drafted = match console.state::<State>().draft.take() {
+        Some((screen, layouts)) if screen == scene.screen => Some(layouts),
+        Some((screen, layouts)) => {
+            screens::save_layouts(console, &screen, layouts);
+            None
+        }
+        None => None,
+    };
     let mut layouts = match drafted {
         Some(layouts) => layouts,
         None => {
             let saved = layouts_of(console, &scene.screen);
-            grid::materialize(&saved, &cards_of(&console.store, &scene.ids))
+            grid::materialize(&saved, &cards_of(&console.store, &scene.laid.ids))
         }
     };
     layouts.set(scene.bp, items);
@@ -361,6 +364,22 @@ fn focus_grid(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
 
 fn rights_here(console: &Console) -> Rights {
     rights(console.role(), &active(console))
+}
+
+/// Whether the screen on show may be edited: its saved layout is in (see
+/// [`Screens::layout_known`]).
+fn layout_known(console: &Console) -> bool {
+    console
+        .state_ref::<Screens>()
+        .is_some_and(|screens| screens.layout_known(&screens.active))
+}
+
+fn layout_unknown(console: &mut Console, cx: &mut Context<Console>) {
+    console.show_toast(
+        "The screen's layout did not load: reload it (R) before editing",
+        true,
+        cx,
+    );
 }
 
 /// Remember the command line's dashboard options (`--screen`, `--edit`).
@@ -414,6 +433,7 @@ fn apply_launch(console: &mut Console, window: &mut Window, cx: &mut Context<Con
 
 pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
     screens::sync(console);
+    fetch_images(console);
     focus_grid(console, window, cx);
 }
 
@@ -432,7 +452,13 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
         }
         cx.notify();
     } else {
+        if key.name == "dashboard.created" && reply.error().is_none() {
+            // The new screen comes on show: the layout being edited is
+            // saved first, as a switch of screens does.
+            save_draft(console);
+        }
         screens::on_reply(console, key, reply, cx);
+        fetch_images(console);
     }
 }
 
@@ -453,6 +479,7 @@ fn switch_screen(console: &mut Console, id: &str, window: &mut Window, cx: &mut 
     if active(console) != id {
         save_draft(console);
         screens::select(console, id);
+        fetch_images(console);
         let state = console.state::<State>();
         state.cursor = None;
         state.drag = None;
@@ -491,11 +518,12 @@ fn toggle_edit(console: &mut Console, window: &mut Window, cx: &mut Context<Cons
         needs_operator(console, cx);
         return;
     }
-    let state = console.state::<State>();
-    if state.editing {
+    if console.state::<State>().editing {
         finish_edit(console);
+    } else if layout_known(console) {
+        console.state::<State>().editing = true;
     } else {
-        state.editing = true;
+        layout_unknown(console, cx);
     }
     focus_grid(console, window, cx);
     cx.notify();
@@ -513,8 +541,12 @@ fn arrange(console: &mut Console, window: &mut Window, cx: &mut Context<Console>
         needs_operator(console, cx);
         return;
     }
+    if !layout_known(console) {
+        layout_unknown(console, cx);
+        return;
+    }
     let scene = scene(console, window);
-    let layouts = grid::auto_arrange_all(&cards_of(&console.store, &scene.ids));
+    let layouts = grid::auto_arrange_all(&cards_of(&console.store, &scene.laid.ids));
     let state = console.state::<State>();
     state.editing = true;
     state.draft = Some((scene.screen, layouts));
@@ -536,7 +568,8 @@ fn arrow(
         return;
     }
     let scene = scene(console, window);
-    let editing = console.state::<State>().editing && rights_here(console).arrange;
+    let editing =
+        console.state::<State>().editing && rights_here(console).arrange && layout_known(console);
     let cursor = console
         .state::<State>()
         .cursor
@@ -769,6 +802,18 @@ fn glide(
     }
 }
 
+/// Forget the tweens of cards not drawn this frame (scrolled away, removed,
+/// or on another screen): one drawn again starts where it is. Every drawn
+/// card has one, so nothing is left to forget when the counts match.
+fn prune_tweens(tweens: &mut HashMap<String, Tween>, shown: &[Shown]) {
+    let placeholder = usize::from(tweens.contains_key(PLACEHOLDER));
+    if tweens.len() <= shown.len() + placeholder {
+        return;
+    }
+    let drawn: HashSet<&str> = shown.iter().map(|card| card.id.as_str()).collect();
+    tweens.retain(|id, _| id == PLACEHOLDER || drawn.contains(id.as_str()));
+}
+
 /// One card to draw.
 struct Shown {
     id: String,
@@ -778,8 +823,11 @@ struct Shown {
 }
 
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
-    screens::sync(console);
-    apply_launch(console, window, cx);
+    // Launch options apply on the page itself, never in the warm-up's
+    // hidden draw. Fetches happen on show and in the reply hooks, not here.
+    if console.page == Page::Dashboard {
+        apply_launch(console, window, cx);
+    }
     let theme = theme(cx).clone();
     let view = window.current_view();
     let focus = grid_focus(console, cx);
@@ -787,7 +835,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let scene = scene(console, window);
     follow_drag(console, &scene);
     // A drag step changed the draft: lay out again.
-    let laid_now = laid(console, &scene.screen, scene.bp, &scene.ids);
+    let laid_now = laid(console, &scene.screen, scene.bp);
     let scene = Scene {
         laid: laid_now,
         ..scene
@@ -825,8 +873,9 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         f32::from(scroll.bounds().size.height).max(f32::from(window.viewport_size().height));
     let shown_to = shown_from + view_height + 2.0 * OVERSCAN;
 
+    let known = layout_known(console);
     let state = console.state::<State>();
-    let editing = state.editing && can.arrange;
+    let editing = state.editing && can.arrange && known;
     if state.drawn.0 != scene.grid.width || state.drawn.1 != scene.screen {
         state.drawn = (scene.grid.width, scene.screen.clone());
         state.tweens.clear();
@@ -874,9 +923,9 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             lifted: true,
         });
     }
+    prune_tweens(&mut state.tweens, &shown);
 
-    // Image cards' pictures, fetched once per URL.
-    let mut wanted: Vec<String> = Vec::new();
+    // Image cards' pictures, fetched by `fetch_images`.
     let mut pictures: HashMap<String, Picture> = HashMap::new();
     for card in &shown {
         let Some(tag) = card
@@ -894,15 +943,13 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         if url.is_empty() {
             continue;
         }
-        match console.state::<State>().images.get(&url) {
-            Some(picture) => {
-                pictures.insert(card.id.clone(), picture.clone());
-            }
-            None => wanted.push(url),
-        }
-    }
-    for url in wanted {
-        fetch_image(console, url);
+        let picture = console
+            .state::<State>()
+            .images
+            .get(&url)
+            .cloned()
+            .unwrap_or(Picture::Loading);
+        pictures.insert(card.id.clone(), picture);
     }
 
     let mut elements: Vec<AnyElement> = Vec::with_capacity(shown.len() + 1);
@@ -1285,8 +1332,38 @@ fn card_element(
     (element, animating)
 }
 
+/// Fetch the pictures of the active screen's image cards not asked for
+/// yet. Only while the page is on show, never for the warm-up's hidden
+/// draw: on show, on a switch of screens, and when the screens or the tag
+/// list change.
+fn fetch_images(console: &mut Console) {
+    if console.phase != Phase::Console || console.page != Page::Dashboard {
+        return;
+    }
+    let screen = active(console);
+    let wanted: Vec<String> = ids(console, &screen)
+        .into_iter()
+        .filter_map(|id| tag_of(&console.store, id))
+        .filter(|tag| CardKind::of(&tag.info.chart_type) == CardKind::Image)
+        .map(|tag| grid::card_config(&tag.info.source_config, "image_url"))
+        .filter(|url| !url.is_empty())
+        .collect();
+    for url in wanted {
+        fetch_image(console, url);
+    }
+}
+
+/// The tag list changed (the runtime's `Event::Tags`): new image cards may
+/// need their pictures.
+pub(crate) fn tags_changed(console: &mut Console) {
+    fetch_images(console);
+}
+
 fn fetch_image(console: &mut Console, url: String) {
     let state = console.state::<State>();
+    if state.images.contains_key(&url) {
+        return;
+    }
     if url.starts_with("data:") {
         state.images.insert(
             url,
@@ -1692,11 +1769,14 @@ fn delete_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
     };
     div()
         .track_focus(&focus)
-        .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
-            if event.keystroke.key == "enter" {
-                confirm_delete(console, window, cx);
-            }
-        }))
+        .on_key_down(
+            cx.listener(move |console, event: &KeyDownEvent, window, cx| {
+                // Enter on a focused button (Cancel) is that button's.
+                if event.keystroke.key == "enter" && focus.is_focused(window) {
+                    confirm_delete(console, window, cx);
+                }
+            }),
+        )
         .child(dialog_frame(
             "Delete the screen",
             div()
@@ -1784,19 +1864,15 @@ fn picks(console: &Console, cx: &App) -> Vec<i64> {
     let query = console
         .state_ref::<State>()
         .and_then(|state| state.query.as_ref())
-        .map(|field| field.read(cx).value().trim().to_lowercase())
+        .map(|field| field.read(cx).value())
         .unwrap_or_default();
+    // The store keeps filter results per query: no tag is lowercased here.
     console
         .store
-        .tags
+        .filter(query)
         .iter()
-        .filter(|tag| !on.contains(&tag.info.id))
-        .filter(|tag| {
-            query.is_empty()
-                || tag.info.name.to_lowercase().contains(&query)
-                || tag.info.key.to_lowercase().contains(&query)
-        })
-        .map(|tag| tag.info.id)
+        .map(|index| console.store.tags[*index].info.id)
+        .filter(|id| !on.contains(id))
         .collect()
 }
 
@@ -1975,7 +2051,14 @@ pub(crate) fn actions(root: Stateful<Div>, cx: &Context<Console>) -> Stateful<Di
         arrow(console, Direction::Right, true, window, cx);
     }))
     .on_action(cx.listener(|console, _: &DashboardOpen, window, cx| {
+        // Enter on a focused button of the page (a screen tab, Edit) is
+        // that button's click, not the card's.
+        let on_grid = console
+            .state_ref::<State>()
+            .and_then(|state| state.focus.as_ref())
+            .is_some_and(|focus| focus.is_focused(window));
         if console.page == Page::Dashboard
+            && on_grid
             && let Some(id) = console.state::<State>().cursor.clone()
         {
             open_card(console, &id, window, cx);
@@ -2051,4 +2134,270 @@ pub(crate) fn actions(root: Stateful<Div>, cx: &Context<Console>) -> Stateful<Di
             cx.notify();
         }
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use voltrus_scada_native::api::DataSource;
+    use voltrus_scada_native::runtime::{Event, Link};
+    use voltrus_scada_native::screens::Screen;
+
+    use super::*;
+    use crate::console::testing::{Harness, SERVER};
+
+    fn dashboard_calls(calls: &[CallKey]) -> Vec<&'static str> {
+        calls
+            .iter()
+            .filter(|key| key.scope() == "dashboard")
+            .map(|key| key.name)
+            .collect()
+    }
+
+    fn find(calls: &[CallKey], name: &str) -> CallKey {
+        *calls
+            .iter()
+            .find(|key| key.name == name)
+            .unwrap_or_else(|| panic!("no {name} in {calls:?}"))
+    }
+
+    /// Signed in as an admin with the dashboard on show; the calls its
+    /// showing sent come back.
+    fn on_dashboard(cx: &mut gpui::TestAppContext) -> (Harness, Vec<CallKey>) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| console.show(Page::Dashboard, window, cx));
+        let calls = h.calls();
+        (h, calls)
+    }
+
+    /// On the dashboard with the server's screen "a" on show.
+    fn with_a_screen(cx: &mut gpui::TestAppContext) -> Harness {
+        let (mut h, calls) = on_dashboard(cx);
+        h.reply(
+            find(&calls, "dashboard.screens"),
+            Reply::ok(vec![Screen {
+                id: "a".into(),
+                name: "A".into(),
+                ..Screen::default()
+            }]),
+        );
+        h.update(|console, window, cx| switch_screen(console, "a", window, cx));
+        h.calls();
+        h
+    }
+
+    fn drafted() -> ScreenLayouts {
+        ScreenLayouts {
+            lg: vec![LayoutItem::new(1, 0, 0, 6, 4)],
+            ..ScreenLayouts::default()
+        }
+    }
+
+    #[gpui::test]
+    fn drawing_the_dashboard_fetches_nothing(cx: &mut gpui::TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.event(Event::SignedIn {
+            username: "op".into(),
+            role: "admin".into(),
+            server: SERVER.into(),
+            must_change_password: false,
+        });
+        h.event(Event::Link(Link::Live));
+        h.event(Event::Tags(vec![DataSource {
+            chart_type: "image".into(),
+            source_config: r#"{"image_url":"/plant.png"}"#.into(),
+            ..Harness::tag(1, "plts_1.camera")
+        }]));
+        for _ in 0..64 {
+            if h.update(|console, _, _| console.warm.is_empty()) {
+                break;
+            }
+            h.draw();
+        }
+        assert_ne!(h.update(|console, _, _| console.page), Page::Dashboard);
+        h.draw();
+        assert_eq!(
+            dashboard_calls(&h.calls()),
+            Vec::<&str>::new(),
+            "the warm-up's hidden draw and later draws ask nothing"
+        );
+        h.update(|console, window, cx| console.show(Page::Dashboard, window, cx));
+        let shown = dashboard_calls(&h.calls());
+        for name in ["dashboard.screens", "dashboard.layouts", "dashboard.image"] {
+            assert!(shown.contains(&name), "showing the page asks {name}");
+        }
+    }
+
+    #[gpui::test]
+    fn a_failed_load_is_not_asked_again_until_a_reload(cx: &mut gpui::TestAppContext) {
+        let (mut h, calls) = on_dashboard(cx);
+        h.reply(find(&calls, "dashboard.screens"), Reply::failed("HTTP 500"));
+        h.reply(find(&calls, "dashboard.layouts"), Reply::failed("HTTP 500"));
+        h.draw();
+        h.update(|console, window, cx| console.focus_page(window, cx));
+        h.draw();
+        assert_eq!(dashboard_calls(&h.calls()), Vec::<&str>::new());
+
+        // The layout is unknown, not a default a save would make permanent.
+        h.update(toggle_edit);
+        h.update(arrange);
+        let (editing, draft) = h.update(|console, _, _| {
+            let state = console.state::<State>();
+            (state.editing, state.draft.is_some())
+        });
+        assert!(!editing && !draft, "editing waits for the layout");
+
+        h.update(|console, _, _| screens::reload(console));
+        let again = dashboard_calls(&h.calls());
+        assert!(again.contains(&"dashboard.screens") && again.contains(&"dashboard.layouts"));
+    }
+
+    #[gpui::test]
+    fn enter_on_the_focused_cancel_deletes_nothing(cx: &mut gpui::TestAppContext) {
+        let mut h = with_a_screen(cx);
+        h.update(open_delete);
+        h.draw();
+        h.keys("tab");
+        let on_dialog = h.update(|console, window, _| {
+            console
+                .state::<State>()
+                .dialog_focus
+                .as_ref()
+                .is_some_and(|focus| focus.is_focused(window))
+        });
+        assert!(!on_dialog, "Tab moved to a button");
+        h.keys("enter");
+        assert!(!dashboard_calls(&h.calls()).contains(&"dashboard.deleted"));
+    }
+
+    #[gpui::test]
+    fn enter_on_the_delete_dialog_deletes_the_screen(cx: &mut gpui::TestAppContext) {
+        let mut h = with_a_screen(cx);
+        h.update(open_delete);
+        h.draw();
+        h.keys("enter");
+        assert!(dashboard_calls(&h.calls()).contains(&"dashboard.deleted"));
+    }
+
+    #[gpui::test]
+    fn enter_on_a_focused_button_of_the_page_opens_no_card(cx: &mut gpui::TestAppContext) {
+        let (mut h, calls) = on_dashboard(cx);
+        h.event(Event::Tags(vec![Harness::tag(1, "plts_1.p")]));
+        h.reply(
+            find(&calls, "dashboard.layouts"),
+            Reply::ok(ScreenLayouts::default()),
+        );
+        h.update(|console, _, _| console.state::<State>().cursor = Some("1".into()));
+        h.draw();
+        let mut on_button = false;
+        for _ in 0..64 {
+            h.keys("tab");
+            on_button = h.update(|console, window, cx| {
+                console
+                    .state::<State>()
+                    .focus
+                    .as_ref()
+                    .is_some_and(|focus| {
+                        focus.contains_focused(window, cx) && !focus.is_focused(window)
+                    })
+            });
+            if on_button {
+                break;
+            }
+        }
+        assert!(on_button, "Tab reached a button of the page");
+        h.keys("enter");
+        assert_eq!(h.update(|console, _, _| console.page), Page::Dashboard);
+
+        h.update(focus_grid);
+        h.keys("enter");
+        assert_eq!(
+            h.update(|console, _, _| console.page),
+            Page::Tags,
+            "on the grid, Enter opens the card"
+        );
+    }
+
+    #[gpui::test]
+    fn creating_a_screen_saves_the_layout_being_edited(cx: &mut gpui::TestAppContext) {
+        let mut h = with_a_screen(cx);
+        h.update(|console, _, _| {
+            let state = console.state::<State>();
+            state.editing = true;
+            state.draft = Some(("a".into(), drafted()));
+            screens::create(console, "B".into());
+        });
+        let created = find(&h.calls(), "dashboard.created");
+        h.reply(
+            created,
+            Reply::ok(Screen {
+                id: "b".into(),
+                name: "B".into(),
+                ..Screen::default()
+            }),
+        );
+        assert!(dashboard_calls(&h.calls()).contains(&"dashboard.saved"));
+        let (active, saved) = h.update(|console, _, _| {
+            let screens = console.state::<Screens>();
+            (screens.active.clone(), screens.layouts.get("a").cloned())
+        });
+        assert_eq!(active, "b");
+        assert_eq!(saved, Some(drafted()), "a's edits are kept");
+    }
+
+    #[gpui::test]
+    fn an_edit_saves_another_screens_draft(cx: &mut gpui::TestAppContext) {
+        let mut h = with_a_screen(cx);
+        h.update(|console, window, _| {
+            console.state::<State>().draft = Some(("b".into(), drafted()));
+            let scene = scene(console, window);
+            edit(console, &scene, Vec::new());
+        });
+        assert!(dashboard_calls(&h.calls()).contains(&"dashboard.saved"));
+        let saved = h.update(|console, _, _| console.state::<Screens>().layouts.get("b").cloned());
+        assert_eq!(saved, Some(drafted()), "b's edits are kept");
+    }
+
+    #[test]
+    fn a_card_standing_still_asks_for_no_frames() {
+        let now = Instant::now();
+        let at = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        assert_eq!(Tween::still(at, now).at(now), (at, false));
+        let mut tweens = HashMap::new();
+        assert_eq!(glide(&mut tweens, "1", at, now), (at, false), "a new card");
+        assert_eq!(glide(&mut tweens, "1", at, now), (at, false), "staying put");
+        let to = Rect { x: 100.0, ..at };
+        assert!(glide(&mut tweens, "1", to, now).1, "a moved card glides");
+        assert_eq!(glide(&mut tweens, "1", to, now + MOVE), (to, false));
+    }
+
+    #[test]
+    fn tweens_of_cards_no_longer_drawn_are_forgotten() {
+        let now = Instant::now();
+        let at = Rect {
+            x: 0.0,
+            y: 0.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        let mut tweens = HashMap::new();
+        for id in ["1", "2", PLACEHOLDER] {
+            glide(&mut tweens, id, at, now);
+        }
+        let shown = [Shown {
+            id: "1".into(),
+            rect: at,
+            ring: false,
+            lifted: false,
+        }];
+        prune_tweens(&mut tweens, &shown);
+        let mut kept: Vec<&str> = tweens.keys().map(String::as_str).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, [PLACEHOLDER, "1"]);
+    }
 }

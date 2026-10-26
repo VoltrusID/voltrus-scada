@@ -9,11 +9,10 @@ use gpui::{
 };
 use voltrus_scada_native::runtime::{CallKey, Reply};
 use vt_ui::Icon;
-use vt_ui::chart::sparkline;
 use vt_ui::components::{empty_state, pill, status_dot};
 use vt_ui::theme::*;
 
-use super::tag_detail::{DetailState, PANEL, TagDialog};
+use super::tag_detail::{DetailState, PANEL};
 use super::{
     ListKeys, age, fit_span, focus_ring, keyboard_list, now_ms, page_header, rows_on_screen,
     span_label, status_color, tail_row, tail_rows, value_color, value_with_unit,
@@ -28,6 +27,7 @@ const ROW_HEIGHT_PX: f32 = 34.0;
 
 pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
     console.focus_list(LIST, window, cx);
+    super::tag_detail::fetch_open(console);
 }
 
 pub fn search(console: &Console) -> Option<Entity<TextInput>> {
@@ -64,13 +64,14 @@ fn follow_cursor(console: &mut Console, row: usize, _: &mut Window, cx: &mut Con
     }
 }
 
-/// Enter opens the row's tag (and the write dialog, for an operator);
-/// Space puts it on Trends or takes it off.
+/// Enter opens the row's tag (writing stays on ⇧⌘W and the panel's button,
+/// so a held or repeated Enter cannot send a write); Space puts it on
+/// Trends or takes it off.
 fn activate_row(
     console: &mut Console,
     row: usize,
     toggle: bool,
-    window: &mut Window,
+    _: &mut Window,
     cx: &mut Context<Console>,
 ) {
     let Some(id) = row_tag(console, row, cx) else {
@@ -80,9 +81,6 @@ fn activate_row(
         console.toggle_trend(id, cx);
     } else {
         console.select(id, cx);
-        if console.is_operator() {
-            super::tag_detail::open_dialog(console, TagDialog::Write, window, cx);
-        }
     }
 }
 
@@ -91,6 +89,8 @@ const VALUE: f32 = 120.0;
 const STATUS: f32 = 84.0;
 const AGE: f32 = 56.0;
 const SPARK: f32 = 110.0;
+/// Columns in a row's sparkline: one per two pixels.
+const SPARK_COLUMNS: usize = 55;
 /// The key follows the name only when the name column has this much room.
 const INLINE_KEY_MIN: f32 = 260.0;
 /// The table's sparklines reach back this far at most; they start where
@@ -427,16 +427,61 @@ fn tag_row(
                 }),
         )
         .when(columns.trend, |this| {
-            this.child(div().w(px(SPARK)).h(px(18.0)).flex_none().child(sparkline(
-                tag.history.clone(),
-                if tag.status == Status::Normal {
-                    theme.accent
-                } else {
-                    color
-                },
-                now,
-                columns.span_ms,
-            )))
+            this.child(
+                div()
+                    .w(px(SPARK))
+                    .h(px(18.0))
+                    .flex_none()
+                    .child(super::spark::spark(
+                        tag,
+                        if tag.status == Status::Normal {
+                            theme.accent
+                        } else {
+                            color
+                        },
+                        now,
+                        columns.span_ms,
+                        SPARK_COLUMNS,
+                    )),
+            )
         })
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use voltrus_scada_native::runtime::{Command, Event};
+
+    use super::LIST;
+    use crate::console::testing::Harness;
+
+    /// Enter on a row opens its tag only: a held or repeated Enter must not
+    /// land in a write dialog's value field.
+    #[gpui::test]
+    fn enter_on_a_row_opens_the_tag_but_no_write(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("demo");
+        h.event(Event::Tags(vec![Harness::tag(7, "plts_1.p")]));
+        h.update(|console, window, cx| {
+            console.open_tag(7, window, cx);
+            console.focus_list(LIST, window, cx);
+            // Enter is what opens it.
+            console.selected = None;
+        });
+        h.draw();
+        h.keys("enter");
+        h.keys("enter");
+        h.update(|console, _, _| {
+            assert_eq!(console.selected, Some(7));
+            assert!(!console.overlay_is("tag-write"));
+        });
+        let sent = h.commands();
+        assert!(
+            !sent
+                .iter()
+                .any(|command| matches!(command, Command::Write { .. })),
+            "{sent:?}"
+        );
+    }
 }

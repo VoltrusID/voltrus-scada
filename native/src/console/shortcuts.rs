@@ -258,6 +258,9 @@ pub enum Skipped {
     Taken(String),
     /// An earlier shortcut has these keys.
     Duplicate(String),
+    /// A key without ⌘, ⌥ or ⇧ (Enter, Space, an arrow, a letter): it would
+    /// take the key from lists and dialogs. Function keys may stand alone.
+    Unmodified,
 }
 
 impl Skipped {
@@ -267,6 +270,7 @@ impl Skipped {
             Self::Unreadable => "Not a key this console knows".into(),
             Self::Taken(stroke) => format!("{} is a built-in key", display_keys(stroke)),
             Self::Duplicate(stroke) => format!("{} is used above", display_keys(stroke)),
+            Self::Unmodified => "Needs ⌘, ⌥ or ⇧, or a function key".into(),
         }
     }
 }
@@ -320,6 +324,10 @@ pub fn plan(nav: &ShortcutMap, tags: &ShortcutMap) -> Plan {
             plan.skipped.insert(entry, Skipped::Unreadable);
             continue;
         };
+        if !modified_or_function(&stroke) {
+            plan.skipped.insert(entry, Skipped::Unmodified);
+            continue;
+        }
         if let Some(builtin) = taken.iter().find(|builtin| same_keys(builtin, &stroke)) {
             // The web's default `Mod+1` for the overview is ⌘1 here too.
             let same = matches!(target, Target::Page(page)
@@ -340,6 +348,17 @@ pub fn plan(nav: &ShortcutMap, tags: &ShortcutMap) -> Plan {
         plan.bound.push((stroke, target));
     }
     plan
+}
+
+/// Whether a GPUI keystroke has a modifier, or is a function key (F1–F24).
+fn modified_or_function(stroke: &str) -> bool {
+    Keystroke::parse(stroke).is_ok_and(|keystroke| {
+        keystroke.modifiers.modified()
+            || keystroke
+                .key
+                .strip_prefix('f')
+                .is_some_and(|n| n.parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)))
+    })
 }
 
 /// A binding from server data: `None` if GPUI refuses it.
@@ -366,6 +385,7 @@ pub fn kiosk_blocks(action: &dyn Action) -> bool {
 pub fn key_bindings(plan: &Plan, kiosk: bool) -> Vec<KeyBinding> {
     let mut bindings = vt_ui::text_input::key_bindings();
     bindings.extend(super::text_area::key_bindings());
+    bindings.extend(super::views::data_manager::scripts::code_editor::key_bindings());
     bindings.extend(
         keys::key_bindings()
             .into_iter()
@@ -394,11 +414,11 @@ pub fn menus(kiosk: bool) -> Vec<gpui::Menu> {
 }
 
 /// Rebuild the keymap and the menus from the loaded shortcuts and the
-/// kiosk lock.
+/// kiosk lock (which holds in the console only).
 pub fn rebind(console: &mut Console, cx: &mut App) {
+    let kiosk = console.kiosk_locked();
     let shell = console.state::<Shell>();
     let plan = plan(&shell.nav, &shell.tags);
-    let kiosk = shell.prefs.kiosk;
     let bindings = key_bindings(&plan, kiosk);
     shell.plan = plan;
     cx.clear_key_bindings();
@@ -606,11 +626,39 @@ mod tests {
     }
 
     #[test]
+    fn a_key_without_a_modifier_is_no_shortcut_but_a_function_key_is() {
+        let tags = map(&[
+            ("1", "Enter"),
+            ("2", "Space"),
+            ("3", "ArrowDown"),
+            ("4", "J"),
+            ("5", "F7"),
+            ("6", "Shift+Enter"),
+        ]);
+        let plan = plan(&ShortcutMap::new(), &tags);
+        for id in 1..=4 {
+            assert_eq!(
+                plan.skipped[&format!("tag:{id}")],
+                Skipped::Unmodified,
+                "tag {id}"
+            );
+        }
+        assert_eq!(
+            plan.bound,
+            [
+                ("f7".to_owned(), Target::Tag(5)),
+                ("shift-enter".to_owned(), Target::Tag(6)),
+            ]
+        );
+    }
+
+    #[test]
     fn the_keymap_carries_every_command_plus_shortcuts_and_the_kiosk_drops_quit() {
         let plan = plan(&map(&[("action:alarms", "F9")]), &map(&[("12", "Alt+F2")]));
         assert_eq!(plan.bound.len(), 2);
         let base = vt_ui::text_input::key_bindings().len()
             + super::super::text_area::key_bindings().len()
+            + super::super::views::data_manager::scripts::code_editor::key_bindings().len()
             + keys::key_bindings().len();
         let open = key_bindings(&plan, false);
         assert_eq!(open.len(), base + 2);

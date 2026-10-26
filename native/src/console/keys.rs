@@ -95,6 +95,69 @@ actions!(
         DataImportFile,
         DataRefreshSection,
         DataSectionTool,
+        EngSystemPreviousTab,
+        EngSystemExportDocs,
+        EngSnapshotsNew,
+        EngSnapshotsRollback,
+        EngSnapshotsDiffFrom,
+        EngSnapshotsDiffTo,
+        EngSnapshotsCompare,
+        EngSnapshotsSortNext,
+        EngMqttNextTab,
+        EngMqttPrevTab,
+        EngMqttStartStop,
+        EngMqttConfigure,
+        EngMqttPublish,
+        EngMqttRefresh,
+        EngEdrNextTab,
+        EngEdrPrevTab,
+        EngEdrRefresh,
+        EngEdrCopy,
+        EngEdrSave,
+        EngImportsOpen,
+        EngImportsSwitch,
+        EngImportsDelimiter,
+        EngFlowsNew,
+        EngFlowsEdit,
+        EngFlowsDelete,
+        EngFlowsRuns,
+        EngFlowsTest,
+        EngFlowsRefresh,
+        EngFlowsSortNext,
+        EngFlowsSortReverse,
+        EngFlowsSave,
+        EngFlowsUndo,
+        EngFlowsDeleteSelection,
+        EngFlowsNudgeLeft,
+        EngFlowsNudgeRight,
+        EngFlowsNudgeUp,
+        EngFlowsNudgeDown,
+        EngFlowsZoomIn,
+        EngFlowsZoomOut,
+        EngFlowsFit,
+        EngFlowsArrange,
+        EngFlowsEarlier,
+        EngFlowsLater,
+        EngFlowsAddStep,
+        EngFlowsInspect,
+        EngFlowsOpen,
+        EngScriptsNew,
+        EngScriptsDelete,
+        EngScriptsToggleEnabled,
+        EngScriptsRefresh,
+        EngScriptsSortNext,
+        EngScriptsSortReverse,
+        EngScriptsShowTest,
+        EngScriptsShowHistory,
+        EngScriptsSave,
+        EngScriptsRun,
+        DataNewUser,
+        DataNewRole,
+        DataNewApiKey,
+        DataNewRule,
+        DataAdminDelete,
+        DataAdminPassword,
+        DataAdminTest,
     ]
 );
 
@@ -124,6 +187,35 @@ pub const ALARM_LIST: &str = "AlarmList";
 pub const DATA_SOURCES: &str = "DataSources";
 /// A Data Manager › Protocols device table has focus.
 pub const DATA_DEVICES: &str = "DataDevices";
+/// Data Manager › Engineering sections: each section's root carries its
+/// context, and its single-letter keys never fire while typing.
+/// System's root also carries `OpsTabbed OpsRefreshable OpsFiltered`
+/// (t, r, [ ]).
+pub const ENG_SYSTEM: &str = "EngSystem && !TextInput";
+pub const ENG_SNAPSHOTS: &str = "EngSnapshots && !TextInput";
+pub const ENG_MQTT: &str = "EngMqtt && !TextInput";
+pub const ENG_EDR: &str = "EngEdr && !TextInput";
+pub const ENG_IMPORTS: &str = "EngImports && !TextInput";
+/// Flows: the list, the editor (⌘S also while typing) and its canvas.
+pub const ENG_FLOWS: &str = "EngFlows && !TextInput";
+pub const ENG_FLOW_EDITOR: &str = "EngFlowEditor";
+pub const ENG_FLOW_CANVAS: &str = "EngFlowCanvas && !TextInput";
+/// Scripts (⌘S and ⌘↵ work while typing in its editor).
+pub const ENG_SCRIPTS: &str = "EngScripts";
+pub const ENG_SCRIPTS_LIST: &str = "EngScripts && !TextInput";
+/// The Data Manager's Admin tables (Users, Roles, API keys, Notifications):
+/// every one carries `DataAdmin` (⌫ deletes or revokes) and its own name
+/// (N makes one; P resets a password; T tests a rule).
+pub const DATA_ADMIN: &str = "DataAdmin";
+pub const DATA_USERS: &str = "DataUsers";
+pub const DATA_ROLES: &str = "DataRoles";
+pub const DATA_API_KEYS: &str = "DataApiKeys";
+pub const DATA_RULES: &str = "DataRules";
+/// The key contexts the Admin tables set on their element.
+pub const DATA_ADMIN_USERS: &str = "DataAdmin DataUsers";
+pub const DATA_ADMIN_ROLES: &str = "DataAdmin DataRoles";
+pub const DATA_ADMIN_API_KEYS: &str = "DataAdmin DataApiKeys";
+pub const DATA_ADMIN_RULES: &str = "DataAdmin DataRules";
 
 /// How the help overlay groups the commands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,15 +478,18 @@ pub static COMMANDS: &[CommandSpec] = &[
         TogglePerfHud,
         true
     ),
-    command!(
-        "Start the stress test",
-        View,
-        Zap,
-        [],
-        CONSOLE,
-        StartStress,
-        true
-    ),
+    // A stress run replaces the session: offered to admins only (the
+    // handler refuses it otherwise, and under the kiosk lock).
+    CommandSpec {
+        label: "Start the stress test",
+        group: Group::View,
+        icon: Icon::Zap,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(StartStress) },
+        palette: true,
+        role: Role::Admin,
+    },
     command!(
         "Stop the stress test",
         View,
@@ -562,24 +657,26 @@ pub static COMMANDS: &[CommandSpec] = &[
         TagsWrite,
         true
     ),
-    command!(
-        "Edit the tag's write policy…",
-        View,
-        Settings,
-        [],
-        CONSOLE,
-        TagsWritePolicy,
-        true
-    ),
-    command!(
-        "Add a note to the tag's chart…",
-        View,
-        Pencil,
-        ["secondary-shift-n"],
-        CONSOLE,
-        TagsAddNote,
-        true
-    ),
+    CommandSpec {
+        label: "Edit the tag's write policy…",
+        group: Group::View,
+        icon: Icon::Settings,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(TagsWritePolicy) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Add a note to the tag's chart…",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &["secondary-shift-n"],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(TagsAddNote) },
+        palette: true,
+        role: Role::Operator,
+    },
     command!(
         "Compare the tag with another…",
         View,
@@ -1128,6 +1225,349 @@ pub static COMMANDS: &[CommandSpec] = &[
         super::views::mimic::MimicReload,
         false
     ),
+    // The mimic's edit mode (`views::mimic::editor`), operators only.
+    CommandSpec {
+        label: "Mimic: edit the screen (E again: done)",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &["e"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEdit) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: edit the screen (E again: done)",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &["e"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEdit) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: save the screen",
+        group: Group::View,
+        icon: Icon::Download,
+        keys: &["secondary-s"],
+        context: super::views::mimic::editor::KEYS_ANYWHERE,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditSave) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: undo",
+        group: Group::View,
+        icon: Icon::ChevronLeft,
+        keys: &["secondary-z"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditUndo) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: redo",
+        group: Group::View,
+        icon: Icon::ChevronRight,
+        keys: &["secondary-shift-z", "secondary-y"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditRedo) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: copy",
+        group: Group::View,
+        icon: Icon::Copy,
+        keys: &["secondary-c"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditCopy) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: paste",
+        group: Group::View,
+        icon: Icon::Copy,
+        keys: &["secondary-v"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditPaste) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: duplicate",
+        group: Group::View,
+        icon: Icon::Copy,
+        keys: &["secondary-d"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditDuplicate) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: select everything",
+        group: Group::View,
+        icon: Icon::Square,
+        keys: &["secondary-a"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditSelectAll) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: delete the selection",
+        group: Group::View,
+        icon: Icon::Trash,
+        keys: &["backspace", "delete"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditDelete) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronUp,
+        keys: &["up"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(0, -1))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronDown,
+        keys: &["down"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(0, 1))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronLeft,
+        keys: &["left"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(-1, 0))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronRight,
+        keys: &["right"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(1, 0))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronUp,
+        keys: &["shift-up"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(0, -10))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronDown,
+        keys: &["shift-down"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(0, 10))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronLeft,
+        keys: &["shift-left"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(-10, 0))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronRight,
+        keys: &["shift-right"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(10, 0))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: bring to the front",
+        group: Group::View,
+        icon: Icon::Layers,
+        keys: &["]"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditFront) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: send to the back",
+        group: Group::View,
+        icon: Icon::Layers,
+        keys: &["["],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditBack) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: select tool",
+        group: Group::View,
+        icon: Icon::Square,
+        keys: &["v"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditSelectTool)
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: connect tool (source, then target)",
+        group: Group::View,
+        icon: Icon::Waypoints,
+        keys: &["c"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditConnectTool)
+        },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: turn a quarter clockwise",
+        group: Group::View,
+        icon: Icon::RefreshCw,
+        keys: &["r"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditRotate) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: turn a quarter back",
+        group: Group::View,
+        icon: Icon::RefreshCw,
+        keys: &["shift-r"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditRotateBack)
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: mirror",
+        group: Group::View,
+        icon: Icon::ArrowUpDown,
+        keys: &["h"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditMirror) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: show or hide the grid",
+        group: Group::View,
+        icon: Icon::Columns,
+        keys: &["g"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditGrid) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: search the palette",
+        group: Group::View,
+        icon: Icon::Search,
+        keys: &["/"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditFind) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: select the next widget",
+        group: Group::Navigation,
+        icon: Icon::ChevronRight,
+        keys: &["tab"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditNext) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: select the previous widget",
+        group: Group::Navigation,
+        icon: Icon::ChevronLeft,
+        keys: &["shift-tab"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditPrevious) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: zoom in",
+        group: Group::View,
+        icon: Icon::Plus,
+        keys: &["secondary-=", "secondary-+"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicZoomIn) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: zoom out",
+        group: Group::View,
+        icon: Icon::ChevronDown,
+        keys: &["secondary--"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicZoomOut) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: fit the stage",
+        group: Group::View,
+        icon: Icon::Square,
+        keys: &["secondary-0"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicFit) },
+        palette: false,
+        role: Role::Operator,
+    },
     CommandSpec {
         label: "New data source",
         group: Group::Data,
@@ -1289,6 +1729,598 @@ pub static COMMANDS: &[CommandSpec] = &[
         ["shift-s"],
         DATA_DEVICES,
         DataReverseSort,
+        false
+    ),
+    command!(
+        "System: previous tab",
+        Data,
+        Columns,
+        ["shift-t"],
+        ENG_SYSTEM,
+        EngSystemPreviousTab,
+        false
+    ),
+    command!(
+        "System: export the documentation (HTML)",
+        Data,
+        Download,
+        ["e"],
+        ENG_SYSTEM,
+        EngSystemExportDocs,
+        false
+    ),
+    command!(
+        "New config snapshot",
+        Data,
+        Plus,
+        ["n"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsNew,
+        false
+    ),
+    command!(
+        "Roll back to the snapshot",
+        Data,
+        History,
+        ["r"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsRollback,
+        false
+    ),
+    command!(
+        "Diff from this snapshot",
+        Data,
+        ChevronLeft,
+        ["f"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsDiffFrom,
+        false
+    ),
+    command!(
+        "Diff to this snapshot",
+        Data,
+        ChevronRight,
+        ["t"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsDiffTo,
+        false
+    ),
+    command!(
+        "Compare the two snapshots",
+        Data,
+        Columns,
+        ["c"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsCompare,
+        false
+    ),
+    command!(
+        "Sort snapshots by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsSortNext,
+        false
+    ),
+    command!(
+        "MQTT: next tab",
+        Data,
+        ChevronRight,
+        ["]"],
+        ENG_MQTT,
+        EngMqttNextTab,
+        false
+    ),
+    command!(
+        "MQTT: previous tab",
+        Data,
+        ChevronLeft,
+        ["["],
+        ENG_MQTT,
+        EngMqttPrevTab,
+        false
+    ),
+    command!(
+        "MQTT: start or stop the broker",
+        Data,
+        Play,
+        ["s"],
+        ENG_MQTT,
+        EngMqttStartStop,
+        false
+    ),
+    command!(
+        "MQTT: configure the broker",
+        Data,
+        Settings,
+        ["c"],
+        ENG_MQTT,
+        EngMqttConfigure,
+        false
+    ),
+    command!(
+        "MQTT: publish a message",
+        Data,
+        Send,
+        ["p"],
+        ENG_MQTT,
+        EngMqttPublish,
+        false
+    ),
+    command!(
+        "MQTT: refresh",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_MQTT,
+        EngMqttRefresh,
+        false
+    ),
+    command!(
+        "EDR: next tab",
+        Data,
+        ChevronRight,
+        ["]"],
+        ENG_EDR,
+        EngEdrNextTab,
+        false
+    ),
+    command!(
+        "EDR: previous tab",
+        Data,
+        ChevronLeft,
+        ["["],
+        ENG_EDR,
+        EngEdrPrevTab,
+        false
+    ),
+    command!(
+        "EDR: refresh",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_EDR,
+        EngEdrRefresh,
+        false
+    ),
+    command!(
+        "EDR: copy the script or guide",
+        Data,
+        Copy,
+        ["c"],
+        ENG_EDR,
+        EngEdrCopy,
+        false
+    ),
+    command!(
+        "EDR: save the Defender script",
+        Data,
+        Download,
+        ["s"],
+        ENG_EDR,
+        EngEdrSave,
+        false
+    ),
+    CommandSpec {
+        label: "Import: choose a file",
+        group: Group::Data,
+        icon: Icon::Upload,
+        keys: &["o"],
+        context: ENG_IMPORTS,
+        action: || -> Box<dyn Action> { Box::new(EngImportsOpen) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Import: data file or Node-RED wizard",
+        group: Group::Data,
+        icon: Icon::Waypoints,
+        keys: &["w"],
+        context: ENG_IMPORTS,
+        action: || -> Box<dyn Action> { Box::new(EngImportsSwitch) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Import: next CSV delimiter",
+        group: Group::Data,
+        icon: Icon::Columns,
+        keys: &["d"],
+        context: ENG_IMPORTS,
+        action: || -> Box<dyn Action> { Box::new(EngImportsDelimiter) },
+        palette: false,
+        role: Role::Operator,
+    },
+    command!(
+        "Flows: new flow",
+        Data,
+        Plus,
+        ["n"],
+        ENG_FLOWS,
+        EngFlowsNew,
+        false
+    ),
+    command!(
+        "Flows: rename, enable",
+        Data,
+        Pencil,
+        ["e"],
+        ENG_FLOWS,
+        EngFlowsEdit,
+        false
+    ),
+    command!(
+        "Flows: delete the flow",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        ENG_FLOWS,
+        EngFlowsDelete,
+        false
+    ),
+    command!(
+        "Flows: runs",
+        Data,
+        History,
+        ["h"],
+        ENG_FLOWS,
+        EngFlowsRuns,
+        false
+    ),
+    command!(
+        "Flows: test with a payload",
+        Data,
+        Send,
+        ["t"],
+        ENG_FLOWS,
+        EngFlowsTest,
+        false
+    ),
+    command!(
+        "Flows: refresh",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_FLOWS,
+        EngFlowsRefresh,
+        false
+    ),
+    command!(
+        "Flows: open the editor",
+        Data,
+        Waypoints,
+        ["o"],
+        ENG_FLOWS,
+        EngFlowsOpen,
+        false
+    ),
+    command!(
+        "Flows: sort by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        ENG_FLOWS,
+        EngFlowsSortNext,
+        false
+    ),
+    command!(
+        "Flows: reverse the sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        ENG_FLOWS,
+        EngFlowsSortReverse,
+        false
+    ),
+    command!(
+        "Flow editor: save",
+        Data,
+        Check,
+        ["secondary-s"],
+        ENG_FLOW_EDITOR,
+        EngFlowsSave,
+        false
+    ),
+    command!(
+        "Flow editor: undo",
+        Data,
+        History,
+        ["secondary-z"],
+        ENG_FLOW_CANVAS,
+        EngFlowsUndo,
+        false
+    ),
+    command!(
+        "Flow editor: remove the step",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        ENG_FLOW_CANVAS,
+        EngFlowsDeleteSelection,
+        false
+    ),
+    command!(
+        "Flow editor: move the step left (⇧ further)",
+        Data,
+        ChevronLeft,
+        ["left", "shift-left"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeLeft,
+        false
+    ),
+    command!(
+        "Flow editor: move the step right (⇧ further)",
+        Data,
+        ChevronRight,
+        ["right", "shift-right"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeRight,
+        false
+    ),
+    command!(
+        "Flow editor: move the step up (⇧ further)",
+        Data,
+        ChevronUp,
+        ["up", "shift-up"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeUp,
+        false
+    ),
+    command!(
+        "Flow editor: move the step down (⇧ further)",
+        Data,
+        ChevronDown,
+        ["down", "shift-down"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeDown,
+        false
+    ),
+    command!(
+        "Flow editor: zoom in",
+        Data,
+        Plus,
+        ["=", "shift-="],
+        ENG_FLOW_CANVAS,
+        EngFlowsZoomIn,
+        false
+    ),
+    command!(
+        "Flow editor: zoom out",
+        Data,
+        Search,
+        ["-"],
+        ENG_FLOW_CANVAS,
+        EngFlowsZoomOut,
+        false
+    ),
+    command!(
+        "Flow editor: fit the flow in view",
+        Data,
+        Square,
+        ["0"],
+        ENG_FLOW_CANVAS,
+        EngFlowsFit,
+        false
+    ),
+    command!(
+        "Flow editor: arrange the steps",
+        Data,
+        Layers,
+        ["a"],
+        ENG_FLOW_CANVAS,
+        EngFlowsArrange,
+        false
+    ),
+    command!(
+        "Flow editor: run the step earlier",
+        Data,
+        ChevronLeft,
+        ["alt-left"],
+        ENG_FLOW_CANVAS,
+        EngFlowsEarlier,
+        false
+    ),
+    command!(
+        "Flow editor: run the step later",
+        Data,
+        ChevronRight,
+        ["alt-right"],
+        ENG_FLOW_CANVAS,
+        EngFlowsLater,
+        false
+    ),
+    command!(
+        "Flow editor: add a step from the palette",
+        Data,
+        Plus,
+        ["n"],
+        ENG_FLOW_CANVAS,
+        EngFlowsAddStep,
+        false
+    ),
+    command!(
+        "Flow editor: edit the step's settings",
+        Data,
+        Settings,
+        ["enter"],
+        ENG_FLOW_CANVAS,
+        EngFlowsInspect,
+        false
+    ),
+    command!(
+        "Flow editor: test",
+        Data,
+        Send,
+        ["t"],
+        ENG_FLOW_CANVAS,
+        EngFlowsTest,
+        false
+    ),
+    command!(
+        "Flow editor: runs",
+        Data,
+        History,
+        ["h"],
+        ENG_FLOW_CANVAS,
+        EngFlowsRuns,
+        false
+    ),
+    command!(
+        "New script",
+        Data,
+        Plus,
+        ["n"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsNew,
+        false
+    ),
+    command!(
+        "Delete the script",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsDelete,
+        false
+    ),
+    command!(
+        "Enable or disable the script",
+        Data,
+        CircleCheck,
+        ["e"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsToggleEnabled,
+        false
+    ),
+    command!(
+        "Refresh the scripts",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsRefresh,
+        false
+    ),
+    command!(
+        "Sort the scripts by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsSortNext,
+        false
+    ),
+    command!(
+        "Reverse the scripts' sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsSortReverse,
+        false
+    ),
+    command!(
+        "Show the script's test panel",
+        Data,
+        Play,
+        ["t"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsShowTest,
+        false
+    ),
+    command!(
+        "Show the script's runs",
+        Data,
+        History,
+        ["h"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsShowHistory,
+        false
+    ),
+    command!(
+        "Save the script",
+        Data,
+        Check,
+        ["secondary-s"],
+        ENG_SCRIPTS,
+        EngScriptsSave,
+        false
+    ),
+    command!(
+        "Run the script's test",
+        Data,
+        Play,
+        ["secondary-enter"],
+        ENG_SCRIPTS,
+        EngScriptsRun,
+        false
+    ),
+    CommandSpec {
+        label: "New user",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_USERS,
+        action: || -> Box<dyn Action> { Box::new(DataNewUser) },
+        palette: true,
+        role: Role::Admin,
+    },
+    CommandSpec {
+        label: "New role",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_ROLES,
+        action: || -> Box<dyn Action> { Box::new(DataNewRole) },
+        palette: true,
+        role: Role::Admin,
+    },
+    CommandSpec {
+        label: "New API key",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_API_KEYS,
+        action: || -> Box<dyn Action> { Box::new(DataNewApiKey) },
+        palette: true,
+        role: Role::Admin,
+    },
+    CommandSpec {
+        label: "New notification rule",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_RULES,
+        action: || -> Box<dyn Action> { Box::new(DataNewRule) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Delete the user, role or rule; revoke the key",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        DATA_ADMIN,
+        DataAdminDelete,
+        false
+    ),
+    command!(
+        "Reset the user's password",
+        Data,
+        Lock,
+        ["p"],
+        DATA_USERS,
+        DataAdminPassword,
+        false
+    ),
+    command!(
+        "Send a test notification",
+        Data,
+        Send,
+        ["t"],
+        DATA_RULES,
+        DataAdminTest,
         false
     ),
 ];

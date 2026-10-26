@@ -63,6 +63,9 @@ struct Listing {
     rows: Rc<Vec<QueuedCommand>>,
     loaded: bool,
     error: Option<String>,
+    /// History only: the answer held more than a page (it asks for one row
+    /// extra), so another page follows.
+    more: bool,
     /// The newest request; older answers are dropped.
     seq: i64,
 }
@@ -100,10 +103,19 @@ impl State {
             .and_then(|index| COMMAND_STATUSES.get(index).copied())
     }
 
-    /// Whether History has a page after this one: a full page may.
+    /// Whether History has a page after this one: the last answer held a
+    /// row beyond this page.
     fn has_next(&self) -> bool {
-        self.history.rows.len() >= PAGE_SIZE
+        self.history.more
     }
+}
+
+/// A History answer asked for one row more than a page: the page's rows,
+/// and whether that extra row says another page follows.
+fn page_of(mut rows: Vec<QueuedCommand>) -> (Vec<QueuedCommand>, bool) {
+    let more = rows.len() > PAGE_SIZE;
+    rows.truncate(PAGE_SIZE);
+    (rows, more)
 }
 
 pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
@@ -132,7 +144,7 @@ fn fetch_history(console: &mut Console) {
     let (seq, status, offset) = (state.history.seq, state.status(), state.page * PAGE_SIZE);
     console.call(
         CallKey::new("commands.history").with(seq),
-        Call::get::<Vec<QueuedCommand>>(ops::commands_path(status, PAGE_SIZE, offset)),
+        Call::get::<Vec<QueuedCommand>>(ops::commands_path(status, PAGE_SIZE + 1, offset)),
     );
 }
 
@@ -161,7 +173,8 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
     let state = console.state::<State>();
     match key.name {
         "commands.history" | "commands.active" => {
-            let listing = if key.name == "commands.history" {
+            let history = key.name == "commands.history";
+            let listing = if history {
                 &mut state.history
             } else {
                 &mut state.active
@@ -171,13 +184,27 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             }
             match reply.take::<Vec<QueuedCommand>>() {
                 Ok(rows) => {
+                    let (rows, more) = if history {
+                        page_of(rows)
+                    } else {
+                        (rows, false)
+                    };
                     if *listing.rows != rows || !listing.loaded {
                         listing.rows = Rc::new(rows);
                     }
                     listing.loaded = true;
                     listing.error = None;
+                    listing.more = more;
                 }
-                Err(error) => listing.error = Some(error),
+                Err(error) => {
+                    // A History page that failed shows why, not the rows of
+                    // the page before it under its own number.
+                    if history {
+                        listing.rows = Rc::default();
+                        listing.more = false;
+                    }
+                    listing.error = Some(error);
+                }
             }
             // The open command follows its newest copy.
             if let Some(open) = &state.open
@@ -1030,6 +1057,7 @@ fn detail(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::console::testing::Harness;
 
     #[test]
     fn the_filter_names_a_status_or_none() {
@@ -1044,12 +1072,51 @@ mod tests {
     }
 
     #[test]
-    fn a_full_page_may_have_a_next_one() {
-        let mut state = State::default();
-        assert!(!state.has_next());
-        state.history.rows = Rc::new(vec![QueuedCommand::default(); PAGE_SIZE]);
-        assert!(state.has_next());
-        state.history.rows = Rc::new(vec![QueuedCommand::default(); PAGE_SIZE - 1]);
-        assert!(!state.has_next(), "a short page is the last");
+    fn only_a_row_beyond_the_page_offers_a_next_one() {
+        let full = || vec![QueuedCommand::default(); PAGE_SIZE];
+        let (rows, more) = page_of(full());
+        assert_eq!(rows.len(), PAGE_SIZE);
+        assert!(!more, "exactly a page: nothing after it");
+        let mut extra = full();
+        extra.push(QueuedCommand::default());
+        let (rows, more) = page_of(extra);
+        assert_eq!(rows.len(), PAGE_SIZE, "the extra row is not shown");
+        assert!(more);
+        assert!(!page_of(Vec::new()).1);
+    }
+
+    #[gpui::test]
+    fn a_failed_page_shows_its_error_not_the_page_before(cx: &mut gpui::TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| console.show(Page::Commands, window, cx));
+        let history = |h: &mut Harness| {
+            h.calls()
+                .into_iter()
+                .find(|key| key.name == "commands.history")
+                .expect("History asked")
+        };
+        let first = history(&mut h);
+        h.reply(
+            first,
+            Reply::ok(vec![QueuedCommand::default(); PAGE_SIZE + 1]),
+        );
+        assert!(h.update(|console, _, _| console.state::<State>().has_next()));
+        h.update(next_page);
+        let second = history(&mut h);
+        h.reply(second, Reply::failed("HTTP 502"));
+        let (page, rows, error, next) = h.update(|console, _, _| {
+            let state = console.state::<State>();
+            (
+                state.page,
+                state.history.rows.len(),
+                state.history.error.clone(),
+                state.has_next(),
+            )
+        });
+        assert_eq!(page, 1);
+        assert_eq!(rows, 0, "page 1's rows are not there");
+        assert_eq!(error.as_deref(), Some("HTTP 502"));
+        assert!(!next);
     }
 }

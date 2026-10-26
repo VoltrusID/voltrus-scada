@@ -12,7 +12,6 @@ use voltrus_scada_native::mimic::{
     self, Binding, EquipState, Level, Widget, limit, low_limits, related, related_text, state_text,
 };
 use vt_ui::Icon;
-use vt_ui::chart::sparkline;
 use vt_ui::components::{Button, IconButton, kbd};
 use vt_ui::theme::*;
 
@@ -21,9 +20,13 @@ use super::scene::{Item, StoreValues, TagView, motion};
 use super::{FACEPLATE_WIDTH, act, armed, level_color, setpoint, write_status};
 use crate::console::Console;
 use crate::console::views::now_ms;
+use crate::console::views::spark::spark;
 
 /// The trend's reach.
 const TREND_MS: f64 = 30.0 * 60_000.0;
+/// Columns of the trend's sparkline (about 2 pixels each across the
+/// faceplate).
+const TREND_COLUMNS: usize = 140;
 
 /// A state or alarm pill: a small square, upper-case words, tinted.
 fn pill(text: impl Into<SharedString>, color: Hsla, alpha: f32) -> gpui::Div {
@@ -283,8 +286,8 @@ pub(crate) fn render(
         let summary = known.history.summary(now - TREND_MS);
         // How far back the samples in the window reach, as the web shows.
         let minutes = known
-            .samples()
-            .find(|(at, _)| *at >= now - TREND_MS)
+            .samples_since(now - TREND_MS)
+            .next()
             .map(|(at, _)| ((now - at) / 60_000.0).round().max(1.0));
         let decimals = usize::try_from(known.info.decimals.clamp(0, 6)).unwrap_or(1);
         div()
@@ -331,8 +334,9 @@ pub(crate) fn render(
                             .child("Collecting samples…")
                             .into_any_element()
                     } else {
-                        sparkline(known.history.clone(), hmi.accent, now, TREND_MS)
-                            .into_any_element()
+                        // Quads, not a path: the faceplate redraws with
+                        // every value.
+                        spark(known, hmi.accent, now, TREND_MS, TREND_COLUMNS).into_any_element()
                     }),
             )
     });

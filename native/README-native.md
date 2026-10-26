@@ -72,10 +72,11 @@ JetBrains Mono for values.
   link is live the chart moves on once a second. Each tag keeps a day of
   history: live values of the last 15 minutes at full rate, older ones
   thinned to one per 20 seconds.
-- **Data Manager** (More menu, palette; admin, demo and integration roles):
-  a sidebar of sections grouped Data, Protocols, Insights and Admin as in the
-  web client (only built sections are listed; ↑↓ switch, Enter goes in, Esc
-  comes back). **Sources**: every data source in a virtualised table
+- **Data Manager** (More menu, palette; offered to a role that sees at least
+  one section): a sidebar of sections grouped Data, Protocols, Insights,
+  Admin and Engineering as in the web client (only built sections are
+  listed; ↑↓ switch, Enter goes in, Esc comes back; `--section <id>` opens
+  one). **Sources**: every data source in a virtualised table
   (order, name, key, unit, range, limits, source type, card, per-tag
   shortcut), `/` to search, sorting by clicking a header or S (⇧S reverses);
   N or New source and Enter or a double click open the form (General: name,
@@ -101,6 +102,20 @@ JetBrains Mono for values.
   handlers answer only admins, so only admins see those sections. OPC UA
   says it is unavailable on the open-core server, whose router has no
   `GET /api/v1/opcua/devices`.
+  **Admin** (as the web client's group): **Users** (admin only): every
+  account with its role; N adds one (name, the password typed twice in
+  masked fields, role), Enter changes the role and optionally the password,
+  P resets a password, ⌫ deletes after a confirmation; the console refuses
+  demoting or deleting yourself or the last admin. **Roles** (admin only):
+  the server's RBAC roles with their permissions picked from the 24 the
+  server accepts. **Notifications** (operators): who hears of a tag's (or
+  every tag's) alarms by email, webhook or push; N, Enter, Space turns a
+  rule on or off, T sends a test through the server and shows each
+  target's outcome, ⌫ deletes. **API keys** (admin only): name, prefix,
+  role, maker, last use and expiry; N makes a read-only or integration key
+  with a lifetime and shows its secret once (masked until revealed, C or
+  Copy), ⌫ revokes. The palette offers New user, New role, New API key and
+  New notification rule.
 - **Dashboard** (⌘6): the server's screens as card dashboards, as the web
   client's card view lays them out (its 24-column grid and saved layouts).
   Screen tabs sit in a bar under the navbar (1–9 jump to them, [ and ] step;
@@ -127,8 +142,25 @@ JetBrains Mono for values.
   confirms within 6 s; an admin's command goes over the WebSocket, other
   operators' through the policy-checked REST write. The alarm banner
   under the stage lists the newest active alarms, acknowledged in place.
-  Screen tabs and [ / ] as on the Dashboard. Viewer only: mimics are drawn
-  in the web client's editor.
+  Screen tabs and [ / ] as on the Dashboard.
+- **Mimic editor** (E on the mimic, or Edit; operators), as the web
+  client's SCADA editor: a palette of the 31 library symbols by category
+  (drawn by the stage's painter) and the widget types, searchable (/),
+  click to add at the centre or drag onto the stage; click, ⇧-click, a
+  rubber band (⌥ anywhere) or ⌘A select; drags move the selection and the
+  eight handles resize, snapping to the 10-pixel grid (dots every 20) and
+  lining up with other widgets' edges and centres (guide lines; ⌘ held:
+  free), on the 1920×1080 stage; the knob (R, ⇧R) turns a symbol a
+  quarter, H mirrors it. The connect tool (C; V back) joins a source and a
+  target as a process pipe, power line or signal. The inspector edits
+  position and size, the type's settings, tag bindings (searched in the
+  store), z-order ([ ]), duplicate and delete; a connection's type; or
+  shows the screen's summary. ⌘Z / ⇧⌘Z (100 steps, typing in one field
+  is one), ⌘C / ⌘V / ⌘D, arrows nudge 1 (⇧ 10), ⌫ deletes. ⌘S saves the
+  rows (`PUT scada-equipment` and `scada-connections`); a failure keeps
+  the edits. Done, another screen, another page or signing out with
+  unsaved edits asks Save / Discard / Cancel (the web client saves on a
+  screen switch without asking).
 - **Tag tree** (⌘5): the tags filed by their path (or their device when
   they have none), folded and unfolded with Space or Enter, searched on the
   server as you type (`/`), each tag with its live value; Enter on a tag
@@ -167,16 +199,20 @@ JetBrains Mono for values.
   language (`settings/ui-lang`, kept for the web client; this console's
   text stays English); the alarm cooldown (operators save it, others read
   it); the history aggregation default; system notifications for new
-  critical alarms (macOS); the kiosk lock (no Quit, Sign out or window
-  close); and the edition, versions and add-on features. ⇧⌘L and the
+  critical alarms (macOS; during a flood at most one every 2 s, counting
+  the alarms raised meanwhile); the kiosk lock (in the console: no Quit,
+  Sign out, window close or stress test; the sign-in card can be quit); and
+  the edition, versions and add-on features. ⇧⌘L and the
   navbar's sun and moon also keep the choice on the server. Local choices
   sit in `<config dir>/voltrus-native/preferences.toml`.
 - **Keyboard shortcuts from the server**: the user's `nav-shortcuts`
   (Overview, Alarms) and per-tag `shortcuts`, shared with the web client,
   become key bindings at sign-in. The shortcut editor (in Settings or the
   palette) lists every target and tag: Enter records new keys, Space
-  clears; shortcuts that only mean something in the web client, or that
-  take a built-in key, are kept but say why they are not bound here.
+  clears; shortcuts that only mean something in the web client, that take
+  a built-in key, or that are a key without ⌘, ⌥ or ⇧ (other than a
+  function key; Enter, Space and the arrows belong to lists and dialogs)
+  are kept but say why they are not bound here.
 - **Notifications**: the navbar's bell counts unread user notifications
   (mentions in shift handovers and annotations, fetched every 30 s); its
   popover (⌥⌘N) shows the alarms to acknowledge and the notifications,
@@ -204,16 +240,23 @@ JetBrains Mono for values.
   pick.
 
 The network side runs on its own tokio thread: it signs in, keeps the
-WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s) signing in
-again each time, and renews the 15-minute session token every 10 minutes
-(30 seconds after a renewal the server did not answer) so REST calls keep
-working. Only the operator's own sign-in waits for the server; every other
-REST call (tags, alarms, history, alarm actions, password changes, renewals,
-the sign-in before a reconnect) runs on its own and never holds up the tag
-stream. Answers that arrive after the session ended are dropped. When the
-server refuses the stored password (changed elsewhere, account locked) the
-session ends with "Not authorised" instead of trying again, since every
-wrong password counts towards locking the account.
+WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s), and
+renews the 15-minute session token with the session's refresh token
+(`POST /auth/refresh`) every 10 minutes and before each reconnect (30
+seconds after a renewal the server did not answer), so REST calls keep
+working. It does not keep the password (only while the server wants it
+changed), and a renewal leaves the user's other sessions alone, where a
+new sign-in would revoke their refresh tokens. Only the operator's own
+sign-in waits for the server; every other REST call (tags, alarms,
+history, alarm actions, password changes, renewals) runs on its own and
+never holds up the tag stream. Answers that arrive after the session ended
+are dropped. When the server refuses a renewal (the refresh token revoked
+or expired, for instance by the same user signing in elsewhere) the session
+ends with "Not authorised". Signing out, quitting and starting a stress
+test all sign the session out of the server, which revokes its refresh
+token. When a session ends (sign-out, a refused renewal, or before the next
+sign-in) every page's state goes with it; only the operator's own
+preferences stay.
 
 ## Build and run
 
@@ -272,6 +315,8 @@ native/src/
                     data sources, alarms, history, password change
   api/ops.rs        commands, shift handover, audit log and data export: mirrors,
                     paths, text downloads
+  api/admin.rs      users, RBAC roles, API keys and notification rules: mirrors,
+                    request bodies checked as the server checks them
   ws_types.rs       MessagePack WebSocket messages (mirror of the server's)
   runtime.rs        the network actor: Command in, Event out, generic calls
   stress.rs         the deterministic synthetic plant
@@ -365,6 +410,15 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 
 ## Server behaviour to know
 
+- The web client's alarm-flood banner (`client/src/AlarmPanel.tsx`,
+  `recentTotal`) sums the analytics' 24-hour `trigger_count` while it says
+  "in the last 5 minutes", so it overstates the count. The console counts
+  the history rows raised in the last 5 minutes instead; the web client
+  should do the same.
+- A sign-in revokes every refresh token of the user, so the same user
+  signing in elsewhere (web or another console) ends this console's session
+  at its next renewal; renewing with the refresh token never does that to
+  the others.
 - The login token comes only in the `Set-Cookie` header, with the JWT's
   base64 padding percent-encoded (`%3D`). The console decodes it
   (`api.rs:percent_decode`); the WebSocket refuses the encoded form.
@@ -409,12 +463,15 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - There is no route that reads a tag's write policy back (only `PATCH
   /api/v1/data-sources/{id}/write-policy`), so the console checks limits and
   the reason only for a policy it saved itself; otherwise the server's
-  answer to the write says why it refused. Saving the policy sets all six
-  settings at once.
+  answer to the write says why it refused. Saving the policy sends only what
+  changed: against a policy saved this session, each setting that differs;
+  with none known, the choices made and the limits typed, leaving the rest as
+  stored.
 - `GET /api/v1/history` answers every tag (only a `screen` filter), so the
-  detail chart asks once per span and setting and keeps the answer for every
-  tag's overlays. `agg=minmax` answers the bucket average (no low/high
-  band), and for Modbus tags the aggregation does not change the answer.
+  detail chart asks once per span, setting and set of charted tags, and keeps
+  only the open tag's and its overlays' samples. `agg=minmax` answers the
+  bucket average (no low/high band), and for Modbus tags the aggregation
+  does not change the answer.
 - A REST write records a command for the device (`pending`); the command
   queue sends it. A Modbus device defined in the configuration file gets
   device id 0 in the command.
@@ -429,3 +486,32 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   client sends milliseconds and reads them as such). An unknown command
   answers 500 "Command not found", not 404; cancelling a command already
   sent answers 400.
+- Engineering routes: config snapshots have no DELETE, and a rollback
+  also rewrites the `alarms` table; the MQTT broker's configuration cannot
+  be cleared once set, and a message published through
+  `POST /mqtt-broker/publish` does not reach the broker's own message log
+  on the CI plant. Flows store no wires or positions (process steps run in
+  stored order, then the outputs), so the editor's wires reorder steps and
+  positions last while it is open; `start`/`stop` change only the running
+  engine, not `enabled`. Saving a script with fixed source keeps its old
+  `syntax_error`. CSV/Excel imports write readings only (no route removes
+  them) and replace mode answers 501; the Node-RED import only converts and
+  reports.
+- Users, roles and API keys are admin-only routes. A user's role is one of
+  `admin`, `demo`, `operator`, `viewer` or `user`; only admin and demo pass
+  the operator routes. A role change or a deletion does not end the user's
+  open sessions: the token keeps its role until it expires. There is no way
+  to disable an account (only delete it), and deleting a user whose
+  handovers or mentions remain fails on a foreign key.
+- RBAC roles (`/api/v1/roles`) store a JSON list of permissions, refused
+  unless every one is in `models::ALL_PERMISSIONS` (the web's own list
+  offers names the server refuses); nothing checks them yet, and
+  `PUT /users/{id}/role` assigns one without any route to read it back.
+- API keys expire in Unix seconds and are shown once; the list keeps only
+  the first eight characters. Their stored permissions are not checked;
+  `api` keys read, `integration` keys also pass operator routes.
+- `POST /notifications/test` answers 200 with a per-target status (sent or
+  the error) for webhooks and email; email needs SMTP configured (else
+  500), push is not testable. `PUT /notifications/settings/{id}` checks the
+  config but not email or URL shapes, so the console checks them as
+  `POST` does.

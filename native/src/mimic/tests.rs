@@ -264,13 +264,16 @@ fn the_ci_plants_mimic_is_complete() {
     // The cooling loop flows while the pump runs (heatsink above 30).
     let temperature = ids["sma_inv_1/temperature"];
     let ac_power = ids["sma_inv_1/ac_power"];
+    let remote_run = ids["sma_inv_1/remote_run"];
     let hot = [
         (temperature, Some(45.0), Level::Normal),
         (ac_power, Some(56_000.0), Level::Normal),
+        (remote_run, Some(1.0), Level::Normal),
     ];
     let cold = [
         (temperature, Some(20.0), Level::Normal),
         (ac_power, Some(0.0), Level::Normal),
+        (remote_run, Some(0.0), Level::Normal),
     ];
     let pipe = layout
         .connections
@@ -279,8 +282,10 @@ fn the_ci_plants_mimic_is_complete() {
         .unwrap();
     assert!(flowing(pipe, &layout, &values(&hot)));
     assert!(!flowing(pipe, &layout, &values(&cold)));
-    // The inverter takes START/STOP; it runs, so STOP is the one offered.
+    // The inverter takes START/STOP on its run register; it runs, so STOP
+    // is the one offered, and START once it stopped.
     let inverter = layout.widget("inv").unwrap();
+    assert_eq!(inverter.tag(), Some(remote_run));
     let offered = commands(inverter, &values(&hot)).unwrap();
     assert_eq!(
         (offered.on.label.as_str(), offered.on.enabled),
@@ -290,6 +295,8 @@ fn the_ci_plants_mimic_is_complete() {
         (offered.off.label.as_str(), offered.off.enabled),
         ("STOP", true)
     );
+    let stopped = commands(inverter, &values(&cold)).unwrap();
+    assert!(stopped.on.enabled && !stopped.off.enabled);
     assert!(!tab_order(&layout).is_empty());
 }
 

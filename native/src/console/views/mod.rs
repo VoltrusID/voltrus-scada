@@ -24,6 +24,7 @@ pub(crate) mod performance;
 pub(crate) mod settings;
 pub(crate) mod shift;
 mod sign_in;
+pub(crate) mod spark;
 pub(crate) mod status_bar;
 pub(crate) mod tag_chart;
 pub(crate) mod tag_detail;
@@ -86,6 +87,11 @@ impl Render for Console {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.meter.borrow_mut().frame_start(Instant::now());
         let warm = self.warm_step(window, cx);
+        let viewport = window.viewport_size();
+        let page_area = gpui::size(
+            viewport.width,
+            (viewport.height - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT).max(px(0.0)),
+        );
         let theme = theme(cx).clone();
         let in_console = self.phase == Phase::Console;
         let body = if in_console {
@@ -221,15 +227,39 @@ impl Render for Console {
                 }
             }))
             .on_action(cx.listener(|console, _: &StartStress, window, cx| {
-                let plan = performance::plan(console);
-                console.start_stress(plan, false, window, cx);
+                if console.may_start_stress() {
+                    let plan = performance::plan(console);
+                    console.start_stress(plan, false, window, cx);
+                } else {
+                    console.show_toast(
+                        "A stress test replaces the session: an admin's, without the kiosk lock",
+                        true,
+                        cx,
+                    );
+                }
             }))
             .on_action(cx.listener(|console, _: &StopStress, window, cx| {
-                if console.stress.is_some() {
+                // Stopping signs out: not under the kiosk lock.
+                if console.stress.is_some() && !console.kiosk_locked() {
                     console.sign_out(window, cx);
                 }
             }))
-            .when_some(warm, |this, view| this.child(super::warm::hidden(view)))
+            // Prepainted and painted first: where layout ends and paint
+            // begins, for the meter's phase split.
+            .child({
+                let meter = self.meter.clone();
+                let marks = self.meter.clone();
+                canvas(
+                    move |_, _, _| meter.borrow_mut().laid_out(Instant::now()),
+                    move |_, (), _, _| marks.borrow_mut().painting(Instant::now()),
+                )
+                .absolute()
+                .w(px(0.0))
+                .h(px(0.0))
+            })
+            .when_some(warm, |this, view| {
+                this.child(super::warm::hidden(view, page_area))
+            })
             .map(|root| super::shell::actions(root, cx))
             .on_action(cx.listener(|console, _: &TagsWrite, window, cx| {
                 if console.phase == Phase::Console {
@@ -289,7 +319,9 @@ impl Render for Console {
                     }
                 }),
             )
+            .map(|this| data_manager::admin_kit::root_actions(this, cx))
             .map(|this| dashboard::actions(this, cx))
+            .map(|this| mimic::editor::actions(this, cx))
             .child(body)
             .when(!self.toasts.is_empty(), |this| {
                 this.child(
@@ -329,8 +361,11 @@ impl Render for Console {
             .child(
                 canvas(
                     |_, _, _| {},
-                    move |_, (), _, _| {
+                    move |_, (), _, cx| {
                         meter.borrow_mut().frame_end(Instant::now(), now_ms());
+                        // Effects run after the frame is presented: the
+                        // present's end, for the meter.
+                        cx.defer(move |_| meter.borrow_mut().presented(Instant::now()));
                     },
                 )
                 .absolute()
@@ -352,12 +387,15 @@ pub(crate) fn page(
     let spec = pages::spec(page);
     let content = (spec.render)(console, window, cx);
     let now = Instant::now();
-    // A page drawn hidden to warm it is not the page on screen.
+    // A page drawn out of sight to warm it is not the page on screen.
+    let mut meter = console.meter.borrow_mut();
     if console.page == page {
-        let mut meter = console.meter.borrow_mut();
         meter.page_built(spec.id, super::meter::ms(started, now));
         meter.sync_display(window, cx, now);
+    } else {
+        meter.page_warmed(spec.id, super::meter::ms(started, now));
     }
+    drop(meter);
     if anim::progress(console.switched_at, Instant::now(), anim::PAGE_IN).is_some() {
         console.meter.borrow_mut().expect_frame(Instant::now());
     }

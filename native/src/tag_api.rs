@@ -157,35 +157,124 @@ fn optional<T: std::str::FromStr>(label: &str, text: &str) -> Result<Option<T>, 
         .map_err(|_| format!("{label}: “{text}” is not a number"))
 }
 
-/// The policy the editor's fields describe.
-pub fn parse_policy(
-    writable: bool,
-    requires_reason: bool,
+/// A number limit from a form field: empty is `None`; `nan` and `inf`
+/// parse as floats but are no limit, so they are refused like any other
+/// non-number.
+fn finite(label: &str, text: &str) -> Result<Option<f64>, String> {
+    match optional::<f64>(label, text)? {
+        Some(value) if !value.is_finite() => {
+            Err(format!("{label}: “{}” is not a number", text.trim()))
+        }
+        value => Ok(value),
+    }
+}
+
+/// The body of `PATCH /api/v1/data-sources/{id}/write-policy`: the server
+/// changes only the settings it carries, and `Some(None)` (sent as `null`)
+/// clears a limit.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct PolicyPatch {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub writable: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_min: Option<Option<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_max: Option<Option<f64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_max_rate: Option<Option<i64>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_requires_reason: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub write_deadband: Option<Option<f64>>,
+}
+
+impl PolicyPatch {
+    /// Nothing to change.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The whole policy once the server applied the patch: `before` with
+    /// the patch's settings, or, with `before` unknown, the patch alone
+    /// when it sets all six.
+    pub fn applied(&self, before: Option<&WritePolicy>) -> Option<WritePolicy> {
+        Some(match before {
+            Some(before) => WritePolicy {
+                writable: self.writable.unwrap_or(before.writable),
+                write_min: self.write_min.unwrap_or(before.write_min),
+                write_max: self.write_max.unwrap_or(before.write_max),
+                write_max_rate: self.write_max_rate.unwrap_or(before.write_max_rate),
+                write_requires_reason: self
+                    .write_requires_reason
+                    .unwrap_or(before.write_requires_reason),
+                write_deadband: self.write_deadband.unwrap_or(before.write_deadband),
+            },
+            None => WritePolicy {
+                writable: self.writable?,
+                write_min: self.write_min?,
+                write_max: self.write_max?,
+                write_max_rate: self.write_max_rate?,
+                write_requires_reason: self.write_requires_reason?,
+                write_deadband: self.write_deadband?,
+            },
+        })
+    }
+}
+
+/// A choice for the patch: sent when made and unlike the known setting.
+fn changed_choice(now: Option<bool>, was: Option<bool>) -> Option<bool> {
+    now.filter(|now| Some(*now) != was)
+}
+
+/// A limit for the patch. With the setting known, the field's value when
+/// it differs (empty clears); with it unknown, only a value typed, so an
+/// empty field leaves the server's limit as it is.
+fn changed_limit<T: PartialEq + Copy>(now: Option<T>, was: Option<Option<T>>) -> Option<Option<T>> {
+    match was {
+        Some(was) => (now != was).then_some(now),
+        None => now.map(Some),
+    }
+}
+
+/// What the policy editor's fields change against `known`, the policy when
+/// the console knows it. The server cannot be asked for a policy, so with
+/// none known the editor sends only the choices made (`None` is a choice
+/// left alone) and the limits typed, never defaults over the stored ones.
+pub fn policy_patch(
+    known: Option<&WritePolicy>,
+    writable: Option<bool>,
+    requires_reason: Option<bool>,
     min: &str,
     max: &str,
     rate: &str,
     deadband: &str,
-) -> Result<WritePolicy, String> {
-    let policy = WritePolicy {
-        writable,
-        write_min: optional::<f64>("Minimum", min)?.filter(|value| value.is_finite()),
-        write_max: optional::<f64>("Maximum", max)?.filter(|value| value.is_finite()),
-        write_max_rate: optional::<i64>("Writes per minute", rate)?,
-        write_requires_reason: requires_reason,
-        write_deadband: optional::<f64>("Deadband", deadband)?.filter(|value| value.is_finite()),
-    };
-    if let (Some(min), Some(max)) = (policy.write_min, policy.write_max)
+) -> Result<PolicyPatch, String> {
+    let min = finite("Minimum", min)?;
+    let max = finite("Maximum", max)?;
+    let rate = optional::<i64>("Writes per minute", rate)?;
+    let deadband = finite("Deadband", deadband)?;
+    if let (Some(min), Some(max)) = (min, max)
         && min > max
     {
         return Err(format!("The minimum, {min}, is above the maximum, {max}"));
     }
-    if policy.write_max_rate.is_some_and(|rate| rate < 0) {
+    if rate.is_some_and(|rate| rate < 0) {
         return Err("Writes per minute cannot be negative".into());
     }
-    if policy.write_deadband.is_some_and(|deadband| deadband < 0.0) {
+    if deadband.is_some_and(|deadband| deadband < 0.0) {
         return Err("The deadband cannot be negative".into());
     }
-    Ok(policy)
+    Ok(PolicyPatch {
+        writable: changed_choice(writable, known.map(|policy| policy.writable)),
+        write_min: changed_limit(min, known.map(|policy| policy.write_min)),
+        write_max: changed_limit(max, known.map(|policy| policy.write_max)),
+        write_max_rate: changed_limit(rate, known.map(|policy| policy.write_max_rate)),
+        write_requires_reason: changed_choice(
+            requires_reason,
+            known.map(|policy| policy.write_requires_reason),
+        ),
+        write_deadband: changed_limit(deadband, known.map(|policy| policy.write_deadband)),
+    })
 }
 
 // ── Tag tree ──────────────────────────────────────────────────────────────
@@ -825,21 +914,41 @@ mod tests {
     }
 
     #[test]
-    fn the_policy_editor_sends_every_field_and_clears_with_null() {
-        let policy = parse_policy(true, false, "0", "", "6", " ").unwrap();
-        // PATCH semantics on the server: null clears, a value sets.
+    fn the_policy_editor_sends_what_changed_and_clears_with_null() {
+        let known = WritePolicy {
+            writable: true,
+            write_min: Some(0.0),
+            write_max: Some(100.0),
+            write_max_rate: None,
+            write_requires_reason: false,
+            write_deadband: Some(0.5),
+        };
+        // PATCH semantics on the server: null clears, a value sets, an
+        // absent field stays.
+        let patch =
+            policy_patch(Some(&known), Some(true), Some(false), "0", "", "6", "0.5").unwrap();
         assert_eq!(
-            serde_json::to_value(&policy).unwrap(),
-            serde_json::json!({
-                "writable": true, "write_min": 0.0, "write_max": null,
-                "write_max_rate": 6, "write_requires_reason": false, "write_deadband": null
+            serde_json::to_value(&patch).unwrap(),
+            serde_json::json!({"write_max": null, "write_max_rate": 6})
+        );
+        assert_eq!(
+            patch.applied(Some(&known)),
+            Some(WritePolicy {
+                write_max: None,
+                write_max_rate: Some(6),
+                ..known
             })
         );
-        assert!(parse_policy(true, false, "10", "5", "", "").is_err());
-        assert!(parse_policy(true, false, "x", "", "", "").is_err());
-        assert!(parse_policy(true, false, "", "", "1.5", "").is_err());
-        assert!(parse_policy(true, false, "", "", "-1", "").is_err());
-        assert!(parse_policy(true, false, "", "", "", "-0.5").is_err());
+        assert!(
+            policy_patch(Some(&known), Some(true), Some(false), "0", "100", "", "0.5")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(policy_patch(None, None, None, "10", "5", "", "").is_err());
+        assert!(policy_patch(None, None, None, "x", "", "", "").is_err());
+        assert!(policy_patch(None, None, None, "", "", "1.5", "").is_err());
+        assert!(policy_patch(None, None, None, "", "", "-1", "").is_err());
+        assert!(policy_patch(None, None, None, "", "", "", "-0.5").is_err());
         // The server's own WritePolicy round-trips.
         let stored: WritePolicy = serde_json::from_str(
             r#"{"writable": true, "write_min": null, "write_max": 80.0,
@@ -848,6 +957,61 @@ mod tests {
         .unwrap();
         assert_eq!(stored.write_max, Some(80.0));
         assert!(stored.write_requires_reason);
+    }
+
+    /// With no policy known, the editor's empty fields and untouched
+    /// choices must not overwrite the stored policy with defaults.
+    #[test]
+    fn an_unknown_policy_is_patched_only_where_the_operator_typed() {
+        let patch = policy_patch(None, None, None, "", "80", "", "").unwrap();
+        assert_eq!(
+            serde_json::to_value(&patch).unwrap(),
+            serde_json::json!({"write_max": 80.0})
+        );
+        // The rest stays unknown, so the console still knows no policy.
+        assert_eq!(patch.applied(None), None);
+        let locked = policy_patch(None, Some(false), None, "", "", "", "").unwrap();
+        assert_eq!(
+            serde_json::to_value(&locked).unwrap(),
+            serde_json::json!({"writable": false})
+        );
+        assert!(
+            policy_patch(None, None, None, "", "", "", "")
+                .unwrap()
+                .is_empty()
+        );
+        let all = policy_patch(None, Some(true), Some(true), "1", "2", "3", "0").unwrap();
+        assert_eq!(
+            all.applied(None),
+            Some(WritePolicy {
+                writable: true,
+                write_min: Some(1.0),
+                write_max: Some(2.0),
+                write_max_rate: Some(3),
+                write_requires_reason: true,
+                write_deadband: Some(0.0),
+            })
+        );
+    }
+
+    /// `nan` and `inf` parse as floats; typed as a limit they are an input
+    /// error, not a silent clear.
+    #[test]
+    fn a_non_finite_limit_is_refused() {
+        let known = WritePolicy {
+            writable: true,
+            write_min: Some(0.0),
+            write_max: Some(100.0),
+            ..WritePolicy::default()
+        };
+        for text in ["nan", "NaN", "inf", "-inf", "infinity"] {
+            assert!(
+                policy_patch(Some(&known), Some(true), Some(false), text, "100", "", "").is_err(),
+                "{text} as the minimum"
+            );
+            assert!(policy_patch(None, None, None, "", text, "", "").is_err());
+            assert!(policy_patch(None, None, None, "", "", "", text).is_err());
+        }
     }
 
     fn sample_tree() -> Vec<TreeNode> {

@@ -3922,9 +3922,15 @@ pub(crate) fn prompt_import(
         multiple: true,
         prompt: Some("Import".into()),
     });
+    let epoch = console.session_epoch();
     cx.spawn(async move |this, cx| {
         if let Ok(Ok(Some(paths))) = prompt.await {
-            let _ = this.update(cx, |console, cx| import_paths(protocol, console, paths, cx));
+            // Not into a later session (signed out while the panel was up).
+            let _ = this.update(cx, |console, cx| {
+                if console.session_epoch() == epoch {
+                    import_paths(protocol, console, paths, cx);
+                }
+            });
         }
     })
     .detach();
@@ -4092,13 +4098,14 @@ pub(crate) fn import_plan(kind: DeviceFileKind, file: &str, text: &str) -> Vec<I
     steps
 }
 
-/// The sections whose poll runs now.
+/// The sections whose poll runs now. Dropped with the session's states,
+/// as the loops of that session end on their own (`session_epoch`).
 #[derive(Default)]
 struct Polls(HashSet<&'static str>);
 
-/// Run `tick` every `every` while section `id` is on screen in a
-/// signed-in console (not in a stress test); call it from the section's
-/// `on_open`. The loop ends when the section goes off screen.
+/// Run `tick` every `every` while section `id` is on screen in this
+/// session (not in a stress test); call it from the section's `on_open`.
+/// The loop ends when the section goes off screen or the session ends.
 pub(crate) fn poll_section(
     console: &mut Console,
     id: &'static str,
@@ -4109,10 +4116,14 @@ pub(crate) fn poll_section(
     if !console.state::<Polls>().0.insert(id) {
         return;
     }
+    let epoch = console.session_epoch();
     cx.spawn(async move |this, cx| {
         loop {
             cx.background_executor().timer(every).await;
             let shown = this.update(cx, |console, cx| {
+                if console.session_epoch() != epoch {
+                    return false;
+                }
                 let shown = super::section_shown(console, id)
                     && console.is_signed_in()
                     && console.stress.is_none();

@@ -23,7 +23,7 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--range 5m|30m|1h|6h|24h] [--appearance dark|light]
                       [--hud] [--overlay palette|help|new-source|add-tags|<action>|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
                       [--alarms history|analytics|audit|detail|shelve|confirm]
-                      [--screen N|ID] [--edit]
+                      [--screen N|ID] [--edit] [--section ID]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
                       [--stress-profile]
@@ -43,7 +43,9 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --alarms           open the Alarms page with this view or dialog once signed in
   --screen           the dashboard's and the mimic's screen: its id, or 1 for the overview,
                      2 for the first
-  --edit             open the dashboard in edit mode (operator roles)
+  --edit             open the dashboard in edit mode (operator roles); with
+                     --page mimic, the mimic's editor
+  --section          the Data Manager's section to show (with --page data), e.g. flows
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
   --stress-tags      how many synthetic tags
   --stress-rate      synthetic updates per second
@@ -70,6 +72,7 @@ struct Options {
     stress: Option<StressPlan>,
     screen: Option<String>,
     edit: bool,
+    section: Option<String>,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, text: Option<&String>) -> Result<T, String> {
@@ -89,6 +92,7 @@ fn parse(args: &[String]) -> Result<Options, String> {
         stress: None,
         screen: None,
         edit: false,
+        section: None,
     };
     let mut stress = StressPlan::default();
     let mut stressed = false;
@@ -168,6 +172,17 @@ fn parse(args: &[String]) -> Result<Options, String> {
                 _ => return Err("--screen takes a screen id or position".into()),
             },
             "--edit" => options.edit = true,
+            "--section" => match args.next() {
+                Some(id) if console::data_manager_section(id) => {
+                    options.section = Some(id.clone());
+                }
+                other => {
+                    return Err(format!(
+                        "--section takes a Data Manager section id, not “{}”",
+                        other.map_or("", String::as_str)
+                    ));
+                }
+            },
             "--stress" => stressed = true,
             "--stress-tags" => {
                 stress.options.tags = number(arg, args.next())?;
@@ -259,6 +274,7 @@ fn main() -> ExitCode {
         stress: options.stress,
         screen: options.screen,
         edit: options.edit,
+        section: options.section,
         utc_offset,
         appearance: options.dark,
     };
@@ -374,6 +390,7 @@ mod tests {
                 stress: None,
                 screen: None,
                 edit: false,
+                section: None,
             })
         );
         assert_eq!(
@@ -402,6 +419,13 @@ mod tests {
                 .map(|options| (options.page, options.overlay)),
             Ok((Some(Page::DataManager), Some(LaunchOverlay::NewSource)))
         );
+        assert_eq!(
+            parse(&args(&["--page", "data", "--section", "flows"]))
+                .map(|options| (options.page, options.section)),
+            Ok((Some(Page::DataManager), Some("flows".to_owned())))
+        );
+        assert!(parse(&args(&["--section", "nowhere"])).is_err());
+        assert!(parse(&args(&["--section"])).is_err());
         assert!(parse(&args(&["--bogus"])).is_err());
         assert_eq!(
             parse(&args(&["--overlay", "tag-write"])).map(|options| options.overlay),
