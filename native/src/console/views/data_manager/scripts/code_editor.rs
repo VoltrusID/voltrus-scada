@@ -1771,8 +1771,8 @@ pub(crate) mod text {
             let blank = leading_blank(line);
             let body = &line[blank..];
             if commented {
-                if body.starts_with("//") {
-                    let removed = if body[2..].starts_with(' ') { 3 } else { 2 };
+                if let Some(rest) = body.strip_prefix("//") {
+                    let removed = if rest.starts_with(' ') { 3 } else { 2 };
                     changes.push(Change {
                         at: start + blank,
                         removed,

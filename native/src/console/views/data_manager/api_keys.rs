@@ -995,7 +995,7 @@ mod tests {
         // On close, at once.
         h.update(|console, _, cx| copy(console, cx));
         assert_eq!(clipboard(&mut h).as_deref(), Some("the-secret"));
-        h.update(|console, window, cx| done(console, window, cx));
+        h.update(done);
         h.draw();
         assert_ne!(clipboard(&mut h).as_deref(), Some("the-secret"));
 
@@ -1007,7 +1007,7 @@ mod tests {
             copy(console, cx);
             cx.write_to_clipboard(ClipboardItem::new_string("mine".to_owned()));
         });
-        h.update(|console, window, cx| done(console, window, cx));
+        h.update(done);
         assert_eq!(clipboard(&mut h).as_deref(), Some("mine"));
     }
 

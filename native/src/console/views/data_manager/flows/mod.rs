@@ -133,9 +133,12 @@ pub(crate) struct State {
     open_pending: bool,
     /// Bumped when `flows` or `running` change: the table cache's key.
     version: u64,
-    /// The table last built: (query, sort, descending, version) and rows.
-    table: Option<((String, Sort, bool, u64), Rc<[Flow]>)>,
+    /// The table last built and its rows.
+    table: Option<(TableKey, Rc<[Flow]>)>,
 }
+
+/// What a built table depends on: query, sort, descending, version.
+type TableKey = (String, Sort, bool, u64);
 
 pub fn on_open(console: &mut Console, _: &mut Context<Console>) {
     if console.state::<State>().asked {
