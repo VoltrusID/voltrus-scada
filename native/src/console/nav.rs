@@ -2,7 +2,7 @@
 //! move it, PgUp/PgDn a screenful, Home/End to the ends, Enter and Space act
 //! on the row (see `views::keyboard_list`, which wires the keys).
 
-use gpui::{App, FocusHandle, ScrollStrategy, UniformListScrollHandle};
+use gpui::{App, FocusHandle, ScrollHandle, ScrollStrategy, UniformListScrollHandle};
 
 /// A cursor move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +47,9 @@ pub struct ListNav {
     pub page: usize,
     /// For `uniform_list`s: scrolled to keep the cursor in view.
     pub scroll: UniformListScrollHandle,
+    /// For lists of plain rows (menus): the scrolling element whose
+    /// children are the rows tracks it, and it keeps the cursor in view.
+    pub rows: ScrollHandle,
 }
 
 impl ListNav {
@@ -57,6 +60,7 @@ impl ListNav {
             len: 0,
             page: 10,
             scroll: UniformListScrollHandle::new(),
+            rows: ScrollHandle::new(),
         }
     }
 
@@ -73,7 +77,7 @@ impl ListNav {
     pub fn step(&mut self, step: Move) -> Option<usize> {
         self.cursor = moved(self.cursor, self.len, step, self.page);
         if let Some(row) = self.cursor {
-            self.scroll.scroll_to_item(row, ScrollStrategy::Center);
+            self.reveal(row);
         }
         self.cursor
     }
@@ -81,7 +85,13 @@ impl ListNav {
     /// Put the cursor on `row` (a click), scrolled into view.
     pub fn select(&mut self, row: usize) {
         self.cursor = Some(row);
+        self.reveal(row);
+    }
+
+    /// Scroll `row` into view, whichever kind of list tracks the handles.
+    pub fn reveal(&self, row: usize) {
         self.scroll.scroll_to_item(row, ScrollStrategy::Center);
+        self.rows.scroll_to_item(row);
     }
 }
 

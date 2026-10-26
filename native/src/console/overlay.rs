@@ -3,13 +3,36 @@
 //! palette (⌘K), the shortcut help (`?`) and the More menu use it; later
 //! dialogs (shelve, export, settings) open their own [`Overlay`] the same
 //! way: `console.open_overlay(Overlay::modal(..), window, cx)`.
+//!
+//! Every overlay fits the window: [`place`] caps its width and height to
+//! the window less [`MARGIN`] and keeps a popover inside it (flipped to
+//! its button's other edge, else shifted), and the frame scrolls what
+//! still does not fit.
 
-use gpui::{Action, App, Entity, FocusHandle, Pixels, Point, SharedString, Subscription};
+use std::cell::Cell;
+use std::rc::Rc;
+
+use gpui::{
+    Action, App, Bounds, Entity, FocusHandle, Pixels, ScrollHandle, SharedString, Size,
+    Subscription, px,
+};
 use vt_ui::Icon;
 use vt_ui::text_input::TextInput;
+use vt_ui::theme::TITLE_BAR_HEIGHT;
 
 use super::keys::{COMMANDS, display, page_keys};
 use super::pages::{PAGES, Page, Render, Role};
+
+/// Where a button was last drawn, for the popover it opens (set by a
+/// `canvas` in the button's prepaint).
+pub type Anchor = Rc<Cell<Option<Bounds<Pixels>>>>;
+
+/// Which edge of its button a popover lines up with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Right,
+}
 
 /// How an overlay sits on the window.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -18,53 +41,163 @@ pub enum OverlayKind {
     Modal { width: Pixels },
     /// Along the right edge, full height, over a dimmed page.
     Sheet { width: Pixels },
-    /// Below a point (a menu button), over an undimmed page.
-    Popover { width: Pixels, at: Point<Pixels> },
+    /// Below its button, lined up with the button's `align` edge, over an
+    /// undimmed page.
+    Popover { width: Pixels, align: Align },
 }
 
 pub struct Overlay {
     /// Names it, e.g. for `is_open`.
     pub id: &'static str,
     pub kind: OverlayKind,
+    /// A popover's button, read again on every draw so the popover follows
+    /// it (a resize, the navbar stepping down).
+    pub anchor: Option<Anchor>,
     /// Draws the overlay's content; the frame (backdrop, card, trap) is
     /// the shell's.
     pub render: Render,
     /// The trap: focus stays inside the element tracking this handle. The
     /// overlay focuses it on opening unless its content focuses a field.
     pub focus: FocusHandle,
+    /// The card's scroll, when its content is taller than the window
+    /// allows.
+    pub scroll: ScrollHandle,
 }
 
 impl Overlay {
     pub fn modal(id: &'static str, width: Pixels, render: Render, cx: &mut App) -> Self {
-        Self {
-            id,
-            kind: OverlayKind::Modal { width },
-            render,
-            focus: cx.focus_handle(),
-        }
+        Self::new(id, OverlayKind::Modal { width }, None, render, cx)
     }
 
     pub fn sheet(id: &'static str, width: Pixels, render: Render, cx: &mut App) -> Self {
-        Self {
-            id,
-            kind: OverlayKind::Sheet { width },
-            render,
-            focus: cx.focus_handle(),
-        }
+        Self::new(id, OverlayKind::Sheet { width }, None, render, cx)
     }
 
     pub fn popover(
         id: &'static str,
         width: Pixels,
-        at: Point<Pixels>,
+        anchor: Anchor,
+        align: Align,
+        render: Render,
+        cx: &mut App,
+    ) -> Self {
+        Self::new(
+            id,
+            OverlayKind::Popover { width, align },
+            Some(anchor),
+            render,
+            cx,
+        )
+    }
+
+    fn new(
+        id: &'static str,
+        kind: OverlayKind,
+        anchor: Option<Anchor>,
         render: Render,
         cx: &mut App,
     ) -> Self {
         Self {
             id,
-            kind: OverlayKind::Popover { width, at },
+            kind,
+            anchor,
             render,
             focus: cx.focus_handle(),
+            scroll: ScrollHandle::new(),
+        }
+    }
+}
+
+/// Room an overlay keeps from the window's edges.
+pub const MARGIN: Pixels = px(12.0);
+/// A modal's height at most, however tall the window.
+const MODAL_MAX_HEIGHT: Pixels = px(560.0);
+/// A modal's distance from the window's top at most (less in a short
+/// window, never into the navbar).
+const MODAL_TOP: Pixels = px(96.0);
+/// Between a popover and its button.
+const POPOVER_GAP: Pixels = px(4.0);
+
+/// Where an overlay's card goes in the window, and how big it may be.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Placed {
+    pub left: Pixels,
+    pub top: Pixels,
+    pub width: Pixels,
+    pub max_height: Pixels,
+}
+
+/// Place an overlay of `kind` in a window of `viewport`, a popover below
+/// its button (`anchor`; before the button is drawn, under the navbar at
+/// the window's edge). Width and height are capped to the window less
+/// [`MARGIN`]; a popover that would cross the window's edge lines up
+/// with its button's other edge if that fits, else is shifted inside.
+pub fn place(kind: OverlayKind, anchor: Option<Bounds<Pixels>>, viewport: Size<Pixels>) -> Placed {
+    let room = |width: Pixels| width.min((viewport.width - MARGIN * 2.0).max(px(0.0)));
+    match kind {
+        OverlayKind::Modal { width } => {
+            let width = room(width);
+            let top = (viewport.height * 0.12).clamp(TITLE_BAR_HEIGHT + MARGIN, MODAL_TOP);
+            Placed {
+                left: ((viewport.width - width) / 2.0).max(px(0.0)),
+                top,
+                width,
+                max_height: MODAL_MAX_HEIGHT.min((viewport.height - top - MARGIN).max(px(0.0))),
+            }
+        }
+        OverlayKind::Sheet { width } => {
+            let width = room(width);
+            Placed {
+                left: viewport.width - width,
+                top: TITLE_BAR_HEIGHT,
+                width,
+                max_height: (viewport.height - TITLE_BAR_HEIGHT).max(px(0.0)),
+            }
+        }
+        OverlayKind::Popover { width, align } => {
+            let width = room(width);
+            let right_edge = viewport.width - MARGIN;
+            let (top, left) = match anchor {
+                Some(button) => {
+                    let left_aligned = button.left();
+                    let right_aligned = button.right() - width;
+                    let left = match align {
+                        Align::Left if left_aligned + width > right_edge => {
+                            if right_aligned >= MARGIN {
+                                right_aligned
+                            } else {
+                                left_aligned
+                            }
+                        }
+                        Align::Left => left_aligned,
+                        Align::Right if right_aligned < MARGIN => {
+                            if left_aligned + width <= right_edge {
+                                left_aligned
+                            } else {
+                                right_aligned
+                            }
+                        }
+                        Align::Right => right_aligned,
+                    };
+                    (button.bottom() + POPOVER_GAP, left)
+                }
+                None => (
+                    TITLE_BAR_HEIGHT + POPOVER_GAP,
+                    match align {
+                        Align::Left => MARGIN,
+                        Align::Right => right_edge - width,
+                    },
+                ),
+            };
+            // Shifted inside: off the right edge first, then off the left.
+            let left = left.min(right_edge - width).max(MARGIN);
+            let top = top.min((viewport.height - MARGIN).max(px(0.0)));
+            Placed {
+                left,
+                top,
+                width,
+                max_height: (viewport.height - top - MARGIN).max(px(0.0)),
+            }
         }
     }
 }
@@ -228,5 +361,138 @@ mod tests {
             [Page::Performance, Page::DataManager, Page::Commands]
         );
         assert!(more_pages(None).is_empty());
+    }
+
+    fn inside(placed: Placed, viewport: Size<Pixels>) {
+        assert!(placed.left >= px(0.0), "{placed:?}");
+        assert!(placed.left + placed.width <= viewport.width, "{placed:?}");
+        assert!(placed.top >= px(0.0), "{placed:?}");
+        assert!(
+            placed.top + placed.max_height <= viewport.height,
+            "{placed:?}"
+        );
+    }
+
+    #[test]
+    fn every_overlay_fits_the_window() {
+        let windows = [
+            gpui::size(px(1440.0), px(900.0)),
+            gpui::size(px(1280.0), px(800.0)),
+            gpui::size(px(1024.0), px(684.0)),
+            gpui::size(px(1024.0), px(640.0)),
+            gpui::size(px(700.0), px(480.0)),
+            gpui::size(px(300.0), px(200.0)),
+        ];
+        let button = |left: f32| {
+            Bounds::new(
+                gpui::point(px(left), px(8.0)),
+                gpui::size(px(22.0), px(22.0)),
+            )
+        };
+        for viewport in windows {
+            for width in [240.0, 380.0, 600.0, 2000.0] {
+                let width = px(width);
+                for kind in [
+                    OverlayKind::Modal { width },
+                    OverlayKind::Sheet { width },
+                    OverlayKind::Popover {
+                        width,
+                        align: Align::Left,
+                    },
+                    OverlayKind::Popover {
+                        width,
+                        align: Align::Right,
+                    },
+                ] {
+                    inside(place(kind, None, viewport), viewport);
+                    for left in [
+                        0.0,
+                        30.0,
+                        f32::from(viewport.width) / 2.0,
+                        f32::from(viewport.width) - 22.0,
+                    ] {
+                        let placed = place(kind, Some(button(left)), viewport);
+                        inside(placed, viewport);
+                        if matches!(kind, OverlayKind::Popover { .. })
+                            && viewport.width > width + MARGIN * 2.0
+                        {
+                            assert!(
+                                placed.left >= MARGIN
+                                    && placed.left + placed.width <= viewport.width - MARGIN,
+                                "{placed:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_popover_near_the_edge_flips_to_its_buttons_other_edge() {
+        let viewport = gpui::size(px(1024.0), px(684.0));
+        let width = px(240.0);
+        // A menu button near the right edge: the menu ends at its right.
+        let near_right = Bounds::new(
+            gpui::point(px(900.0), px(8.0)),
+            gpui::size(px(60.0), px(26.0)),
+        );
+        let placed = place(
+            OverlayKind::Popover {
+                width,
+                align: Align::Left,
+            },
+            Some(near_right),
+            viewport,
+        );
+        assert_eq!(placed.left, near_right.right() - width);
+        assert_eq!(placed.top, near_right.bottom() + px(4.0));
+        // A right-aligned menu under a button near the left edge starts at its left.
+        let near_left = Bounds::new(
+            gpui::point(px(20.0), px(8.0)),
+            gpui::size(px(22.0), px(22.0)),
+        );
+        let placed = place(
+            OverlayKind::Popover {
+                width,
+                align: Align::Right,
+            },
+            Some(near_left),
+            viewport,
+        );
+        assert_eq!(placed.left, near_left.left());
+        // In the open it lines up as asked.
+        let middle = Bounds::new(
+            gpui::point(px(400.0), px(8.0)),
+            gpui::size(px(60.0), px(26.0)),
+        );
+        let placed = place(
+            OverlayKind::Popover {
+                width,
+                align: Align::Left,
+            },
+            Some(middle),
+            viewport,
+        );
+        assert_eq!(placed.left, px(400.0));
+        // Its height is what is left below the button.
+        assert_eq!(placed.max_height, viewport.height - placed.top - MARGIN);
+    }
+
+    #[test]
+    fn a_modal_moves_up_and_shrinks_in_a_short_window() {
+        let tall = place(
+            OverlayKind::Modal { width: px(600.0) },
+            None,
+            gpui::size(px(1440.0), px(900.0)),
+        );
+        assert_eq!((tall.top, tall.max_height), (px(96.0), px(560.0)));
+        let short = place(
+            OverlayKind::Modal { width: px(600.0) },
+            None,
+            gpui::size(px(1024.0), px(640.0)),
+        );
+        assert!(short.top < px(96.0) && short.top >= TITLE_BAR_HEIGHT + MARGIN);
+        assert_eq!(short.max_height, px(640.0) - short.top - MARGIN);
     }
 }

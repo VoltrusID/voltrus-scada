@@ -4032,12 +4032,14 @@ fn render_menu(
         cx,
     );
     let nav = console.list(MENU_LIST, cx);
-    let (cursor, focused) = (nav.cursor, nav.focus.is_focused(window));
+    let (cursor, focused, rows) = (nav.cursor, nav.focus.is_focused(window), nav.rows.clone());
     list.flex()
         .flex_col()
+        .min_h_0()
         .p(SPACE_3)
         .child(
             div()
+                .flex_none()
                 .px(SPACE_4)
                 .py(SPACE_3)
                 .text_size(FONT_CAPTION)
@@ -4046,39 +4048,50 @@ fn render_menu(
                 .truncate()
                 .child(title.to_uppercase()),
         )
-        .children(
-            items
-                .into_iter()
-                .enumerate()
-                .map(|(at, (item, label, icon))| {
-                    let hover = theme.hover;
-                    let danger = matches!(item, MenuItem::Delete);
-                    div()
-                        .id(("data-device-menu-item", at))
-                        .relative()
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_4)
-                        .h(px(30.0))
-                        .px(SPACE_4)
-                        .rounded(RADIUS_MD)
-                        .cursor_pointer()
-                        .when(cursor == Some(at), |this| this.bg(theme.selected))
-                        .hover(move |style| style.bg(hover))
-                        .when(focused && cursor == Some(at), |this| {
-                            this.child(focus_ring(&theme))
-                        })
-                        .text_color(if danger { theme.danger } else { theme.fg })
-                        .child(vt_ui::icon(
-                            icon,
-                            ICON_MD,
-                            if danger { theme.danger } else { theme.fg_dim },
-                        ))
-                        .child(label)
-                        .on_click(cx.listener(move |console, _, window, cx| {
-                            run_menu(console, at, false, window, cx)
-                        }))
-                }),
+        // A long menu scrolls in a short window, the cursor's row in view.
+        .child(
+            div()
+                .id("data-device-menu-items")
+                .flex()
+                .flex_col()
+                .min_h_0()
+                .overflow_y_scroll()
+                .track_scroll(&rows)
+                .children(
+                    items
+                        .into_iter()
+                        .enumerate()
+                        .map(|(at, (item, label, icon))| {
+                            let hover = theme.hover;
+                            let danger = matches!(item, MenuItem::Delete);
+                            div()
+                                .id(("data-device-menu-item", at))
+                                .relative()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(SPACE_4)
+                                .h(px(30.0))
+                                .px(SPACE_4)
+                                .rounded(RADIUS_MD)
+                                .cursor_pointer()
+                                .when(cursor == Some(at), |this| this.bg(theme.selected))
+                                .hover(move |style| style.bg(hover))
+                                .when(focused && cursor == Some(at), |this| {
+                                    this.child(focus_ring(&theme))
+                                })
+                                .text_color(if danger { theme.danger } else { theme.fg })
+                                .child(vt_ui::icon(
+                                    icon,
+                                    ICON_MD,
+                                    if danger { theme.danger } else { theme.fg_dim },
+                                ))
+                                .child(label)
+                                .on_click(cx.listener(move |console, _, window, cx| {
+                                    run_menu(console, at, false, window, cx)
+                                }))
+                        }),
+                ),
         )
         .into_any_element()
 }

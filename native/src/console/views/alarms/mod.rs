@@ -38,7 +38,7 @@ use crate::console::nav::Move;
 use crate::console::{Console, Page, Phase, severity_rank, time_now_secs};
 
 pub(crate) use dialogs::confirm_acknowledge_all;
-pub(crate) use sound::mute_button;
+pub(crate) use sound::{mute_button, muted, speaker};
 
 /// The alarm list's keyboard list.
 pub(crate) const LIST: &str = "alarms";

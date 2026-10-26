@@ -21,6 +21,13 @@ fn tier_color(tier: Tier, theme: &Theme) -> gpui::Hsla {
     }
 }
 
+/// The navbar's tier badge's text, once the server said (for the navbar's
+/// fit).
+pub fn badge_label(console: &mut Console) -> Option<&'static str> {
+    let license = console.state::<Shell>().license.as_ref()?;
+    Some(license.tier().label())
+}
+
 /// The navbar's tier badge, once the server said.
 pub fn badge(console: &mut Console, cx: &mut Context<Console>) -> Option<AnyElement> {
     let theme = theme(cx).clone();

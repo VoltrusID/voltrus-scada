@@ -46,7 +46,7 @@ pub(super) fn toggle_mute(console: &mut Console, cx: &mut Context<Console>) {
     cx.notify();
 }
 
-pub(super) fn muted(console: &Console) -> bool {
+pub(crate) fn muted(console: &Console) -> bool {
     console
         .state_ref::<Annunciator>()
         .is_some_and(Annunciator::muted)
@@ -110,7 +110,7 @@ pub(crate) fn mute_button(console: &Console, cx: &mut Context<Console>) -> AnyEl
 
 /// A speaker glyph (vt-ui has no sound icons): the cone, then waves when
 /// on or a cross when off.
-fn speaker(off: bool, size: Pixels, color: Hsla) -> impl IntoElement {
+pub(crate) fn speaker(off: bool, size: Pixels, color: Hsla) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds: Bounds<Pixels>, (), window: &mut Window, _| {

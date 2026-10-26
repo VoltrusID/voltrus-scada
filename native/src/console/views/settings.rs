@@ -617,11 +617,13 @@ pub fn themes(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     )
     .track_scroll(scroll)
     .px(SPACE_3)
-    .h(px(PICKER_ROW * VISIBLE_ROWS));
+    .h(px(PICKER_ROW * VISIBLE_ROWS))
+    .min_h(px(PICKER_ROW));
 
     div()
         .flex()
         .flex_col()
+        .min_h_0()
         // Esc anywhere in the picker goes back to the settings, putting
         // the theme before back; `/` finds.
         .on_action(cx.listener(|console, _: &Dismiss, window, cx| {
@@ -648,18 +650,24 @@ pub fn themes(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 )
                 .child(div().flex_1().child(filter)),
         )
-        .child(list.py(SPACE_3).child(if count == 0 {
-            div()
-                .h(px(PICKER_ROW * 2.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.fg_dim)
-                .child("No theme matches")
-                .into_any_element()
-        } else {
-            rows_view.into_any_element()
-        }))
+        .child(
+            list.flex()
+                .flex_col()
+                .min_h_0()
+                .py(SPACE_3)
+                .child(if count == 0 {
+                    div()
+                        .h(px(PICKER_ROW * 2.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(theme.fg_dim)
+                        .child("No theme matches")
+                        .into_any_element()
+                } else {
+                    rows_view.into_any_element()
+                }),
+        )
         .child(footer(
             &[
                 ("↑↓", "Look"),
@@ -906,12 +914,14 @@ pub fn shortcuts(
     )
     .track_scroll(scroll)
     .px(SPACE_3)
-    .h(px(SHORTCUT_ROW * VISIBLE_ROWS));
+    .h(px(SHORTCUT_ROW * VISIBLE_ROWS))
+    .min_h(px(SHORTCUT_ROW));
 
     let field = filter.clone();
     div()
         .flex()
         .flex_col()
+        .min_h_0()
         .on_action(cx.listener(move |_, _: &FocusSearch, window, cx| {
             field.update(cx, |field, _| field.focus(window));
         }))
@@ -953,7 +963,7 @@ pub fn shortcuts(
                 )
                 .child(filter),
         )
-        .child(list.py(SPACE_3).child(if count == 0 {
+        .child(list.flex().flex_col().min_h_0().py(SPACE_3).child(if count == 0 {
             div()
                 .h(px(SHORTCUT_ROW * 2.0))
                 .flex()

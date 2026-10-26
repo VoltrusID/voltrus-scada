@@ -292,6 +292,7 @@ voltrus-native [--sign-in] [--page overview|tags|alarms|trends|performance|tagtr
                [--range 5m|30m|1h|6h|24h] [--appearance dark|light] [--hud]
                [--overlay palette|help|<action>|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
                [--alarms history|analytics|audit|detail|shelve|confirm]
+               [--window WxH] [--keys <keystrokes>]
                [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                          [--stress-seconds N] [--stress-report FILE]]
                [--stress-profile]
@@ -308,6 +309,13 @@ e.g. `--overlay OpsExportData` (the data export dialog),
 `--alarms` opens the Alarms page on a view (history, analytics, audit) or
 with a dialog open on its worst alarm (detail, shelve) or the
 acknowledge-all confirmation.
+`--window 1280x800` opens the window at that size in points (the minimum,
+1024×640, gives way to a smaller size, to show the navbar's narrow steps),
+and `--keys down,down,down` types those keys once the console and its
+`--overlay` are up (a menu scrolled by the keyboard). In a narrow window the
+navbar shows its tabs as icons, a search button and one menu for
+notifications, settings, the alarm sound, the HUD and the appearance
+(`--overlay ShowNavMenu` opens it).
 `--stress-seconds 20 --stress-report report.txt` runs the stress test for
 20 seconds, prints the report (frames, frame time p50/p95/max, drops,
 page-switch time, memory, the share of frames built within a 60 Hz and a

@@ -24,6 +24,7 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
                       [--hud] [--overlay palette|help|new-source|add-tags|<action>|tag-write|tag-policy|tag-note|tag-compare|tag-range|tag-expand]
                       [--alarms history|analytics|audit|detail|shelve|confirm]
                       [--screen N|ID] [--edit] [--section ID]
+                      [--window WxH] [--keys <keystrokes>]
                       [--stress [--stress-tags N] [--stress-rate N] [--stress-switch-ms N]
                                 [--stress-seconds N] [--stress-report FILE]]
                       [--stress-profile]
@@ -46,6 +47,10 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --edit             open the dashboard in edit mode (operator roles); with
                      --page mimic, the mimic's editor
   --section          the Data Manager's section to show (with --page data), e.g. flows
+  --window           the window's size in points, e.g. 1280x800 (screenshots; the
+                     window's minimum, 1024x640, gives way to a smaller one)
+  --keys             keystrokes to type once signed in and the --overlay is open,
+                     separated by commas or spaces (e.g. down,down,down)
   --stress           feed a synthetic plant (no server): 10000 tags, 20000 updates/s
   --stress-tags      how many synthetic tags
   --stress-rate      synthetic updates per second
@@ -73,11 +78,21 @@ struct Options {
     screen: Option<String>,
     edit: bool,
     section: Option<String>,
+    window: Option<(f32, f32)>,
+    keys: Option<String>,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, text: Option<&String>) -> Result<T, String> {
     text.and_then(|text| text.parse().ok())
         .ok_or_else(|| format!("{flag} takes a number"))
+}
+
+/// `1280x800`: a window's width and height in points, each at least 320.
+fn window_size(text: &str) -> Option<(f32, f32)> {
+    let (width, height) = text.split_once('x')?;
+    let (width, height): (f32, f32) = (width.parse().ok()?, height.parse().ok()?);
+    (width >= 320.0 && height >= 320.0 && width.is_finite() && height.is_finite())
+        .then_some((width, height))
 }
 
 fn parse(args: &[String]) -> Result<Options, String> {
@@ -93,6 +108,8 @@ fn parse(args: &[String]) -> Result<Options, String> {
         screen: None,
         edit: false,
         section: None,
+        window: None,
+        keys: None,
     };
     let mut stress = StressPlan::default();
     let mut stressed = false;
@@ -182,6 +199,17 @@ fn parse(args: &[String]) -> Result<Options, String> {
                         other.map_or("", String::as_str)
                     ));
                 }
+            },
+            "--window" => {
+                let text = args.next().map_or("", String::as_str);
+                options.window = Some(
+                    window_size(text)
+                        .ok_or_else(|| format!("--window takes WIDTHxHEIGHT, not “{text}”"))?,
+                );
+            }
+            "--keys" => match args.next() {
+                Some(keys) if !keys.trim().is_empty() => options.keys = Some(keys.clone()),
+                _ => return Err("--keys takes keystrokes, e.g. \"down down\"".into()),
             },
             "--stress" => stressed = true,
             "--stress-tags" => {
@@ -277,8 +305,12 @@ fn main() -> ExitCode {
         section: options.section,
         utc_offset,
         appearance: options.dark,
+        keys: options.keys,
     };
     let appearance = options.dark;
+    let wanted = options
+        .window
+        .map(|(width, height)| size(px(width), px(height)));
 
     Application::new()
         .with_assets(vt_ui::Assets)
@@ -307,6 +339,12 @@ fn main() -> ExitCode {
                 }
             };
 
+            // The window's minimum: room for every page (the navbar steps
+            // down to fit far narrower). `--window` may ask for less.
+            let minimum = size(px(1024.0), px(640.0));
+            // `--window` resizes the window once open (below): a window
+            // opened at a size that needs no fitting to the screen first
+            // draws at the wrong scale on the CI runner's display.
             let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -315,7 +353,12 @@ fn main() -> ExitCode {
                     appears_transparent: true,
                     traffic_light_position: Some(point(px(14.0), px(13.0))),
                 }),
-                window_min_size: Some(size(px(1024.0), px(640.0))),
+                window_min_size: Some(wanted.map_or(minimum, |wanted| {
+                    size(
+                        wanted.width.min(minimum.width),
+                        wanted.height.min(minimum.height),
+                    )
+                })),
                 app_id: Some("id.voltrus.scada.console".into()),
                 ..WindowOptions::default()
             };
@@ -347,10 +390,23 @@ fn main() -> ExitCode {
                 });
                 console
             });
-            if let Err(error) = opened {
-                eprintln!("voltrus-native: could not open the window: {error}");
-                cx.quit();
-                return;
+            match opened {
+                Err(error) => {
+                    eprintln!("voltrus-native: could not open the window: {error}");
+                    cx.quit();
+                    return;
+                }
+                // AppKit fits a new window to the screen (a taller one than
+                // the screen keeps the screen's height).
+                Ok(handle) => {
+                    if let Some(wanted) = wanted {
+                        let _ = handle.update(cx, |_, window, _| {
+                            if window.viewport_size() != wanted {
+                                window.resize(wanted);
+                            }
+                        });
+                    }
+                }
             }
             cx.activate(true);
         });
@@ -391,8 +447,18 @@ mod tests {
                 screen: None,
                 edit: false,
                 section: None,
+                window: None,
+                keys: None,
             })
         );
+        assert_eq!(
+            parse(&args(&["--window", "1280x800", "--keys", "down down"]))
+                .map(|options| (options.window, options.keys)),
+            Ok((Some((1280.0, 800.0)), Some("down down".to_owned())))
+        );
+        assert!(parse(&args(&["--window", "1280"])).is_err());
+        assert!(parse(&args(&["--window", "10x10"])).is_err());
+        assert!(parse(&args(&["--keys"])).is_err());
         assert_eq!(
             parse(&args(&["--tag", "ac_current_l1"])).map(|options| options.tag),
             Ok(Some("ac_current_l1".to_owned()))
