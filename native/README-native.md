@@ -72,10 +72,11 @@ JetBrains Mono for values.
   link is live the chart moves on once a second. Each tag keeps a day of
   history: live values of the last 15 minutes at full rate, older ones
   thinned to one per 20 seconds.
-- **Data Manager** (More menu, palette; admin, demo and integration roles):
-  a sidebar of sections grouped Data, Protocols, Insights and Admin as in the
-  web client (only built sections are listed; ↑↓ switch, Enter goes in, Esc
-  comes back). **Sources**: every data source in a virtualised table
+- **Data Manager** (More menu, palette; offered to a role that sees at least
+  one section): a sidebar of sections grouped Data, Protocols, Insights,
+  Admin and Engineering as in the web client (only built sections are
+  listed; ↑↓ switch, Enter goes in, Esc comes back; `--section <id>` opens
+  one). **Sources**: every data source in a virtualised table
   (order, name, key, unit, range, limits, source type, card, per-tag
   shortcut), `/` to search, sorting by clicking a header or S (⇧S reverses);
   N or New source and Enter or a double click open the form (General: name,
@@ -104,6 +105,37 @@ JetBrains Mono for values.
   live ones), L loads it after a confirmation and follows the commands the
   server queued (every 2 s until each is done; Retry writes a failed one
   again; Open in Commands shows them on the Commands page), ⌫ deletes.
+  **Protocols** (Modbus, OPC UA, Siemens S7, EtherNet/IP, DNP3, BACnet), each
+  a device table like Sources (`/` search, header or S sort, the poller's
+  or the WebSocket's online state per device, columns dropping as the
+  window narrows) whose rows expand (Space) into their registers, nodes,
+  tags, points or objects. N adds a device, Enter edits, A adds a child, E
+  enables or disables, ⌫ removes a device or a child after a confirmation,
+  `.` lists the row's actions (start and stop polling, restart, browse,
+  integrity poll, freeze, simulation), T runs the section's scan or
+  discovery, whose results are picked to add devices, registers, nodes,
+  tags or objects. Modbus also has duplicate (D, registers included),
+  simulation profiles and the simulation switch; Modbus and BACnet import
+  Modbus Poll and BACnet Explorer device files from Import… (I) or dropped
+  on the section, with a report of what was added. Modbus reads are open to
+  every user and its changes to operators; the server's other protocol
+  handlers answer only admins, so only admins see those sections. OPC UA
+  says it is unavailable on the open-core server, whose router has no
+  `GET /api/v1/opcua/devices`.
+  **Admin** (as the web client's group): **Users** (admin only): every
+  account with its role; N adds one (name, the password typed twice in
+  masked fields, role), Enter changes the role and optionally the password,
+  P resets a password, ⌫ deletes after a confirmation; the console refuses
+  demoting or deleting yourself or the last admin. **Roles** (admin only):
+  the server's RBAC roles with their permissions picked from the 24 the
+  server accepts. **Notifications** (operators): who hears of a tag's (or
+  every tag's) alarms by email, webhook or push; N, Enter, Space turns a
+  rule on or off, T sends a test through the server and shows each
+  target's outcome, ⌫ deletes. **API keys** (admin only): name, prefix,
+  role, maker, last use and expiry; N makes a read-only or integration key
+  with a lifetime and shows its secret once (masked until revealed, C or
+  Copy), ⌫ revokes. The palette offers New user, New role, New API key and
+  New notification rule.
 - **Dashboard** (⌘6): the server's screens as card dashboards, as the web
   client's card view lays them out (its 24-column grid and saved layouts).
   Screen tabs sit in a bar under the navbar (1–9 jump to them, [ and ] step;
@@ -130,8 +162,25 @@ JetBrains Mono for values.
   confirms within 6 s; an admin's command goes over the WebSocket, other
   operators' through the policy-checked REST write. The alarm banner
   under the stage lists the newest active alarms, acknowledged in place.
-  Screen tabs and [ / ] as on the Dashboard. Viewer only: mimics are drawn
-  in the web client's editor.
+  Screen tabs and [ / ] as on the Dashboard.
+- **Mimic editor** (E on the mimic, or Edit; operators), as the web
+  client's SCADA editor: a palette of the 31 library symbols by category
+  (drawn by the stage's painter) and the widget types, searchable (/),
+  click to add at the centre or drag onto the stage; click, ⇧-click, a
+  rubber band (⌥ anywhere) or ⌘A select; drags move the selection and the
+  eight handles resize, snapping to the 10-pixel grid (dots every 20) and
+  lining up with other widgets' edges and centres (guide lines; ⌘ held:
+  free), on the 1920×1080 stage; the knob (R, ⇧R) turns a symbol a
+  quarter, H mirrors it. The connect tool (C; V back) joins a source and a
+  target as a process pipe, power line or signal. The inspector edits
+  position and size, the type's settings, tag bindings (searched in the
+  store), z-order ([ ]), duplicate and delete; a connection's type; or
+  shows the screen's summary. ⌘Z / ⇧⌘Z (100 steps, typing in one field
+  is one), ⌘C / ⌘V / ⌘D, arrows nudge 1 (⇧ 10), ⌫ deletes. ⌘S saves the
+  rows (`PUT scada-equipment` and `scada-connections`); a failure keeps
+  the edits. Done, another screen, another page or signing out with
+  unsaved edits asks Save / Discard / Cancel (the web client saves on a
+  screen switch without asking).
 - **Tag tree** (⌘5): the tags filed by their path (or their device when
   they have none), folded and unfolded with Space or Enter, searched on the
   server as you type (`/`), each tag with its live value; Enter on a tag
@@ -286,6 +335,8 @@ native/src/
                     data sources, alarms, history, password change
   api/ops.rs        commands, shift handover, audit log and data export: mirrors,
                     paths, text downloads
+  api/admin.rs      users, RBAC roles, API keys and notification rules: mirrors,
+                    request bodies checked as the server checks them
   ws_types.rs       MessagePack WebSocket messages (mirror of the server's)
   runtime.rs        the network actor: Command in, Event out, generic calls
   stress.rs         the deterministic synthetic plant
@@ -455,3 +506,32 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   client sends milliseconds and reads them as such). An unknown command
   answers 500 "Command not found", not 404; cancelling a command already
   sent answers 400.
+- Engineering routes: config snapshots have no DELETE, and a rollback
+  also rewrites the `alarms` table; the MQTT broker's configuration cannot
+  be cleared once set, and a message published through
+  `POST /mqtt-broker/publish` does not reach the broker's own message log
+  on the CI plant. Flows store no wires or positions (process steps run in
+  stored order, then the outputs), so the editor's wires reorder steps and
+  positions last while it is open; `start`/`stop` change only the running
+  engine, not `enabled`. Saving a script with fixed source keeps its old
+  `syntax_error`. CSV/Excel imports write readings only (no route removes
+  them) and replace mode answers 501; the Node-RED import only converts and
+  reports.
+- Users, roles and API keys are admin-only routes. A user's role is one of
+  `admin`, `demo`, `operator`, `viewer` or `user`; only admin and demo pass
+  the operator routes. A role change or a deletion does not end the user's
+  open sessions: the token keeps its role until it expires. There is no way
+  to disable an account (only delete it), and deleting a user whose
+  handovers or mentions remain fails on a foreign key.
+- RBAC roles (`/api/v1/roles`) store a JSON list of permissions, refused
+  unless every one is in `models::ALL_PERMISSIONS` (the web's own list
+  offers names the server refuses); nothing checks them yet, and
+  `PUT /users/{id}/role` assigns one without any route to read it back.
+- API keys expire in Unix seconds and are shown once; the list keeps only
+  the first eight characters. Their stored permissions are not checked;
+  `api` keys read, `integration` keys also pass operator routes.
+- `POST /notifications/test` answers 200 with a per-target status (sent or
+  the error) for webhooks and email; email needs SMTP configured (else
+  500), push is not testable. `PUT /notifications/settings/{id}` checks the
+  config but not email or URL shapes, so the console checks them as
+  `POST` does.

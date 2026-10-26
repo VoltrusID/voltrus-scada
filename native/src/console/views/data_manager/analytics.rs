@@ -1454,6 +1454,68 @@ fn label(text: &str, origin: Point<Pixels>, color: Hsla, window: &mut Window, cx
 mod tests {
     use super::*;
     use voltrus_scada_native::api::insights::AggregatedMetric;
+    use super::super::insights_kit::testing::{open, sent, signed_in};
+
+    fn hourly(starts: &[i64]) -> Vec<Bucket> {
+        starts
+            .iter()
+            .map(|start| {
+                (
+                    *start,
+                    AggregatedMetric {
+                        metric: "p".into(),
+                        min: 1.0,
+                        max: 3.0,
+                        avg: 2.0,
+                        count: 60,
+                        first_ts: *start,
+                        last_ts: start + 3599,
+                        ..AggregatedMetric::default()
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[gpui::test]
+    fn a_bar_drills_in_and_back_by_keyboard_for_any_user(cx: &mut gpui::TestAppContext) {
+        // Analytics only reads, so a viewer has all of it.
+        let mut h = signed_in(cx, "viewer");
+        h.update(|console, _, _| console.state::<State>().range = 2); // 24 h of hours
+        open(&mut h, ID);
+        let aggregate = sent(&h.calls(), "data.analytics.aggregate").expect("the buckets");
+        assert_eq!(
+            h.update(|console, _, _| console.state::<State>().metric.clone()),
+            Some("p".to_owned()),
+            "the device's first tag"
+        );
+        let now = time_now_secs() / 3600 * 3600;
+        h.reply(aggregate, Reply::ok(hourly(&[now - 7200, now - 3600, now])));
+        assert!(
+            sent(&h.calls(), "data.analytics.compare").is_some(),
+            "the halves are compared once the buckets are in"
+        );
+        h.draw();
+        // Enter on the metric goes to the chart; ← moves a bar back.
+        h.keys("enter");
+        h.draw();
+        h.keys("left");
+        assert_eq!(h.update(|console, _, _| console.state::<State>().cursor), Some(1));
+        h.keys("enter");
+        let state = |h: &mut crate::console::testing::Harness| {
+            h.update(|console, _, _| {
+                let state = console.state::<State>();
+                (state.levels.len(), state.span.map(|span| span.interval))
+            })
+        };
+        assert_eq!(state(&mut h), (1, Some(300)), "the hour in five-minute bars");
+        let finer = sent(&h.calls(), "data.analytics.aggregate").expect("its buckets");
+        assert_eq!(finer.arg, aggregate.arg + 1);
+        h.keys("backspace");
+        assert_eq!(state(&mut h), (0, Some(3600)), "back out, as it was");
+        assert_eq!(h.update(|console, _, _| buckets_of(console).len()), 3);
+    }
+
 
     fn buckets(starts: &[i64]) -> Vec<Bucket> {
         starts

@@ -385,6 +385,7 @@ pub fn kiosk_blocks(action: &dyn Action) -> bool {
 pub fn key_bindings(plan: &Plan, kiosk: bool) -> Vec<KeyBinding> {
     let mut bindings = vt_ui::text_input::key_bindings();
     bindings.extend(super::text_area::key_bindings());
+    bindings.extend(super::views::data_manager::scripts::code_editor::key_bindings());
     bindings.extend(
         keys::key_bindings()
             .into_iter()
@@ -657,6 +658,7 @@ mod tests {
         assert_eq!(plan.bound.len(), 2);
         let base = vt_ui::text_input::key_bindings().len()
             + super::super::text_area::key_bindings().len()
+            + super::super::views::data_manager::scripts::code_editor::key_bindings().len()
             + keys::key_bindings().len();
         let open = key_bindings(&plan, false);
         assert_eq!(open.len(), base + 2);

@@ -14,6 +14,7 @@ mod nav;
 pub mod overlay;
 pub mod pages;
 mod prefs;
+mod redraw;
 pub mod screens;
 mod shell;
 pub mod shortcuts;
@@ -25,6 +26,13 @@ mod tests;
 mod text_area;
 mod views;
 mod warm;
+
+/// Whether `id` names a Data Manager section (`--section`).
+pub fn data_manager_section(id: &str) -> bool {
+    views::data_manager::SECTIONS
+        .iter()
+        .any(|spec| spec.id == id)
+}
 
 use std::any::{Any, TypeId};
 use std::cell::{Cell, RefCell};
@@ -215,6 +223,9 @@ pub struct Launch {
     pub screen: Option<String>,
     /// Open the dashboard in edit mode (`--edit`).
     pub edit: bool,
+    /// The Data Manager's section to show (`--section`), a
+    /// [`data_manager_section`] id.
+    pub section: Option<String>,
     /// Read before any thread started: `time` cannot ask the system later.
     pub utc_offset: UtcOffset,
     /// `--appearance`: pinned light (false) or dark (true); the server's
@@ -370,6 +381,7 @@ impl Console {
                 }
                 let applied = this.update_in(cx, |console, window, cx| {
                     let started = Instant::now();
+                    let values_only = redraw::values_only(&batch);
                     for event in batch {
                         console.apply(event, window, cx);
                     }
@@ -379,7 +391,11 @@ impl Console {
                     frames.batch_applied(took);
                     frames.expect_frame(now);
                     drop(frames);
-                    cx.notify();
+                    if values_only {
+                        console.values_changed(cx);
+                    } else {
+                        cx.notify();
+                    }
                 });
                 if applied.is_err() {
                     break;
@@ -563,6 +579,13 @@ impl Console {
             console.sign_in(window, cx);
         }
         views::dashboard::launch(&mut console, launch.screen, launch.edit);
+        if let Some(section) = launch.section.as_deref() {
+            views::data_manager::launch(&mut console, section);
+        }
+        views::mimic::editor::launch(
+            &mut console,
+            launch.edit && launch.page == Some(Page::Mimic),
+        );
         shell::init(&mut console, launch.appearance, window, cx);
         console
     }
@@ -823,7 +846,7 @@ impl Console {
         // The kiosk lock holds from here on.
         shortcuts::rebind(self, cx);
         let page = self.pending_page.take().unwrap_or(self.page);
-        let page = if self.allows(pages::spec(page).role) {
+        let page = if pages::opens(pages::spec(page), self.role()) {
             page
         } else {
             Page::Overview
@@ -912,6 +935,10 @@ impl Console {
     }
 
     pub fn sign_out(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Unsaved mimic edits ask first (Save, Discard, Cancel).
+        if views::mimic::editor::holds(self, views::mimic::editor::Leave::SignOut, window, cx) {
+            return;
+        }
         if self.stress.is_some() {
             self.finish_stress(cx);
         }
@@ -1013,8 +1040,11 @@ impl Console {
             self.focus_page(window, cx);
             return;
         }
-        if !self.allows(pages::spec(page).role) {
+        if !pages::opens(pages::spec(page), self.role()) {
             self.show_toast(format!("{} needs another role", page.title()), true, cx);
+            return;
+        }
+        if views::mimic::editor::holds(self, views::mimic::editor::Leave::Page(page), window, cx) {
             return;
         }
         self.back.push(self.page);
@@ -1027,6 +1057,14 @@ impl Console {
 
     /// ⌘[ and ⌘]: back or forward through the pages shown.
     pub fn history_step(&mut self, forward: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if views::mimic::editor::holds(
+            self,
+            views::mimic::editor::Leave::History(forward),
+            window,
+            cx,
+        ) {
+            return;
+        }
         let (from, to) = if forward {
             (&mut self.forward, &mut self.back)
         } else {
@@ -1455,6 +1493,9 @@ impl Console {
             apply: meter.apply_spread(),
             warm_up: meter.warm_up(),
             pages: meter.page_figures(),
+            phases: meter.phases(),
+            late: meter.late_starts(),
+            on_next_vsync: meter.stats.on_next_vsync(),
             slowest: meter.slowest(),
         })
     }

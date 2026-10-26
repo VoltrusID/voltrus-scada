@@ -286,6 +286,43 @@ pub(crate) fn save_text(suggested: String, text: String, cx: &mut Context<Consol
     .detach();
 }
 
+/// Test helpers the Insights sections share.
+#[cfg(test)]
+pub(crate) mod testing {
+    use voltrus_scada_native::runtime::{CallKey, Event};
+
+    use crate::console::Page;
+    use crate::console::testing::Harness;
+
+    /// The plant `plts_1` with tags `p` and `q`, signed in as `role`.
+    pub(crate) fn signed_in(cx: &mut gpui::TestAppContext, role: &str) -> Harness {
+        let mut h = Harness::new(cx);
+        h.sign_in(role);
+        let tag = |id, key| {
+            let mut tag = Harness::tag(id, key);
+            tag.device_id = "plts_1".into();
+            tag
+        };
+        h.event(Event::Tags(vec![tag(1, "p"), tag(2, "q")]));
+        h.calls();
+        h
+    }
+
+    /// The Data Manager on section `id` (as `--page data --section id`).
+    pub(crate) fn open(h: &mut Harness, id: &'static str) {
+        h.update(|console, window, cx| {
+            super::super::launch(console, id);
+            console.show(Page::DataManager, window, cx);
+        });
+        h.draw();
+    }
+
+    /// The call named `name` among those sent since the last look.
+    pub(crate) fn sent(calls: &[CallKey], name: &str) -> Option<CallKey> {
+        calls.iter().copied().find(|key| key.name == name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

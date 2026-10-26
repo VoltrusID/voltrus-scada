@@ -170,7 +170,7 @@ pub static PAGES: &[PageSpec] = &[
         title: "Data Manager",
         icon: Icon::Database,
         digit: None,
-        role: Role::Operator,
+        role: Role::Any,
         placement: Placement::More,
         render: views::data_manager::render,
         badge: None,
@@ -282,6 +282,14 @@ pub fn spec(page: Page) -> &'static PageSpec {
 /// The row whose id is `id`, e.g. from `--page` or a [`CallKey`] scope.
 pub fn by_id(id: &str) -> Option<&'static PageSpec> {
     PAGES.iter().find(|spec| spec.id == id)
+}
+
+/// Whether a user with `role` may open the page of `spec`: their role is
+/// enough, and a page made of sections (the Data Manager) has one for them,
+/// so no menu offers an empty page.
+pub fn opens(spec: &PageSpec, role: Option<Role>) -> bool {
+    role.is_some_and(|role| role >= spec.role)
+        && (spec.page != Page::DataManager || views::data_manager::has_sections(role))
 }
 
 impl Page {

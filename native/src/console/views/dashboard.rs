@@ -1864,19 +1864,15 @@ fn picks(console: &Console, cx: &App) -> Vec<i64> {
     let query = console
         .state_ref::<State>()
         .and_then(|state| state.query.as_ref())
-        .map(|field| field.read(cx).value().trim().to_lowercase())
+        .map(|field| field.read(cx).value())
         .unwrap_or_default();
+    // The store keeps filter results per query: no tag is lowercased here.
     console
         .store
-        .tags
+        .filter(query)
         .iter()
-        .filter(|tag| !on.contains(&tag.info.id))
-        .filter(|tag| {
-            query.is_empty()
-                || tag.info.name.to_lowercase().contains(&query)
-                || tag.info.key.to_lowercase().contains(&query)
-        })
-        .map(|tag| tag.info.id)
+        .map(|index| console.store.tags[*index].info.id)
+        .filter(|id| !on.contains(id))
         .collect()
 }
 

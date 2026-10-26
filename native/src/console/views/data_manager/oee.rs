@@ -1846,6 +1846,97 @@ fn shifts_list(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::insights_kit::testing::{open, sent, signed_in};
+    use crate::console::testing::Harness;
+
+    fn metrics() -> OeeMetrics {
+        OeeMetrics {
+            availability: 0.9,
+            performance: 1.0,
+            quality: 1.0,
+            oee: 0.9,
+            total_running_secs: 25_920,
+            total_planned_secs: 28_800,
+            downtime_count: 1,
+        }
+    }
+
+    fn open_event() -> DowntimeEvent {
+        DowntimeEvent {
+            id: 4,
+            device_id: "plts_1".into(),
+            state: "faulted".into(),
+            started_at: time_now_secs() - 600,
+            ..DowntimeEvent::default()
+        }
+    }
+
+    #[gpui::test]
+    fn the_figures_drill_in_and_back_by_keyboard(cx: &mut gpui::TestAppContext) {
+        let mut h = signed_in(cx, "admin");
+        open(&mut h, ID);
+        let calls = h.calls();
+        let metrics_key = sent(&calls, "data.oee.metrics").expect("the figures are fetched");
+        let events_key = sent(&calls, "data.oee.events").expect("the downtime too");
+        assert!(sent(&calls, "data.oee.shifts").is_some());
+        assert_eq!(
+            h.update(|console, _, _| console.state::<State>().device.clone()),
+            Some("plts_1".into()),
+            "the first device is chosen"
+        );
+        h.reply(metrics_key, Reply::ok(metrics()));
+        h.reply(events_key, Reply::ok(vec![open_event()]));
+        h.draw();
+        // ← → move between the figures, Enter drills in.
+        h.keys("right right enter");
+        let at = |h: &mut Harness| {
+            h.update(|console, _, _| {
+                let state = console.state::<State>();
+                (state.figure, state.drilled)
+            })
+        };
+        assert_eq!(at(&mut h), (2, 2), "Performance");
+        h.keys("left left left enter");
+        assert_eq!(at(&mut h), (0, 0), "back to OEE, the first figure");
+        // A stale answer is dropped.
+        h.reply(metrics_key.with(metrics_key.arg - 1), Reply::ok(OeeMetrics::default()));
+        assert!(h.update(|console, _, _| {
+            matches!(&console.state::<State>().metrics.value, Some(Ok(m)) if m.oee == 0.9)
+        }));
+    }
+
+    #[gpui::test]
+    fn an_operator_closes_downtime_and_a_viewer_cannot(cx: &mut gpui::TestAppContext) {
+        let mut h = signed_in(cx, "admin");
+        open(&mut h, ID);
+        h.update(|console, window, cx| ask_close(console, open_event(), window, cx));
+        assert!(h.update(|console, _, _| console.overlay_is(CLOSE)));
+        h.keys("b e a r i n g enter");
+        let calls = h.calls();
+        let close = sent(&calls, "data.oee.close").expect("the close is sent");
+        h.reply(close, Reply::ok(IgnoredAny));
+        h.draw();
+        assert!(!h.update(|console, _, _| console.overlay_is(CLOSE)), "closed");
+        assert!(
+            sent(&h.calls(), "data.oee.events").is_some(),
+            "the downtime is fetched again"
+        );
+
+        let mut h = signed_in(cx, "viewer");
+        open(&mut h, ID);
+        h.calls();
+        h.update(|console, window, cx| {
+            ask_close(console, open_event(), window, cx);
+            open_record(console, window, cx);
+            open_new_shift(console, window, cx);
+        });
+        assert!(
+            h.update(|console, _, _| console.overlay.is_none()),
+            "a viewer reads OEE but changes nothing"
+        );
+        assert!(h.calls().is_empty());
+    }
+
 
     #[test]
     fn the_figures_read_their_part_of_the_metrics() {

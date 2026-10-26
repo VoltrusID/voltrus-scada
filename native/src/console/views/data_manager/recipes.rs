@@ -1693,6 +1693,102 @@ fn load_card(console: &mut Console, cx: &mut Context<Console>) -> Option<AnyElem
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::insights_kit::testing::{open, sent, signed_in};
+    use super::super::{SECTIONS, visible};
+    use crate::console::pages::Role;
+
+    fn summer() -> Recipe {
+        Recipe {
+            id: 4,
+            name: "Summer".into(),
+            device_id: "plts_1".into(),
+            values: r#"{"p": 50.0, "q": 2.5}"#.into(),
+            version: 1,
+            ..Recipe::default()
+        }
+    }
+
+    #[gpui::test]
+    fn a_recipe_opens_loads_and_its_commands_are_followed(cx: &mut gpui::TestAppContext) {
+        let mut h = signed_in(cx, "demo");
+        open(&mut h, ID);
+        let list = sent(&h.calls(), "data.recipes.list").expect("the recipes");
+        h.reply(list, Reply::ok(vec![summer()]));
+        h.draw();
+        // Enter opens it beside the live values; Esc closes.
+        h.keys("down enter");
+        assert!(h.update(|console, _, _| console.overlay_is(SHEET)));
+        h.update(|console, _, _| {
+            let values = &console.state::<State>().sheet.as_ref().expect("open").values;
+            assert_eq!(values.len(), 2);
+            assert!(values.iter().all(|(_, _, at)| at.is_some()), "each finds its tag");
+        });
+        h.keys("escape");
+        assert!(!h.update(|console, _, _| console.overlay_is(SHEET)));
+        // L asks, Enter loads.
+        h.draw();
+        h.keys("l");
+        assert!(h.update(|console, _, _| console.overlay_is(LOAD)));
+        h.draw();
+        h.keys("enter");
+        let load = sent(&h.calls(), "data.recipes.load").expect("the load is sent");
+        assert_eq!(load.arg, 4);
+        h.reply(
+            load,
+            Reply::ok((
+                "Summer".to_owned(),
+                "plts_1".to_owned(),
+                RecipeLoad {
+                    ok: true,
+                    command_ids: vec!["cmd_a".into(), "cmd_b".into()],
+                    message: "Recipe load queued: 2 commands".into(),
+                },
+            )),
+        );
+        let follow = sent(&h.calls(), "data.recipes.commands").expect("its commands");
+        let command = |id: &str, status: &str| {
+            (
+                id.to_owned(),
+                QueuedCommand {
+                    id: id.into(),
+                    status: status.into(),
+                    ..QueuedCommand::default()
+                },
+            )
+        };
+        h.reply(
+            follow,
+            Reply::ok(vec![command("cmd_a", "acked"), command("cmd_b", "failed")]),
+        );
+        h.draw();
+        let tallied = h.update(|console, _, _| {
+            let run = console.state::<State>().load.as_ref().expect("followed");
+            tally(&run.ids, &run.commands)
+        });
+        assert_eq!((tallied.acked, tallied.failed, tallied.done), (1, 1, true));
+        // The ids lead to the Commands page.
+        h.update(open_commands);
+        assert_eq!(h.update(|console, _, _| console.page), Page::Commands);
+    }
+
+    #[gpui::test]
+    fn recipes_are_for_operators_only(cx: &mut gpui::TestAppContext) {
+        assert!(
+            !visible(SECTIONS, Some(Role::Any))
+                .iter()
+                .any(|spec| spec.id == ID),
+            "the server's recipe routes are all operator routes"
+        );
+        let mut h = signed_in(cx, "viewer");
+        h.update(|console, window, cx| {
+            open_new(console, window, cx);
+            ask_load(console, summer(), window, cx);
+            ask_delete(console, summer(), window, cx);
+        });
+        assert!(h.update(|console, _, _| console.overlay.is_none()));
+        assert!(h.calls().is_empty(), "nothing is asked of the server");
+    }
+
 
     #[test]
     fn a_retry_replaces_the_failed_command_it_retries() {

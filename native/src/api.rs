@@ -20,8 +20,17 @@ pub use reqwest::Method;
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 
+pub mod admin;
+pub mod eng_edr;
+pub mod eng_flows;
+pub mod eng_imports;
+pub mod eng_mqtt;
+pub mod eng_scripts;
+pub mod eng_snapshots;
+pub mod eng_system;
 pub mod insights;
 pub mod ops;
+pub mod protocols;
 
 /// A request the server answered with an error status.
 #[derive(Debug, Clone)]

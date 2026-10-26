@@ -42,6 +42,7 @@ impl Harness {
             stress: None,
             screen: None,
             edit: false,
+            section: None,
             utc_offset: UtcOffset::UTC,
             appearance: Some(true),
         };

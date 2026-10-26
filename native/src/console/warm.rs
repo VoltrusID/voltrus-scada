@@ -1,28 +1,39 @@
 //! Warming the pages after sign-in: each page the user may open is drawn
-//! once, hidden behind the shown one, one page per frame. Its view is made
-//! and kept, its fonts are loaded and its text shaped, so the first switch
-//! to it is as quick as any later one. The meter keeps these frames out of
-//! its figures (they are the price of signing in, reported apart).
+//! once, out of sight, one page per frame. It is rendered, laid out,
+//! prepainted and painted like a shown page, at the page's size and place
+//! but fully transparent and under a layer that takes the mouse: its view
+//! is made and kept, its fonts loaded, its text shaped and its glyphs and
+//! icons rasterized into the atlas (GPUI skips glyphs outside the clip, so
+//! a clipped page would leave that work to its first show). The first
+//! switch to it then costs what any later one does. The meter keeps these
+//! frames out of its figures and reports each page's warm-up apart.
 
 use gpui::prelude::*;
-use gpui::{AnyElement, AnyView, Context, Entity, Visibility, Window, div};
-use vt_ui::theme::{STATUS_BAR_HEIGHT, TITLE_BAR_HEIGHT};
+use gpui::{AnyElement, AnyView, Context, Entity, Pixels, Size, Window, div};
+use vt_ui::theme::TITLE_BAR_HEIGHT;
 
 use super::views::cached::CachedView;
 use super::{Console, Phase, pages};
 
-/// A page view laid out where pages go but not painted. Put it before the
-/// shown page, so that nothing in it sits above the page for the mouse.
-pub(crate) fn hidden(view: Entity<CachedView>) -> AnyElement {
-    let mut layer = div()
+/// A page view drawn in full where pages go, `size` large, transparent,
+/// with a layer over it that takes every mouse event: nothing of it is
+/// seen, hovered or clicked. Put it before the shown page.
+pub(crate) fn hidden(view: Entity<CachedView>, size: Size<Pixels>) -> AnyElement {
+    div()
         .absolute()
         .top(TITLE_BAR_HEIGHT)
         .left_0()
-        .right_0()
-        .bottom(STATUS_BAR_HEIGHT);
-    layer.style().visibility = Some(Visibility::Hidden);
-    layer
-        .child(AnyView::from(view).cached(div().size_full().style().clone()))
+        .w(size.width)
+        .h(size.height)
+        .child(
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .opacity(0.0)
+                .child(AnyView::from(view).cached(div().size_full().style().clone())),
+        )
+        .child(div().id("warm-shield").absolute().inset_0().occlude())
         .into_any_element()
 }
 
@@ -32,7 +43,7 @@ impl Console {
         self.warm = pages::PAGES
             .iter()
             .rev()
-            .filter(|spec| spec.page != self.page && self.allows(spec.role))
+            .filter(|spec| spec.page != self.page && pages::opens(spec, self.role()))
             .map(|spec| spec.page)
             .collect();
         self.meter.borrow_mut().set_warming(!self.warm.is_empty());
@@ -53,9 +64,9 @@ impl Console {
             self.meter.borrow_mut().set_warming(false);
             return None;
         };
-        // Drawn hidden, it was rendered but not painted: the switch to it
-        // notifies the console, so its view draws afresh then rather than
-        // replaying this frame.
+        // Drawn transparent, its cached frame is not the one to replay: the
+        // switch to it notifies the console, so its view draws afresh in
+        // the page slot.
         window.request_animation_frame();
         Some(self.page_view(page, cx))
     }
