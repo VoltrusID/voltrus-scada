@@ -80,7 +80,9 @@ struct State {
     quick: QuickStep,
     fields: Option<Fields>,
     error: Option<String>,
-    creating: bool,
+    /// The mode a create is in flight for: its reply lands there, and the
+    /// mode and step stay put until it does.
+    creating: Option<Mode>,
     create_seq: i64,
     /// The full wizard's answer, and the quick start's.
     result: Option<WizardResult>,
@@ -187,21 +189,13 @@ pub(super) fn on_reply(
             if key.arg != state.create_seq {
                 return;
             }
-            state.creating = false;
+            let Some(mode) = state.creating.take() else {
+                return;
+            };
             match reply.take::<WizardResult>() {
                 Ok(result) => {
-                    state.error = None;
                     let device = result.device_id.clone();
-                    match state.mode {
-                        Mode::Full => {
-                            state.result = Some(result);
-                            state.step = WizardStep::Result;
-                        }
-                        Mode::Quick => {
-                            state.quick_result = Some(result);
-                            state.quick = QuickStep::Results;
-                        }
-                    }
+                    file_result(state, mode, result);
                     console.refresh_tags();
                     console.show_toast(format!("Project set up on device {device}"), false, cx);
                 }
@@ -209,6 +203,21 @@ pub(super) fn on_reply(
             }
         }
         _ => {}
+    }
+}
+
+/// Files a create answer under the mode that asked, not the one showing.
+fn file_result(state: &mut State, mode: Mode, result: WizardResult) {
+    state.error = None;
+    match mode {
+        Mode::Full => {
+            state.result = Some(result);
+            state.step = WizardStep::Result;
+        }
+        Mode::Quick => {
+            state.quick_result = Some(result);
+            state.quick = QuickStep::Results;
+        }
     }
 }
 
@@ -368,6 +377,9 @@ pub(super) fn focus(console: &mut Console, window: &mut Window, cx: &mut Context
 /// other mode.
 pub(super) fn cycle(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
     let state = console.state::<State>();
+    if state.creating.is_some() {
+        return;
+    }
     if state.mode == Mode::Full && state.step == WizardStep::Template {
         let source = match state.draft.source {
             TemplateSource::Vertical => TemplateSource::Feed,
@@ -385,6 +397,9 @@ pub(super) fn cycle(console: &mut Console, window: &mut Window, cx: &mut Context
 
 fn set_mode(console: &mut Console, mode: Mode, window: &mut Window, cx: &mut Context<Console>) {
     let state = console.state::<State>();
+    if state.creating.is_some() {
+        return;
+    }
     state.mode = mode;
     state.error = None;
     focus(console, window, cx);
@@ -446,6 +461,9 @@ fn next(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
 fn back(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> bool {
     collect(console, cx);
     let state = console.state::<State>();
+    if state.creating.is_some() {
+        return false;
+    }
     let moved = match state.mode {
         Mode::Quick => match state.quick {
             QuickStep::Connect => false,
@@ -476,7 +494,7 @@ fn back(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -
 
 fn send_create(console: &mut Console, config: WizardConfig) {
     let state = console.state::<State>();
-    state.creating = true;
+    state.creating = Some(state.mode);
     state.error = None;
     state.create_seq += 1;
     let seq = state.create_seq;
@@ -496,7 +514,7 @@ fn create(console: &mut Console, cx: &mut Context<Console>) {
         return;
     }
     let state = console.state::<State>();
-    if state.creating {
+    if state.creating.is_some() {
         return;
     }
     match state.draft.config() {
@@ -512,7 +530,7 @@ fn quick_connect(console: &mut Console, cx: &mut Context<Console>) {
         return;
     }
     let state = console.state::<State>();
-    if state.creating {
+    if state.creating.is_some() {
         return;
     }
     let Some(fields) = &state.fields else {
@@ -914,7 +932,7 @@ fn quick(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> An
     let state = console.state::<State>();
     let (step, creating, error, result) = (
         state.quick,
-        state.creating,
+        state.creating.is_some(),
         state.error.clone(),
         state.quick_result.clone(),
     );
@@ -1175,7 +1193,7 @@ fn full(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -
     let (step, draft, creating, error, result) = (
         state.step,
         state.draft.clone(),
-        state.creating,
+        state.creating.is_some(),
         state.error.clone(),
         state.result.clone(),
     );
@@ -1744,5 +1762,21 @@ mod tests {
             voltrus_scada_native::api::eng_system::protocol(state.draft.protocol).port,
             502
         );
+    }
+
+    #[test]
+    fn create_answer_lands_under_the_mode_that_asked() {
+        let mut state = State {
+            mode: Mode::Full,
+            ..State::default()
+        };
+        file_result(&mut state, Mode::Quick, WizardResult::default());
+        assert!(state.quick_result.is_some());
+        assert_eq!(state.quick, QuickStep::Results);
+        assert!(
+            state.result.is_none(),
+            "not filed under the showing Full mode"
+        );
+        assert_ne!(state.step, WizardStep::Result);
     }
 }

@@ -17,7 +17,8 @@
 //! the mapping, ↑↓ choose a field, ←→ or Space its column, ⌫ unmap it.
 
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use gpui::prelude::*;
 use gpui::{
@@ -114,6 +115,9 @@ struct DataWizard {
     /// Why the mapping starts as it does.
     note: Option<String>,
     dry: Option<ImportResult>,
+    /// The bytes the latest detect or dry run sent: the import sends these
+    /// same bytes, never a re-read of a file that may have changed since.
+    upload: Arc<OnceLock<Vec<u8>>>,
     report: Option<ImportResult>,
     busy: bool,
     error: Option<String>,
@@ -463,6 +467,9 @@ fn choose_file(console: &mut Console, cx: &mut Context<Console>) {
     if wizard == Wizard::Data && !may_import_data(console.role()) {
         return;
     }
+    if busy(console) {
+        return;
+    }
     let token = next_seq();
     console.state::<State>().prompt = token;
     let prompt = cx.prompt_for_paths(PathPromptOptions {
@@ -484,7 +491,7 @@ fn choose_file(console: &mut Console, cx: &mut Context<Console>) {
             match chosen {
                 Ok(Ok(Some(paths))) => {
                     if let Some(path) = paths.into_iter().next() {
-                        accept_path(console, path, cx);
+                        picked(console, wizard, path, cx);
                     }
                 }
                 Ok(Err(error)) => {
@@ -497,8 +504,37 @@ fn choose_file(console: &mut Console, cx: &mut Context<Console>) {
     .detach();
 }
 
+/// The open panel's answer: for the wizard that asked, not whichever
+/// shows now (the operator may have switched while the panel was open).
+fn picked(console: &mut Console, asked: Wizard, path: PathBuf, cx: &mut Context<Console>) {
+    if console.state::<State>().wizard != asked {
+        let name = match asked {
+            Wizard::Data => "data",
+            Wizard::NodeRed => "Node-RED",
+        };
+        console.show_toast(
+            format!("The file was chosen for the {name} import: open it there again"),
+            true,
+            cx,
+        );
+        return;
+    }
+    accept_path(console, path, cx);
+}
+
+/// A request of either wizard is in flight: a new file would drop its
+/// answer (a report lost, an import that can run again).
+fn busy(console: &mut Console) -> bool {
+    let state = console.state::<State>();
+    state.data.busy || state.flows.busy
+}
+
 /// A chosen or dropped file: the wizard on screen starts over with it.
 fn accept_path(console: &mut Console, path: PathBuf, cx: &mut Context<Console>) {
+    if busy(console) {
+        console.show_toast("Wait for the current import step to finish", true, cx);
+        return;
+    }
     let name = path
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -666,6 +702,14 @@ fn send_data(console: &mut Console, name: &'static str, cx: &mut Context<Console
         mapping: (name != "data.imports.detect").then_some(data.mapping),
     };
     let path = chosen.path.clone();
+    let file_name = chosen.name.clone();
+    // Detect and dry run read the file and keep its bytes; the import
+    // sends exactly those.
+    let run = name == "data.imports.run";
+    if !run {
+        data.upload = Arc::default();
+    }
+    let upload = data.upload.clone();
     data.seq = next_seq();
     data.busy = true;
     data.error = None;
@@ -673,10 +717,28 @@ fn send_data(console: &mut Console, name: &'static str, cx: &mut Context<Console
     console.call(
         CallKey::new(name).with(seq),
         Call::new(move |api| async move {
-            let (file_name, bytes) = read_upload(&path, DATA_LIMIT)?;
-            api.import_data(&request, &file_name, &bytes).await
+            let bytes = upload_bytes(&upload, &path, run)?;
+            api.import_data(&request, &file_name, bytes).await
         }),
     );
+}
+
+/// The bytes to send: a detect or dry run reads `path` and keeps them in
+/// `upload`; the import takes the kept ones, so it imports exactly what
+/// the dry run checked.
+fn upload_bytes<'a>(
+    upload: &'a OnceLock<Vec<u8>>,
+    path: &Path,
+    run: bool,
+) -> anyhow::Result<&'a [u8]> {
+    if run {
+        return upload
+            .get()
+            .map(Vec::as_slice)
+            .ok_or_else(|| anyhow::anyhow!("Run the dry run again before importing"));
+    }
+    let (_, bytes) = read_upload(path, DATA_LIMIT)?;
+    Ok(upload.get_or_init(|| bytes))
 }
 
 /// ↵, the Next button.
@@ -2656,5 +2718,132 @@ mod tests {
         );
         assert_eq!(warning_row(&result.warnings, 2), None);
         assert_eq!(warning_row(&[], 0), None);
+    }
+}
+
+#[cfg(test)]
+mod harness_tests {
+    use super::*;
+    use crate::console::testing::Harness;
+
+    fn temp_csv(tag: &str, body: &[u8]) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "voltrus-native-imports-{tag}-{}.csv",
+            std::process::id()
+        ));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+
+    /// At the dry run's result with `path` chosen and its bytes kept.
+    fn at_dry_run(console: &mut Console, path: &Path) {
+        let data = &mut console.state::<State>().data;
+        data.file = Some((
+            Chosen {
+                path: path.to_path_buf(),
+                name: "plant.csv".into(),
+                size: 3,
+            },
+            FileKind::Csv,
+        ));
+        data.step = DataStep::DryRun;
+        data.dry = Some(ImportResult::default());
+        let _ = data.upload.set(b"a,1".to_vec());
+    }
+
+    #[gpui::test]
+    fn a_file_dropped_during_the_import_keeps_its_report(cx: &mut gpui::TestAppContext) {
+        let first = temp_csv("drop-a", b"a,1");
+        let second = temp_csv("drop-b", b"b,2");
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, _, cx| {
+            at_dry_run(console, &first);
+            next_data(console, cx);
+        });
+        let seq = h.update(|console, _, _| console.state::<State>().data.seq);
+        assert!(
+            h.calls()
+                .contains(&CallKey::new("data.imports.run").with(seq))
+        );
+        // A drop (or the open panel's answer) while it runs.
+        h.update(|console, _, cx| accept_path(console, second.clone(), cx));
+        h.reply(
+            CallKey::new("data.imports.run").with(seq),
+            Reply::ok(ImportOutcome::Done(ImportResult {
+                total_rows: 1,
+                imported: 1,
+                ..ImportResult::default()
+            })),
+        );
+        h.draw();
+        h.update(|console, _, _| {
+            let data = &console.state::<State>().data;
+            assert_eq!(data.step, DataStep::Report);
+            assert_eq!(data.report.as_ref().map(|report| report.imported), Some(1));
+            assert_eq!(
+                data.file.as_ref().map(|(chosen, _)| chosen.path.clone()),
+                Some(first.clone())
+            );
+        });
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&second);
+    }
+
+    #[gpui::test]
+    fn a_flows_preview_in_flight_ignores_a_dropped_file(cx: &mut gpui::TestAppContext) {
+        let path = temp_csv("busy-flows", b"a,1");
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, _, cx| {
+            let state = console.state::<State>();
+            state.wizard = Wizard::Data;
+            state.flows.busy = true;
+            accept_path(console, path.clone(), cx);
+            assert!(console.state::<State>().data.file.is_none());
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[gpui::test]
+    fn a_picked_file_goes_to_the_wizard_that_asked(cx: &mut gpui::TestAppContext) {
+        let path = temp_csv("picked", b"tag,value\na,1\n");
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, _, cx| {
+            // Asked from the data wizard, answered after a switch.
+            console.state::<State>().wizard = Wizard::NodeRed;
+            picked(console, Wizard::Data, path.clone(), cx);
+            let state = console.state::<State>();
+            assert!(state.flows.file.is_none());
+            assert!(state.flows.error.is_none(), "no flows-file complaint");
+            assert!(state.data.file.is_none());
+            // Answered with the asking wizard on screen.
+            state.wizard = Wizard::Data;
+            picked(console, Wizard::Data, path.clone(), cx);
+            assert!(console.state::<State>().data.file.is_some());
+        });
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_import_sends_the_bytes_the_dry_run_checked() {
+        let path = temp_csv("kept", b"tag,value\na,1\n");
+        let upload = OnceLock::new();
+        assert!(
+            upload_bytes(&upload, &path, true).is_err(),
+            "no dry run yet"
+        );
+        assert_eq!(
+            upload_bytes(&upload, &path, false).unwrap(),
+            b"tag,value\na,1\n"
+        );
+        // Edited on disk after the dry run.
+        std::fs::write(&path, b"tag,value\nb,999\n").unwrap();
+        assert_eq!(
+            upload_bytes(&upload, &path, true).unwrap(),
+            b"tag,value\na,1\n"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -212,6 +212,9 @@ pub fn validate_meta(id: &str, name: &str, taken: Option<&[Flow]>) -> Result<(),
     if id.is_empty() || name.trim().is_empty() {
         return Err("ID and name required".into());
     }
+    if id == "." || id == ".." {
+        return Err("The ID can't be . or ..".into());
+    }
     if let Some(flows) = taken {
         if !id
             .chars()
@@ -1480,6 +1483,8 @@ mod tests {
         assert!(validate_meta("a", " ", None).is_err());
         assert!(validate_meta("flow_1761390000000", "x", Some(&flows)).is_err());
         assert!(validate_meta("a/b", "x", Some(&flows)).is_err());
+        assert!(validate_meta(".", "x", Some(&flows)).is_err());
+        assert!(validate_meta("..", "x", Some(&flows)).is_err());
         assert!(validate_meta("flow_2", "x", Some(&flows)).is_ok());
         assert!(
             validate_meta("flow_1761390000000", "x", None).is_ok(),

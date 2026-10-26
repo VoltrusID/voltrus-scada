@@ -75,6 +75,10 @@ struct State {
     preview: Option<Result<TemplatePreview, String>>,
     preview_seq: i64,
     previewing: bool,
+    /// What the preview in flight asks for, and what the one shown was
+    /// asked for: the confirmation's counts hold only for the same ask.
+    preview_asked: Option<PreviewBody>,
+    preview_for: Option<PreviewBody>,
     fields: Option<Fields>,
     note: Option<Result<String, String>>,
     /// The instance waiting for the confirmation.
@@ -190,6 +194,7 @@ fn send_preview(console: &mut Console, cx: &gpui::App) {
     match PreviewBody::new(&selected.id, &text) {
         Ok(body) => {
             state.preview_seq += 1;
+            state.preview_asked = Some(body.clone());
             state.previewing = true;
             state.note = None;
             let seq = state.preview_seq;
@@ -440,6 +445,7 @@ pub(super) fn on_reply(
             if key.arg == state.preview_seq {
                 state.previewing = false;
                 state.preview = Some(reply.take::<TemplatePreview>());
+                state.preview_for = state.preview_asked.take();
             }
         }
         "data.system.templates.instantiate" => {
@@ -1239,15 +1245,7 @@ fn confirm_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
         || body.template_id.clone(),
         |selected| selected.name.clone(),
     );
-    let counts = match &state.preview {
-        Some(Ok(preview)) => format!(
-            "{} tags, {} alarm limits and {} flow rules (disabled)",
-            preview.expanded_tags.len(),
-            preview.expanded_alarms.len(),
-            preview.flows.len()
-        ),
-        _ => "the template's tags, alarm limits and flow rules (disabled)".to_owned(),
-    };
+    let counts = confirm_counts(state.preview.as_ref(), state.preview_for.as_ref(), &body);
     let focus = state.confirm_focus.clone();
     let device = instance_device_id(&body.name);
     div()
@@ -1336,4 +1334,48 @@ fn confirm_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
                 ),
         )
         .into_any_element()
+}
+
+/// What the confirmation says the instance makes: the preview's counts
+/// when it was asked for this template and instance count, else in words.
+fn confirm_counts(
+    preview: Option<&Result<TemplatePreview, String>>,
+    asked: Option<&PreviewBody>,
+    body: &InstantiateBody,
+) -> String {
+    let same = asked.is_some_and(|asked| {
+        asked.template_id == body.template_id && asked.instance_counts == body.instance_counts
+    });
+    match preview {
+        Some(Ok(preview)) if same => format!(
+            "{} tags, {} alarm limits and {} flow rules (disabled)",
+            preview.expanded_tags.len(),
+            preview.expanded_alarms.len(),
+            preview.flows.len()
+        ),
+        _ => "the template's tags, alarm limits and flow rules (disabled)".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_confirmation_counts_only_the_instances_previewed() {
+        let preview = Ok(TemplatePreview {
+            template_id: "car_wash".to_owned(),
+            ..TemplatePreview::default()
+        });
+        let asked = PreviewBody::new("car_wash", "2").unwrap();
+        let same = InstantiateBody::new("car_wash", "Bay", "2").unwrap();
+        let more = InstantiateBody::new("car_wash", "Bay", "5").unwrap();
+        assert!(confirm_counts(Some(&preview), Some(&asked), &same).starts_with("0 tags"));
+        assert_eq!(
+            confirm_counts(Some(&preview), Some(&asked), &more),
+            "the template's tags, alarm limits and flow rules (disabled)",
+            "typed 5 after previewing 2"
+        );
+        assert!(!confirm_counts(Some(&preview), None, &same).starts_with("0 tags"));
+    }
 }

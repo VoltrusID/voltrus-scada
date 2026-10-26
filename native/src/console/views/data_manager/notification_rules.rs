@@ -49,8 +49,6 @@ const TARGETS: f32 = 250.0;
 const STATE: f32 = 56.0;
 const TESTED: f32 = 190.0;
 const ACTIONS: f32 = 96.0;
-/// The form's test answers under this argument; rules under their id.
-const FORM_TEST: i64 = 0;
 
 struct Form {
     /// The rule being edited; `None` for a new one.
@@ -63,7 +61,23 @@ struct Form {
     busy: bool,
     testing: bool,
     test: Option<Result<TestOutcome, String>>,
+    /// This form's number: its save's key, so an older form's answer
+    /// leaves it alone.
+    seq: i64,
+    /// The test the form waits for (`data.notifications.form-test`); a
+    /// new channel or new targets drop it.
+    test_seq: Option<i64>,
     _subscriptions: Vec<Subscription>,
+}
+
+impl Form {
+    /// Drops the last form test and any on its way: it went to another
+    /// channel or other targets.
+    fn forget_test(&mut self) {
+        self.test = None;
+        self.testing = false;
+        self.test_seq = None;
+    }
 }
 
 #[derive(Default)]
@@ -73,6 +87,8 @@ pub(crate) struct State {
     search: Option<Entity<TextInput>>,
     _search: Option<Subscription>,
     form: Option<Form>,
+    /// Numbers forms and form tests.
+    seq: i64,
     deleting: Option<NotificationRule>,
     /// The last test of each rule, by id.
     tests: HashMap<i64, Result<TestOutcome, String>>,
@@ -234,13 +250,18 @@ fn open_form(
             InputEvent::Changed => {
                 if let Some(form) = console.state::<State>().form.as_mut() {
                     form.error = None;
+                    // The last test went to the old targets.
+                    form.forget_test();
                 }
                 cx.notify();
             }
             InputEvent::Blurred => {}
         },
     ));
-    console.state::<State>().form = Some(Form {
+    let state = console.state::<State>();
+    state.seq += 1;
+    let seq = state.seq;
+    state.form = Some(Form {
         original,
         source_key: source_key.clone(),
         targets,
@@ -250,6 +271,8 @@ fn open_form(
         busy: false,
         testing: false,
         test: None,
+        seq,
+        test_seq: None,
         _subscriptions: subscriptions,
     });
     kit::remember_window(console, window);
@@ -318,7 +341,10 @@ fn test_rule(console: &mut Console, rule: &NotificationRule, cx: &mut Context<Co
 
 /// The form's Test: the targets as typed, before saving.
 fn test_form(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
-    let Some(form) = console.state::<State>().form.as_mut() else {
+    let state = console.state::<State>();
+    state.seq += 1;
+    let seq = state.seq;
+    let Some(form) = state.form.as_mut() else {
         return;
     };
     if form.testing {
@@ -331,6 +357,7 @@ fn test_form(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
             form.testing = true;
             form.test = None;
             form.error = None;
+            form.test_seq = Some(seq);
             let probe = NotificationRule {
                 source_key: key.trim().to_owned(),
                 channel_type: form.channel.to_owned(),
@@ -338,7 +365,7 @@ fn test_form(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
                 ..NotificationRule::default()
             };
             console.call(
-                CallKey::new("data.notifications.test").with(FORM_TEST),
+                CallKey::new("data.notifications.form-test").with(seq),
                 Call::send::<TestOutcome>(
                     Method::POST,
                     "/api/v1/notifications/test",
@@ -402,6 +429,7 @@ fn submit(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
         Ok(body) => {
             form.busy = true;
             form.error = None;
+            let seq = form.seq;
             let call = match &form.original {
                 Some(rule) => Call::send::<IgnoredAny>(
                     Method::PUT,
@@ -412,7 +440,7 @@ fn submit(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
                     Call::send::<IgnoredAny>(Method::POST, "/api/v1/notifications/settings", body)
                 }
             };
-            console.call(CallKey::new("data.notifications.save"), call);
+            console.call(CallKey::new("data.notifications.save").with(seq), call);
         }
         Err(error) => form.error = Some(error),
     }
@@ -424,30 +452,38 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
         "data.notifications.list" => {
             console.state::<State>().rules = Some(reply.take::<Vec<NotificationRule>>());
         }
-        "data.notifications.save" => match reply.take::<IgnoredAny>() {
-            Ok(_) => {
-                let saved = console
-                    .state::<State>()
-                    .form
-                    .take()
-                    .map(|form| form.original.is_some());
-                kit::close_later(console, FORM, cx);
-                fetch(console, true);
-                let verb = if saved == Some(true) {
-                    "Saved"
-                } else {
-                    "Added"
-                };
-                console.show_toast(format!("{verb} the notification rule"), false, cx);
-            }
-            Err(error) => match console.state::<State>().form.as_mut() {
-                Some(form) => {
-                    form.busy = false;
-                    form.error = Some(error);
+        "data.notifications.save" => {
+            let state = console.state::<State>();
+            let current = state.form.as_ref().is_some_and(|form| form.seq == key.arg);
+            match reply.take::<IgnoredAny>() {
+                Ok(_) => {
+                    // A form opened since then keeps its edits.
+                    let saved = if current {
+                        let form = state.form.take();
+                        kit::close_later(console, FORM, cx);
+                        form.map(|form| form.original.is_some())
+                    } else {
+                        None
+                    };
+                    fetch(console, true);
+                    let verb = if saved == Some(false) {
+                        "Added"
+                    } else {
+                        "Saved"
+                    };
+                    console.show_toast(format!("{verb} the notification rule"), false, cx);
                 }
-                None => console.show_toast(format!("Saving the rule failed: {error}"), true, cx),
-            },
-        },
+                Err(error) => match state.form.as_mut().filter(|_| current) {
+                    Some(form) => {
+                        form.busy = false;
+                        form.error = Some(error);
+                    }
+                    None => {
+                        console.show_toast(format!("Saving the rule failed: {error}"), true, cx);
+                    }
+                },
+            }
+        }
         "data.notifications.switch" => {
             console.state::<State>().busy.retain(|id| *id != key.arg);
             match reply.take::<bool>() {
@@ -460,20 +496,28 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 }
             }
         }
+        "data.notifications.form-test" => {
+            let outcome = reply.take::<TestOutcome>();
+            // Only the test the form still waits for: not one sent before
+            // the channel or targets changed, nor an older form's.
+            if let Some(form) = console
+                .state::<State>()
+                .form
+                .as_mut()
+                .filter(|form| form.test_seq == Some(key.arg))
+            {
+                form.testing = false;
+                form.test_seq = None;
+                form.test = Some(outcome);
+            }
+        }
         "data.notifications.test" => {
             let outcome = reply.take::<TestOutcome>();
             let (line, ok) = outcome_line(&outcome);
             let state = console.state::<State>();
-            if key.arg == FORM_TEST {
-                if let Some(form) = state.form.as_mut() {
-                    form.testing = false;
-                    form.test = Some(outcome);
-                }
-            } else {
-                state.busy.retain(|id| *id != key.arg);
-                state.tests.insert(key.arg, outcome);
-                console.show_toast(format!("Test: {line}"), !ok, cx);
-            }
+            state.busy.retain(|id| *id != key.arg);
+            state.tests.insert(key.arg, outcome);
+            console.show_toast(format!("Test: {line}"), !ok, cx);
         }
         "data.notifications.delete" => match reply.take::<IgnoredAny>() {
             Ok(_) => {
@@ -838,7 +882,7 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
                 cx.listener(move |console, _, _, cx| {
                     if let Some(form) = console.state::<State>().form.as_mut() {
                         form.channel = id;
-                        form.test = None;
+                        form.forget_test();
                         form.error = None;
                     }
                     cx.notify();
@@ -959,7 +1003,107 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::console::testing::Harness;
+    use gpui::TestAppContext;
     use voltrus_scada_native::api::admin::TestResult;
+
+    fn set_targets(h: &mut Harness, text: &'static str) {
+        h.update(|console, window, cx| {
+            let targets = console
+                .state::<State>()
+                .form
+                .as_ref()
+                .map(|form| form.targets.clone())
+                .expect("the form is open");
+            targets.update(cx, |area, cx| {
+                area.replace_text_in_range(None, text, window, cx);
+            });
+        });
+    }
+
+    fn sent_once() -> Reply {
+        Reply::ok(TestOutcome {
+            channel: "email".into(),
+            results: vec![TestResult {
+                to: Some("ops@example.com".into()),
+                status: "sent".into(),
+                ..TestResult::default()
+            }],
+        })
+    }
+
+    #[gpui::test]
+    fn a_form_test_for_old_targets_does_not_land_on_new_ones(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| open_form(console, None, window, cx));
+        set_targets(&mut h, "ops@example.com");
+        h.update(test_form);
+        let sent = *h
+            .calls()
+            .iter()
+            .find(|key| key.name == "data.notifications.form-test")
+            .expect("tested");
+        // New targets while the test is on its way.
+        set_targets(&mut h, "other@example.com");
+        h.reply(sent, sent_once());
+        h.draw();
+        assert!(
+            h.update(|console, _, _| {
+                let form = console.state::<State>().form.as_ref().expect("open");
+                form.test.is_none() && !form.testing
+            }),
+            "the old answer is dropped"
+        );
+        // The form's own test still lands.
+        h.update(test_form);
+        let again = *h
+            .calls()
+            .iter()
+            .find(|key| key.name == "data.notifications.form-test")
+            .expect("tested again");
+        assert_ne!(again, sent);
+        h.reply(again, sent_once());
+        assert!(h.update(|console, _, _| {
+            console
+                .state::<State>()
+                .form
+                .as_ref()
+                .is_some_and(|form| form.test.as_ref().is_some_and(Result::is_ok))
+        }));
+    }
+
+    #[gpui::test]
+    fn an_older_forms_save_answer_leaves_the_new_form_alone(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| open_form(console, None, window, cx));
+        set_targets(&mut h, "ops@example.com");
+        h.update(submit);
+        let first = *h
+            .calls()
+            .iter()
+            .find(|key| key.name == "data.notifications.save")
+            .expect("saved");
+        h.update(|console, window, cx| {
+            console.close_overlay(window, cx);
+            open_form(console, None, window, cx);
+        });
+        h.reply(first, Reply::failed("refused"));
+        h.draw();
+        assert!(h.update(|console, _, _| {
+            let form = console.state::<State>().form.as_ref().expect("open");
+            form.error.is_none() && form.seq != first.arg
+        }));
+        h.reply(first, Reply::ok(IgnoredAny));
+        h.draw();
+        assert!(
+            h.update(
+                |console, _, _| console.overlay_is(FORM) && console.state::<State>().form.is_some()
+            ),
+            "the old success does not close the new form"
+        );
+    }
 
     #[test]
     fn a_test_reads_as_sent_counts_or_the_first_failure() {

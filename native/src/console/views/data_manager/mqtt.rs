@@ -54,6 +54,8 @@ const ROW: f32 = 34.0;
 const DETAIL: f32 = 360.0;
 /// The log shows the newest this many (the server keeps 500).
 const LOG_LIMIT: usize = 200;
+/// A payload shows at most this many lines; the rest are counted.
+const PAYLOAD_LINES: usize = 40;
 const OPERATORS: &str = "Operators only (admin, demo, integration)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -112,7 +114,8 @@ struct ConfigForm {
 struct State {
     tab: Tab,
     status: Option<Result<BrokerStatus, String>>,
-    topics: Option<Result<Topics, String>>,
+    /// Shared with each render's list closure without copying the topics.
+    topics: Option<Result<Rc<Topics>, String>>,
     messages: Option<Result<Messages, String>>,
     selected: Option<String>,
     topic_messages: Option<Result<TopicMessages, String>>,
@@ -137,6 +140,8 @@ struct State {
     topic: Option<Entity<TextInput>>,
     payload: Option<Entity<TextArea>>,
     _publish: Vec<Subscription>,
+    /// The current payload field's; replaced (not added to) with the field.
+    _payload: Option<Subscription>,
     publish_error: Option<String>,
     publishing: bool,
 }
@@ -506,7 +511,7 @@ fn new_payload(console: &mut Console, window: &mut Window, cx: &mut Context<Cons
     );
     let state = console.state::<State>();
     state.payload = Some(payload);
-    state._publish.push(subscription);
+    state._payload = Some(subscription);
 }
 
 fn ensure_publish(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
@@ -698,21 +703,29 @@ fn copy_client(
 
 // ── Replies ──────────────────────────────────────────────────────────────
 
+/// A status answer: a stopped broker leaves only the overview, but a failed
+/// poll keeps the tab the user is on.
+fn apply_status(state: &mut State, status: Result<BrokerStatus, String>) {
+    let stopped = matches!(&status, Ok(status) if !status.running());
+    state.status = Some(status);
+    if stopped && tab_blocked(state.tab, true, false).is_some() {
+        state.tab = Tab::Overview;
+    }
+}
+
 pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Context<Console>) {
+    // A dialog closed (Esc) before its answer: the error goes to a toast.
+    let config_open = console.overlay_is(CONFIG);
     let state = console.state::<State>();
     match key.name {
         "data.mqtt.status" => {
             if key.arg == state.status_seq {
-                state.status = Some(reply.take::<BrokerStatus>());
-                // A stopped broker leaves only the overview.
-                if tab_blocked(state.tab, true, state.running()).is_some() {
-                    state.tab = Tab::Overview;
-                }
+                apply_status(state, reply.take::<BrokerStatus>());
             }
         }
         "data.mqtt.topics" => {
             if key.arg == state.topics_seq {
-                state.topics = Some(reply.take::<Topics>());
+                state.topics = Some(reply.take::<Topics>().map(Rc::new));
             }
         }
         "data.mqtt.topic" => {
@@ -746,7 +759,7 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 console.show_toast(updated.message, false, cx);
                 fetch_status(console);
             }
-            Err(error) => match state.form.as_mut() {
+            Err(error) => match state.form.as_mut().filter(|_| config_open) {
                 Some(form) => {
                     form.saving = false;
                     form.error = Some(error);
@@ -843,6 +856,10 @@ fn ensure_search(console: &mut Console, window: &mut Window, cx: &mut Context<Co
 #[allow(clippy::too_many_lines)]
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     ensure_search(console, window, cx);
+    // A form closed with Esc keeps no password.
+    if !console.overlay_is(CONFIG) {
+        console.state::<State>().form = None;
+    }
     let theme = theme(cx).clone();
     let operator = console.is_operator();
     let state = console.state::<State>();
@@ -1184,8 +1201,15 @@ fn overview(
         .into_any_element()
 }
 
+/// The first `max` lines of `text` and how many more there are.
+fn capped_lines(text: &str, max: usize) -> (impl Iterator<Item = &str>, usize) {
+    let hidden = text.lines().count().saturating_sub(max);
+    (text.lines().take(max), hidden)
+}
+
 fn payload_block(payload: &str, theme: &Theme) -> Div {
     let (text, json) = model::pretty_payload(payload);
+    let (lines, hidden) = capped_lines(&text, PAYLOAD_LINES);
     div()
         .p(SPACE_4)
         .rounded(RADIUS_MD)
@@ -1193,11 +1217,14 @@ fn payload_block(payload: &str, theme: &Theme) -> Div {
         .font_family(MONO)
         .text_size(FONT_SMALL)
         .text_color(if json { theme.accent } else { theme.fg })
-        .children(
-            text.lines()
-                .map(|line| div().child(line.to_owned()))
-                .collect::<Vec<_>>(),
-        )
+        .children(lines.map(|line| div().child(line.to_owned())))
+        .when(hidden > 0, |this| {
+            this.child(
+                div()
+                    .text_color(theme.fg_dim)
+                    .child(format!("… {hidden} more lines")),
+            )
+        })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1209,9 +1236,9 @@ fn topics_tab(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let state = console.state::<State>();
     let selected = state.selected.clone();
     let (infos, error) = match &state.topics {
-        Some(Ok(topics)) => (Rc::<[model::TopicInfo]>::from(topics.topics.clone()), None),
-        Some(Err(error)) => (Rc::from(Vec::new()), Some(error.clone())),
-        None => (Rc::from(Vec::new()), None),
+        Some(Ok(topics)) => (Some(topics.clone()), None),
+        Some(Err(error)) => (None, Some(error.clone())),
+        None => (None, None),
     };
     let loaded = state.topics.is_some();
     let topic_messages = state.topic_messages.clone();
@@ -1228,7 +1255,7 @@ fn topics_tab(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     );
     let nav = console.list(TOPICS, cx);
     let (cursor, focused, scroll) = (nav.cursor, nav.focus.is_focused(window), nav.scroll.clone());
-    let total = infos.len();
+    let total = infos.as_ref().map_or(0, |topics| topics.topics.len());
 
     let left = if let Some(error) = error {
         ops_kit::notice(format!("Topics: {error}"), true, &theme)
@@ -1262,7 +1289,9 @@ fn topics_tab(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                             range
                                 .map(|index| match rows.get(index) {
                                     Some(line) => {
-                                        let info = line.topic.and_then(|at| infos.get(at));
+                                        let info = line.topic.and_then(|at| {
+                                            infos.as_ref().and_then(|topics| topics.topics.get(at))
+                                        });
                                         let picked =
                                             selected_row.as_deref() == Some(line.path.as_str());
                                         let path = line.path.clone();
@@ -1356,9 +1385,15 @@ fn topics_tab(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             .into_any_element()
     };
 
-    let info = selected
-        .as_ref()
-        .and_then(|topic| infos.iter().find(|info| &info.topic == topic).cloned());
+    let info = selected.as_ref().and_then(|topic| {
+        infos.as_ref().and_then(|topics| {
+            topics
+                .topics
+                .iter()
+                .find(|info| &info.topic == topic)
+                .cloned()
+        })
+    });
     let detail = match &selected {
         None => ops_kit::notice(
             "Pick a topic (↵) to see its last value and messages",
@@ -1951,5 +1986,128 @@ mod tests {
         assert!(state.running());
         state.status = Some(Err("down".into()));
         assert!(!state.running());
+    }
+
+    #[test]
+    fn a_failed_status_poll_keeps_the_tab() {
+        let mut state = State {
+            tab: Tab::Topics,
+            ..State::default()
+        };
+        apply_status(&mut state, Err("timeout".into()));
+        assert_eq!(state.tab, Tab::Topics, "a failed poll keeps the tab");
+        apply_status(
+            &mut state,
+            Ok(BrokerStatus {
+                status: "stopped".into(),
+                ..BrokerStatus::default()
+            }),
+        );
+        assert_eq!(
+            state.tab,
+            Tab::Overview,
+            "a stopped broker leaves the overview"
+        );
+    }
+
+    #[test]
+    fn a_payload_shows_capped_lines() {
+        let text = (0..100)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let (lines, hidden) = capped_lines(&text, PAYLOAD_LINES);
+        assert_eq!(lines.count(), PAYLOAD_LINES);
+        assert_eq!(hidden, 100 - PAYLOAD_LINES);
+        let (lines, hidden) = capped_lines("a\nb", PAYLOAD_LINES);
+        assert_eq!((lines.count(), hidden), (2, 0));
+    }
+
+    mod ui {
+        use super::super::*;
+        use crate::console::pages::Role;
+        use crate::console::testing::Harness;
+        use crate::console::views::data_manager::admin_kit;
+        use gpui::TestAppContext;
+
+        fn open(h: &mut Harness) {
+            h.sign_in("admin");
+            h.update(|console, window, cx| {
+                assert!(admin_kit::open_section(
+                    console,
+                    ID,
+                    Role::Any,
+                    "MQTT",
+                    window,
+                    cx
+                ));
+            });
+            h.draw();
+            h.calls();
+        }
+
+        #[gpui::test]
+        fn publishing_again_keeps_one_payload_subscription(cx: &mut TestAppContext) {
+            let mut h = Harness::new(cx);
+            open(&mut h);
+            h.update(ensure_publish);
+            let before = h.update(|console, _, _| console.state::<State>()._publish.len());
+            for _ in 0..3 {
+                h.update(new_payload);
+            }
+            h.update(|console, _, _| {
+                let state = console.state::<State>();
+                assert_eq!(state._publish.len(), before, "no subscription per publish");
+                assert!(state._payload.is_some());
+            });
+        }
+
+        #[gpui::test]
+        fn a_closed_config_form_keeps_no_password(cx: &mut TestAppContext) {
+            let mut h = Harness::new(cx);
+            open(&mut h);
+            h.update(open_config);
+            h.update(add_user);
+            h.update(|console, _, cx| {
+                let form = console
+                    .state::<State>()
+                    .form
+                    .as_ref()
+                    .expect("the form is open");
+                let password = form.users[0].1.clone();
+                password.update(cx, |field, cx| field.set_text("hunter2", cx));
+            });
+            h.update(|console, window, cx| console.close_overlay(window, cx));
+            h.draw();
+            assert!(
+                h.update(|console, _, _| console.state::<State>().form.is_none()),
+                "closing the dialog drops its passwords"
+            );
+        }
+
+        #[gpui::test]
+        fn a_late_save_error_is_shown(cx: &mut TestAppContext) {
+            let mut h = Harness::new(cx);
+            open(&mut h);
+            h.update(open_config);
+            h.update(|console, _, cx| save_config(console, cx));
+            let seq = h.update(|console, _, _| console.state::<State>().config_seq);
+            assert!(
+                h.calls()
+                    .contains(&CallKey::new("data.mqtt.config").with(seq))
+            );
+            h.update(|console, window, cx| console.close_overlay(window, cx));
+            h.reply(
+                CallKey::new("data.mqtt.config").with(seq),
+                Reply::failed("port 1883 in use"),
+            );
+            assert!(
+                h.update(|console, _, _| console
+                    .toasts
+                    .iter()
+                    .any(|toast| toast.error && toast.message.contains("port 1883 in use"))),
+                "the error reaches the user after the dialog closed"
+            );
+        }
     }
 }

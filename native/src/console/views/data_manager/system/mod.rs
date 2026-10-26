@@ -160,6 +160,11 @@ pub fn on_open(console: &mut Console, cx: &mut Context<Console>) {
     poll_while_shown(console, Page::DataManager, overview::EVERY, tick, cx);
 }
 
+/// After a config rollback: the documentation is asked for afresh.
+pub(crate) fn stale(console: &mut Console) {
+    docs::stale(console);
+}
+
 /// Every 5 s while the Data Manager is on screen: the host figures again,
 /// when this section and its System tab are the ones shown.
 fn tick(console: &mut Console, _: &mut Context<Console>) {

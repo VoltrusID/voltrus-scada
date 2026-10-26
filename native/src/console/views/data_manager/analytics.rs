@@ -224,6 +224,16 @@ fn fetch(console: &mut Console) {
     );
 }
 
+/// `R` and the refresh button: at the top level the range's window as of
+/// now, not the one first asked for; drilled in, the same bars again.
+fn refresh(console: &mut Console) {
+    let state = console.state::<State>();
+    if state.levels.is_empty() {
+        state.span = None;
+    }
+    fetch(console);
+}
+
 pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Context<Console>) {
     let state = console.state::<State>();
     match key.name {
@@ -460,7 +470,7 @@ fn export(console: &mut Console, cx: &mut Context<Console>) {
         return;
     }
     let name = format!("analytics_{metric}_{}.csv", time_now_secs());
-    insights_kit::save_text(name, buckets_csv(&buckets, &metric), cx);
+    insights_kit::save_text(console, name, buckets_csv(&buckets, &metric), cx);
 }
 
 /// The bucket whose middle is nearest `at` (Unix seconds).
@@ -571,7 +581,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         IconButton::new("analytics-refresh", Icon::RefreshCw)
             .tooltip("Fetch again  R")
             .on_click(cx.listener(|console, _, _, cx| {
-                fetch(console);
+                refresh(console);
                 cx.notify();
             }))
             .into_any_element(),
@@ -803,7 +813,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             set_mode(console, mode, cx);
         }))
         .on_action(cx.listener(|console, _: &AnalyticsRefresh, _, cx| {
-            fetch(console);
+            refresh(console);
             cx.notify();
         }))
         .on_action(cx.listener(|console, _: &AnalyticsExport, _, cx| export(console, cx)))
@@ -1548,6 +1558,30 @@ mod tests {
         h.keys("backspace");
         assert_eq!(state(&mut h), (0, Some(3600)), "back out, as it was");
         assert_eq!(h.update(|console, _, _| buckets_of(console).len()), 3);
+    }
+
+    #[gpui::test]
+    fn refresh_asks_for_the_window_as_of_now(cx: &mut gpui::TestAppContext) {
+        let mut h = signed_in(cx, "viewer");
+        open(&mut h, ID);
+        let first = sent(&h.calls(), "data.analytics.aggregate").expect("the buckets");
+        // As if the first ask was long ago.
+        h.update(|console, _, _| {
+            let state = console.state::<State>();
+            state.span = state.span.map(|span| Span {
+                from: span.from - 86_400,
+                to: span.to - 86_400,
+                ..span
+            });
+        });
+        h.update(|console, _, _| refresh(console));
+        let again = sent(&h.calls(), "data.analytics.aggregate").expect("asked again");
+        assert_eq!(again.arg, first.arg + 1);
+        let to = h.update(|console, _, _| console.state::<State>().span.map(|span| span.to));
+        assert!(
+            to.is_some_and(|to| to >= time_now_secs() - 60),
+            "the window ends now, not a day ago: {to:?}"
+        );
     }
 
     fn buckets(starts: &[i64]) -> Vec<Bucket> {

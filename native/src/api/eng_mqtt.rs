@@ -177,11 +177,21 @@ pub struct Published {
 
 // ── Forms ────────────────────────────────────────────────────────────────
 
-/// A broker user in the config form.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// A broker user in the config form. Debug redacts the password, so
+/// `ConfigDraft`'s derived Debug never prints one either.
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct UserDraft {
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for UserDraft {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UserDraft")
+            .field("username", &self.username)
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 /// The config form as typed.
@@ -210,10 +220,11 @@ impl ConfigDraft {
         }
     }
 
-    /// `PUT /api/v1/mqtt-broker/config`'s body, as the web form sends it:
-    /// port and max connections always, auth `enabled`, and `users` (named
-    /// ones only) when auth is on. The server rejects 0 for either number
-    /// and refuses while the broker runs; this checks the numbers first.
+    /// `PUT /api/v1/mqtt-broker/config`'s body: port and max connections
+    /// always, auth `enabled`, and `users` (named ones only) only when auth
+    /// is on and at least one user is named — the server replaces its user
+    /// list with whatever is sent, so an empty list would wipe the users.
+    /// A named user without a password is rejected.
     pub fn body(&self) -> Result<Value, String> {
         let port: u16 = self
             .port
@@ -233,13 +244,20 @@ impl ConfigDraft {
         }
         let mut auth = json!({ "enabled": self.auth });
         if self.auth {
-            let users: Vec<Value> = self
-                .users
-                .iter()
-                .filter(|user| !user.username.trim().is_empty())
-                .map(|user| json!({ "username": user.username.trim(), "password": user.password }))
-                .collect();
-            auth["users"] = Value::Array(users);
+            let mut users = Vec::new();
+            for user in &self.users {
+                let name = user.username.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                if user.password.is_empty() {
+                    return Err(format!("User \"{name}\" needs a password"));
+                }
+                users.push(json!({ "username": name, "password": user.password }));
+            }
+            if !users.is_empty() {
+                auth["users"] = Value::Array(users);
+            }
         }
         Ok(json!({ "port": port, "max_connections": max, "auth": auth }))
     }
@@ -538,6 +556,31 @@ mod tests {
             auth_enabled: false,
         });
         assert_eq!(back["auth"], json!({"enabled": false}));
+    }
+
+    #[test]
+    fn auth_without_named_users_omits_users_and_passwordless_users_fail() {
+        let mut draft = ConfigDraft::from_status(None);
+        draft.auth = true;
+        assert_eq!(draft.body().unwrap()["auth"], json!({"enabled": true}));
+        draft.users = vec![UserDraft::default()];
+        assert_eq!(draft.body().unwrap()["auth"], json!({"enabled": true}));
+        draft.users = vec![UserDraft {
+            username: "plc".into(),
+            password: String::new(),
+        }];
+        assert!(draft.body().is_err());
+    }
+
+    #[test]
+    fn config_draft_debug_redacts_passwords() {
+        let mut draft = ConfigDraft::from_status(None);
+        draft.users = vec![UserDraft {
+            username: "plc".into(),
+            password: "hunter2".into(),
+        }];
+        let shown = format!("{draft:?}");
+        assert!(shown.contains("plc") && !shown.contains("hunter2"));
     }
 
     #[test]

@@ -73,6 +73,8 @@ struct State {
     from: Option<i64>,
     to: Option<i64>,
     diff: Option<Result<DiffSummary, String>>,
+    /// `diff` as the sheet's lines, made once per answer.
+    diff_lines: Option<Result<Rc<[Line]>, String>>,
     comparing: bool,
     /// The newest diff and create requests; older answers are dropped.
     diff_seq: i64,
@@ -80,6 +82,8 @@ struct State {
     // One snapshot opened.
     detail_id: Option<i64>,
     detail: Option<Result<SnapshotDetail, String>>,
+    /// `detail` as the sheet's lines, made once per answer.
+    detail_lines: Option<Result<Rc<[Line]>, String>>,
     // New snapshot.
     label: Option<Entity<TextInput>>,
     _label: Option<Subscription>,
@@ -88,7 +92,9 @@ struct State {
     // Rollback.
     confirm: Option<SnapshotSummary>,
     confirm_focus: Option<FocusHandle>,
-    rolling: bool,
+    /// The snapshot whose rollback is on its way: only its answer may close
+    /// the dialog.
+    rolling: Option<i64>,
 }
 
 pub fn on_open(console: &mut Console, _: &mut Context<Console>) {
@@ -216,6 +222,7 @@ fn open_detail(console: &mut Console, id: i64, window: &mut Window, cx: &mut Con
     let state = console.state::<State>();
     state.detail_id = Some(id);
     state.detail = None;
+    state.detail_lines = None;
     console.call(
         CallKey::new("data.snapshots.detail").with(id),
         Call::new(move |api| async move { api.config_snapshot(id).await }),
@@ -248,6 +255,7 @@ fn pick(console: &mut Console, id: i64, from: bool, cx: &mut Context<Console>) {
         state.to = Some(id);
     }
     state.diff = None;
+    state.diff_lines = None;
     state.comparing = false;
     // A diff on its way is for the old pair.
     state.diff_seq += 1;
@@ -267,6 +275,7 @@ fn compare(console: &mut Console, window: &mut Window, cx: &mut Context<Console>
         return;
     };
     state.diff = None;
+    state.diff_lines = None;
     state.comparing = true;
     state.diff_seq += 1;
     let seq = state.diff_seq;
@@ -285,6 +294,7 @@ fn clear_diff(console: &mut Console, cx: &mut Context<Console>) {
     state.from = None;
     state.to = None;
     state.diff = None;
+    state.diff_lines = None;
     cx.notify();
 }
 
@@ -350,7 +360,7 @@ fn ask_rollback(console: &mut Console, id: i64, window: &mut Window, cx: &mut Co
     let state = console.state::<State>();
     state.confirm = Some(snapshot);
     state.confirm_focus = Some(focus.clone());
-    state.rolling = false;
+    state.rolling = None;
     state.window = Some(window.window_handle());
     let overlay = Overlay::modal(ROLLBACK, px(460.0), rollback_dialog, cx);
     console.open_overlay(overlay, window, cx);
@@ -359,13 +369,13 @@ fn ask_rollback(console: &mut Console, id: i64, window: &mut Window, cx: &mut Co
 
 fn rollback_confirmed(console: &mut Console, cx: &mut Context<Console>) {
     let state = console.state::<State>();
-    if state.rolling {
+    if state.rolling.is_some() {
         return;
     }
     let Some(snapshot) = state.confirm.clone() else {
         return;
     };
-    state.rolling = true;
+    state.rolling = Some(snapshot.id);
     let id = snapshot.id;
     console.call(
         CallKey::new("data.snapshots.rollback").with(id),
@@ -391,14 +401,18 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
         "data.snapshots.detail" => {
             let state = console.state::<State>();
             if state.detail_id == Some(key.arg) {
-                state.detail = Some(reply.take::<SnapshotDetail>());
+                let detail = reply.take::<SnapshotDetail>();
+                state.detail_lines = Some(lines_of(&detail, detail_lines));
+                state.detail = Some(detail);
             }
         }
         "data.snapshots.diff" => {
             let state = console.state::<State>();
             if key.arg == state.diff_seq {
                 state.comparing = false;
-                state.diff = Some(reply.take::<DiffSummary>());
+                let diff = reply.take::<DiffSummary>();
+                state.diff_lines = Some(lines_of(&diff, diff_lines));
+                state.diff = Some(diff);
             }
         }
         "data.snapshots.create" => {
@@ -424,11 +438,17 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
         }
         "data.snapshots.rollback" => {
             let state = console.state::<State>();
-            state.rolling = false;
+            // An answer for an earlier rollback leaves a newer dialog be.
+            let current = state.rolling == Some(key.arg);
+            if current {
+                state.rolling = None;
+            }
             match reply.take::<()>() {
                 Ok(()) => {
-                    state.confirm = None;
-                    close_later(console, ROLLBACK, cx);
+                    if current && state.confirm.as_ref().is_some_and(|c| c.id == key.arg) {
+                        state.confirm = None;
+                        close_later(console, ROLLBACK, cx);
+                    }
                     console.show_toast(
                         format!(
                             "Rolled back to snapshot #{}; the previous configuration was saved as a restore snapshot",
@@ -439,6 +459,11 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                     );
                     // Sources and screens may have changed under every page.
                     console.refresh_tags();
+                    // The other sections' lists are from before it.
+                    super::device_form::stale(console);
+                    super::flows::stale(console);
+                    super::recipes::stale(console);
+                    super::system::stale(console);
                     fetch(console);
                 }
                 Err(error) => {
@@ -984,6 +1009,17 @@ fn detail_lines(detail: &SnapshotDetail) -> Vec<Line> {
     lines
 }
 
+/// An answer as the sheet's lines, made when it arrives, not per frame.
+fn lines_of<T>(
+    answer: &Result<T, String>,
+    make: fn(&T) -> Vec<Line>,
+) -> Result<Rc<[Line]>, String> {
+    match answer {
+        Ok(value) => Ok(make(value).into()),
+        Err(error) => Err(error.clone()),
+    }
+}
+
 fn diff_lines(diff: &DiffSummary) -> Vec<Line> {
     if diff.is_empty() {
         return vec![Line::Note(
@@ -1086,7 +1122,7 @@ fn sheet(
     list_id: &'static str,
     title: String,
     subtitle: String,
-    lines: Option<Result<Vec<Line>, String>>,
+    lines: Option<Result<Rc<[Line]>, String>>,
     footer: Option<AnyElement>,
     console: &mut Console,
     window: &mut Window,
@@ -1096,7 +1132,7 @@ fn sheet(
     let lines: Rc<[Line]> = match lines {
         None => vec![Line::Note("Loading…".to_owned(), false)].into(),
         Some(Err(error)) => vec![Line::Note(error, true)].into(),
-        Some(Ok(lines)) => lines.into(),
+        Some(Ok(lines)) => lines,
     };
     let count = lines.len();
     let list = keyboard_list(
@@ -1180,13 +1216,13 @@ fn detail_sheet(
 ) -> AnyElement {
     let state = console.state::<State>();
     let id = state.detail_id.unwrap_or(0);
-    let detail = state.detail.clone();
+    let lines = state.detail_lines.clone();
     let operator = console.is_operator();
-    let summary = detail
-        .as_ref()
-        .and_then(|detail| detail.as_ref().ok())
-        .map(|detail| detail.summary.clone())
-        .or_else(|| by_id(console, id));
+    let summary = match &console.state::<State>().detail {
+        Some(Ok(detail)) => Some(detail.summary.clone()),
+        _ => None,
+    };
+    let summary = summary.or_else(|| by_id(console, id));
     let (title, subtitle) = summary.as_ref().map_or_else(
         || (format!("Snapshot #{id}"), String::new()),
         |summary| {
@@ -1236,7 +1272,6 @@ fn detail_sheet(
                 })),
         )
         .into_any_element();
-    let lines = detail.map(|detail| detail.map(|detail| detail_lines(&detail)));
     sheet(
         DETAIL_LIST,
         title,
@@ -1252,8 +1287,9 @@ fn detail_sheet(
 fn diff_sheet(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let state = console.state::<State>();
     let (from, to) = (state.from.unwrap_or(0), state.to.unwrap_or(0));
-    let diff = state.diff.clone();
-    let subtitle = match &diff {
+    let lines = state.diff_lines.clone();
+    let diff = &state.diff;
+    let subtitle = match diff {
         Some(Ok(diff)) => {
             let (added, removed, changed) = diff.totals();
             format!(
@@ -1264,7 +1300,6 @@ fn diff_sheet(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         Some(Err(_)) => "The comparison failed".to_owned(),
         None => "Comparing…".to_owned(),
     };
-    let lines = diff.map(|diff| diff.map(|diff| diff_lines(&diff)));
     sheet(
         DIFF_LIST,
         format!("Diff #{from} → #{to}"),
@@ -1363,7 +1398,7 @@ fn rollback_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Conso
         return div().into_any_element();
     };
     let focus = state.confirm_focus.clone();
-    let rolling = state.rolling;
+    let rolling = state.rolling.is_some();
     div()
         .when_some(focus, |this, focus| this.track_focus(&focus))
         .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
@@ -1519,6 +1554,59 @@ mod tests {
         };
         assert!(
             matches!(&diff_lines(&changed)[1], Line::Item { detail, .. } if detail == "title, layout")
+        );
+    }
+
+    #[gpui::test]
+    fn an_earlier_rollback_answer_leaves_a_newer_confirmation_open(cx: &mut gpui::TestAppContext) {
+        let mut h = crate::console::testing::Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, _, _| {
+            let state = console.state::<State>();
+            state.confirm = Some(SnapshotSummary {
+                id: 2,
+                ..SnapshotSummary::default()
+            });
+            state.rolling = Some(2);
+        });
+        h.reply(
+            CallKey::new("data.snapshots.rollback").with(1),
+            Reply::ok(()),
+        );
+        h.update(|console, _, _| {
+            let state = console.state::<State>();
+            assert_eq!(state.confirm.as_ref().map(|c| c.id), Some(2));
+            assert_eq!(state.rolling, Some(2), "still waiting on #2");
+        });
+        h.reply(
+            CallKey::new("data.snapshots.rollback").with(2),
+            Reply::ok(()),
+        );
+        h.update(|console, _, _| {
+            let state = console.state::<State>();
+            assert!(state.confirm.is_none());
+            assert_eq!(state.rolling, None);
+        });
+    }
+
+    #[gpui::test]
+    fn a_rollback_has_other_sections_list_afresh(cx: &mut gpui::TestAppContext) {
+        let mut h = crate::console::testing::Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, _, cx| super::super::recipes::on_open(console, cx));
+        h.calls();
+        h.update(|console, _, cx| super::super::recipes::on_open(console, cx));
+        assert!(h.calls().is_empty(), "listed once");
+        h.update(|console, _, _| console.state::<State>().rolling = Some(1));
+        h.reply(
+            CallKey::new("data.snapshots.rollback").with(1),
+            Reply::ok(()),
+        );
+        h.calls();
+        h.update(|console, _, cx| super::super::recipes::on_open(console, cx));
+        assert!(
+            h.calls().iter().any(|key| key.name == "data.recipes.list"),
+            "the recipes from before the rollback are not kept"
         );
     }
 }

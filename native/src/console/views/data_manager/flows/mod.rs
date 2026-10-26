@@ -131,13 +131,25 @@ pub(crate) struct State {
     editor: Option<editor::Editor>,
     /// O came before the list: open its first flow when it arrives.
     open_pending: bool,
+    /// Bumped when `flows` or `running` change: the table cache's key.
+    version: u64,
+    /// The table last built and its rows.
+    table: Option<(TableKey, Rc<[Flow]>)>,
 }
+
+/// What a built table depends on: query, sort, descending, version.
+type TableKey = (String, Sort, bool, u64);
 
 pub fn on_open(console: &mut Console, _: &mut Context<Console>) {
     if console.state::<State>().asked {
         return;
     }
     fetch(console);
+}
+
+/// After a config rollback: the flows list afresh when next opened.
+pub(crate) fn stale(console: &mut Console) {
+    console.state::<State>().asked = false;
 }
 
 pub fn focus(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
@@ -218,16 +230,23 @@ fn table(console: &mut Console, cx: &gpui::App) -> Rc<[Flow]> {
         .map(|field| field.read(cx).value().trim().to_lowercase())
         .unwrap_or_default();
     let state = console.state::<State>();
+    let key = (query, state.sort, state.descending, state.version);
+    if let Some((cached, rows)) = &state.table
+        && *cached == key
+    {
+        return rows.clone();
+    }
     let Some(Ok(flows)) = &state.flows else {
         return Rc::from(Vec::new());
     };
+    let query = &key.0;
     let mut rows: Vec<Flow> = flows
         .iter()
         .filter(|flow| {
             query.is_empty()
-                || flow.name.to_lowercase().contains(&query)
-                || flow.id.to_lowercase().contains(&query)
-                || flow.trigger_label().to_lowercase().contains(&query)
+                || flow.name.to_lowercase().contains(query)
+                || flow.id.to_lowercase().contains(query)
+                || flow.trigger_label().to_lowercase().contains(query)
         })
         .cloned()
         .collect();
@@ -236,7 +255,9 @@ fn table(console: &mut Console, cx: &gpui::App) -> Rc<[Flow]> {
         let order = compare(state, a, b, sort);
         if descending { order.reverse() } else { order }
     });
-    rows.into()
+    let rows: Rc<[Flow]> = rows.into();
+    state.table = Some((key, rows.clone()));
+    rows
 }
 
 fn cursor_flow(console: &mut Console, cx: &mut Context<Console>) -> Option<Flow> {
@@ -410,6 +431,7 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                     Ok(flows) => {
                         let state = console.state::<State>();
                         state.flows = Some(Ok(flows));
+                        state.version += 1;
                         if std::mem::take(&mut state.open_pending) {
                             with_window(console, cx, open_cursor);
                         }
@@ -418,7 +440,11 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                     Err(error) if shown => {
                         console.show_toast(format!("Flows: {error}"), true, cx);
                     }
-                    Err(error) => console.state::<State>().flows = Some(Err(error)),
+                    Err(error) => {
+                        let state = console.state::<State>();
+                        state.flows = Some(Err(error));
+                        state.version += 1;
+                    }
                 }
             }
         }
@@ -426,7 +452,9 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             let id = console.state::<State>().pending.remove(&key.arg);
             match reply.take::<(String, String, bool)>() {
                 Ok((id, name, run)) => {
-                    console.state::<State>().running.insert(id, run);
+                    let state = console.state::<State>();
+                    state.running.insert(id, run);
+                    state.version += 1;
                     let verb = if run { "Started" } else { "Stopped" };
                     console.show_toast(format!("{verb} {name}"), false, cx);
                 }
@@ -442,7 +470,9 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             match reply.take::<String>() {
                 Ok(name) => {
                     if let Some(id) = id {
-                        console.state::<State>().running.remove(&id);
+                        let state = console.state::<State>();
+                        state.running.remove(&id);
+                        state.version += 1;
                     }
                     console.show_toast(format!("Deleted {name}"), false, cx);
                     refresh(console);
@@ -1067,5 +1097,51 @@ mod tests {
         // Stopped here: a running flow sorts first.
         let other = Flow::blank("g", "G", true, trigger_kind("timer").unwrap(), 1);
         assert_eq!(compare(&state, &other, &flow, Sort::Status), Ordering::Less);
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use gpui::TestAppContext;
+
+    use super::*;
+    use crate::console::testing::Harness;
+
+    #[gpui::test]
+    fn the_table_is_sorted_once_per_change_not_per_render(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, _, cx| {
+            let timer = trigger_kind("timer").unwrap();
+            let state = console.state::<State>();
+            state.sort = Sort::Status;
+            state.flows = Some(Ok(vec![
+                Flow::blank("a", "A", true, timer, 1),
+                Flow::blank("b", "B", false, timer, 1),
+            ]));
+            state.version += 1;
+            let first = table(console, cx);
+            let again = table(console, cx);
+            assert!(
+                Rc::ptr_eq(&first, &again),
+                "an unchanged list is not rebuilt"
+            );
+            assert_eq!(first[0].id, "a", "running first");
+            on_reply(
+                console,
+                CallKey::new("data.flows.run").with(1),
+                Reply::ok(("b".to_owned(), "B".to_owned(), true)),
+                cx,
+            );
+            on_reply(
+                console,
+                CallKey::new("data.flows.run").with(2),
+                Reply::ok(("a".to_owned(), "A".to_owned(), false)),
+                cx,
+            );
+            let after = table(console, cx);
+            assert!(!Rc::ptr_eq(&first, &after), "a start or stop rebuilds it");
+            assert_eq!(after[0].id, "b");
+        });
     }
 }

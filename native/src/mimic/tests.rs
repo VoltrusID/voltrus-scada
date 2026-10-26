@@ -54,6 +54,7 @@ fn widget(kind: &str, config: serde_json::Value, tags: &[i64]) -> Widget {
         kind: WidgetKind::parse(kind),
         name: String::new(),
         tags: tags.to_vec(),
+        signals: Vec::new(),
         x: 0.0,
         y: 0.0,
         width: 90.0,
@@ -120,7 +121,7 @@ fn a_layout_saves_back_in_the_servers_shape() {
 }
 
 #[test]
-fn a_feed_templates_rows_load_without_their_signal_names() {
+fn a_feed_templates_signal_names_are_kept_through_a_save() {
     // `wizard/feed_instantiator.rs` binds signal names and calls its
     // connections "process".
     let equipment = [EquipmentRow {
@@ -143,6 +144,16 @@ fn a_feed_templates_rows_load_without_their_signal_names() {
     }];
     let layout = parse(&equipment, &connections);
     assert!(layout.widgets[0].tags.is_empty());
+    assert_eq!(
+        layout.widgets[0].signals,
+        [json!("dc_power"), json!("ac_power")]
+    );
+    // A save writes the signal names back, not `[]`.
+    let (rows, _) = to_rows(&layout);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&rows[0].sensor_bindings).unwrap(),
+        json!(["dc_power", "ac_power"])
+    );
     assert_eq!(layout.connections[0].line(), LineKind::Data);
     // Broken JSON text reads as empty, not as a failed screen.
     let broken = [EquipmentRow {
