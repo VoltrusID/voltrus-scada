@@ -28,6 +28,7 @@ pub mod eng_mqtt;
 pub mod eng_scripts;
 pub mod eng_snapshots;
 pub mod eng_system;
+pub mod insights;
 pub mod ops;
 pub mod protocols;
 

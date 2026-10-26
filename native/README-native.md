@@ -85,6 +85,26 @@ JetBrains Mono for values.
   its settings, a Modbus device with one register or an expression); D
   duplicates, ⌫ deletes after a confirmation, ⌥↑/⌥↓ or dragging a row
   reorders (shown at once, saved to the server).
+  **OEE** (every user; writes need an operator): a device's OEE,
+  availability, performance and quality over 8 h, 24 h or 7 d as figure
+  cards with bars (←→ move, Enter shows what the figure is made of:
+  A × P × Q, the running and planned time, downtime by machine state);
+  the downtime events (N opens one with a machine state, Enter closes an
+  open one with a reason) and the shift schedule (T switches; N adds a
+  shift with its start, length and days, ⌫ deletes); `,`/`.` step the
+  devices, `[`/`]` the ranges, R fetches again (also every 15 s on
+  screen). **Analytics** (every user): a device metric (the device's tags,
+  ↑↓) as buckets over 1 h to 30 d, each bucket's low-to-high span a bar
+  with its average marked, the range's figures, a crosshair and readout
+  following the pointer; ←→ move between bars, Enter (or a double click)
+  drills into a bar with finer buckets and ⌫ or Esc comes back; M switches
+  to the comparison of the range's recent half with the half before; E
+  saves the buckets as CSV. **Recipes** (operators): saved device values by
+  device and category (`/` searches); N saves a device's current values,
+  Enter opens a recipe (name, category, description; its values beside the
+  live ones), L loads it after a confirmation and follows the commands the
+  server queued (every 2 s until each is done; Retry writes a failed one
+  again; Open in Commands shows them on the Commands page), ⌫ deletes.
   **Protocols** (Modbus, OPC UA, Siemens S7, EtherNet/IP, DNP3, BACnet), each
   a device table like Sources (`/` search, header or S sort, the poller's
   or the WebSocket's online state per device, columns dropping as the

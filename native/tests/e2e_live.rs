@@ -2743,3 +2743,246 @@ async fn live_protocol_device_managers() {
     let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
     protocols::run(&url, &user, &pass).await;
 }
+
+/// Data Manager › Insights against the live plant, every path the OEE,
+/// Analytics and Recipes sections call: a shift added and deleted, a
+/// downtime event opened and closed with a reason on a device of its own
+/// (the server has no route to delete one), the OEE figures over it, the
+/// bucketed aggregate and the period comparison of a plant metric, and a
+/// recipe saved from the inverter's values, read, renamed, loaded (its
+/// queued commands read one by one, and cancelled while still unsent) and
+/// deleted.
+#[tokio::test]
+async fn live_data_manager_insights() {
+    use serde::de::IgnoredAny;
+    use voltrus_scada_native::api::insights::{
+        self, Bucket, CloseDowntime, ComparisonResult, DowntimeEvent, NewDowntime, NewRecipe,
+        NewShift, OeeMetrics, Recipe, RecipeLoad, RecipeUpdate, ShiftConfig, WEEKDAYS,
+    };
+    use voltrus_scada_native::api::ops::{QueuedCommand, cancel_path};
+    use voltrus_scada_native::api::{DataSource, Method};
+
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    let mut api = VoltrusApi::new(&url);
+    api.login(&user, &pass).await.expect("sign in");
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0))
+    };
+
+    // ── OEE: the shift schedule ──
+    let before: Vec<ShiftConfig> = api
+        .get_json(insights::SHIFTS_PATH)
+        .await
+        .expect("GET /oee/shifts");
+    let name = format!("e2e native {}", std::process::id());
+    let body = NewShift::parse(&name, "22:30", "8", WEEKDAYS).expect("a valid shift");
+    let shift: ShiftConfig = api
+        .send_json(Method::POST, insights::SHIFTS_PATH, &body)
+        .await
+        .expect("POST /oee/shifts");
+    assert_eq!(
+        (shift.name.as_str(), shift.start_hour, shift.start_minute),
+        (name.as_str(), 22, 30)
+    );
+    assert_eq!(shift.window_label(), "22:30–06:30 +1");
+    let listed: Vec<ShiftConfig> = api.get_json(insights::SHIFTS_PATH).await.expect("shifts");
+    assert!(
+        listed
+            .iter()
+            .any(|row| row.id == shift.id && row.days_mask == WEEKDAYS)
+    );
+    api.send_empty::<IgnoredAny>(Method::DELETE, &insights::shift_path(shift.id))
+        .await
+        .expect("DELETE /oee/shifts/{id}");
+    let after: Vec<ShiftConfig> = api.get_json(insights::SHIFTS_PATH).await.expect("shifts");
+    assert_eq!(
+        after.iter().map(|row| row.id).collect::<Vec<_>>(),
+        before.iter().map(|row| row.id).collect::<Vec<_>>(),
+        "the schedule is as it was"
+    );
+    println!("shift {} added and deleted", shift.id);
+
+    // ── OEE: a downtime event on a device of its own ──
+    let device = format!("e2e_native_oee_{}", std::process::id());
+    let opened: DowntimeEvent = api
+        .send_json(
+            Method::POST,
+            insights::DOWNTIME_PATH,
+            &NewDowntime::new(&device, "faulted").expect("a valid event"),
+        )
+        .await
+        .expect("POST /oee/downtime");
+    assert!(opened.is_open() && opened.device_id == device && opened.state == "faulted");
+    let from = now() - 3600;
+    let open: Vec<DowntimeEvent> = api
+        .get_json(&insights::downtime_path(Some(&device), from, now() + 5))
+        .await
+        .expect("GET /oee/downtime");
+    assert!(
+        open.iter()
+            .any(|event| event.id == opened.id && event.is_open())
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    api.send_json::<_, IgnoredAny>(
+        Method::PUT,
+        &insights::close_downtime_path(opened.id),
+        &CloseDowntime::new("e2e: bearing replaced"),
+    )
+    .await
+    .expect("PUT /oee/downtime/{id}/close");
+    let closed: Vec<DowntimeEvent> = api
+        .get_json(&insights::downtime_path(Some(&device), from, now() + 5))
+        .await
+        .expect("GET /oee/downtime");
+    let event = closed
+        .iter()
+        .find(|event| event.id == opened.id)
+        .expect("the event is listed");
+    assert!(!event.is_open());
+    assert_eq!(event.reason.as_deref(), Some("e2e: bearing replaced"));
+    let metrics: OeeMetrics = api
+        .get_json(&insights::oee_metrics_path(&device, from, now() + 5))
+        .await
+        .expect("GET /oee/metrics");
+    assert_eq!(metrics.downtime_count, 1);
+    assert!(metrics.availability < 1.0 && metrics.availability > 0.9);
+    assert!(
+        (metrics.oee - metrics.availability * metrics.performance * metrics.quality).abs() < 1e-9
+    );
+    println!(
+        "downtime {} opened and closed; availability {:.4}",
+        opened.id, metrics.availability
+    );
+
+    // ── Analytics: a plant metric ──
+    let tags: Vec<DataSource> = api.get_json("/api/v1/data-sources").await.expect("tags");
+    let tag = tags
+        .iter()
+        .find(|tag| tag.device_id == "sma_inv_1")
+        .or_else(|| tags.iter().find(|tag| !tag.device_id.is_empty()))
+        .expect("a device tag");
+    let (to, from) = (now(), now() - 3600);
+    let buckets: Vec<Bucket> = api
+        .get_json(&insights::aggregate_path(
+            &tag.device_id,
+            &tag.key,
+            from,
+            to,
+            60,
+        ))
+        .await
+        .expect("GET /analytics/aggregate");
+    assert!(
+        !buckets.is_empty(),
+        "{}/{} has stored values",
+        tag.device_id,
+        tag.key
+    );
+    assert!(
+        buckets.windows(2).all(|pair| pair[0].0 < pair[1].0),
+        "oldest first"
+    );
+    let overall = insights::overall(&buckets).expect("figures");
+    assert!(overall.min <= overall.avg && overall.avg <= overall.max);
+    // As the section does: from the first stored value, so both halves
+    // hold some (the server answers 500 for an empty one).
+    let (start, end) = insights::compare_span(from, to, &buckets).expect("a span to compare");
+    let (current, previous) = insights::halves(start, end);
+    let compared: ComparisonResult = api
+        .get_json(&insights::compare_path(
+            &tag.device_id,
+            &tag.key,
+            current,
+            previous,
+        ))
+        .await
+        .expect("GET /analytics/compare");
+    assert_eq!(compared.metric, tag.key);
+    assert!(compared.current.count > 0, "the recent half has values");
+    println!(
+        "{}: {} buckets, {} samples; recent half {:+.1}%",
+        tag.key, overall.buckets, overall.samples, compared.change_percent
+    );
+
+    // ── Recipes: save, read, rename, load, delete ──
+    let recipe_name = format!("e2e native recipe {}", std::process::id());
+    let created: Recipe = api
+        .send_json(
+            Method::POST,
+            insights::RECIPES_PATH,
+            &NewRecipe::new(&recipe_name, &tag.device_id, "e2e", "").expect("a valid recipe"),
+        )
+        .await
+        .expect("POST /recipes");
+    assert_eq!(
+        (created.name.as_str(), created.version),
+        (recipe_name.as_str(), 1)
+    );
+    assert!(
+        !created.values().is_empty(),
+        "the device's current values are kept"
+    );
+    let listed: Vec<Recipe> = api
+        .get_json(&insights::recipes_path(Some(&tag.device_id)))
+        .await
+        .expect("GET /recipes?device_id=");
+    assert!(listed.iter().any(|recipe| recipe.id == created.id));
+    let read: Recipe = api
+        .get_json(&insights::recipe_path(created.id))
+        .await
+        .expect("GET /recipes/{id}");
+    assert_eq!(read.values, created.values);
+    let renamed: Recipe = api
+        .send_json(
+            Method::PUT,
+            &insights::recipe_path(created.id),
+            &RecipeUpdate::new(&format!("{recipe_name} v2"), "", "renamed by e2e").expect("valid"),
+        )
+        .await
+        .expect("PUT /recipes/{id}");
+    assert_eq!(renamed.version, 2);
+    assert_eq!(renamed.category(), None, "the category is cleared");
+    assert_eq!(renamed.description(), Some("renamed by e2e"));
+    let load: RecipeLoad = api
+        .send_empty(Method::POST, &insights::load_path(created.id))
+        .await
+        .expect("POST /recipes/{id}/load");
+    assert!(load.ok);
+    for id in &load.command_ids {
+        let command: QueuedCommand = api
+            .get_json(&insights::command_path(id))
+            .await
+            .expect("GET /commands/{id}");
+        assert_eq!(&command.id, id);
+        assert!(
+            command.created_by.starts_with("recipe:"),
+            "{}",
+            command.created_by
+        );
+        if command.is_cancellable() {
+            // Restore the queue: an unsent command of the test goes.
+            let _ = api
+                .send_empty::<IgnoredAny>(Method::POST, &cancel_path(id))
+                .await;
+        }
+    }
+    println!("recipe {} loaded: {}", created.id, load.message);
+    api.send_empty::<IgnoredAny>(Method::DELETE, &insights::recipe_path(created.id))
+        .await
+        .expect("DELETE /recipes/{id}");
+    let left: Vec<Recipe> = api
+        .get_json(&insights::recipes_path(None))
+        .await
+        .expect("GET /recipes");
+    assert!(
+        !left.iter().any(|recipe| recipe.id == created.id),
+        "the recipe is gone"
+    );
+}

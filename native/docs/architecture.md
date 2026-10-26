@@ -315,6 +315,15 @@ to close a dialog after the server answered, keep the window handle in the
 section's state and close it in `cx.defer` (see
 `data_manager::source_form::close_later`).
 
+The Insights sections (`oee`, `analytics`, `recipes`) share
+`data_manager::insights_kit`: the plant's devices from the tag list
+(made again only when the list changes), a row of device chips, a bar and
+a figure, and `every_while_shown(console, id, every, tick, cx)`, a timer
+that runs while section `id` is on screen (`data_manager::section_shown`)
+until `tick` answers false (Recipes follows a load's commands with it).
+Their charts are their own canvases with a crosshair under the pointer:
+the plot's bounds are kept as it paints, so a pointer maps back to a time
+and a bar, as with `tag_chart`.
 ### A device table (the Protocols sections)
 
 The Protocols sections are data over one module,

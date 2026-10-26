@@ -15,6 +15,7 @@
 //! stays put).
 
 pub(crate) mod admin_kit;
+pub(crate) mod analytics;
 pub(crate) mod api_keys;
 pub(crate) mod bacnet;
 pub(crate) mod device_form;
@@ -23,10 +24,13 @@ pub(crate) mod edr;
 pub(crate) mod enip;
 pub(crate) mod flows;
 pub(crate) mod imports;
+pub(crate) mod insights_kit;
 pub(crate) mod modbus;
 pub(crate) mod mqtt;
 pub(crate) mod notification_rules;
+pub(crate) mod oee;
 pub(crate) mod opcua;
+pub(crate) mod recipes;
 pub(crate) mod roles;
 pub(crate) mod s7;
 pub(crate) mod scripts;
@@ -121,6 +125,42 @@ pub static SECTIONS: &[SectionSpec] = &[
         focus: Some(sources::focus),
         on_reply: Some(sources::on_reply),
         search: Some(sources::search),
+    },
+    SectionSpec {
+        id: oee::ID,
+        title: "OEE",
+        icon: Icon::Gauge,
+        group: SectionGroup::Insights,
+        role: Role::Any,
+        render: oee::render,
+        on_open: Some(oee::on_open),
+        focus: Some(oee::focus),
+        on_reply: Some(oee::on_reply),
+        search: None,
+    },
+    SectionSpec {
+        id: analytics::ID,
+        title: "Analytics",
+        icon: Icon::ChartLine,
+        group: SectionGroup::Insights,
+        role: Role::Any,
+        render: analytics::render,
+        on_open: Some(analytics::on_open),
+        focus: Some(analytics::focus),
+        on_reply: Some(analytics::on_reply),
+        search: None,
+    },
+    SectionSpec {
+        id: recipes::ID,
+        title: "Recipes",
+        icon: Icon::Layers,
+        group: SectionGroup::Insights,
+        role: Role::Operator,
+        render: recipes::render,
+        on_open: Some(recipes::on_open),
+        focus: Some(recipes::focus),
+        on_reply: Some(recipes::on_reply),
+        search: Some(recipes::search),
     },
     // Protocols: Modbus reads are open to every signed-in user (writes need
     // an operator); the other protocols' handlers all check for admin.
@@ -757,6 +797,10 @@ mod tests {
         );
         // Protocols: Modbus reads are open to all; the other protocols'
         // handlers answer only admins.
+        // Insights: OEE and analytics are read by anyone; recipes (the
+        // list too) are operator routes.
+        assert!(any.contains(&"oee") && any.contains(&"analytics"));
+        assert!(!any.contains(&"recipes") && operator.contains(&"recipes"));
         assert!(any.contains(&"modbus"));
         for admin_only in ["opcua", "s7", "enip", "dnp3", "bacnet"] {
             assert!(!operator.contains(&admin_only), "{admin_only}");

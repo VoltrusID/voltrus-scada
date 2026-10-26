@@ -95,6 +95,14 @@ shots=(
   "data-api-key-new|--sign-in --page data --overlay DataNewApiKey --appearance dark"
   "data-rule-new|--sign-in --page data --overlay DataNewRule --appearance dark"
   "data-rule-new-light|--sign-in --page data --overlay DataNewRule --appearance light"
+  "data-oee|--sign-in --page data --section oee --appearance dark"
+  "data-oee-light|--sign-in --page data --section oee --appearance light"
+  "data-oee-record|--sign-in --page data --section oee --overlay OeeNew --appearance dark"
+  "data-analytics|--sign-in --page data --section analytics --appearance dark"
+  "data-analytics-light|--sign-in --page data --section analytics --appearance light"
+  "data-analytics-compare|--sign-in --page data --section analytics --overlay AnalyticsSwitchMode --appearance dark"
+  "data-recipes|--sign-in --page data --section recipes --appearance dark"
+  "data-recipe-new|--sign-in --page data --section recipes --overlay RecipesNew --appearance dark"
   "mimic|--sign-in --page mimic --appearance dark"
   "mimic-light|--sign-in --page mimic --appearance light"
   "mimic-faceplate|--sign-in --page mimic --overlay MimicOpen --appearance dark"
@@ -105,6 +113,17 @@ shots=(
   "mimic-edit-palette|--sign-in --page mimic --edit --overlay MimicEditFind --appearance dark"
   "mimic-edit-connect|--sign-in --page mimic --edit --overlay MimicEditConnectTool --appearance dark"
 )
+
+# A recipe for the Recipes shots, saved now (after the end-to-end test,
+# whose config rollback cannot restore one) from the inverter's values.
+jar="$(mktemp)"
+curl -fsS -c "$jar" -H 'content-type: application/json' \
+  -d "$(jq -n --arg user "$VOLTRUS_NATIVE_USER" --arg pass "$VOLTRUS_NATIVE_PASSWORD" '{username: $user, password: $pass}')" \
+  "$VOLTRUS_NATIVE_URL/api/v1/auth/login" > /dev/null \
+  && curl -fsS -b "$jar" -H 'content-type: application/json' \
+    -d '{"name": "Clear-sky setpoints", "device_id": "sma_inv_1", "category": "Seasonal", "description": "Values at full irradiance"}' \
+    "$VOLTRUS_NATIVE_URL/api/v1/recipes" > /dev/null \
+  || echo "::warning::no recipe for the Recipes shots"
 
 status=0
 for shot in "${shots[@]}"; do
