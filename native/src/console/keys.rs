@@ -33,6 +33,7 @@ actions!(
         ToggleHelp,
         TogglePerfHud,
         ShowMore,
+        ShowNavMenu,
         Back,
         Forward,
         FocusSearch,
@@ -330,6 +331,18 @@ pub static COMMANDS: &[CommandSpec] = &[
         CONSOLE,
         ShowMore,
         true
+    ),
+    // The navbar's menu: the secondary controls a narrow window folds into
+    // one button (`--overlay ShowNavMenu`). Not in the palette: each
+    // control has its own row there.
+    command!(
+        "Navbar menu",
+        Navigation,
+        Ellipsis,
+        [],
+        CONSOLE,
+        ShowNavMenu,
+        false
     ),
     command!(
         "Search this page",

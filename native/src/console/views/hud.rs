@@ -89,14 +89,17 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         )
     });
 
+    // Opaque, like every popover: the page under it must not show through
+    // its figures.
     div()
         .size_full()
         .flex()
         .flex_col()
         .gap(SPACE_2)
         .p(SPACE_6)
+        .overflow_hidden()
         .rounded(RADIUS_LG)
-        .bg(theme.elevated.opacity(0.94))
+        .bg(theme.elevated)
         .border_1()
         .border_color(theme.border_strong)
         .shadow(theme.shadow(Elevation::Popover))

@@ -3,12 +3,16 @@
 
 use std::path::Path;
 
-use gpui::{AppContext as _, TestAppContext};
+use gpui::{Action, AppContext as _, Bounds, Pixels, TestAppContext, px, size};
 use voltrus_scada_native::api::Alarm;
 use voltrus_scada_native::runtime::{Command, Event, Link};
 
 use super::audio::Annunciator;
-use super::keys::{StartStress, StopStress};
+use super::keys::{
+    ShellOpenSettings, ShellToggleNotifications, ShowMore, ShowNavMenu, StartStress, StopStress,
+    ToggleHelp, TogglePalette,
+};
+use super::navfit::Fit;
 use super::shell::Shell;
 use super::testing::Harness;
 use super::text_area::TextArea;
@@ -197,4 +201,134 @@ fn every_call_key_scope_has_an_owner() {
             "{name} ({file}): no page or section answers it, so its reply is lost"
         );
     }
+}
+
+/// The navbar's parts left to right as drawn at `fit`.
+fn navbar_parts(h: &mut Harness, fit: Fit) -> Vec<(&'static str, Bounds<Pixels>)> {
+    let mut names = vec!["nav-brand"];
+    if fit.host() {
+        names.push("nav-host");
+    }
+    names.extend(["nav-tabs", "nav-search"]);
+    if fit.folds_controls() {
+        names.push("nav-menu");
+    } else {
+        names.extend([
+            "nav-control-0",
+            "nav-control-1",
+            "nav-control-2",
+            "nav-control-3",
+            "nav-control-4",
+        ]);
+    }
+    names.extend(["nav-avatar", "nav-sign-out"]);
+    names
+        .into_iter()
+        .map(|name| {
+            let bounds =
+                h.cx.debug_bounds(name)
+                    .unwrap_or_else(|| panic!("{name} is drawn at {fit:?}"));
+            (name, bounds)
+        })
+        .collect()
+}
+
+#[gpui::test]
+fn the_navbar_steps_down_to_fit_every_window_width(cx: &mut TestAppContext) {
+    let mut h = Harness::new(cx);
+    h.sign_in("admin");
+    let mut fits = Vec::new();
+    for width in [
+        2400.0_f32, 1728.0, 1440.0, 1280.0, 1180.0, 1100.0, 1024.0, 960.0, 900.0, 860.0, 800.0,
+        760.0, 720.0,
+    ] {
+        h.cx.simulate_resize(size(px(width), px(760.0)));
+        h.draw();
+        let fit = h.update(|console, _, _| console.nav_fit);
+        if let Some(wider) = fits.last() {
+            assert!(fit >= *wider, "{width}: {fit:?} after {wider:?}");
+        }
+        fits.push(fit);
+        let parts = navbar_parts(&mut h, fit);
+        for pair in parts.windows(2) {
+            let ((a, a_at), (b, b_at)) = (pair[0], pair[1]);
+            assert!(
+                a_at.right() <= b_at.left() + px(0.5),
+                "{width} ({fit:?}): {a} {a_at:?} runs into {b} {b_at:?}"
+            );
+        }
+        // The avatar and sign-out whole, clear of the window's edge.
+        for (name, at) in &parts[parts.len() - 2..] {
+            assert!(
+                at.right() <= px(width - 12.0 + 0.5),
+                "{width} ({fit:?}): {name} {at:?} is clipped"
+            );
+            assert!(at.size.width >= px(22.0), "{width}: {name} {at:?} squeezed");
+        }
+        // The tabs are not clipped either: the More button ends inside.
+        let tabs = h.cx.debug_bounds("nav-tabs").expect("the tabs");
+        let more = h.cx.debug_bounds("nav-more").expect("the More button");
+        assert!(
+            more.right() <= tabs.right() + px(0.5),
+            "{width} ({fit:?}): the tabs {tabs:?} clip More {more:?}"
+        );
+    }
+    assert_eq!(fits[0], Fit::Full, "a wide window shows everything");
+    assert!(
+        fits.last().is_some_and(|fit| fit.folds_controls()),
+        "a narrow window folds the controls: {fits:?}"
+    );
+}
+
+#[gpui::test]
+fn menus_and_popovers_open_inside_a_small_window(cx: &mut TestAppContext) {
+    let mut h = Harness::new(cx);
+    h.sign_in("admin");
+    let window = size(px(760.0), px(480.0));
+    h.cx.simulate_resize(window);
+    h.draw();
+    assert!(h.update(|console, _, _| console.nav_fit.folds_controls()));
+    let opens: [(&str, Box<dyn Action>); 6] = [
+        (views::navbar::MENU, Box::new(ShowNavMenu)),
+        ("more", Box::new(ShowMore)),
+        ("palette", Box::new(TogglePalette)),
+        ("help", Box::new(ToggleHelp)),
+        ("settings", Box::new(ShellOpenSettings)),
+        ("notifications", Box::new(ShellToggleNotifications)),
+    ];
+    for (id, action) in opens {
+        h.cx.update(|window, cx| window.dispatch_action(action, cx));
+        h.draw();
+        assert!(
+            h.update(|console, _, _| console.overlay_is(id)),
+            "{id} opens"
+        );
+        let card =
+            h.cx.debug_bounds("overlay-card")
+                .expect("the overlay's card");
+        assert!(
+            card.left() >= px(0.0)
+                && card.top() >= px(0.0)
+                && card.right() <= window.width
+                && card.bottom() <= window.height,
+            "{id}: {card:?} is outside the window"
+        );
+        h.update(|console, window, cx| console.close_overlay(window, cx));
+    }
+    // The notifications popover opens under the menu button standing in for
+    // the bell, lined up with its right edge.
+    let button = h.cx.debug_bounds("nav-menu").expect("the menu button");
+    h.cx.update(|window, cx| window.dispatch_action(Box::new(ShellToggleNotifications), cx));
+    h.draw();
+    let card = h.cx.debug_bounds("overlay-card").expect("the popover");
+    assert!(
+        (card.right() - button.right()).abs() < px(1.0),
+        "{card:?} {button:?}"
+    );
+    h.update(|console, window, cx| console.close_overlay(window, cx));
+    // The menu's rows run the controls: the second is Settings.
+    h.cx.update(|window, cx| window.dispatch_action(Box::new(ShowNavMenu), cx));
+    h.draw();
+    h.keys("down enter");
+    assert!(h.update(|console, _, _| console.overlay_is("settings")));
 }

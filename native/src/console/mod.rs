@@ -11,6 +11,7 @@ mod config;
 pub mod keys;
 mod meter;
 mod nav;
+pub(crate) mod navfit;
 pub mod overlay;
 pub mod pages;
 mod prefs;
@@ -35,15 +36,15 @@ pub fn data_manager_section(id: &str) -> bool {
 }
 
 use std::any::{Any, TypeId};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AppContext as _, Bounds, Context, Entity, FocusHandle, Pixels, ScrollHandle, SharedString,
-    Subscription, Task, Window, px,
+    AppContext as _, Context, Entity, FocusHandle, ScrollHandle, SharedString, Subscription, Task,
+    Window, px,
 };
 use time::UtcOffset;
 use voltrus_scada_native::api::Alarm;
@@ -51,7 +52,7 @@ use voltrus_scada_native::perf::{self, Report};
 use voltrus_scada_native::runtime::{Call, CallKey, Command, Event, Handle, Link, Reply};
 use voltrus_scada_native::stress::StressOptions;
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
-use vt_ui::theme::{self, ThemeCatalog};
+use vt_ui::theme::ThemeCatalog;
 
 pub use keys::{Quit, key_bindings, menus};
 pub use pages::Page;
@@ -69,6 +70,8 @@ const ALARM_REFRESH_SECS: u64 = 10;
 
 /// How often the HUD redraws its figures while shown.
 const HUD_REFRESH: Duration = Duration::from_millis(250);
+/// How long after entering the console `--keys` are typed.
+const LAUNCH_KEYS_AFTER: Duration = Duration::from_secs(3);
 
 /// Pages remembered for ⌘[ and ⌘].
 const HISTORY_DEPTH: usize = 32;
@@ -231,6 +234,9 @@ pub struct Launch {
     /// `--appearance`: pinned light (false) or dark (true); the server's
     /// theme preference is then not applied.
     pub appearance: Option<bool>,
+    /// `--keys`: keystrokes typed once the console and its launch overlay
+    /// are up (screenshots of a menu scrolled by the keyboard).
+    pub keys: Option<String>,
 }
 
 /// The cached views that draw the window's parts.
@@ -290,7 +296,12 @@ pub struct Console {
     return_focus: Option<FocusHandle>,
     pub palette: Option<Palette>,
     /// Where the navbar's More button is, for its menu.
-    pub more_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+    pub more_anchor: overlay::Anchor,
+    /// Where the navbar's menu button is (the secondary controls folded
+    /// into one menu in a narrow window), for its menu.
+    pub menu_anchor: overlay::Anchor,
+    /// What the navbar showed at its last draw (see `navfit`).
+    pub nav_fit: navfit::Fit,
     pub meter: Meter,
     pub hud: bool,
     hud_task: Option<Task<()>>,
@@ -302,6 +313,7 @@ pub struct Console {
     pending_page: Option<Page>,
     pending_tag: Option<String>,
     pending_overlay: Option<LaunchOverlay>,
+    pending_keys: Option<String>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
     /// Pages to draw once, hidden, one per frame after sign-in (see
@@ -535,6 +547,8 @@ impl Console {
             return_focus: None,
             palette: None,
             more_anchor: Rc::default(),
+            menu_anchor: Rc::default(),
+            nav_fit: navfit::Fit::Full,
             meter: Rc::new(RefCell::new(meter::FrameMeter::default())),
             hud: false,
             hud_task: None,
@@ -545,6 +559,7 @@ impl Console {
             pending_page: launch.page,
             pending_tag: launch.tag,
             pending_overlay: launch.overlay,
+            pending_keys: launch.keys,
             _tasks: vec![pump, ticker],
             _subscriptions: subscriptions,
             warm: Vec::new(),
@@ -882,6 +897,24 @@ impl Console {
             }
             Some(LaunchOverlay::AddTags) => views::dashboard::launch_picker(self),
             None => {}
+        }
+        if let Some(keys) = self.pending_keys.take() {
+            // After the launch overlay has had its frames (and a menu its
+            // rows): typed as the operator would.
+            cx.spawn_in(window, async move |_, cx| {
+                cx.background_executor().timer(LAUNCH_KEYS_AFTER).await;
+                let _ = cx.update(|window, cx| {
+                    for key in keys
+                        .split(|c: char| c.is_whitespace() || c == ',')
+                        .filter(|key| !key.is_empty())
+                    {
+                        if let Ok(keystroke) = gpui::Keystroke::parse(key) {
+                            window.dispatch_keystroke(keystroke, cx);
+                        }
+                    }
+                });
+            })
+            .detach();
         }
     }
 
@@ -1274,15 +1307,41 @@ impl Console {
     }
 
     pub fn open_more(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let at = self.more_anchor.get().map_or_else(
-            || gpui::point(px(240.0), theme::TITLE_BAR_HEIGHT),
-            |bounds| gpui::point(bounds.left(), bounds.bottom() + px(4.0)),
+        let overlay = Overlay::popover(
+            "more",
+            px(240.0),
+            self.more_anchor.clone(),
+            overlay::Align::Left,
+            views::overlays::more,
+            cx,
         );
-        let overlay = Overlay::popover("more", px(240.0), at, views::overlays::more, cx);
         self.open_overlay(overlay, window, cx);
         // The menu's list, inside the overlay, takes the keys.
         let nav = self.list(views::overlays::MORE_LIST, cx);
         nav.cursor = Some(0);
+        nav.reveal(0);
+        window.focus(&nav.focus);
+    }
+
+    /// The navbar's menu: the controls a narrow window folds into it
+    /// (notifications, settings, alarm sound, HUD, appearance). Nothing
+    /// while they are on the navbar.
+    pub fn open_nav_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.nav_fit.folds_controls() {
+            return;
+        }
+        let overlay = Overlay::popover(
+            views::navbar::MENU,
+            views::navbar::MENU_WIDTH,
+            self.menu_anchor.clone(),
+            overlay::Align::Right,
+            views::navbar::menu,
+            cx,
+        );
+        self.open_overlay(overlay, window, cx);
+        let nav = self.list(views::navbar::MENU, cx);
+        nav.cursor = Some(0);
+        nav.reveal(0);
         window.focus(&nav.focus);
     }
 

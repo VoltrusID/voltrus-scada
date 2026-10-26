@@ -16,6 +16,23 @@ swiftc -O -o "$helper" "$here/window-id.swift"
 
 # name, then the console's arguments.
 shots=(
+  # The navbar and every menu fit the window: at a 13" MacBook's 1280x800,
+  # at the runner's default 1024x684, and narrower (the controls folded
+  # into the navbar menu). The bell has a mention and the HUD is on.
+  "fit-navbar-1280|--window 1280x800 --sign-in --page overview --hud --appearance dark"
+  "fit-navbar-1024|--window 1024x684 --sign-in --page overview --hud --appearance dark"
+  "fit-navbar-900|--window 900x640 --sign-in --page overview --hud --appearance dark"
+  "fit-navbar-800|--window 800x600 --sign-in --page overview --hud --appearance dark"
+  "fit-hud-1280|--window 1280x800 --stress --stress-switch-ms 0 --page dashboard --hud --appearance dark"
+  "fit-hud-1024|--window 1024x684 --stress --stress-switch-ms 0 --page dashboard --hud --appearance dark"
+  "fit-more-1280|--window 1280x800 --sign-in --page overview --overlay ShowMore --appearance dark"
+  "fit-more-1024|--window 1024x684 --sign-in --page commands --overlay ShowMore --appearance dark"
+  "fit-menu-800|--window 800x600 --sign-in --page overview --overlay ShowNavMenu --appearance dark"
+  "fit-menu-light-800|--window 800x600 --sign-in --page trends --range 5m --overlay ShowNavMenu --appearance light"
+  "fit-notifications-800|--window 800x600 --sign-in --page overview --overlay ShellToggleNotifications --appearance dark"
+  "fit-palette-scrolled-1024|--window 1024x684 --sign-in --page overview --overlay palette --keys down,down,down,down,down,down,down,down,down,down,down,down,down,down --appearance dark"
+  "fit-themes-short|--window 1024x520 --sign-in --page trends --range 5m --overlay ShellPickTheme --appearance dark"
+  "fit-help-short|--window 1024x520 --sign-in --page tags --overlay help --appearance dark"
   "overview|--sign-in --page overview --appearance dark"
   "tags|--sign-in --page tags --tag ac_current_l1 --appearance dark"
   "alarms|--sign-in --page alarms --appearance dark"

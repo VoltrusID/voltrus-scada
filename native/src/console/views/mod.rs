@@ -49,8 +49,8 @@ use vt_ui::theme::*;
 use super::keys::{
     AcknowledgeAll, Back, CONSOLE, Dismiss, FocusNext, FocusPrevious, FocusSearch, Forward, LIST,
     ListActivate, ListDown, ListFirst, ListLast, ListPageDown, ListPageUp, ListToggle, ListUp,
-    Quit, ShowMore, ShowPage, SignOut, StartStress, StopStress, ToggleAppearance, ToggleHelp,
-    TogglePalette, TogglePerfHud,
+    Quit, ShowMore, ShowNavMenu, ShowPage, SignOut, StartStress, StopStress, ToggleAppearance,
+    ToggleHelp, TogglePalette, TogglePerfHud,
 };
 use super::keys::{OpsExportAudit, OpsExportData, OpsNewHandover};
 use super::keys::{
@@ -213,6 +213,15 @@ impl Render for Console {
                     console.open_more(window, cx);
                 }
             }))
+            .on_action(cx.listener(|console, _: &ShowNavMenu, window, cx| {
+                if console.overlay_is(navbar::MENU) {
+                    console.close_overlay(window, cx);
+                } else if console.phase == Phase::Console
+                    && !data_manager::api_keys::secret_shown(console)
+                {
+                    console.open_nav_menu(window, cx);
+                }
+            }))
             .on_action(cx.listener(|console, _: &TogglePerfHud, _, cx| {
                 console.set_hud(!console.hud, cx);
             }))
@@ -344,14 +353,21 @@ impl Render for Console {
                 )
             })
             .when(self.hud && in_console, |this| {
+                // Under the navbar at the right, never past the window's
+                // edges or over the status bar.
+                let room = gpui::size(
+                    (viewport.width - SPACE_7 * 2.0).max(px(0.0)),
+                    (viewport.height - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT - SPACE_6 * 2.0)
+                        .max(px(0.0)),
+                );
                 this.child(
                     AnyView::from(self.views.hud.clone()).cached(
                         div()
                             .absolute()
                             .top(TITLE_BAR_HEIGHT + SPACE_6)
                             .right(SPACE_7)
-                            .w(hud::WIDTH)
-                            .h(hud::HEIGHT)
+                            .w(hud::WIDTH.min(room.width))
+                            .h(hud::HEIGHT.min(room.height))
                             .style()
                             .clone(),
                     ),

@@ -1,12 +1,16 @@
 //! The overlay slot's frame (backdrop, card, focus trap) and the built-in
 //! overlays: the command palette, the shortcut help and the More menu.
+//!
+//! The card fits the window (`overlay::place`) and scrolls when its content
+//! cannot shrink. A menu shrinks instead: its root takes `min_h_0`, and its
+//! rows scroll in their own container, tracking the list's
+//! `ListNav::rows` handle so the keyboard's row stays in view.
 
 use std::ops::Range;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Context, FontWeight, MouseButton, SharedString, Window, anchored, div, hsla, px,
-    uniform_list,
+    AnyElement, Context, FontWeight, MouseButton, SharedString, Window, div, hsla, px, uniform_list,
 };
 use vt_ui::components::{kbd, section_label};
 use vt_ui::theme::*;
@@ -30,15 +34,31 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     };
     let kind = overlay.kind;
     let trap = overlay.focus.clone();
+    let scroll = overlay.scroll.clone();
     let draw = overlay.render;
+    let placed = overlay::place(
+        kind,
+        overlay.anchor.as_ref().and_then(|anchor| anchor.get()),
+        window.viewport_size(),
+    );
     let content = draw(console, window, cx);
     let theme = theme(cx).clone();
     let dim = hsla(0.0, 0.0, 0.0, if theme.dark { 0.45 } else { 0.2 });
     let border = theme.border_strong;
+    // Opaque, so nothing of the page shows through.
     let card = div()
+        .id("overlay-card")
+        .debug_selector(|| "overlay-card".into())
         .track_focus(&trap)
+        .absolute()
+        .left(placed.left)
+        .top(placed.top)
+        .w(placed.width)
+        .max_h(placed.max_height)
         .flex()
         .flex_col()
+        .overflow_y_scroll()
+        .track_scroll(&scroll)
         .bg(theme.elevated)
         .border_color(border)
         .shadow(theme.shadow(Elevation::Modal))
@@ -52,25 +72,13 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         cx.listener(|console, _, window, cx| console.close_overlay(window, cx)),
     );
     match kind {
-        OverlayKind::Modal { width } => backdrop
+        OverlayKind::Modal { .. } => backdrop.bg(dim).child(card.border_1().rounded(RADIUS_XL)),
+        OverlayKind::Sheet { .. } => backdrop
             .bg(dim)
-            .flex()
-            .justify_center()
-            .items_start()
-            .pt(px(96.0))
-            .child(card.w(width).max_h(px(560.0)).border_1().rounded(RADIUS_XL)),
-        OverlayKind::Sheet { width } => backdrop
-            .bg(dim)
-            .flex()
-            .justify_end()
-            .pt(TITLE_BAR_HEIGHT)
-            .child(card.w(width).h_full().border_l_1().border_t_1()),
-        OverlayKind::Popover { width, at } => backdrop.child(
-            anchored()
-                .position(at)
-                .snap_to_window()
-                .child(card.w(width).border_1().rounded(RADIUS_LG).py(SPACE_3)),
-        ),
+            .child(card.h(placed.max_height).border_l_1().border_t_1()),
+        OverlayKind::Popover { .. } => {
+            backdrop.child(card.border_1().rounded(RADIUS_LG).py(SPACE_3))
+        }
     }
     .into_any_element()
 }
@@ -139,7 +147,8 @@ pub fn palette(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
     )
     .track_scroll(scroll)
     .px(SPACE_3)
-    .h(px(PALETTE_ROW * 9.0));
+    .h(px(PALETTE_ROW * 9.0))
+    .min_h(px(PALETTE_ROW));
 
     div()
         .key_context(MENU)
@@ -151,6 +160,7 @@ pub fn palette(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         }))
         .flex()
         .flex_col()
+        .min_h_0()
         .child(
             div()
                 .flex()
@@ -164,18 +174,25 @@ pub fn palette(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
                 .child(div().flex_1().child(input))
                 .child(kbd(hint(&TogglePalette).unwrap_or_default(), cx)),
         )
-        .child(div().py(SPACE_3).child(if count == 0 {
+        .child(
             div()
-                .h(px(PALETTE_ROW * 2.0))
                 .flex()
-                .items_center()
-                .justify_center()
-                .text_color(theme.fg_dim)
-                .child("Nothing matches")
-                .into_any_element()
-        } else {
-            list.into_any_element()
-        }))
+                .flex_col()
+                .min_h_0()
+                .py(SPACE_3)
+                .child(if count == 0 {
+                    div()
+                        .h(px(PALETTE_ROW * 2.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(theme.fg_dim)
+                        .child("Nothing matches")
+                        .into_any_element()
+                } else {
+                    list.into_any_element()
+                }),
+        )
         .child(footer(
             &[("↑↓", "Move"), ("↵", "Run"), ("Esc", "Close")],
             format!("{count} results"),
@@ -305,7 +322,7 @@ pub fn more(console: &mut Console, window: &mut Window, cx: &mut Context<Console
     };
     let list = keyboard_list(keys, pages.len(), pages.len(), console, cx);
     let nav = console.list(MORE_LIST, cx);
-    let cursor = nav.cursor;
+    let (cursor, rows_scroll) = (nav.cursor, nav.rows.clone());
     let focused = nav.focus.is_focused(window);
     let rows: Vec<AnyElement> = pages
         .iter()
@@ -319,6 +336,7 @@ pub fn more(console: &mut Console, window: &mut Window, cx: &mut Context<Console
                 .id(("more-row", row))
                 .relative()
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(SPACE_4)
                 .h(px(30.0))
@@ -343,5 +361,12 @@ pub fn more(console: &mut Console, window: &mut Window, cx: &mut Context<Console
                 .into_any_element()
         })
         .collect();
-    list.flex().flex_col().children(rows).into_any_element()
+    // The rows scroll inside the popover when the window is short.
+    list.min_h_0()
+        .flex()
+        .flex_col()
+        .overflow_y_scroll()
+        .track_scroll(&rows_scroll)
+        .children(rows)
+        .into_any_element()
 }

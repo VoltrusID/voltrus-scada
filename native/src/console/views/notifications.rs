@@ -11,7 +11,6 @@ use vt_ui::theme::*;
 
 use super::{ListKeys, age, focus_ring, keyboard_list, text_on};
 use crate::console::keys::{ShellToggleNotifications, ShowPage, display, hint, page_keys};
-use crate::console::overlay::OverlayKind;
 use crate::console::pages::{self, Page};
 use crate::console::shell::{self, Shell};
 use crate::console::{Console, time_now_secs};
@@ -30,16 +29,6 @@ pub fn bell(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     let unread = console.unread_notifications();
     let open = console.overlay_is("notifications");
     let anchor = console.state::<Shell>().bell_anchor.clone();
-    // Opened before the navbar was drawn (at launch) or the window
-    // resized: move the popover under the bell.
-    if let (Some(bounds), Some(overlay)) = (anchor.get(), console.overlay.as_mut())
-        && overlay.id == "notifications"
-        && let OverlayKind::Popover { at, .. } = &mut overlay.kind
-        && *at != shell::popover_at(bounds)
-    {
-        *at = shell::popover_at(bounds);
-        cx.notify();
-    }
     let tooltip = SharedString::from(format!(
         "Notifications  {}",
         hint(&ShellToggleNotifications).unwrap_or_default()
@@ -60,31 +49,7 @@ pub fn bell(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                     window.dispatch_action(Box::new(ShellToggleNotifications), cx);
                 })),
         )
-        .when(unread > 0, |this| {
-            this.child(
-                div()
-                    .absolute()
-                    .top(px(-3.0))
-                    .right(px(-4.0))
-                    .min_w(px(14.0))
-                    .h(px(14.0))
-                    .px(px(3.0))
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(theme.warning)
-                    .text_color(text_on(theme.warning, &theme))
-                    .text_size(FONT_CAPTION)
-                    .font_weight(FontWeight::BOLD)
-                    .font_family(MONO)
-                    .child(if unread > 99 {
-                        "99+".to_owned()
-                    } else {
-                        unread.to_string()
-                    }),
-            )
-        })
+        .when(unread > 0, |this| this.child(unread_badge(unread, &theme)))
         .child(
             canvas(
                 move |bounds, _, _| anchor.set(Some(bounds)),
@@ -94,6 +59,32 @@ pub fn bell(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
             .size_full(),
         )
         .into_any_element()
+}
+
+/// The unread count on the bell (or on the navbar's menu button when the
+/// bell is folded into it).
+pub(crate) fn unread_badge(unread: usize, theme: &Theme) -> impl IntoElement {
+    div()
+        .absolute()
+        .top(px(-3.0))
+        .right(px(-4.0))
+        .min_w(px(14.0))
+        .h(px(14.0))
+        .px(px(3.0))
+        .rounded_full()
+        .flex()
+        .items_center()
+        .justify_center()
+        .bg(theme.warning)
+        .text_color(text_on(theme.warning, theme))
+        .text_size(FONT_CAPTION)
+        .font_weight(FontWeight::BOLD)
+        .font_family(MONO)
+        .child(if unread > 99 {
+            "99+".to_owned()
+        } else {
+            unread.to_string()
+        })
 }
 
 fn activate(
@@ -150,7 +141,8 @@ pub fn popover(
         cx,
     );
     let nav = console.list(LIST, cx);
-    let (cursor, focused) = (nav.cursor, nav.focus.is_focused(window));
+    let (cursor, focused, rows_scroll) =
+        (nav.cursor, nav.focus.is_focused(window), nav.rows.clone());
     let alarms_keys = pages::spec(Page::Alarms)
         .digit
         .map(|digit| display(&page_keys(digit)))
@@ -158,6 +150,7 @@ pub fn popover(
     let now = time_now_secs();
 
     let alarms = div()
+        .flex_none()
         .flex()
         .items_center()
         .gap(SPACE_4)
@@ -218,6 +211,7 @@ pub fn popover(
                     .id(("notification", row))
                     .relative()
                     .flex()
+                    .flex_none()
                     .items_start()
                     .gap(SPACE_4)
                     .h(px(ROW))
@@ -296,9 +290,10 @@ pub fn popover(
     } else {
         div()
             .id("notification-rows")
+            .min_h_0()
             .max_h(px(ROW * VISIBLE as f32 + 8.0))
             .overflow_y_scroll()
-            .track_scroll(&console.scroll("notifications"))
+            .track_scroll(&rows_scroll)
             .flex()
             .flex_col()
             .gap(SPACE_1)
@@ -306,13 +301,16 @@ pub fn popover(
             .into_any_element()
     };
 
+    // Shrinks in a short window: the rows scroll, the rest stays.
     div()
         .flex()
         .flex_col()
+        .min_h_0()
         .gap(SPACE_3)
         .child(
             div()
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(SPACE_3)
                 .px(SPACE_6)
@@ -344,10 +342,11 @@ pub fn popover(
                 }),
         )
         .child(alarms)
-        .child(list.child(body))
+        .child(list.flex().flex_col().min_h_0().child(body))
         .child(
             div()
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(SPACE_5)
                 .px(SPACE_6)

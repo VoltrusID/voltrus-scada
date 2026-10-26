@@ -6,13 +6,11 @@
 //! edition}`; the state is [`Shell`] in `Console::state`.
 
 use std::any::TypeId;
-use std::cell::Cell;
 use std::collections::HashSet;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::prelude::*;
-use gpui::{Bounds, Context, Entity, Keystroke, Pixels, Stateful, Subscription, Window, px};
+use gpui::{Context, Entity, Keystroke, Stateful, Subscription, Window, px};
 use serde::de::IgnoredAny;
 use time::OffsetDateTime;
 use voltrus_scada_native::api::Method;
@@ -28,7 +26,7 @@ use super::keys::{
     Quit, ShellEditShortcuts, ShellOpenSettings, ShellPickTheme, ShellToggleNotifications, SignOut,
     hint,
 };
-use super::overlay::Overlay;
+use super::overlay::{Align, Anchor, Overlay};
 use super::prefs::{self, Prefs};
 use super::shortcuts::{self, Entry, Plan, ShellOpenTag};
 use super::{Console, Phase, severity_rank, views};
@@ -88,7 +86,9 @@ pub struct Shell {
     pub editor: Option<Editor>,
     pub picker: Option<Picker>,
     themes: Vec<ThemeEntry>,
-    pub bell_anchor: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// The bell, or the navbar's menu button standing in for it, for the
+    /// notifications popover.
+    pub bell_anchor: Anchor,
     /// Critical alarms announced to the system, and those waiting.
     announcer: Announcer,
     subscriptions: Vec<Subscription>,
@@ -961,31 +961,16 @@ fn refresh_notifications(console: &Console) {
     }
 }
 
-/// Where the bell's popover opens: right-aligned under the bell.
-pub fn popover_at(bell: Bounds<Pixels>) -> gpui::Point<Pixels> {
-    gpui::point(
-        bell.right() - views::notifications::WIDTH,
-        bell.bottom() + px(4.0),
-    )
-}
-
-/// The bell's popover, below the bell (where the navbar drew it last; the
-/// bell moves it there if it opens before the navbar was drawn).
+/// The bell's popover, right-aligned under the bell (or under the navbar's
+/// menu button when the bell is folded into it), following it as the
+/// navbar moves.
 pub fn open_notifications(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    let width = views::notifications::WIDTH;
-    let at = console.state::<Shell>().bell_anchor.get().map_or_else(
-        || {
-            gpui::point(
-                window.viewport_size().width - width - px(12.0),
-                theme::TITLE_BAR_HEIGHT,
-            )
-        },
-        popover_at,
-    );
+    let anchor = console.state::<Shell>().bell_anchor.clone();
     let overlay = Overlay::popover(
         "notifications",
-        width,
-        at,
+        views::notifications::WIDTH,
+        anchor,
+        Align::Right,
         views::notifications::popover,
         cx,
     );

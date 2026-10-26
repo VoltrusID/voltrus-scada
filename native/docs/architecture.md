@@ -186,7 +186,8 @@ the page's `on_show` with `console.focus_list(LIST, window, cx)`.
 
 ```rust
 let overlay = Overlay::modal("shelve", px(420.0), views::alarms::shelve_dialog, cx);
-// or Overlay::sheet(id, width, render, cx), Overlay::popover(id, width, at, render, cx)
+// or Overlay::sheet(id, width, render, cx),
+//    Overlay::popover(id, width, button_anchor, Align::Left /* or Right */, render, cx)
 console.open_overlay(overlay, window, cx);
 ```
 
@@ -195,6 +196,45 @@ focus trap, click-outside-closes) is the shell's. Tab cycles inside the
 overlay, Esc closes it (a text field's Esc closes it too if you subscribe to
 `InputEvent::Cancelled`), and focus returns where it was. Keep the dialog's
 state in your page's state; close with `console.close_overlay(window, cx)`.
+
+Every overlay fits the window (`overlay::place`, unit tested): its width
+and height are capped to the window less `overlay::MARGIN`, a modal moves
+up in a short window, and a popover opens below its button (an
+`overlay::Anchor` the button's `canvas` sets as it is drawn, read again on
+every draw so the popover follows it), lined up with the button's `align`
+edge, flipped to its other edge or shifted when that would cross the
+window's edge. The card is opaque (`theme.elevated`, a border and a
+shadow) and scrolls what cannot shrink. A menu or list overlay shrinks
+instead, so its header and footer stay: give its root `.min_h_0()` and
+its header and footer `.flex_none()`, let the rows' container take
+`.min_h_0()` and scroll, and make each row `.flex_none()` (rows shrink
+otherwise). A `uniform_list` keeps its `h` as the most it takes and gets a
+`min_h` of one row; plain rows scroll in a container that tracks the
+list's `ListNav::rows` handle, whose children are the rows, so the
+keyboard's row stays in view (`ListNav::step`/`select` reveal it). See the
+More menu (`views::overlays::more`) and the navbar menu
+(`views::navbar::menu`). Anything floating outside the slot (the HUD) is
+opaque too and capped to the window.
+
+## The navbar fits every width
+
+`console::navfit` (no GPUI, unit tested) picks what the navbar shows from
+the window's width and its labels' widths as the text system measures them
+(`views::navbar::measure`, remembered per text): full labels, then
+icon-only tabs (tooltips name them), then no wordmark or user name (the
+avatar's tooltip names the user), then a search button for the Search box
+(⌘K unchanged), then the secondary controls (notifications, settings,
+alarm sound, HUD, appearance) folded into the navbar menu (`ShowNavMenu`;
+its button carries the unread count and stands in for the bell as the
+notifications popover's anchor), then no host or edition badge. The widths
+come from the same constants the navbar draws with, so the avatar and
+sign-out keep `navfit::EDGE` from the window's edge at every step; a GPUI
+test lays the navbar out at widths from 2400 down to 720 and checks that no
+part runs into the next. A new navbar part needs a `navfit::Part`, its
+width in `navfit::spans`, and a step that hides it if it is not essential.
+The window's minimum is 1024×640; `--window WxH` opens another size
+(screenshots; it may be smaller) and `--keys down,down` types keys once
+the launch overlay is up.
 
 ## Animate
 

@@ -45,6 +45,7 @@ impl Harness {
             section: None,
             utc_offset: UtcOffset::UTC,
             appearance: Some(true),
+            keys: None,
         };
         let (console, vcx) = cx.add_window_view(|window, cx| {
             Console::new(runtime, receiver, catalog, launch, window, cx)
