@@ -633,9 +633,21 @@ fn open_sheet(
     let name = prefilled(&recipe.name, "Name", cx);
     let category = prefilled(recipe.category().unwrap_or(""), "None", cx);
     let description = prefilled(recipe.description().unwrap_or(""), "None", cx);
+    // Like `on_field`, except Esc (the field's `Cancelled`, which the field
+    // takes before any `Dismiss`) asks before dropping unsaved edits.
     let subscriptions = [&name, &category, &description]
         .into_iter()
-        .map(|input| on_field(input, submit_sheet, window, cx))
+        .map(|input| {
+            cx.subscribe_in(
+                input,
+                window,
+                |console, _, event: &InputEvent, window, cx| match event {
+                    InputEvent::Submitted => submit_sheet(console, window, cx),
+                    InputEvent::Cancelled => close_sheet(console, window, cx),
+                    InputEvent::Changed | InputEvent::Blurred => cx.notify(),
+                },
+            )
+        })
         .collect();
     // Where each value goes: the data source id of the device's tag with
     // the register's key; the render finds it in the store by id.

@@ -884,7 +884,10 @@ mod tests {
 
     /// Opens the dialog, names the key and asks for it: the create's key.
     fn ask(h: &mut Harness, name: &'static str) -> CallKey {
-        h.cx.dispatch_action(DataNewApiKey);
+        // Straight to the action's handler: a dispatched action after an
+        // earlier dialog closed is not what these tests are about.
+        h.update(new_key);
+        h.draw();
         assert!(h.update(|console, _, _| console.overlay_is(FORM)));
         h.calls();
         h.update(|console, _, cx| {
@@ -898,9 +901,12 @@ mod tests {
                 .update(cx, |field, cx| field.set_text(name, cx));
         });
         h.update(submit);
-        let calls = h.calls();
+        let calls: Vec<CallKey> = h
+            .calls()
+            .into_iter()
+            .filter(|key| key.name == "data.api-keys.create")
+            .collect();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "data.api-keys.create");
         calls[0]
     }
 

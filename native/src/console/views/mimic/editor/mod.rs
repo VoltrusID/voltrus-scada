@@ -1977,7 +1977,7 @@ pub(super) fn edit_button(cx: &mut Context<Console>) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{Modifiers, TestAppContext, point};
+    use gpui::{KeyUpEvent, Keystroke, Modifiers, TestAppContext, point};
     use voltrus_scada_native::mimic::{Widget, WidgetKind};
 
     use super::*;
@@ -2090,6 +2090,32 @@ mod tests {
         h.draw();
     }
 
+    /// Enter pressed and released: a focused button clicks on the release
+    /// (`simulate_keystrokes` sends only the press).
+    fn press_enter(h: &mut Harness) {
+        h.keys("enter");
+        h.cx.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse("enter").expect("a keystroke"),
+        });
+    }
+
+    /// Tab `times` from the dialog: focus is on one of its buttons.
+    fn tab_to_button(h: &mut Harness, times: usize) {
+        for _ in 0..times {
+            h.keys("tab");
+        }
+        let (on_dialog, in_overlay) = h.update(|console, window, cx| {
+            let on_dialog =
+                edits_ref(console).is_some_and(|editor| editor.dialog_focus.is_focused(window));
+            let in_overlay = console
+                .overlay
+                .as_ref()
+                .is_some_and(|overlay| overlay.focus.contains_focused(window, cx));
+            (on_dialog, in_overlay)
+        });
+        assert!(!on_dialog && in_overlay, "Tab moved to a dialog button");
+    }
+
     #[gpui::test]
     fn enter_on_the_unsaved_dialog_saves(cx: &mut TestAppContext) {
         let mut h = editing_a(cx);
@@ -2102,8 +2128,8 @@ mod tests {
     fn enter_on_the_focused_cancel_saves_nothing(cx: &mut TestAppContext) {
         let mut h = editing_a(cx);
         asking(&mut h);
-        h.keys("tab");
-        h.keys("enter");
+        tab_to_button(&mut h, 1);
+        press_enter(&mut h);
         assert!(saves(&mut h).is_empty(), "Cancel is not Save");
         assert!(h.update(|console, _, _| editing(console)), "still editing");
         assert!(dirty(&mut h), "the edit is kept");
@@ -2113,8 +2139,8 @@ mod tests {
     fn enter_on_the_focused_discard_discards(cx: &mut TestAppContext) {
         let mut h = editing_a(cx);
         asking(&mut h);
-        h.keys("tab tab");
-        h.keys("enter");
+        tab_to_button(&mut h, 2);
+        press_enter(&mut h);
         assert!(saves(&mut h).is_empty(), "the discarded edit is not PUT");
         assert!(
             !h.update(|console, _, _| editing(console)),

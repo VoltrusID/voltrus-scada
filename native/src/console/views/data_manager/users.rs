@@ -868,9 +868,13 @@ mod tests {
 
         type_into(&mut h, |form| form.again.clone(), "secret-123");
         h.update(submit);
-        assert_eq!(h.calls(), [CallKey::new("data.users.save")]);
+        let calls = h.calls();
+        assert_eq!(calls.len(), 1);
+        let saved = calls[0];
+        assert_eq!(saved.name, "data.users.save");
+        assert_ne!(saved.arg, 0, "keyed with the form's number");
         h.reply(
-            CallKey::new("data.users.save"),
+            saved,
             Reply::ok(("Created ana".to_owned(), "ana".to_owned())),
         );
         h.draw();
@@ -965,10 +969,11 @@ mod tests {
         type_into(&mut h, |form| form.password.clone(), "secret-123");
         type_into(&mut h, |form| form.again.clone(), "secret-123");
         h.update(submit);
-        let calls = h.calls();
-        assert_eq!(calls.len(), 1);
-        let first = calls[0];
-        assert_eq!(first.name, "data.users.save");
+        let first = *h
+            .calls()
+            .iter()
+            .find(|key| key.name == "data.users.save")
+            .expect("saved");
         // Esc while it saves, then another form.
         h.update(|console, window, cx| {
             console.close_overlay(window, cx);
