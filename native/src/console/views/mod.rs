@@ -1,54 +1,146 @@
-//! Views are functions over `&mut Console`; this is the window's root.
+//! Views are functions over `&mut Console`. Each part of the window is
+//! drawn by its own cached view ([`cached::CachedView`]): the navbar, the
+//! page, the status bar, the toasts, the overlay and the HUD. This root is a
+//! thin shell around them: it redraws every frame, but a part that did not
+//! change replays its last frame, so an animating page costs only itself.
 
-mod alarms;
-mod navbar;
-mod overview;
+pub(crate) mod alarms;
+pub(crate) mod audit;
+pub(crate) mod cached;
+pub(crate) mod commands;
+pub(crate) mod dashboard;
+mod dashboard_cards;
+pub(crate) mod data_manager;
+pub(crate) mod edition;
+pub(crate) mod export;
+pub(crate) mod hud;
+pub(crate) mod mimic;
+pub(crate) mod navbar;
+pub(crate) mod notifications;
+pub(crate) mod ops_kit;
+pub(crate) mod overlays;
+pub(crate) mod overview;
+pub(crate) mod performance;
+pub(crate) mod settings;
+pub(crate) mod shift;
 mod sign_in;
-mod status_bar;
-mod tags;
-mod trends;
+pub(crate) mod spark;
+pub(crate) mod status_bar;
+pub(crate) mod tag_chart;
+pub(crate) mod tag_detail;
+pub(crate) mod tag_tree;
+pub(crate) mod tag_write;
+pub(crate) mod tags;
+pub(crate) mod toasts;
+pub(crate) mod trends;
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, Div, FontWeight, Hsla, SharedString, Window, div, px};
+use gpui::{
+    Action, Animation, AnimationExt as _, AnyElement, AnyView, App, Context, Div, ElementId,
+    FontWeight, Hsla, SharedString, Window, canvas, div, px,
+};
 use time::{OffsetDateTime, UtcOffset};
 use voltrus_scada_native::api::Alarm;
-use vt_ui::Icon;
 use vt_ui::chart::format_value;
 use vt_ui::theme::*;
 
-use super::store::Status;
-use super::{
-    AcknowledgeAll, CONSOLE, Console, NextTag, Page, Phase, PreviousTag, Quit, ShowAlarms,
-    ShowOverview, ShowTags, ShowTrends, SignOut, ToggleAppearance, severity_rank,
+use super::keys::{
+    AcknowledgeAll, Back, CONSOLE, Dismiss, FocusNext, FocusPrevious, FocusSearch, Forward, LIST,
+    ListActivate, ListDown, ListFirst, ListLast, ListPageDown, ListPageUp, ListToggle, ListUp,
+    Quit, ShowMore, ShowPage, SignOut, StartStress, StopStress, ToggleAppearance, ToggleHelp,
+    TogglePalette, TogglePerfHud,
 };
+use super::keys::{OpsExportAudit, OpsExportData, OpsNewHandover};
+use super::keys::{
+    TagsAddNote, TagsCompare, TagsCustomRange, TagsExpandDetail, TagsExportCsv, TagsWrite,
+    TagsWritePolicy,
+};
+use super::nav::Move;
+use super::store::Status;
+use super::{Console, Page, Phase, anim, pages, severity_rank};
+
+/// Room below a list's last row, so it scrolls clear of the toast stack in
+/// the bottom-right corner (three toasts and their gaps). Plain scrolling
+/// areas take it as bottom padding; a `uniform_list` (whose padding shrinks
+/// its viewport instead) gets [`tail_rows`] empty rows after its last.
+pub(crate) const LIST_TAIL: gpui::Pixels = px(200.0);
+
+/// Empty rows of `row_height` that make up [`LIST_TAIL`] after a
+/// `uniform_list`'s last row; none for an empty list.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn tail_rows(len: usize, row_height: f32) -> usize {
+    if len == 0 {
+        0
+    } else {
+        (f32::from(LIST_TAIL) / row_height).ceil() as usize
+    }
+}
+
+/// One of the [`tail_rows`].
+pub(crate) fn tail_row(row_height: f32) -> AnyElement {
+    div().w_full().h(px(row_height)).into_any_element()
+}
 
 impl Render for Console {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.meter.borrow_mut().frame_start(Instant::now());
+        let warm = self.warm_step(window, cx);
+        let viewport = window.viewport_size();
+        let page_area = gpui::size(
+            viewport.width,
+            (viewport.height - TITLE_BAR_HEIGHT - STATUS_BAR_HEIGHT).max(px(0.0)),
+        );
         let theme = theme(cx).clone();
-        let body = match self.phase {
-            Phase::SignIn | Phase::ChangePassword => sign_in::render(self, cx),
-            Phase::Console => {
-                let rate = self.rate.per_second(Instant::now());
-                // Counted once: the navbar, status bar and page all show it.
-                let unacknowledged = self.unacknowledged();
-                let page = match self.page {
-                    Page::Overview => overview::render(self, rate, unacknowledged, cx),
-                    Page::Tags => tags::render(self, window.viewport_size().width, cx),
-                    Page::Alarms => alarms::render(self, unacknowledged, cx),
-                    Page::Trends => trends::render(self, cx),
-                };
-                div()
-                    .flex()
-                    .flex_col()
-                    .size_full()
-                    .child(navbar::render(self, unacknowledged, cx))
-                    .child(div().flex().flex_col().flex_1().min_h_0().child(page))
-                    .child(status_bar::render(self, rate, unacknowledged, cx))
-                    .into_any_element()
-            }
+        let in_console = self.phase == Phase::Console;
+        let body = if in_console {
+            let page = self.page_view(self.page, cx);
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                .child(
+                    AnyView::from(self.views.navbar.clone()).cached(
+                        div()
+                            .flex_none()
+                            .w_full()
+                            .h(TITLE_BAR_HEIGHT)
+                            .style()
+                            .clone(),
+                    ),
+                )
+                .child(
+                    AnyView::from(page).cached(div().flex_1().w_full().min_h_0().style().clone()),
+                )
+                .child(
+                    AnyView::from(self.views.status_bar.clone()).cached(
+                        div()
+                            .flex_none()
+                            .w_full()
+                            .h(STATUS_BAR_HEIGHT)
+                            .style()
+                            .clone(),
+                    ),
+                )
+                .into_any_element()
+        } else {
+            sign_in::render(self, cx)
         };
+
+        // Bottom right, above the status bar and left of the page's side
+        // panel (tag detail, trend picker): clear of headers and controls.
+        let toast_right = if in_console {
+            (pages::spec(self.page).side_panel)(self) + SPACE_7
+        } else {
+            SPACE_7
+        };
+        let toast_bottom = if in_console {
+            STATUS_BAR_HEIGHT + SPACE_7
+        } else {
+            SPACE_7
+        };
+        let meter = self.meter.clone();
 
         div()
             .id("console")
@@ -71,97 +163,348 @@ impl Render for Console {
                     console.sign_out(window, cx);
                 }
             }))
-            .on_action(cx.listener(|console, _: &ShowOverview, _, cx| {
-                console.show(Page::Overview, cx);
-            }))
-            .on_action(cx.listener(|console, _: &ShowTags, _, cx| console.show(Page::Tags, cx)))
-            .on_action(cx.listener(|console, _: &ShowAlarms, _, cx| {
-                console.show(Page::Alarms, cx);
-            }))
-            .on_action(cx.listener(|console, _: &ShowTrends, _, cx| {
-                console.show(Page::Trends, cx);
-            }))
-            .on_action(cx.listener(|console, _: &AcknowledgeAll, _, _| {
+            .on_action(cx.listener(|console, action: &ShowPage, window, cx| {
                 if console.phase == Phase::Console {
-                    console.acknowledge_all();
+                    console.show(action.0, window, cx);
                 }
             }))
-            .on_action(cx.listener(|console, _: &NextTag, _, cx| {
-                if console.phase == Phase::Console && console.page == Page::Tags {
-                    console.step(1, cx);
+            .on_action(cx.listener(|console, _: &Back, window, cx| {
+                if console.phase == Phase::Console {
+                    console.history_step(false, window, cx);
                 }
             }))
-            .on_action(cx.listener(|console, _: &PreviousTag, _, cx| {
-                if console.phase == Phase::Console && console.page == Page::Tags {
-                    console.step(-1, cx);
+            .on_action(cx.listener(|console, _: &Forward, window, cx| {
+                if console.phase == Phase::Console {
+                    console.history_step(true, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &AcknowledgeAll, window, cx| {
+                if console.phase == Phase::Console && console.is_signed_in() {
+                    alarms::confirm_acknowledge_all(console, window, cx);
                 }
             }))
             .on_action(cx.listener(|console, _: &ToggleAppearance, _, cx| {
                 console.toggle_appearance(cx);
             }))
+            .on_action(cx.listener(|console, _: &TogglePalette, window, cx| {
+                if console.overlay_is("palette") {
+                    console.close_overlay(window, cx);
+                } else if console.phase == Phase::Console
+                    && !data_manager::api_keys::secret_shown(console)
+                {
+                    console.open_palette(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &ToggleHelp, window, cx| {
+                if console.overlay_is("help") {
+                    console.close_overlay(window, cx);
+                } else if console.phase == Phase::Console
+                    && !data_manager::api_keys::secret_shown(console)
+                {
+                    console.open_help(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &ShowMore, window, cx| {
+                if console.overlay_is("more") {
+                    console.close_overlay(window, cx);
+                } else if console.phase == Phase::Console
+                    && !data_manager::api_keys::secret_shown(console)
+                {
+                    console.open_more(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TogglePerfHud, _, cx| {
+                console.set_hud(!console.hud, cx);
+            }))
+            .on_action(cx.listener(|console, _: &FocusSearch, window, cx| {
+                if console.phase == Phase::Console && console.overlay.is_none() {
+                    console.focus_search(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &FocusNext, window, cx| {
+                console.focus_step(true, window, cx);
+            }))
+            .on_action(cx.listener(|console, _: &FocusPrevious, window, cx| {
+                console.focus_step(false, window, cx);
+            }))
+            .on_action(cx.listener(|console, _: &Dismiss, window, cx| {
+                if console.phase == Phase::Console {
+                    console.dismiss(window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &StartStress, window, cx| {
+                if console.may_start_stress() {
+                    let plan = performance::plan(console);
+                    console.start_stress(plan, false, window, cx);
+                } else {
+                    console.show_toast(
+                        "A stress test replaces the session: an admin's, without the kiosk lock",
+                        true,
+                        cx,
+                    );
+                }
+            }))
+            .on_action(cx.listener(|console, _: &StopStress, window, cx| {
+                // Stopping signs out: not under the kiosk lock.
+                if console.stress.is_some() && !console.kiosk_locked() {
+                    console.sign_out(window, cx);
+                }
+            }))
+            // Prepainted and painted first: where layout ends and paint
+            // begins, for the meter's phase split.
+            .child({
+                let meter = self.meter.clone();
+                let marks = self.meter.clone();
+                canvas(
+                    move |_, _, _| meter.borrow_mut().laid_out(Instant::now()),
+                    move |_, (), _, _| marks.borrow_mut().painting(Instant::now()),
+                )
+                .absolute()
+                .w(px(0.0))
+                .h(px(0.0))
+            })
+            .when_some(warm, |this, view| {
+                this.child(super::warm::hidden(view, page_area))
+            })
+            .map(|root| super::shell::actions(root, cx))
+            .on_action(cx.listener(|console, _: &TagsWrite, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Write, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsWritePolicy, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Policy, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsAddNote, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Note, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsCompare, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Compare, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsCustomRange, window, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::open_dialog(console, tag_detail::TagDialog::Range, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsExportCsv, _, cx| {
+                if console.phase == Phase::Console {
+                    tag_detail::export_csv(console, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &TagsExpandDetail, _, cx| {
+                if console.phase == Phase::Console && tag_detail::open_index(console).is_some() {
+                    tag_detail::toggle_expanded(console, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &OpsExportData, window, cx| {
+                if console.phase == Phase::Console {
+                    export::open(console, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &OpsNewHandover, window, cx| {
+                if console.phase == Phase::Console {
+                    shift::new_entry(console, window, cx);
+                }
+            }))
+            .on_action(cx.listener(|console, _: &OpsExportAudit, window, cx| {
+                if console.phase == Phase::Console {
+                    audit::export_csv(console, window, cx);
+                }
+            }))
+            .map(|root| alarms::root_actions(root, cx))
+            .on_action(
+                cx.listener(|console, _: &super::keys::DataNewSource, window, cx| {
+                    if console.phase == Phase::Console {
+                        data_manager::sources::new_source(console, window, cx);
+                    }
+                }),
+            )
+            .map(|this| data_manager::admin_kit::root_actions(this, cx))
+            .map(|this| dashboard::actions(this, cx))
+            .map(|this| mimic::editor::actions(this, cx))
             .child(body)
             .when(!self.toasts.is_empty(), |this| {
-                // Bottom right, above the status bar and left of the page's
-                // side panel (tag detail, trend picker), stacked upward with
-                // the newest at the bottom: clear of headers and controls.
-                let in_console = self.phase == Phase::Console;
-                let panel = match self.page {
-                    Page::Tags if in_console && self.selected.is_some() => px(tags::PANEL),
-                    Page::Trends if in_console => px(trends::PICKER),
-                    _ => px(0.0),
-                };
-                let bottom = if in_console {
-                    STATUS_BAR_HEIGHT + SPACE_7
-                } else {
-                    SPACE_7
-                };
-                let toasts = self.toasts.iter().map(|toast| {
-                    let color = if toast.error {
-                        theme.danger
-                    } else {
-                        theme.success
-                    };
-                    div()
-                        .w(px(380.0))
-                        .flex()
-                        .items_start()
-                        .gap(SPACE_4)
-                        .px(SPACE_6)
-                        .py(SPACE_5)
-                        .rounded(RADIUS_LG)
-                        .bg(theme.elevated)
-                        .border_1()
-                        .border_color(color.alpha(0.4))
-                        .shadow(theme.shadow(Elevation::Popover))
-                        .child(vt_ui::icon(
-                            if toast.error {
-                                Icon::CircleAlert
-                            } else {
-                                Icon::CircleCheck
-                            },
-                            ICON_LG,
-                            color,
-                        ))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_size(FONT_BODY)
-                                .child(toast.message.clone()),
-                        )
-                });
                 this.child(
-                    div()
-                        .absolute()
-                        .bottom(bottom)
-                        .right(panel + SPACE_7)
-                        .flex()
-                        .flex_col()
-                        .gap(SPACE_4)
-                        .children(toasts),
+                    AnyView::from(self.views.toasts.clone()).cached(
+                        div()
+                            .absolute()
+                            .bottom(toast_bottom)
+                            .right(toast_right)
+                            .w(toasts::WIDTH)
+                            .h(toasts::HEIGHT)
+                            .style()
+                            .clone(),
+                    ),
                 )
             })
+            .when(self.hud && in_console, |this| {
+                this.child(
+                    AnyView::from(self.views.hud.clone()).cached(
+                        div()
+                            .absolute()
+                            .top(TITLE_BAR_HEIGHT + SPACE_6)
+                            .right(SPACE_7)
+                            .w(hud::WIDTH)
+                            .h(hud::HEIGHT)
+                            .style()
+                            .clone(),
+                    ),
+                )
+            })
+            .when(self.overlay.is_some() && in_console, |this| {
+                this.child(
+                    AnyView::from(self.views.overlay.clone())
+                        .cached(div().absolute().inset_0().style().clone()),
+                )
+            })
+            // Painted last: the frame's end, for the meter.
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    move |_, (), _, cx| {
+                        meter.borrow_mut().frame_end(Instant::now(), now_ms());
+                        // Effects run after the frame is presented: the
+                        // present's end, for the meter.
+                        cx.defer(move |_| meter.borrow_mut().presented(Instant::now()));
+                    },
+                )
+                .absolute()
+                .w(px(0.0))
+                .h(px(0.0)),
+            )
     }
+}
+
+/// A page as its cached view draws it: the registry's render function,
+/// entering with a short fade and slide after each switch.
+pub(crate) fn page(
+    console: &mut Console,
+    page: Page,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) -> AnyElement {
+    let started = Instant::now();
+    let spec = pages::spec(page);
+    let content = (spec.render)(console, window, cx);
+    let now = Instant::now();
+    // A page drawn out of sight to warm it is not the page on screen.
+    let mut meter = console.meter.borrow_mut();
+    if console.page == page {
+        meter.page_built(spec.id, super::meter::ms(started, now));
+        meter.sync_display(window, cx, now);
+    } else {
+        meter.page_warmed(spec.id, super::meter::ms(started, now));
+    }
+    drop(meter);
+    if anim::progress(console.switched_at, Instant::now(), anim::PAGE_IN).is_some() {
+        console.meter.borrow_mut().expect_frame(Instant::now());
+    }
+    div()
+        .relative()
+        .size_full()
+        .flex()
+        .flex_col()
+        .child(content)
+        .with_animation(
+            ElementId::NamedInteger("page-in".into(), console.switch_seq),
+            Animation::new(anim::PAGE_IN).with_easing(anim::ease_out),
+            |this, t| this.opacity(0.3 + 0.7 * t).top(px((1.0 - t) * 6.0)),
+        )
+        .into_any_element()
+}
+
+/// The cursor of a keyboard list moved to a row.
+pub(crate) type OnMove = fn(&mut Console, usize, &mut Window, &mut Context<Console>);
+/// Enter (`toggle` false) or Space (`toggle` true) on a keyboard list's row.
+pub(crate) type OnActivate = fn(&mut Console, usize, bool, &mut Window, &mut Context<Console>);
+
+/// What a keyboard list does with its rows.
+#[derive(Clone, Copy)]
+pub(crate) struct ListKeys {
+    /// The list's id, for [`Console::list`].
+    pub id: &'static str,
+    /// The cursor moved to a row (the Tags page opens its detail).
+    pub on_move: Option<OnMove>,
+    pub on_activate: OnActivate,
+}
+
+fn mover<A: Action>(
+    keys: ListKeys,
+    step: Move,
+    cx: &mut Context<Console>,
+) -> impl Fn(&A, &mut Window, &mut App) + 'static {
+    cx.listener(move |console: &mut Console, _: &A, window, cx| {
+        if let Some(row) = console.list_move(keys.id, step, cx)
+            && let Some(on_move) = keys.on_move
+        {
+            on_move(console, row, window, cx);
+        }
+    })
+}
+
+fn activator<A: Action>(
+    keys: ListKeys,
+    toggle: bool,
+    cx: &mut Context<Console>,
+) -> impl Fn(&A, &mut Window, &mut App) + 'static {
+    cx.listener(move |console: &mut Console, _: &A, window, cx| {
+        if let Some(row) = console.list(keys.id, cx).cursor {
+            (keys.on_activate)(console, row, toggle, window, cx);
+        }
+    })
+}
+
+/// A container that makes the list inside it keyboard-driven: it takes
+/// focus (a click on a row gives it), and j/k, the arrows, PgUp/PgDn,
+/// Home/End, Enter and Space act on its cursor row. `len` is how many rows
+/// this render shows; `page` how many fit on screen.
+pub(crate) fn keyboard_list(
+    keys: ListKeys,
+    len: usize,
+    page: usize,
+    console: &mut Console,
+    cx: &mut Context<Console>,
+) -> gpui::Stateful<Div> {
+    let nav = console.list(keys.id, cx);
+    nav.set_len(len);
+    nav.page = page;
+    let focus = nav.focus.clone();
+    div()
+        .id(SharedString::from(keys.id))
+        .track_focus(&focus)
+        .key_context(LIST)
+        .on_action(mover::<ListUp>(keys, Move::Up, cx))
+        .on_action(mover::<ListDown>(keys, Move::Down, cx))
+        .on_action(mover::<ListPageUp>(keys, Move::PageUp, cx))
+        .on_action(mover::<ListPageDown>(keys, Move::PageDown, cx))
+        .on_action(mover::<ListFirst>(keys, Move::First, cx))
+        .on_action(mover::<ListLast>(keys, Move::Last, cx))
+        .on_action(activator::<ListActivate>(keys, false, cx))
+        .on_action(activator::<ListToggle>(keys, true, cx))
+}
+
+/// The keyboard cursor's ring over a row; it does not move the row's
+/// content.
+pub(crate) fn focus_ring(theme: &Theme) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .rounded(RADIUS_SM)
+        .border_1()
+        .border_color(theme.accent)
+}
+
+/// How many rows of `row_height` fit in the window's height, for PgUp/PgDn.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub(crate) fn rows_on_screen(window: &Window, row_height: f32) -> usize {
+    let height = f32::from(window.viewport_size().height) - 160.0;
+    (height / row_height).floor().max(1.0) as usize
 }
 
 /// Wall-clock now in milliseconds, the time base of every chart.
@@ -250,7 +593,7 @@ pub(crate) fn fit_span(reach_ms: Option<f64>, shortest: f64, longest: f64) -> f6
 pub(crate) fn alarm_source(console: &Console, alarm: &Alarm) -> String {
     console
         .store
-        .position(&alarm.source_key)
+        .by_key(&alarm.source_key)
         .map(|index| console.store.tags[index].info.name.clone())
         .filter(|name| !name.is_empty())
         .or_else(|| (!alarm.source_name.is_empty()).then(|| alarm.source_name.clone()))

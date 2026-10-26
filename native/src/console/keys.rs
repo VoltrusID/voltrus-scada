@@ -1,0 +1,2878 @@
+//! Actions, key bindings, menus and the command table they all come from.
+//!
+//! One table, [`COMMANDS`], lists every console command with its keys, its
+//! key context, a label and whether the ⌘K palette offers it. The key
+//! bindings, the View menu, the palette and the help overlay (`?`) are all
+//! generated from it and from the page registry ([`super::pages::PAGES`]),
+//! so a new command is one row here (plus its handler on the root view).
+//!
+//! Key contexts:
+//! - [`CONSOLE`]: the window's root; global commands.
+//! - [`NOT_TYPING`]: the root, unless a text field has focus (`/`, `?`).
+//! - [`LIST`]: a keyboard list (rows with a cursor) has focus.
+//! - [`MENU`]: a popup list inside an overlay (the palette, the More menu).
+
+use std::rc::Rc;
+
+use gpui::{
+    Action, DummyKeyboardMapper, KeyBinding, KeyBindingContextPredicate, Menu, MenuItem, OsAction,
+    actions,
+};
+use vt_ui::Icon;
+
+use super::pages::{PAGES, Page, Role};
+
+actions!(
+    voltrus_console,
+    [
+        Quit,
+        SignOut,
+        AcknowledgeAll,
+        ToggleAppearance,
+        TogglePalette,
+        ToggleHelp,
+        TogglePerfHud,
+        ShowMore,
+        Back,
+        Forward,
+        FocusSearch,
+        FocusNext,
+        FocusPrevious,
+        Dismiss,
+        ListUp,
+        ListDown,
+        ListPageUp,
+        ListPageDown,
+        ListFirst,
+        ListLast,
+        ListActivate,
+        ListToggle,
+        StartStress,
+        StopStress,
+        ShellOpenSettings,
+        ShellToggleNotifications,
+        ShellEditShortcuts,
+        ShellPickTheme,
+        TagsWrite,
+        TagsWritePolicy,
+        TagsAddNote,
+        TagsCompare,
+        TagsCustomRange,
+        TagsExportCsv,
+        TagsExpandDetail,
+        OpsPreviousPage,
+        OpsNextPage,
+        OpsNextTab,
+        OpsNextFilter,
+        OpsPreviousFilter,
+        OpsRefresh,
+        OpsCancelCommand,
+        OpsSortNext,
+        OpsSortReverse,
+        OpsNewHandover,
+        OpsExportAudit,
+        OpsExportData,
+        AlarmsAcknowledge,
+        AlarmsShelve,
+        AlarmsNextFilter,
+        AlarmsPreviousFilter,
+        AlarmsCycleSort,
+        AlarmsToggleMute,
+        AlarmsShowList,
+        AlarmsShowAnalytics,
+        AlarmsShowAudit,
+        DataNewSource,
+        DataDuplicateSource,
+        DataDeleteSource,
+        DataMoveSourceUp,
+        DataMoveSourceDown,
+        DataSortNext,
+        DataReverseSort,
+        DataNewDevice,
+        DataAddChild,
+        DataToggleEnabled,
+        DataRowActions,
+        DataImportFile,
+        DataRefreshSection,
+        DataSectionTool,
+        EngSystemPreviousTab,
+        EngSystemExportDocs,
+        EngSnapshotsNew,
+        EngSnapshotsRollback,
+        EngSnapshotsDiffFrom,
+        EngSnapshotsDiffTo,
+        EngSnapshotsCompare,
+        EngSnapshotsSortNext,
+        EngMqttNextTab,
+        EngMqttPrevTab,
+        EngMqttStartStop,
+        EngMqttConfigure,
+        EngMqttPublish,
+        EngMqttRefresh,
+        EngEdrNextTab,
+        EngEdrPrevTab,
+        EngEdrRefresh,
+        EngEdrCopy,
+        EngEdrSave,
+        EngImportsOpen,
+        EngImportsSwitch,
+        EngImportsDelimiter,
+        EngFlowsNew,
+        EngFlowsEdit,
+        EngFlowsDelete,
+        EngFlowsRuns,
+        EngFlowsTest,
+        EngFlowsRefresh,
+        EngFlowsSortNext,
+        EngFlowsSortReverse,
+        EngFlowsSave,
+        EngFlowsUndo,
+        EngFlowsDeleteSelection,
+        EngFlowsNudgeLeft,
+        EngFlowsNudgeRight,
+        EngFlowsNudgeUp,
+        EngFlowsNudgeDown,
+        EngFlowsZoomIn,
+        EngFlowsZoomOut,
+        EngFlowsFit,
+        EngFlowsArrange,
+        EngFlowsEarlier,
+        EngFlowsLater,
+        EngFlowsAddStep,
+        EngFlowsInspect,
+        EngFlowsOpen,
+        EngScriptsNew,
+        EngScriptsDelete,
+        EngScriptsToggleEnabled,
+        EngScriptsRefresh,
+        EngScriptsSortNext,
+        EngScriptsSortReverse,
+        EngScriptsShowTest,
+        EngScriptsShowHistory,
+        EngScriptsSave,
+        EngScriptsRun,
+        DataNewUser,
+        DataNewRole,
+        DataNewApiKey,
+        DataNewRule,
+        DataAdminDelete,
+        DataAdminPassword,
+        DataAdminTest,
+    ]
+);
+
+/// Show a page (⌘1–⌘9, the View menu, the palette).
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = voltrus_console, no_json)]
+pub struct ShowPage(pub Page);
+
+pub const CONSOLE: &str = "Console";
+pub const NOT_TYPING: &str = "Console && !TextInput";
+pub const LIST: &str = "List";
+pub const MENU: &str = "Menu";
+/// The operations pages' keys (Commands, Shift handover, Audit log): their
+/// page roots carry `OpsPaged`, `OpsTabbed`, … and the keys never fire
+/// while a text field has focus.
+pub const OPS_PAGED: &str = "OpsPaged && !TextInput";
+pub const OPS_TABBED: &str = "OpsTabbed && !TextInput";
+pub const OPS_FILTERED: &str = "OpsFiltered && !TextInput";
+pub const OPS_REFRESHABLE: &str = "OpsRefreshable && !TextInput";
+pub const OPS_COMMANDS: &str = "OpsCommands && !TextInput";
+pub const OPS_SHIFT: &str = "OpsShift && !TextInput";
+pub const OPS_AUDIT: &str = "OpsAudit && !TextInput";
+/// The Alarms page's lists (and its detail sheet): a = acknowledge, s =
+/// shelve, ⇧A = acknowledge all, ←/→ = filter, o = sort.
+pub const ALARM_LIST: &str = "AlarmList";
+/// The Data Manager's sources table has focus.
+pub const DATA_SOURCES: &str = "DataSources";
+/// A Data Manager › Protocols device table has focus.
+pub const DATA_DEVICES: &str = "DataDevices";
+/// Data Manager › Engineering sections: each section's root carries its
+/// context, and its single-letter keys never fire while typing.
+/// System's root also carries `OpsTabbed OpsRefreshable OpsFiltered`
+/// (t, r, [ ]).
+pub const ENG_SYSTEM: &str = "EngSystem && !TextInput";
+pub const ENG_SNAPSHOTS: &str = "EngSnapshots && !TextInput";
+pub const ENG_MQTT: &str = "EngMqtt && !TextInput";
+pub const ENG_EDR: &str = "EngEdr && !TextInput";
+pub const ENG_IMPORTS: &str = "EngImports && !TextInput";
+/// Flows: the list, the editor (⌘S also while typing) and its canvas.
+pub const ENG_FLOWS: &str = "EngFlows && !TextInput";
+pub const ENG_FLOW_EDITOR: &str = "EngFlowEditor";
+pub const ENG_FLOW_CANVAS: &str = "EngFlowCanvas && !TextInput";
+/// Scripts (⌘S and ⌘↵ work while typing in its editor).
+pub const ENG_SCRIPTS: &str = "EngScripts";
+pub const ENG_SCRIPTS_LIST: &str = "EngScripts && !TextInput";
+/// The Data Manager's Admin tables (Users, Roles, API keys, Notifications):
+/// every one carries `DataAdmin` (⌫ deletes or revokes) and its own name
+/// (N makes one; P resets a password; T tests a rule).
+pub const DATA_ADMIN: &str = "DataAdmin";
+pub const DATA_USERS: &str = "DataUsers";
+pub const DATA_ROLES: &str = "DataRoles";
+pub const DATA_API_KEYS: &str = "DataApiKeys";
+pub const DATA_RULES: &str = "DataRules";
+/// The key contexts the Admin tables set on their element.
+pub const DATA_ADMIN_USERS: &str = "DataAdmin DataUsers";
+pub const DATA_ADMIN_ROLES: &str = "DataAdmin DataRoles";
+pub const DATA_ADMIN_API_KEYS: &str = "DataAdmin DataApiKeys";
+pub const DATA_ADMIN_RULES: &str = "DataAdmin DataRules";
+
+/// How the help overlay groups the commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Pages,
+    Navigation,
+    Lists,
+    Alarms,
+    View,
+    Session,
+    Data,
+}
+
+impl Group {
+    pub const ALL: [Self; 7] = [
+        Self::Pages,
+        Self::Navigation,
+        Self::Lists,
+        Self::Alarms,
+        Self::View,
+        Self::Session,
+        Self::Data,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Pages => "Pages",
+            Self::Navigation => "Navigation",
+            Self::Lists => "Lists",
+            Self::Alarms => "Alarms",
+            Self::View => "View",
+            Self::Session => "Session",
+            Self::Data => "Data Manager",
+        }
+    }
+}
+
+/// One console command.
+pub struct CommandSpec {
+    pub label: &'static str,
+    pub group: Group,
+    pub icon: Icon,
+    /// GPUI keystrokes (`secondary` is ⌘ on macOS and Ctrl elsewhere); the
+    /// first is the one menus and hints show.
+    pub keys: &'static [&'static str],
+    pub context: &'static str,
+    pub action: fn() -> Box<dyn Action>,
+    /// Offered in the ⌘K palette.
+    pub palette: bool,
+    /// Who the palette offers it to.
+    pub role: Role,
+}
+
+macro_rules! command {
+    ($label:expr, $group:ident, $icon:ident, [$($key:expr),*], $context:expr, $action:expr, $palette:expr) => {
+        CommandSpec {
+            label: $label,
+            group: Group::$group,
+            icon: Icon::$icon,
+            keys: &[$($key),*],
+            context: $context,
+            action: || -> Box<dyn Action> { Box::new($action) },
+            palette: $palette,
+            role: Role::Any,
+        }
+    };
+}
+
+/// Every command but the page shortcuts, which come from the page registry.
+pub static COMMANDS: &[CommandSpec] = &[
+    command!(
+        "Command palette",
+        Navigation,
+        Search,
+        ["secondary-k"],
+        CONSOLE,
+        TogglePalette,
+        false
+    ),
+    command!(
+        "Keyboard shortcuts",
+        Navigation,
+        Keyboard,
+        ["?"],
+        NOT_TYPING,
+        ToggleHelp,
+        true
+    ),
+    command!(
+        "Back",
+        Navigation,
+        ChevronLeft,
+        ["secondary-["],
+        CONSOLE,
+        Back,
+        true
+    ),
+    command!(
+        "Forward",
+        Navigation,
+        ChevronRight,
+        ["secondary-]"],
+        CONSOLE,
+        Forward,
+        true
+    ),
+    command!(
+        "More pages",
+        Navigation,
+        Ellipsis,
+        [],
+        CONSOLE,
+        ShowMore,
+        true
+    ),
+    command!(
+        "Search this page",
+        Navigation,
+        Search,
+        ["/"],
+        NOT_TYPING,
+        FocusSearch,
+        false
+    ),
+    command!(
+        "Next control",
+        Navigation,
+        ChevronRight,
+        ["tab"],
+        CONSOLE,
+        FocusNext,
+        false
+    ),
+    command!(
+        "Previous control",
+        Navigation,
+        ChevronLeft,
+        ["shift-tab"],
+        CONSOLE,
+        FocusPrevious,
+        false
+    ),
+    command!(
+        "Close or go back",
+        Navigation,
+        X,
+        ["escape"],
+        CONSOLE,
+        Dismiss,
+        false
+    ),
+    command!(
+        "Move down",
+        Lists,
+        ChevronDown,
+        ["down", "j"],
+        LIST,
+        ListDown,
+        false
+    ),
+    command!(
+        "Move up",
+        Lists,
+        ChevronUp,
+        ["up", "k"],
+        LIST,
+        ListUp,
+        false
+    ),
+    command!(
+        "Page down",
+        Lists,
+        ChevronDown,
+        ["pagedown"],
+        LIST,
+        ListPageDown,
+        false
+    ),
+    command!(
+        "Page up",
+        Lists,
+        ChevronUp,
+        ["pageup"],
+        LIST,
+        ListPageUp,
+        false
+    ),
+    command!(
+        "First row",
+        Lists,
+        ChevronUp,
+        ["home"],
+        LIST,
+        ListFirst,
+        false
+    ),
+    command!(
+        "Last row",
+        Lists,
+        ChevronDown,
+        ["end"],
+        LIST,
+        ListLast,
+        false
+    ),
+    command!(
+        "Open the row",
+        Lists,
+        CircleDot,
+        ["enter"],
+        LIST,
+        ListActivate,
+        false
+    ),
+    command!(
+        "Toggle the row",
+        Lists,
+        Check,
+        ["space"],
+        LIST,
+        ListToggle,
+        false
+    ),
+    // Arrows move a menu's cursor also while its search field has focus
+    // (the field takes only left and right); letters type.
+    command!(
+        "Move down",
+        Lists,
+        ChevronDown,
+        ["down"],
+        MENU,
+        ListDown,
+        false
+    ),
+    command!("Move up", Lists, ChevronUp, ["up"], MENU, ListUp, false),
+    command!(
+        "Acknowledge all alarms",
+        Alarms,
+        Check,
+        ["secondary-shift-a"],
+        CONSOLE,
+        AcknowledgeAll,
+        true
+    ),
+    command!(
+        "Light or dark",
+        View,
+        Sun,
+        ["secondary-shift-l"],
+        CONSOLE,
+        ToggleAppearance,
+        true
+    ),
+    command!(
+        "Performance HUD",
+        View,
+        Activity,
+        ["secondary-shift-p"],
+        CONSOLE,
+        TogglePerfHud,
+        true
+    ),
+    // A stress run replaces the session: offered to admins only (the
+    // handler refuses it otherwise, and under the kiosk lock).
+    CommandSpec {
+        label: "Start the stress test",
+        group: Group::View,
+        icon: Icon::Zap,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(StartStress) },
+        palette: true,
+        role: Role::Admin,
+    },
+    command!(
+        "Stop the stress test",
+        View,
+        Square,
+        [],
+        CONSOLE,
+        StopStress,
+        true
+    ),
+    command!("Sign out", Session, Unplug, [], CONSOLE, SignOut, true),
+    command!("Quit", Session, X, ["secondary-q"], CONSOLE, Quit, true),
+    // The operations pages (Commands, Shift handover, Audit log).
+    command!(
+        "Previous page of results",
+        Lists,
+        ChevronLeft,
+        ["left"],
+        OPS_PAGED,
+        OpsPreviousPage,
+        false
+    ),
+    command!(
+        "Next page of results",
+        Lists,
+        ChevronRight,
+        ["right"],
+        OPS_PAGED,
+        OpsNextPage,
+        false
+    ),
+    command!(
+        "Switch the page's tab",
+        Lists,
+        Columns,
+        ["t"],
+        OPS_TABBED,
+        OpsNextTab,
+        false
+    ),
+    command!(
+        "Next filter",
+        Lists,
+        Funnel,
+        ["]"],
+        OPS_FILTERED,
+        OpsNextFilter,
+        false
+    ),
+    command!(
+        "Previous filter",
+        Lists,
+        Funnel,
+        ["["],
+        OPS_FILTERED,
+        OpsPreviousFilter,
+        false
+    ),
+    command!(
+        "Refresh the list",
+        Lists,
+        RefreshCw,
+        ["r"],
+        OPS_REFRESHABLE,
+        OpsRefresh,
+        false
+    ),
+    command!(
+        "Cancel the command",
+        Lists,
+        X,
+        ["x"],
+        OPS_COMMANDS,
+        OpsCancelCommand,
+        false
+    ),
+    command!(
+        "Sort by the next column",
+        Lists,
+        ArrowUpDown,
+        ["s"],
+        OPS_AUDIT,
+        OpsSortNext,
+        false
+    ),
+    command!(
+        "Reverse the sort",
+        Lists,
+        ArrowUpDown,
+        ["shift-s"],
+        OPS_AUDIT,
+        OpsSortReverse,
+        false
+    ),
+    CommandSpec {
+        label: "New shift handover entry",
+        group: Group::Lists,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: OPS_SHIFT,
+        action: || -> Box<dyn Action> { Box::new(OpsNewHandover) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Export the audit log as CSV",
+        group: Group::Lists,
+        icon: Icon::Download,
+        keys: &["e"],
+        context: OPS_AUDIT,
+        action: || -> Box<dyn Action> { Box::new(OpsExportAudit) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Export data…",
+        View,
+        Download,
+        [],
+        CONSOLE,
+        OpsExportData,
+        true
+    ),
+    command!(
+        "Settings",
+        View,
+        Settings,
+        ["secondary-,"],
+        CONSOLE,
+        ShellOpenSettings,
+        true
+    ),
+    command!(
+        "Notifications",
+        View,
+        Inbox,
+        ["secondary-alt-n"],
+        CONSOLE,
+        ShellToggleNotifications,
+        true
+    ),
+    command!(
+        "Edit keyboard shortcuts",
+        View,
+        Keyboard,
+        [],
+        CONSOLE,
+        ShellEditShortcuts,
+        true
+    ),
+    command!(
+        "Pick a theme",
+        View,
+        Palette,
+        [],
+        CONSOLE,
+        ShellPickTheme,
+        true
+    ),
+    command!(
+        "Write to the tag…",
+        View,
+        Send,
+        ["secondary-shift-w"],
+        CONSOLE,
+        TagsWrite,
+        true
+    ),
+    CommandSpec {
+        label: "Edit the tag's write policy…",
+        group: Group::View,
+        icon: Icon::Settings,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(TagsWritePolicy) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Add a note to the tag's chart…",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &["secondary-shift-n"],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(TagsAddNote) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Compare the tag with another…",
+        View,
+        Layers,
+        [],
+        CONSOLE,
+        TagsCompare,
+        true
+    ),
+    command!(
+        "Show a custom span on the tag's chart…",
+        View,
+        Clock,
+        [],
+        CONSOLE,
+        TagsCustomRange,
+        true
+    ),
+    command!(
+        "Save the tag's chart as CSV…",
+        View,
+        Download,
+        ["secondary-shift-s"],
+        CONSOLE,
+        TagsExportCsv,
+        true
+    ),
+    command!(
+        "Widen or narrow the tag detail",
+        View,
+        PanelLeft,
+        [],
+        CONSOLE,
+        TagsExpandDetail,
+        true
+    ),
+    command!(
+        "Acknowledge all alarms",
+        Alarms,
+        Check,
+        ["shift-a"],
+        ALARM_LIST,
+        AcknowledgeAll,
+        false
+    ),
+    command!(
+        "Acknowledge the alarm",
+        Alarms,
+        Check,
+        ["a"],
+        ALARM_LIST,
+        AlarmsAcknowledge,
+        false
+    ),
+    CommandSpec {
+        label: "Shelve or unshelve the alarm",
+        group: Group::Alarms,
+        icon: Icon::Clock,
+        keys: &["s"],
+        context: ALARM_LIST,
+        action: || -> Box<dyn Action> { Box::new(AlarmsShelve) },
+        palette: false,
+        role: Role::Operator,
+    },
+    command!(
+        "Next alarm filter",
+        Alarms,
+        ChevronRight,
+        ["right"],
+        ALARM_LIST,
+        AlarmsNextFilter,
+        false
+    ),
+    command!(
+        "Previous alarm filter",
+        Alarms,
+        ChevronLeft,
+        ["left"],
+        ALARM_LIST,
+        AlarmsPreviousFilter,
+        false
+    ),
+    command!(
+        "Sort the alarms",
+        Alarms,
+        ArrowUpDown,
+        ["o"],
+        ALARM_LIST,
+        AlarmsCycleSort,
+        false
+    ),
+    command!(
+        "Mute or unmute the alarm sound",
+        Alarms,
+        Radio,
+        ["secondary-shift-m"],
+        CONSOLE,
+        AlarmsToggleMute,
+        true
+    ),
+    command!(
+        "Alarm list",
+        Alarms,
+        List,
+        [],
+        CONSOLE,
+        AlarmsShowList,
+        true
+    ),
+    CommandSpec {
+        label: "Alarm analytics",
+        group: Group::Alarms,
+        icon: Icon::ChartLine,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(AlarmsShowAnalytics) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Alarm audit trail",
+        group: Group::Alarms,
+        icon: Icon::ScrollText,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(AlarmsShowAudit) },
+        palette: true,
+        role: Role::Operator,
+    },
+    // The card dashboard (`views::dashboard`): arrows and letters act on
+    // its focused grid; the palette's entries open the page first.
+    command!(
+        "Dashboard: card above (editing: move it up)",
+        Navigation,
+        ChevronUp,
+        ["up"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardUp,
+        false
+    ),
+    command!(
+        "Dashboard: card below (editing: move it down)",
+        Navigation,
+        ChevronDown,
+        ["down"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardDown,
+        false
+    ),
+    command!(
+        "Dashboard: card to the left (editing: move it)",
+        Navigation,
+        ChevronLeft,
+        ["left"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardLeft,
+        false
+    ),
+    command!(
+        "Dashboard: card to the right (editing: move it)",
+        Navigation,
+        ChevronRight,
+        ["right"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardRight,
+        false
+    ),
+    command!(
+        "Dashboard: make the card shorter (editing)",
+        View,
+        ChevronUp,
+        ["shift-up"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardShorter,
+        false
+    ),
+    command!(
+        "Dashboard: make the card taller (editing)",
+        View,
+        ChevronDown,
+        ["shift-down"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardTaller,
+        false
+    ),
+    command!(
+        "Dashboard: make the card narrower (editing)",
+        View,
+        ChevronLeft,
+        ["shift-left"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardNarrower,
+        false
+    ),
+    command!(
+        "Dashboard: make the card wider (editing)",
+        View,
+        ChevronRight,
+        ["shift-right"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardWider,
+        false
+    ),
+    command!(
+        "Dashboard: open the card's tag",
+        Navigation,
+        CircleDot,
+        ["enter"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardOpen,
+        false
+    ),
+    CommandSpec {
+        label: "Dashboard: edit the cards (move, resize, add)",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &["e"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardEdit) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: arrange the cards by device",
+        group: Group::View,
+        icon: Icon::Columns,
+        keys: &["a"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardArrange) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: add tags to the screen",
+        group: Group::View,
+        icon: Icon::Plus,
+        keys: &["t"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardAddTags) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: remove the card from the screen (editing)",
+        group: Group::View,
+        icon: Icon::Trash,
+        keys: &["backspace", "delete"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardRemove) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: new screen",
+        group: Group::View,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: super::views::dashboard::DASHBOARD,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardNewScreen) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: rename the screen",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardRenameScreen) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Dashboard: delete the screen",
+        group: Group::View,
+        icon: Icon::Trash,
+        keys: &[],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardDeleteScreen) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Dashboard: next screen",
+        Navigation,
+        ChevronRight,
+        ["]"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardNextScreen,
+        true
+    ),
+    command!(
+        "Dashboard: previous screen",
+        Navigation,
+        ChevronLeft,
+        ["["],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardPreviousScreen,
+        true
+    ),
+    command!(
+        "Dashboard: reload the screens",
+        View,
+        RefreshCw,
+        ["r"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardReload,
+        true
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["1"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(1),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["2"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(2),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["3"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(3),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["4"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(4),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["5"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(5),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["6"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(6),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["7"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(7),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["8"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(8),
+        false
+    ),
+    command!(
+        "Dashboard: screen 1–9 (1 is the overview)",
+        Navigation,
+        Columns,
+        ["9"],
+        super::views::dashboard::DASHBOARD,
+        super::views::dashboard::DashboardScreen(9),
+        false
+    ),
+    // The HMI mimic (`views::mimic`): its keys act on the focused stage.
+    command!(
+        "Mimic: next equipment",
+        Navigation,
+        ChevronRight,
+        ["tab"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicNext,
+        false
+    ),
+    command!(
+        "Mimic: previous equipment",
+        Navigation,
+        ChevronLeft,
+        ["shift-tab"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicPrevious,
+        false
+    ),
+    command!(
+        "Mimic: equipment above",
+        Navigation,
+        ChevronUp,
+        ["up"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicUp,
+        false
+    ),
+    command!(
+        "Mimic: equipment below",
+        Navigation,
+        ChevronDown,
+        ["down"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicDown,
+        false
+    ),
+    command!(
+        "Mimic: equipment to the left",
+        Navigation,
+        ChevronLeft,
+        ["left"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicLeft,
+        false
+    ),
+    command!(
+        "Mimic: equipment to the right",
+        Navigation,
+        ChevronRight,
+        ["right"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicRight,
+        false
+    ),
+    command!(
+        "Mimic: open the faceplate (armed: confirm)",
+        Navigation,
+        CircleDot,
+        ["enter"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicOpen,
+        false
+    ),
+    command!(
+        "Mimic: zoom in",
+        View,
+        Plus,
+        ["secondary-=", "secondary-+"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicZoomIn,
+        false
+    ),
+    command!(
+        "Mimic: zoom out",
+        View,
+        ChevronDown,
+        ["secondary--"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicZoomOut,
+        false
+    ),
+    command!(
+        "Mimic: fit the stage",
+        View,
+        Square,
+        ["secondary-0"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicFit,
+        false
+    ),
+    CommandSpec {
+        label: "Mimic: arm start / open / on (or the setpoint)",
+        group: Group::View,
+        icon: Icon::Play,
+        keys: &["1"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicArmOn) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: arm stop / close / off",
+        group: Group::View,
+        icon: Icon::Square,
+        keys: &["0"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicArmOff) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: raise the setpoint",
+        group: Group::View,
+        icon: Icon::ChevronUp,
+        keys: &["shift-up"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicStepUp) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: lower the setpoint",
+        group: Group::View,
+        icon: Icon::ChevronDown,
+        keys: &["shift-down"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicStepDown) },
+        palette: false,
+        role: Role::Operator,
+    },
+    command!(
+        "Mimic: next screen",
+        Navigation,
+        ChevronRight,
+        ["]"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicNextScreen,
+        false
+    ),
+    command!(
+        "Mimic: previous screen",
+        Navigation,
+        ChevronLeft,
+        ["["],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicPreviousScreen,
+        false
+    ),
+    command!(
+        "Mimic: reload the screen",
+        View,
+        RefreshCw,
+        ["r"],
+        super::views::mimic::MIMIC,
+        super::views::mimic::MimicReload,
+        false
+    ),
+    // The mimic's edit mode (`views::mimic::editor`), operators only.
+    CommandSpec {
+        label: "Mimic: edit the screen (E again: done)",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &["e"],
+        context: super::views::mimic::MIMIC,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEdit) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: edit the screen (E again: done)",
+        group: Group::View,
+        icon: Icon::Pencil,
+        keys: &["e"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEdit) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: save the screen",
+        group: Group::View,
+        icon: Icon::Download,
+        keys: &["secondary-s"],
+        context: super::views::mimic::editor::KEYS_ANYWHERE,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditSave) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: undo",
+        group: Group::View,
+        icon: Icon::ChevronLeft,
+        keys: &["secondary-z"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditUndo) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: redo",
+        group: Group::View,
+        icon: Icon::ChevronRight,
+        keys: &["secondary-shift-z", "secondary-y"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditRedo) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: copy",
+        group: Group::View,
+        icon: Icon::Copy,
+        keys: &["secondary-c"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditCopy) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: paste",
+        group: Group::View,
+        icon: Icon::Copy,
+        keys: &["secondary-v"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditPaste) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: duplicate",
+        group: Group::View,
+        icon: Icon::Copy,
+        keys: &["secondary-d"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditDuplicate) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: select everything",
+        group: Group::View,
+        icon: Icon::Square,
+        keys: &["secondary-a"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditSelectAll) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: delete the selection",
+        group: Group::View,
+        icon: Icon::Trash,
+        keys: &["backspace", "delete"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditDelete) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronUp,
+        keys: &["up"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(0, -1))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronDown,
+        keys: &["down"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(0, 1))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronLeft,
+        keys: &["left"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(-1, 0))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronRight,
+        keys: &["right"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(1, 0))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronUp,
+        keys: &["shift-up"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(0, -10))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronDown,
+        keys: &["shift-down"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(0, 10))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronLeft,
+        keys: &["shift-left"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(-10, 0))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: nudge 1 px (⇧: 10 px)",
+        group: Group::View,
+        icon: Icon::ChevronRight,
+        keys: &["shift-right"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditNudge(10, 0))
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: bring to the front",
+        group: Group::View,
+        icon: Icon::Layers,
+        keys: &["]"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditFront) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: send to the back",
+        group: Group::View,
+        icon: Icon::Layers,
+        keys: &["["],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditBack) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: select tool",
+        group: Group::View,
+        icon: Icon::Square,
+        keys: &["v"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditSelectTool)
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: connect tool (source, then target)",
+        group: Group::View,
+        icon: Icon::Waypoints,
+        keys: &["c"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditConnectTool)
+        },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: turn a quarter clockwise",
+        group: Group::View,
+        icon: Icon::RefreshCw,
+        keys: &["r"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditRotate) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: turn a quarter back",
+        group: Group::View,
+        icon: Icon::RefreshCw,
+        keys: &["shift-r"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::MimicEditRotateBack)
+        },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: mirror",
+        group: Group::View,
+        icon: Icon::ArrowUpDown,
+        keys: &["h"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditMirror) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: show or hide the grid",
+        group: Group::View,
+        icon: Icon::Columns,
+        keys: &["g"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditGrid) },
+        palette: true,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: search the palette",
+        group: Group::View,
+        icon: Icon::Search,
+        keys: &["/"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditFind) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: select the next widget",
+        group: Group::Navigation,
+        icon: Icon::ChevronRight,
+        keys: &["tab"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditNext) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic editor: select the previous widget",
+        group: Group::Navigation,
+        icon: Icon::ChevronLeft,
+        keys: &["shift-tab"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditPrevious) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: zoom in",
+        group: Group::View,
+        icon: Icon::Plus,
+        keys: &["secondary-=", "secondary-+"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicZoomIn) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: zoom out",
+        group: Group::View,
+        icon: Icon::ChevronDown,
+        keys: &["secondary--"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicZoomOut) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Mimic: fit the stage",
+        group: Group::View,
+        icon: Icon::Square,
+        keys: &["secondary-0"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicFit) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "New data source",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_SOURCES,
+        action: || -> Box<dyn Action> { Box::new(DataNewSource) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Duplicate the source",
+        Data,
+        Copy,
+        ["d"],
+        DATA_SOURCES,
+        DataDuplicateSource,
+        false
+    ),
+    command!(
+        "Delete the source",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        DATA_SOURCES,
+        DataDeleteSource,
+        false
+    ),
+    command!(
+        "Move the source up",
+        Data,
+        ChevronUp,
+        ["alt-up"],
+        DATA_SOURCES,
+        DataMoveSourceUp,
+        false
+    ),
+    command!(
+        "Move the source down",
+        Data,
+        ChevronDown,
+        ["alt-down"],
+        DATA_SOURCES,
+        DataMoveSourceDown,
+        false
+    ),
+    command!(
+        "Sort by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        DATA_SOURCES,
+        DataSortNext,
+        false
+    ),
+    command!(
+        "Reverse the sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        DATA_SOURCES,
+        DataReverseSort,
+        false
+    ),
+    // Data Manager › Insights (`views::data_manager::{oee, analytics,
+    // recipes}`): each section's root and chart carry these contexts.
+    command!(
+        "OEE: previous figure",
+        Data,
+        ChevronLeft,
+        ["left"],
+        super::views::data_manager::oee::OEE_CARDS,
+        super::views::data_manager::oee::OeePreviousFigure,
+        false
+    ),
+    command!(
+        "OEE: next figure",
+        Data,
+        ChevronRight,
+        ["right"],
+        super::views::data_manager::oee::OEE_CARDS,
+        super::views::data_manager::oee::OeeNextFigure,
+        false
+    ),
+    command!(
+        "OEE: what the figure is made of",
+        Data,
+        CircleDot,
+        ["enter"],
+        super::views::data_manager::oee::OEE_CARDS,
+        super::views::data_manager::oee::OeeDrill,
+        false
+    ),
+    command!(
+        "OEE: to the list below",
+        Data,
+        ChevronDown,
+        ["down"],
+        super::views::data_manager::oee::OEE_CARDS,
+        super::views::data_manager::oee::OeeToList,
+        false
+    ),
+    command!(
+        "Insights: previous device",
+        Data,
+        ChevronLeft,
+        [","],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeePreviousDevice,
+        false
+    ),
+    command!(
+        "Insights: next device",
+        Data,
+        ChevronRight,
+        ["."],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeNextDevice,
+        false
+    ),
+    command!(
+        "Insights: shorter range",
+        Data,
+        Clock,
+        ["["],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeePreviousRange,
+        false
+    ),
+    command!(
+        "Insights: longer range",
+        Data,
+        Clock,
+        ["]"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeNextRange,
+        false
+    ),
+    command!(
+        "OEE: switch Downtime and Shifts",
+        Data,
+        Columns,
+        ["t"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeSwitchTab,
+        false
+    ),
+    command!(
+        "OEE: record downtime, or add a shift",
+        Data,
+        Plus,
+        ["n"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeNew,
+        false
+    ),
+    command!(
+        "Insights: fetch again",
+        Data,
+        RefreshCw,
+        ["r"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeRefresh,
+        false
+    ),
+    command!(
+        "OEE: delete the shift",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        super::views::data_manager::oee::OEE,
+        super::views::data_manager::oee::OeeDeleteShift,
+        false
+    ),
+    command!(
+        "Analytics: previous bar",
+        Data,
+        ChevronLeft,
+        ["left"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsPreviousBar,
+        false
+    ),
+    command!(
+        "Analytics: next bar",
+        Data,
+        ChevronRight,
+        ["right"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsNextBar,
+        false
+    ),
+    command!(
+        "Analytics: first bar",
+        Data,
+        ChevronLeft,
+        ["home"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsFirstBar,
+        false
+    ),
+    command!(
+        "Analytics: last bar",
+        Data,
+        ChevronRight,
+        ["end"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsLastBar,
+        false
+    ),
+    command!(
+        "Analytics: drill into the bar",
+        Data,
+        CircleDot,
+        ["enter"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsDrill,
+        false
+    ),
+    command!(
+        "Analytics: back out of the bar",
+        Data,
+        ChevronUp,
+        ["backspace"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsBack,
+        false
+    ),
+    command!(
+        "Analytics: previous metric",
+        Data,
+        ChevronUp,
+        ["up"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsPreviousMetric,
+        false
+    ),
+    command!(
+        "Analytics: next metric",
+        Data,
+        ChevronDown,
+        ["down"],
+        super::views::data_manager::analytics::ANALYTICS_CHART,
+        super::views::data_manager::analytics::AnalyticsNextMetric,
+        false
+    ),
+    command!(
+        "Insights: previous device",
+        Data,
+        ChevronLeft,
+        [","],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsPreviousDevice,
+        false
+    ),
+    command!(
+        "Insights: next device",
+        Data,
+        ChevronRight,
+        ["."],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsNextDevice,
+        false
+    ),
+    command!(
+        "Insights: shorter range",
+        Data,
+        Clock,
+        ["["],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsPreviousRange,
+        false
+    ),
+    command!(
+        "Insights: longer range",
+        Data,
+        Clock,
+        ["]"],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsNextRange,
+        false
+    ),
+    command!(
+        "Analytics: switch Aggregate and Compare",
+        Data,
+        Columns,
+        ["m"],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsSwitchMode,
+        false
+    ),
+    command!(
+        "Insights: fetch again",
+        Data,
+        RefreshCw,
+        ["r"],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsRefresh,
+        false
+    ),
+    command!(
+        "Analytics: save the buckets as CSV",
+        Data,
+        Download,
+        ["e"],
+        super::views::data_manager::analytics::ANALYTICS,
+        super::views::data_manager::analytics::AnalyticsExport,
+        false
+    ),
+    command!(
+        "Recipes: save current as recipe",
+        Data,
+        Plus,
+        ["n"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesNew,
+        false
+    ),
+    command!(
+        "Recipes: load the recipe",
+        Data,
+        Upload,
+        ["l"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesLoad,
+        false
+    ),
+    command!(
+        "Recipes: delete the recipe",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesDelete,
+        false
+    ),
+    command!(
+        "Insights: previous device",
+        Data,
+        ChevronLeft,
+        [","],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesPreviousDevice,
+        false
+    ),
+    command!(
+        "Insights: next device",
+        Data,
+        ChevronRight,
+        ["."],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesNextDevice,
+        false
+    ),
+    command!(
+        "Recipes: next category",
+        Data,
+        Funnel,
+        ["c"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesNextCategory,
+        false
+    ),
+    command!(
+        "Insights: fetch again",
+        Data,
+        RefreshCw,
+        ["r"],
+        super::views::data_manager::recipes::RECIPES,
+        super::views::data_manager::recipes::RecipesRefresh,
+        false
+    ),
+    command!(
+        "New device",
+        Data,
+        Plus,
+        ["n"],
+        DATA_DEVICES,
+        DataNewDevice,
+        false
+    ),
+    command!(
+        "Add a register, node, tag, point or object",
+        Data,
+        Plus,
+        ["a"],
+        DATA_DEVICES,
+        DataAddChild,
+        false
+    ),
+    command!(
+        "Enable or disable the device",
+        Data,
+        Square,
+        ["e"],
+        DATA_DEVICES,
+        DataToggleEnabled,
+        false
+    ),
+    command!(
+        "Duplicate the device",
+        Data,
+        Copy,
+        ["d"],
+        DATA_DEVICES,
+        DataDuplicateSource,
+        false
+    ),
+    command!(
+        "Delete the device or child",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        DATA_DEVICES,
+        DataDeleteSource,
+        false
+    ),
+    command!(
+        "The device's actions",
+        Data,
+        Ellipsis,
+        ["."],
+        DATA_DEVICES,
+        DataRowActions,
+        false
+    ),
+    command!(
+        "Import device files",
+        Data,
+        Upload,
+        ["i"],
+        DATA_DEVICES,
+        DataImportFile,
+        false
+    ),
+    command!(
+        "Refresh the devices",
+        Data,
+        RefreshCw,
+        ["r"],
+        DATA_DEVICES,
+        DataRefreshSection,
+        false
+    ),
+    command!(
+        "Scan or discover the network",
+        Data,
+        Radio,
+        ["t"],
+        DATA_DEVICES,
+        DataSectionTool,
+        false
+    ),
+    command!(
+        "Sort the devices by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        DATA_DEVICES,
+        DataSortNext,
+        false
+    ),
+    command!(
+        "Reverse the devices' sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        DATA_DEVICES,
+        DataReverseSort,
+        false
+    ),
+    command!(
+        "System: previous tab",
+        Data,
+        Columns,
+        ["shift-t"],
+        ENG_SYSTEM,
+        EngSystemPreviousTab,
+        false
+    ),
+    command!(
+        "System: export the documentation (HTML)",
+        Data,
+        Download,
+        ["e"],
+        ENG_SYSTEM,
+        EngSystemExportDocs,
+        false
+    ),
+    command!(
+        "New config snapshot",
+        Data,
+        Plus,
+        ["n"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsNew,
+        false
+    ),
+    command!(
+        "Roll back to the snapshot",
+        Data,
+        History,
+        ["r"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsRollback,
+        false
+    ),
+    command!(
+        "Diff from this snapshot",
+        Data,
+        ChevronLeft,
+        ["f"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsDiffFrom,
+        false
+    ),
+    command!(
+        "Diff to this snapshot",
+        Data,
+        ChevronRight,
+        ["t"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsDiffTo,
+        false
+    ),
+    command!(
+        "Compare the two snapshots",
+        Data,
+        Columns,
+        ["c"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsCompare,
+        false
+    ),
+    command!(
+        "Sort snapshots by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        ENG_SNAPSHOTS,
+        EngSnapshotsSortNext,
+        false
+    ),
+    command!(
+        "MQTT: next tab",
+        Data,
+        ChevronRight,
+        ["]"],
+        ENG_MQTT,
+        EngMqttNextTab,
+        false
+    ),
+    command!(
+        "MQTT: previous tab",
+        Data,
+        ChevronLeft,
+        ["["],
+        ENG_MQTT,
+        EngMqttPrevTab,
+        false
+    ),
+    command!(
+        "MQTT: start or stop the broker",
+        Data,
+        Play,
+        ["s"],
+        ENG_MQTT,
+        EngMqttStartStop,
+        false
+    ),
+    command!(
+        "MQTT: configure the broker",
+        Data,
+        Settings,
+        ["c"],
+        ENG_MQTT,
+        EngMqttConfigure,
+        false
+    ),
+    command!(
+        "MQTT: publish a message",
+        Data,
+        Send,
+        ["p"],
+        ENG_MQTT,
+        EngMqttPublish,
+        false
+    ),
+    command!(
+        "MQTT: refresh",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_MQTT,
+        EngMqttRefresh,
+        false
+    ),
+    command!(
+        "EDR: next tab",
+        Data,
+        ChevronRight,
+        ["]"],
+        ENG_EDR,
+        EngEdrNextTab,
+        false
+    ),
+    command!(
+        "EDR: previous tab",
+        Data,
+        ChevronLeft,
+        ["["],
+        ENG_EDR,
+        EngEdrPrevTab,
+        false
+    ),
+    command!(
+        "EDR: refresh",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_EDR,
+        EngEdrRefresh,
+        false
+    ),
+    command!(
+        "EDR: copy the script or guide",
+        Data,
+        Copy,
+        ["c"],
+        ENG_EDR,
+        EngEdrCopy,
+        false
+    ),
+    command!(
+        "EDR: save the Defender script",
+        Data,
+        Download,
+        ["s"],
+        ENG_EDR,
+        EngEdrSave,
+        false
+    ),
+    CommandSpec {
+        label: "Import: choose a file",
+        group: Group::Data,
+        icon: Icon::Upload,
+        keys: &["o"],
+        context: ENG_IMPORTS,
+        action: || -> Box<dyn Action> { Box::new(EngImportsOpen) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Import: data file or Node-RED wizard",
+        group: Group::Data,
+        icon: Icon::Waypoints,
+        keys: &["w"],
+        context: ENG_IMPORTS,
+        action: || -> Box<dyn Action> { Box::new(EngImportsSwitch) },
+        palette: false,
+        role: Role::Operator,
+    },
+    CommandSpec {
+        label: "Import: next CSV delimiter",
+        group: Group::Data,
+        icon: Icon::Columns,
+        keys: &["d"],
+        context: ENG_IMPORTS,
+        action: || -> Box<dyn Action> { Box::new(EngImportsDelimiter) },
+        palette: false,
+        role: Role::Operator,
+    },
+    command!(
+        "Flows: new flow",
+        Data,
+        Plus,
+        ["n"],
+        ENG_FLOWS,
+        EngFlowsNew,
+        false
+    ),
+    command!(
+        "Flows: rename, enable",
+        Data,
+        Pencil,
+        ["e"],
+        ENG_FLOWS,
+        EngFlowsEdit,
+        false
+    ),
+    command!(
+        "Flows: delete the flow",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        ENG_FLOWS,
+        EngFlowsDelete,
+        false
+    ),
+    command!(
+        "Flows: runs",
+        Data,
+        History,
+        ["h"],
+        ENG_FLOWS,
+        EngFlowsRuns,
+        false
+    ),
+    command!(
+        "Flows: test with a payload",
+        Data,
+        Send,
+        ["t"],
+        ENG_FLOWS,
+        EngFlowsTest,
+        false
+    ),
+    command!(
+        "Flows: refresh",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_FLOWS,
+        EngFlowsRefresh,
+        false
+    ),
+    command!(
+        "Flows: open the editor",
+        Data,
+        Waypoints,
+        ["o"],
+        ENG_FLOWS,
+        EngFlowsOpen,
+        false
+    ),
+    command!(
+        "Flows: sort by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        ENG_FLOWS,
+        EngFlowsSortNext,
+        false
+    ),
+    command!(
+        "Flows: reverse the sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        ENG_FLOWS,
+        EngFlowsSortReverse,
+        false
+    ),
+    command!(
+        "Flow editor: save",
+        Data,
+        Check,
+        ["secondary-s"],
+        ENG_FLOW_EDITOR,
+        EngFlowsSave,
+        false
+    ),
+    command!(
+        "Flow editor: undo",
+        Data,
+        History,
+        ["secondary-z"],
+        ENG_FLOW_CANVAS,
+        EngFlowsUndo,
+        false
+    ),
+    command!(
+        "Flow editor: remove the step",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        ENG_FLOW_CANVAS,
+        EngFlowsDeleteSelection,
+        false
+    ),
+    command!(
+        "Flow editor: move the step left (⇧ further)",
+        Data,
+        ChevronLeft,
+        ["left", "shift-left"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeLeft,
+        false
+    ),
+    command!(
+        "Flow editor: move the step right (⇧ further)",
+        Data,
+        ChevronRight,
+        ["right", "shift-right"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeRight,
+        false
+    ),
+    command!(
+        "Flow editor: move the step up (⇧ further)",
+        Data,
+        ChevronUp,
+        ["up", "shift-up"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeUp,
+        false
+    ),
+    command!(
+        "Flow editor: move the step down (⇧ further)",
+        Data,
+        ChevronDown,
+        ["down", "shift-down"],
+        ENG_FLOW_CANVAS,
+        EngFlowsNudgeDown,
+        false
+    ),
+    command!(
+        "Flow editor: zoom in",
+        Data,
+        Plus,
+        ["=", "shift-="],
+        ENG_FLOW_CANVAS,
+        EngFlowsZoomIn,
+        false
+    ),
+    command!(
+        "Flow editor: zoom out",
+        Data,
+        Search,
+        ["-"],
+        ENG_FLOW_CANVAS,
+        EngFlowsZoomOut,
+        false
+    ),
+    command!(
+        "Flow editor: fit the flow in view",
+        Data,
+        Square,
+        ["0"],
+        ENG_FLOW_CANVAS,
+        EngFlowsFit,
+        false
+    ),
+    command!(
+        "Flow editor: arrange the steps",
+        Data,
+        Layers,
+        ["a"],
+        ENG_FLOW_CANVAS,
+        EngFlowsArrange,
+        false
+    ),
+    command!(
+        "Flow editor: run the step earlier",
+        Data,
+        ChevronLeft,
+        ["alt-left"],
+        ENG_FLOW_CANVAS,
+        EngFlowsEarlier,
+        false
+    ),
+    command!(
+        "Flow editor: run the step later",
+        Data,
+        ChevronRight,
+        ["alt-right"],
+        ENG_FLOW_CANVAS,
+        EngFlowsLater,
+        false
+    ),
+    command!(
+        "Flow editor: add a step from the palette",
+        Data,
+        Plus,
+        ["n"],
+        ENG_FLOW_CANVAS,
+        EngFlowsAddStep,
+        false
+    ),
+    command!(
+        "Flow editor: edit the step's settings",
+        Data,
+        Settings,
+        ["enter"],
+        ENG_FLOW_CANVAS,
+        EngFlowsInspect,
+        false
+    ),
+    command!(
+        "Flow editor: test",
+        Data,
+        Send,
+        ["t"],
+        ENG_FLOW_CANVAS,
+        EngFlowsTest,
+        false
+    ),
+    command!(
+        "Flow editor: runs",
+        Data,
+        History,
+        ["h"],
+        ENG_FLOW_CANVAS,
+        EngFlowsRuns,
+        false
+    ),
+    command!(
+        "New script",
+        Data,
+        Plus,
+        ["n"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsNew,
+        false
+    ),
+    command!(
+        "Delete the script",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsDelete,
+        false
+    ),
+    command!(
+        "Enable or disable the script",
+        Data,
+        CircleCheck,
+        ["e"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsToggleEnabled,
+        false
+    ),
+    command!(
+        "Refresh the scripts",
+        Data,
+        RefreshCw,
+        ["r"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsRefresh,
+        false
+    ),
+    command!(
+        "Sort the scripts by the next column",
+        Data,
+        ArrowUpDown,
+        ["s"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsSortNext,
+        false
+    ),
+    command!(
+        "Reverse the scripts' sort",
+        Data,
+        ArrowUpDown,
+        ["shift-s"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsSortReverse,
+        false
+    ),
+    command!(
+        "Show the script's test panel",
+        Data,
+        Play,
+        ["t"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsShowTest,
+        false
+    ),
+    command!(
+        "Show the script's runs",
+        Data,
+        History,
+        ["h"],
+        ENG_SCRIPTS_LIST,
+        EngScriptsShowHistory,
+        false
+    ),
+    command!(
+        "Save the script",
+        Data,
+        Check,
+        ["secondary-s"],
+        ENG_SCRIPTS,
+        EngScriptsSave,
+        false
+    ),
+    command!(
+        "Run the script's test",
+        Data,
+        Play,
+        ["secondary-enter"],
+        ENG_SCRIPTS,
+        EngScriptsRun,
+        false
+    ),
+    CommandSpec {
+        label: "New user",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_USERS,
+        action: || -> Box<dyn Action> { Box::new(DataNewUser) },
+        palette: true,
+        role: Role::Admin,
+    },
+    CommandSpec {
+        label: "New role",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_ROLES,
+        action: || -> Box<dyn Action> { Box::new(DataNewRole) },
+        palette: true,
+        role: Role::Admin,
+    },
+    CommandSpec {
+        label: "New API key",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_API_KEYS,
+        action: || -> Box<dyn Action> { Box::new(DataNewApiKey) },
+        palette: true,
+        role: Role::Admin,
+    },
+    CommandSpec {
+        label: "New notification rule",
+        group: Group::Data,
+        icon: Icon::Plus,
+        keys: &["n"],
+        context: DATA_RULES,
+        action: || -> Box<dyn Action> { Box::new(DataNewRule) },
+        palette: true,
+        role: Role::Operator,
+    },
+    command!(
+        "Delete the user, role or rule; revoke the key",
+        Data,
+        Trash,
+        ["backspace", "delete"],
+        DATA_ADMIN,
+        DataAdminDelete,
+        false
+    ),
+    command!(
+        "Reset the user's password",
+        Data,
+        Lock,
+        ["p"],
+        DATA_USERS,
+        DataAdminPassword,
+        false
+    ),
+    command!(
+        "Send a test notification",
+        Data,
+        Send,
+        ["t"],
+        DATA_RULES,
+        DataAdminTest,
+        false
+    ),
+];
+
+/// A binding from table data; panics on a bad keystroke or context, which
+/// the unit tests rule out for every row.
+fn bind(keys: &str, action: Box<dyn Action>, context: &str) -> KeyBinding {
+    let predicate = KeyBindingContextPredicate::parse(context).expect("a valid key context");
+    KeyBinding::load(
+        keys,
+        action,
+        Some(Rc::new(predicate)),
+        false,
+        None,
+        &DummyKeyboardMapper,
+    )
+    .expect("a valid keystroke")
+}
+
+/// The ⌘ digit binding of a page.
+pub fn page_keys(digit: u8) -> String {
+    format!("secondary-{digit}")
+}
+
+pub fn key_bindings() -> Vec<KeyBinding> {
+    let mut bindings: Vec<KeyBinding> = COMMANDS
+        .iter()
+        .flat_map(|command| {
+            command
+                .keys
+                .iter()
+                .map(|keys| bind(keys, (command.action)(), command.context))
+        })
+        .collect();
+    for spec in PAGES {
+        if let Some(digit) = spec.digit {
+            bindings.push(bind(
+                &page_keys(digit),
+                Box::new(ShowPage(spec.page)),
+                CONSOLE,
+            ));
+        }
+    }
+    bindings
+}
+
+pub fn menus() -> Vec<Menu> {
+    let mut view: Vec<MenuItem> = PAGES
+        .iter()
+        .map(|spec| MenuItem::action(spec.title, ShowPage(spec.page)))
+        .collect();
+    view.push(MenuItem::separator());
+    view.extend(
+        COMMANDS
+            .iter()
+            .filter(|command| command.palette && command.group != Group::Session)
+            .map(|command| MenuItem::Action {
+                name: command.label.into(),
+                action: (command.action)(),
+                os_action: None,
+            }),
+    );
+    vec![
+        Menu {
+            name: "Voltrus SCADA".into(),
+            items: vec![
+                MenuItem::action("Sign Out", SignOut),
+                MenuItem::separator(),
+                MenuItem::action("Quit Voltrus SCADA", Quit),
+            ],
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::os_action("Cut", vt_ui::text_input::Cut, OsAction::Cut),
+                MenuItem::os_action("Copy", vt_ui::text_input::Copy, OsAction::Copy),
+                MenuItem::os_action("Paste", vt_ui::text_input::Paste, OsAction::Paste),
+                MenuItem::os_action(
+                    "Select All",
+                    vt_ui::text_input::SelectAll,
+                    OsAction::SelectAll,
+                ),
+            ],
+        },
+        Menu {
+            name: "View".into(),
+            items: view,
+        },
+    ]
+}
+
+/// A keystroke as the operator reads it: `⇧⌘P`, `⌘[`, `↓`, `Space` on
+/// macOS; `Ctrl+Shift+P` elsewhere.
+pub fn display(keys: &str) -> String {
+    let mac = cfg!(target_os = "macos");
+    let mut modifiers = String::new();
+    // A literal `-` key (`-`, `secondary--`) leaves an empty last part.
+    let (keys, dash) = match keys.strip_suffix('-') {
+        Some(rest) if rest.is_empty() || rest.ends_with('-') => (rest.trim_end_matches('-'), true),
+        _ => (keys, false),
+    };
+    let mut parts: Vec<&str> = if keys.is_empty() {
+        Vec::new()
+    } else {
+        keys.split('-').collect()
+    };
+    let key = if dash { "-" } else { parts.pop().unwrap_or("") };
+    let mut names: Vec<&str> = Vec::new();
+    for modifier in parts {
+        let (symbol, name) = match modifier {
+            "secondary" | "cmd" if mac => ("⌘", "Cmd"),
+            "secondary" | "ctrl" => ("⌃", "Ctrl"),
+            "cmd" => ("⌘", "Super"),
+            "shift" => ("⇧", "Shift"),
+            "alt" => ("⌥", "Alt"),
+            _ => ("", modifier),
+        };
+        names.push(name);
+        modifiers.push_str(symbol);
+    }
+    let key = match key {
+        "up" => "↑".to_owned(),
+        "down" => "↓".to_owned(),
+        "left" => "←".to_owned(),
+        "right" => "→".to_owned(),
+        "enter" => "↵".to_owned(),
+        "escape" => "Esc".to_owned(),
+        "tab" => "Tab".to_owned(),
+        "space" => "Space".to_owned(),
+        "pageup" => "PgUp".to_owned(),
+        "pagedown" => "PgDn".to_owned(),
+        "home" => "Home".to_owned(),
+        "end" => "End".to_owned(),
+        other => other.to_uppercase(),
+    };
+    if mac {
+        // macOS orders modifiers ⌃⌥⇧⌘.
+        let order = ['⌃', '⌥', '⇧', '⌘'];
+        let mut symbols: Vec<char> = modifiers.chars().collect();
+        symbols.sort_by_key(|symbol| order.iter().position(|o| o == symbol));
+        format!("{}{key}", symbols.into_iter().collect::<String>())
+    } else {
+        names.push(&key);
+        names.join("+")
+    }
+}
+
+/// The help overlay's lines: each label once with all its keys, grouped.
+pub fn help_rows() -> Vec<(Group, &'static str, Vec<String>)> {
+    let mut rows: Vec<(Group, &'static str, Vec<String>)> = Vec::new();
+    for spec in PAGES {
+        if let Some(digit) = spec.digit {
+            rows.push((Group::Pages, spec.title, vec![display(&page_keys(digit))]));
+        }
+    }
+    for command in COMMANDS.iter().filter(|command| !command.keys.is_empty()) {
+        let keys: Vec<String> = command.keys.iter().map(|keys| display(keys)).collect();
+        match rows
+            .iter_mut()
+            .find(|(group, label, _)| *group == command.group && *label == command.label)
+        {
+            Some((_, _, existing)) => {
+                for key in keys {
+                    if !existing.contains(&key) {
+                        existing.push(key);
+                    }
+                }
+            }
+            None => rows.push((command.group, command.label, keys)),
+        }
+    }
+    rows.sort_by_key(|(group, _, _)| Group::ALL.iter().position(|g| g == group));
+    rows
+}
+
+/// The first key of the command whose action is `action`, for hints.
+pub fn hint(action: &dyn Action) -> Option<String> {
+    COMMANDS
+        .iter()
+        .find(|command| (command.action)().partial_eq(action))
+        .and_then(|command| command.keys.first())
+        .map(|keys| display(keys))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_row_binds_and_no_two_rows_share_keys_in_a_context() {
+        let bindings = key_bindings();
+        let pages = PAGES.iter().filter(|spec| spec.digit.is_some()).count();
+        let keys: usize = COMMANDS.iter().map(|command| command.keys.len()).sum();
+        assert_eq!(bindings.len(), keys + pages);
+        let mut seen = std::collections::HashSet::new();
+        for command in COMMANDS {
+            for keys in command.keys {
+                assert!(
+                    seen.insert((command.context, *keys)),
+                    "{keys} bound twice in {}",
+                    command.context
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn keys_read_like_the_platform_writes_them() {
+        if cfg!(target_os = "macos") {
+            assert_eq!(display("secondary-shift-p"), "⇧⌘P");
+            assert_eq!(display("secondary-["), "⌘[");
+            assert_eq!(display("secondary-1"), "⌘1");
+        } else {
+            assert_eq!(display("secondary-shift-p"), "Ctrl+Shift+P");
+        }
+        assert_eq!(display("down"), "↓");
+        assert_eq!(display("j"), "J");
+        assert_eq!(display("?"), "?");
+        assert_eq!(display("pagedown"), "PgDn");
+        assert_eq!(display("-"), "-");
+        if cfg!(target_os = "macos") {
+            assert_eq!(display("secondary--"), "⌘-");
+        }
+    }
+
+    #[test]
+    fn help_lists_each_command_once_with_all_its_keys() {
+        let rows = help_rows();
+        let down: Vec<_> = rows
+            .iter()
+            .filter(|(_, label, _)| *label == "Move down")
+            .collect();
+        assert_eq!(down.len(), 1);
+        assert_eq!(down[0].2, ["↓", "J"]);
+        assert_eq!(rows[0].0, Group::Pages, "pages first");
+        assert!(rows.iter().any(|(_, label, _)| *label == "Performance"));
+        assert!(
+            rows.windows(2)
+                .all(|pair| Group::ALL.iter().position(|g| *g == pair[0].0)
+                    <= Group::ALL.iter().position(|g| *g == pair[1].0))
+        );
+        assert_eq!(
+            hint(&TogglePalette).as_deref(),
+            Some(display("secondary-k").as_str())
+        );
+    }
+}

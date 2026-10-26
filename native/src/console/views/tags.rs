@@ -1,34 +1,101 @@
-//! Every tag in a virtualised table, and the chosen one in detail.
+//! Every tag in a virtualised table, and the chosen one in detail
+//! (`tag_detail`, across the page when widened).
 
 use std::ops::Range;
-use std::rc::Rc;
 
 use gpui::prelude::*;
-use gpui::{AnyElement, Context, ElementId, FontWeight, SharedString, div, px, uniform_list};
+use gpui::{
+    AnyElement, Context, ElementId, Entity, FontWeight, Pixels, Window, div, px, uniform_list,
+};
+use voltrus_scada_native::runtime::{CallKey, Reply};
 use vt_ui::Icon;
-use vt_ui::chart::{Series, format_value, sparkline, trend_chart};
-use vt_ui::components::{Button, IconButton, empty_state, field, pill, section_label, status_dot};
+use vt_ui::components::{empty_state, pill, status_dot};
 use vt_ui::theme::*;
 
+use super::tag_detail::{DetailState, PANEL};
 use super::{
-    age, card, fit_span, now_ms, page_header, span_label, status_color, value_color,
-    value_with_unit,
+    ListKeys, age, fit_span, focus_ring, keyboard_list, now_ms, page_header, rows_on_screen,
+    span_label, status_color, tail_row, tail_rows, value_color, value_with_unit,
 };
 use crate::console::store::Status;
 use crate::console::{Console, time_now_secs};
+use vt_ui::text_input::TextInput;
+
+/// The table's keyboard list.
+pub(crate) const LIST: &str = "tags";
+const ROW_HEIGHT_PX: f32 = 34.0;
+
+pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    console.focus_list(LIST, window, cx);
+    super::tag_detail::fetch_open(console);
+}
+
+pub fn search(console: &Console) -> Option<Entity<TextInput>> {
+    Some(console.inputs.filter.clone())
+}
+
+pub fn side_panel(console: &Console) -> Pixels {
+    if console.selected.is_some() {
+        px(PANEL)
+    } else {
+        px(0.0)
+    }
+}
+
+/// The answers to the detail panel's calls (history, notes, writes,
+/// policies).
+pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Context<Console>) {
+    match key.name {
+        "tags.write" | "tags.policy" => super::tag_write::on_reply(console, key, reply, cx),
+        _ => super::tag_detail::on_reply(console, key, reply, cx),
+    }
+}
+
+/// The tag on table row `row`, with the filter as it is.
+fn row_tag(console: &Console, row: usize, cx: &gpui::App) -> Option<i64> {
+    let index = *console.visible_tags(cx).get(row)?;
+    Some(console.store.tags[index].info.id)
+}
+
+/// Moving the cursor opens its tag in the detail panel.
+fn follow_cursor(console: &mut Console, row: usize, _: &mut Window, cx: &mut Context<Console>) {
+    if let Some(id) = row_tag(console, row, cx) {
+        console.select(id, cx);
+    }
+}
+
+/// Enter opens the row's tag (writing stays on ⇧⌘W and the panel's button,
+/// so a held or repeated Enter cannot send a write); Space puts it on
+/// Trends or takes it off.
+fn activate_row(
+    console: &mut Console,
+    row: usize,
+    toggle: bool,
+    _: &mut Window,
+    cx: &mut Context<Console>,
+) {
+    let Some(id) = row_tag(console, row, cx) else {
+        return;
+    };
+    if toggle {
+        console.toggle_trend(id, cx);
+    } else {
+        console.select(id, cx);
+    }
+}
 
 const KEY: f32 = 180.0;
 const VALUE: f32 = 120.0;
 const STATUS: f32 = 84.0;
 const AGE: f32 = 56.0;
 const SPARK: f32 = 110.0;
-pub(crate) const PANEL: f32 = 340.0;
+/// Columns in a row's sparkline: one per two pixels.
+const SPARK_COLUMNS: usize = 55;
 /// The key follows the name only when the name column has this much room.
 const INLINE_KEY_MIN: f32 = 260.0;
-/// The table's sparklines reach back this far at most, the panel's trend
-/// an hour; both start where the data does when it is younger.
+/// The table's sparklines reach back this far at most; they start where
+/// the data does when it is younger.
 const SPARK_MS: f64 = 15.0 * 60_000.0;
-const DETAIL_MS: f64 = 60.0 * 60_000.0;
 const SHORTEST_MS: f64 = 2.0 * 60_000.0;
 
 /// Which optional columns fit the table's width, and how wide the name is:
@@ -71,22 +138,19 @@ impl Columns {
 }
 
 /// `width` is the window's width: the page spans it.
-pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>) -> AnyElement {
+pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
+    let width = window.viewport_size().width;
     let theme = theme(cx).clone();
-    // Filtered once per render; the list's rows index into it.
-    let rows = Rc::new(console.visible_tags(cx));
+    // Filtered once per tag list and query (the store keeps it); the
+    // list's rows index into it.
+    let rows = console.visible_tags(cx);
     let visible = rows.len();
     let total = console.store.tags.len();
-    let attention = console
-        .store
-        .tags
-        .iter()
-        .filter(|tag| tag.status.needs_attention())
-        .count();
+    let attention = console.store.attention_count();
     let filtered = visible != total;
-    let selected = console
-        .selected
-        .filter(|index| *index < console.store.tags.len());
+    let selected = console.selected.and_then(|id| console.store.position(id));
+    // Widened, the detail takes the page and the table steps aside.
+    let expanded = selected.is_some() && console.state::<DetailState>().expanded;
 
     let table_width = if selected.is_some() {
         width - px(PANEL)
@@ -96,16 +160,7 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
     let now = now_ms();
     let columns = Columns::fit(
         f32::from(table_width),
-        fit_span(
-            console
-                .store
-                .tags
-                .iter()
-                .filter_map(|tag| tag.span_ms(now))
-                .reduce(f64::max),
-            SHORTEST_MS,
-            SPARK_MS,
-        ),
+        fit_span(console.store.span_ms(now), SHORTEST_MS, SPARK_MS),
     );
 
     let filter = div()
@@ -143,6 +198,21 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
             )))
         });
 
+    let list = keyboard_list(
+        ListKeys {
+            id: LIST,
+            on_move: Some(follow_cursor),
+            on_activate: activate_row,
+        },
+        visible,
+        rows_on_screen(window, ROW_HEIGHT_PX),
+        console,
+        cx,
+    );
+    let nav = console.list(LIST, cx);
+    let cursor = nav.cursor;
+    let focused = nav.focus.is_focused(window);
+    let scroll = nav.scroll.clone();
     let table = if visible == 0 {
         empty_state(
             Icon::Search,
@@ -163,23 +233,28 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
     } else {
         uniform_list(
             "tags",
-            visible,
+            visible + tail_rows(visible, ROW_HEIGHT_PX),
             cx.processor(
                 move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
-                    let now = now_ms();
-                    let now_secs = time_now_secs();
+                    let clock = (now_ms(), time_now_secs());
                     range
-                        .filter_map(|row| rows.get(row).copied())
-                        .map(|index| tag_row(console, index, columns, now, now_secs, &theme, cx))
+                        .map(|row| match rows.get(row).copied() {
+                            Some(index) => {
+                                let ring = focused && cursor == Some(row);
+                                tag_row(console, index, row, columns, clock, ring, &theme, cx)
+                            }
+                            None => tail_row(ROW_HEIGHT_PX),
+                        })
                         .collect::<Vec<_>>()
                 },
             ),
         )
-        .track_scroll(console.tags_scroll.clone())
-        .flex_1()
+        .track_scroll(scroll)
+        .size_full()
         .into_any_element()
     };
+    let detail = selected.map(|index| super::tag_detail::panel(console, index, window, cx));
 
     div()
         .flex()
@@ -190,7 +265,9 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
             if filtered {
                 format!("{visible} of {total} tags match")
             } else {
-                format!("{total} tags · {attention} need attention · ↑↓ to move")
+                format!(
+                    "{total} tags · {attention} need attention · j/k or ↑↓ to move, / to filter"
+                )
             },
             vec![filter.into_any_element()],
             cx,
@@ -200,36 +277,39 @@ pub fn render(console: &Console, width: gpui::Pixels, cx: &mut Context<Console>)
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(header)
-                        .child(table),
-                )
-                .when_some(selected, |this, index| {
-                    this.child(detail(console, index, cx))
-                }),
+                .when(!expanded, |this| {
+                    this.child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(header)
+                            .child(list.flex_1().min_h_0().child(table)),
+                    )
+                })
+                .children(detail),
         )
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn tag_row(
     console: &Console,
     index: usize,
+    row: usize,
     columns: Columns,
-    now: f64,
-    now_secs: i64,
+    (now, now_secs): (f64, i64),
+    ring: bool,
     theme: &Theme,
     cx: &Context<Console>,
 ) -> AnyElement {
     let tag = &console.store.tags[index];
-    let selected = console.selected == Some(index);
+    let id = tag.info.id;
+    let selected = console.selected == Some(id);
     let hover = theme.hover;
     let color = status_color(tag.status, theme);
-    let trended = console.trend.contains(&index);
+    let trended = console.trend.contains(&id);
     // Without its own column the key follows the name, unless they match.
     let inline_key = !columns.key && tag.info.key != tag.info.name;
     div()
@@ -248,7 +328,12 @@ fn tag_row(
         .cursor_pointer()
         .when(selected, |this| this.bg(theme.selected))
         .when(!selected, |this| this.hover(move |style| style.bg(hover)))
-        .on_click(cx.listener(move |console, _, _, cx| console.select(index, cx)))
+        .relative()
+        .on_click(cx.listener(move |console, _, _, cx| {
+            console.list(LIST, cx).select(row);
+            console.select(id, cx);
+        }))
+        .when(ring, |this| this.child(focus_ring(theme)))
         .child({
             let gap = f32::from(SPACE_4);
             let room = columns.name
@@ -342,295 +427,61 @@ fn tag_row(
                 }),
         )
         .when(columns.trend, |this| {
-            this.child(div().w(px(SPARK)).h(px(18.0)).flex_none().child(sparkline(
-                tag.history.clone(),
-                if tag.status == Status::Normal {
-                    theme.accent
-                } else {
-                    color
-                },
-                now,
-                columns.span_ms,
-            )))
+            this.child(
+                div()
+                    .w(px(SPARK))
+                    .h(px(18.0))
+                    .flex_none()
+                    .child(super::spark::spark(
+                        tag,
+                        if tag.status == Status::Normal {
+                            theme.accent
+                        } else {
+                            color
+                        },
+                        now,
+                        columns.span_ms,
+                        SPARK_COLUMNS,
+                    )),
+            )
         })
         .into_any_element()
 }
 
-fn detail(console: &Console, index: usize, cx: &mut Context<Console>) -> impl IntoElement {
-    let theme = theme(cx).clone();
-    let tag = &console.store.tags[index];
-    let color = status_color(tag.status, &theme);
-    let trended = console.trend.contains(&index);
-    let now = now_ms();
-    let span = fit_span(tag.span_ms(now), 5.0 * 60_000.0, DETAIL_MS);
-    let span_text = span_label(span);
-    let summary = tag.history.summary(now - span);
-    let unit = tag.info.unit.clone();
-    let threshold = |value: f64| {
-        if value > 0.0 {
-            format!("{} {unit}", format_value(value))
-                .trim_end()
-                .to_owned()
-        } else {
-            "Off".to_owned()
-        }
-    };
-    let stat = |value: Option<f64>| {
-        value.map_or_else(
-            || "—".to_owned(),
-            |value| {
-                format!("{} {unit}", format_value(value))
-                    .trim_end()
-                    .to_owned()
-            },
-        )
-    };
-    let updated = if tag.at_secs > 0 {
-        format!("Updated {} ago", age(time_now_secs() - tag.at_secs))
-    } else {
-        "No value yet".to_owned()
-    };
-    let admin = console.can_write();
-    let writing = console.writing == Some(index);
-    let result = console
-        .write_result
-        .as_ref()
-        .filter(|(at, _)| *at == index)
-        .map(|(_, result)| result.clone());
+#[cfg(test)]
+mod tests {
+    use gpui::TestAppContext;
+    use voltrus_scada_native::runtime::{Command, Event};
 
-    let facts = [
-        ("Warning at".to_owned(), threshold(tag.info.warn_val)),
-        ("Critical at".to_owned(), threshold(tag.info.crit_val)),
-        (
-            format!("Lowest, {span_text}"),
-            stat(summary.map(|summary| summary.min)),
-        ),
-        (
-            format!("Highest, {span_text}"),
-            stat(summary.map(|summary| summary.max)),
-        ),
-        (
-            format!("Average, {span_text}"),
-            stat(summary.map(|summary| summary.mean)),
-        ),
-        (
-            "Source".to_owned(),
-            if tag.info.source_type.is_empty() {
-                "—".to_owned()
-            } else {
-                tag.info.source_type.clone()
-            },
-        ),
-    ];
+    use super::LIST;
+    use crate::console::testing::Harness;
 
-    let trend_color = if tag.status == Status::Normal {
-        theme.accent
-    } else {
-        color
-    };
-    let series = vec![Series {
-        label: SharedString::from(tag.info.name.clone()),
-        color: trend_color,
-        history: Rc::clone(&tag.history),
-        stepped: false,
-    }];
-
-    div()
-        .id("tag-detail")
-        .flex()
-        .flex_col()
-        .flex_none()
-        .w(px(PANEL))
-        .h_full()
-        .overflow_y_scroll()
-        .bg(theme.chrome)
-        .border_l_1()
-        .border_color(theme.border)
-        .child(
-            div()
-                .flex()
-                .items_start()
-                .gap(SPACE_4)
-                .px(SPACE_8)
-                .pt(SPACE_8)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(SPACE_1)
-                        .child(
-                            div()
-                                .text_size(FONT_TITLE)
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(tag.info.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .font_family(MONO)
-                                .text_size(FONT_SMALL)
-                                .text_color(theme.fg_dim)
-                                .child(tag.info.key.clone()),
-                        ),
-                )
-                .child(
-                    IconButton::new("close-detail", Icon::X)
-                        .tooltip("Close")
-                        .on_click(cx.listener(|console, _, _, cx| {
-                            console.selected = None;
-                            cx.notify();
-                        })),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(SPACE_3)
-                .px(SPACE_8)
-                .py(SPACE_7)
-                .child(value_with_unit(
-                    tag.display(),
-                    &tag.info.unit,
-                    px(34.0),
-                    value_color(tag.status, &theme),
-                    &theme,
-                ))
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_4)
-                        .child(pill(tag.status.label(), color))
-                        .when(tag.simulated, |this| this.child(pill("SIMULATED", theme.info)))
-                        .child(
-                            div()
-                                .text_size(FONT_SMALL)
-                                .text_color(theme.fg_dim)
-                                .child(updated),
-                        ),
-                ),
-        )
-        .child(
-            div()
-                .grid()
-                .grid_cols(2)
-                .gap(SPACE_5)
-                .px(SPACE_8)
-                .pb(SPACE_7)
-                .children(facts.into_iter().map(|(label, value)| {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(SPACE_1)
-                        .min_w_0()
-                        .child(
-                            div()
-                                .text_size(FONT_CAPTION)
-                                .text_color(theme.fg_dim)
-                                .child(label),
-                        )
-                        .child(
-                            div()
-                                .truncate()
-                                .font_family(MONO)
-                                .text_size(FONT_SMALL)
-                                .child(value),
-                        )
-                })),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(SPACE_4)
-                .px(SPACE_8)
-                .pb(SPACE_8)
-                .child(section_label(format!("Last {span_text}"), cx))
-                .child(
-                    card(&theme)
-                        .h(px(180.0))
-                        .p(SPACE_4)
-                        .child(trend_chart(series, now, span, cx)),
-                )
-                .child(
-                    Button::new(
-                        "toggle-trend",
-                        if trended {
-                            "Remove from Trends"
-                        } else {
-                            "Add to Trends"
-                        },
-                    )
-                    .icon(Icon::ChartLine)
-                    .on_click(cx.listener(move |console, _, _, cx| {
-                        console.toggle_trend(index, cx);
-                    })),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(SPACE_4)
-                .px(SPACE_8)
-                .py(SPACE_8)
-                .border_t_1()
-                .border_color(theme.border)
-                .child(section_label("Write", cx))
-                .map(|this| {
-                    if admin {
-                        this.child(field(
-                            "New value",
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(SPACE_3)
-                                .child(div().flex_1().child(console.inputs.write.clone()))
-                                .child(
-                                    Button::new("write", if writing { "Writing…" } else { "Write" })
-                                        .primary()
-                                        .icon(Icon::Send)
-                                        .disabled(writing)
-                                        .on_click(cx.listener(|console, _, window, cx| {
-                                            console.write_selected(window, cx);
-                                        })),
-                                ),
-                            cx,
-                        ))
-                        .child(match result {
-                            Some(Ok(detail)) => write_note(
-                                Icon::CircleCheck,
-                                format!("Written: {detail}"),
-                                theme.success,
-                            ),
-                            Some(Err(error)) => write_note(Icon::CircleAlert, error, theme.danger),
-                            None => write_note(
-                                Icon::Info,
-                                "Sent to the device through the server; the server must allow writes to this tag.".to_owned(),
-                                theme.fg_dim,
-                            ),
-                        })
-                    } else {
-                        this.child(write_note(
-                            Icon::Lock,
-                            "Writing values needs the admin role.".to_owned(),
-                            theme.fg_dim,
-                        ))
-                    }
-                }),
-        )
-}
-
-fn write_note(glyph: Icon, text: String, color: gpui::Hsla) -> impl IntoElement {
-    div()
-        .flex()
-        .items_start()
-        .gap(SPACE_3)
-        .text_size(FONT_SMALL)
-        .text_color(color)
-        .child(div().pt(px(2.0)).child(vt_ui::icon(glyph, ICON_SM, color)))
-        .child(div().flex_1().min_w_0().child(text))
+    /// Enter on a row opens its tag only: a held or repeated Enter must not
+    /// land in a write dialog's value field.
+    #[gpui::test]
+    fn enter_on_a_row_opens_the_tag_but_no_write(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("demo");
+        h.event(Event::Tags(vec![Harness::tag(7, "plts_1.p")]));
+        h.update(|console, window, cx| {
+            console.open_tag(7, window, cx);
+            console.focus_list(LIST, window, cx);
+            // Enter is what opens it.
+            console.selected = None;
+        });
+        h.draw();
+        h.keys("enter");
+        h.keys("enter");
+        h.update(|console, _, _| {
+            assert_eq!(console.selected, Some(7));
+            assert!(!console.overlay_is("tag-write"));
+        });
+        let sent = h.commands();
+        assert!(
+            !sent
+                .iter()
+                .any(|command| matches!(command, Command::Write { .. })),
+            "{sent:?}"
+        );
+    }
 }

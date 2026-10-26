@@ -1,0 +1,73 @@
+{
+  "about": "The solar farm's HMI mimic for the overview screen (__overview), seeded by ci-server.sh when the screen has none. Tags are named \"<device>/<key>\" and resolved to data source ids when seeded; a config value \"@<device>/<key>\" is a tag setting (runSensorId, faultSensorId). Stage: 1920 x 1080. INV-1 takes commands: it is bound to sma_inv_1/remote_run, the inverter's run register ci-server.sh adds (1 running, 0 stopped), which the simulator keeps as written.",
+  "equipment": [
+    { "equipment_id": "area_pv", "equipment_type": "area", "equipment_name": "PV field", "x": 40, "y": 110, "width": 520, "height": 560, "tags": [], "config": { "title": "PV field", "subtitle": "strings A · B" } },
+    { "equipment_id": "area_inverter", "equipment_type": "area", "equipment_name": "Inverter", "x": 600, "y": 110, "width": 560, "height": 560, "tags": [], "config": { "title": "Inverter", "subtitle": "SMA STP 60" } },
+    { "equipment_id": "area_grid", "equipment_type": "area", "equipment_name": "Grid connection", "x": 1200, "y": 110, "width": 680, "height": 560, "tags": [], "config": { "title": "Grid connection", "subtitle": "PM5560 · 20 kV" } },
+    { "equipment_id": "area_plant", "equipment_type": "area", "equipment_name": "Plant", "x": 40, "y": 700, "width": 520, "height": 340, "tags": [], "config": { "title": "Plant", "subtitle": "yield" } },
+    { "equipment_id": "area_cooling", "equipment_type": "area", "equipment_name": "Inverter cooling", "x": 600, "y": 700, "width": 560, "height": 340, "tags": [], "config": { "title": "Inverter cooling", "subtitle": "glycol loop" } },
+    { "equipment_id": "area_quality", "equipment_type": "area", "equipment_name": "Power quality", "x": 1200, "y": 700, "width": 680, "height": 340, "tags": [], "config": { "title": "Power quality", "subtitle": "grid meter" } },
+
+    { "equipment_id": "title", "equipment_type": "label", "equipment_name": "Title", "x": 40, "y": 22, "width": 1000, "height": 44, "tags": [], "config": { "text": "SOLAR FARM · 100 kWp ROOFTOP PV", "fontSize": 24, "bold": true, "align": "left" } },
+    { "equipment_id": "subtitle", "equipment_type": "label", "equipment_name": "Subtitle", "x": 40, "y": 62, "width": 1000, "height": 28, "tags": [], "config": { "text": "SMA Sunny Tripower 60TL inverter · Schneider PM5560 grid meter", "fontSize": 13, "muted": true, "align": "left" } },
+
+    { "equipment_id": "pv_a", "equipment_type": "symbol", "equipment_name": "String A", "x": 70, "y": 170, "width": 150, "height": 150, "tags": ["sma_inv_1/dc_current_a"], "config": { "symbol": "solar_panel", "label": "STRING A", "onThreshold": 1, "showStatus": true } },
+    { "equipment_id": "pv_b", "equipment_type": "symbol", "equipment_name": "String B", "x": 330, "y": 170, "width": 150, "height": 150, "tags": ["sma_inv_1/dc_current_b"], "config": { "symbol": "solar_panel", "label": "STRING B", "onThreshold": 1, "showStatus": true } },
+    { "equipment_id": "vi_a", "equipment_type": "symbol", "equipment_name": "VI-101", "x": 220, "y": 360, "width": 84, "height": 108, "tags": ["sma_inv_1/dc_voltage_a"], "config": { "symbol": "instrument", "tagFunction": "VI", "loopNumber": "101", "mounting": "field" } },
+    { "equipment_id": "vi_b", "equipment_type": "symbol", "equipment_name": "VI-102", "x": 450, "y": 360, "width": 84, "height": 108, "tags": ["sma_inv_1/dc_voltage_b"], "config": { "symbol": "instrument", "tagFunction": "VI", "loopNumber": "102", "mounting": "field" } },
+    { "equipment_id": "irradiance_bar", "equipment_type": "progress_bar", "equipment_name": "Irradiance", "x": 70, "y": 360, "width": 120, "height": 150, "tags": ["sma_inv_1/irradiance"], "config": { "direction": "up" } },
+    { "equipment_id": "dc_bus", "equipment_type": "symbol", "equipment_name": "DC bus", "x": 70, "y": 560, "width": 410, "height": 14, "tags": ["sma_inv_1/dc_power"], "config": { "symbol": "busbar", "onThreshold": 100 } },
+    { "equipment_id": "dc_bus_label", "equipment_type": "label", "equipment_name": "DC bus label", "x": 70, "y": 580, "width": 220, "height": 24, "tags": [], "config": { "text": "DC BUS · 600 V", "fontSize": 11, "muted": true, "align": "left" } },
+
+    { "equipment_id": "dc_power", "equipment_type": "big_number", "equipment_name": "DC power", "x": 630, "y": 150, "width": 220, "height": 96, "tags": ["sma_inv_1/dc_power"], "config": { "fontSize": 30, "decimals": 0 } },
+    { "equipment_id": "ac_power", "equipment_type": "big_number", "equipment_name": "AC power", "x": 910, "y": 150, "width": 220, "height": 96, "tags": ["sma_inv_1/ac_power"], "config": { "fontSize": 30, "decimals": 0 } },
+    { "equipment_id": "inv", "equipment_type": "symbol", "equipment_name": "INV-1", "x": 810, "y": 262, "width": 140, "height": 175, "tags": ["sma_inv_1/remote_run"], "config": { "symbol": "inverter", "label": "INV-1", "onThreshold": 0.5, "showStatus": true, "writable": true } },
+    { "equipment_id": "l1_light", "equipment_type": "status_light", "equipment_name": "L1 current", "x": 1050, "y": 290, "width": 60, "height": 60, "tags": ["sma_inv_1/ac_current_l1"], "config": {} },
+    { "equipment_id": "l1_light_label", "equipment_type": "label", "equipment_name": "L1 label", "x": 1020, "y": 350, "width": 120, "height": 22, "tags": [], "config": { "text": "AC L1", "fontSize": 11, "muted": true } },
+    { "equipment_id": "heatsink_label", "equipment_type": "label", "equipment_name": "Heatsink label", "x": 630, "y": 462, "width": 240, "height": 22, "tags": [], "config": { "text": "HEATSINK", "fontSize": 11, "muted": true, "align": "left" } },
+    { "equipment_id": "heatsink", "equipment_type": "bar", "equipment_name": "Heatsink", "x": 630, "y": 486, "width": 250, "height": 44, "tags": ["sma_inv_1/temperature"], "config": {} },
+    { "equipment_id": "ac_frequency", "equipment_type": "led_display", "equipment_name": "AC frequency", "x": 910, "y": 462, "width": 220, "height": 80, "tags": ["sma_inv_1/frequency"], "config": {} },
+    { "equipment_id": "efficiency", "equipment_type": "donut", "equipment_name": "Efficiency", "x": 640, "y": 546, "width": 110, "height": 110, "tags": ["sma_inv_1/efficiency"], "config": { "thickness": 12, "showName": false } },
+    { "equipment_id": "l1_current", "equipment_type": "indicator", "equipment_name": "AC current L1", "x": 790, "y": 556, "width": 160, "height": 96, "tags": ["sma_inv_1/ac_current_l1"], "config": { "fontSize": 26 } },
+    { "equipment_id": "ac_voltage", "equipment_type": "semicircle_gauge", "equipment_name": "AC voltage L1", "x": 970, "y": 552, "width": 170, "height": 104, "tags": ["sma_inv_1/ac_voltage_l1"], "config": { "thickness": 12 } },
+
+    { "equipment_id": "tx", "equipment_type": "symbol", "equipment_name": "T1", "x": 1250, "y": 300, "width": 80, "height": 150, "tags": ["sma_inv_1/ac_power"], "config": { "symbol": "transformer", "label": "T1", "onThreshold": 500, "showStatus": true } },
+    { "equipment_id": "q1", "equipment_type": "symbol", "equipment_name": "Q1", "x": 1420, "y": 470, "width": 70, "height": 140, "tags": ["pm5560_grid/active_power"], "config": { "symbol": "breaker", "label": "Q1", "onThreshold": 1000, "showStatus": true } },
+    { "equipment_id": "grid_bus", "equipment_type": "symbol", "equipment_name": "Grid bus", "x": 1540, "y": 640, "width": 320, "height": 14, "tags": ["pm5560_grid/frequency"], "config": { "symbol": "busbar", "onThreshold": 1 } },
+    { "equipment_id": "grid_bus_label", "equipment_type": "label", "equipment_name": "Grid bus label", "x": 1640, "y": 612, "width": 220, "height": 24, "tags": [], "config": { "text": "20 kV GRID", "fontSize": 11, "muted": true, "align": "right" } },
+    { "equipment_id": "pm", "equipment_type": "symbol", "equipment_name": "PM5560", "x": 1720, "y": 420, "width": 110, "height": 150, "tags": ["pm5560_grid/active_power"], "config": { "symbol": "meter", "label": "PM5560" } },
+    { "equipment_id": "pf", "equipment_type": "semicircle_gauge", "equipment_name": "Power factor", "x": 1480, "y": 150, "width": 190, "height": 116, "tags": ["pm5560_grid/power_factor"], "config": {} },
+    { "equipment_id": "grid_power", "equipment_type": "big_number", "equipment_name": "Grid power", "x": 1680, "y": 150, "width": 190, "height": 100, "tags": ["pm5560_grid/active_power"], "config": { "fontSize": 26, "decimals": 0 } },
+    { "equipment_id": "grid_frequency", "equipment_type": "gauge", "equipment_name": "Grid frequency", "x": 1500, "y": 290, "width": 180, "height": 170, "tags": ["pm5560_grid/frequency"], "config": {} },
+
+    { "equipment_id": "irradiance", "equipment_type": "gauge", "equipment_name": "Irradiance", "x": 60, "y": 736, "width": 200, "height": 200, "tags": ["sma_inv_1/irradiance"], "config": {} },
+    { "equipment_id": "ac_power_trend", "equipment_type": "trend", "equipment_name": "AC power trend", "x": 280, "y": 736, "width": 260, "height": 140, "tags": ["sma_inv_1/ac_power"], "config": {} },
+    { "equipment_id": "efficiency_bar", "equipment_type": "progress_bar", "equipment_name": "Efficiency", "x": 280, "y": 896, "width": 260, "height": 56, "tags": ["sma_inv_1/efficiency"], "config": { "direction": "right", "showTicks": false } },
+    { "equipment_id": "string_share", "equipment_type": "pie_chart", "equipment_name": "String share", "x": 60, "y": 944, "width": 210, "height": 92, "tags": ["sma_inv_1/dc_current_a", "sma_inv_1/dc_current_b"], "config": {} },
+    { "equipment_id": "plant_on", "equipment_type": "on_off", "equipment_name": "Feeding", "x": 300, "y": 966, "width": 110, "height": 64, "tags": ["sma_inv_1/ac_power"], "config": { "onThreshold": 500, "onLabel": "FEEDING", "offLabel": "IDLE" } },
+
+    { "equipment_id": "p101", "equipment_type": "symbol", "equipment_name": "P-101", "x": 640, "y": 780, "width": 100, "height": 130, "tags": ["sma_inv_1/temperature"], "config": { "symbol": "pump", "label": "P-101", "onThreshold": 30, "showStatus": true } },
+    { "equipment_id": "hx101", "equipment_type": "symbol", "equipment_name": "HX-101", "x": 800, "y": 763, "width": 150, "height": 110, "tags": [], "config": { "symbol": "heat_exchanger", "label": "HX-101" } },
+    { "equipment_id": "fan101", "equipment_type": "symbol", "equipment_name": "Dry cooler", "x": 1010, "y": 760, "width": 100, "height": 130, "tags": ["sma_inv_1/temperature"], "config": { "symbol": "fan", "label": "DRY COOLER", "onThreshold": 30, "showStatus": true } },
+    { "equipment_id": "nrv101", "equipment_type": "symbol", "equipment_name": "NRV", "x": 830, "y": 975, "width": 80, "height": 48, "tags": [], "config": { "symbol": "check_valve" } },
+
+    { "equipment_id": "voltages", "equipment_type": "data_table", "equipment_name": "Grid voltages", "x": 1220, "y": 740, "width": 300, "height": 170, "tags": ["pm5560_grid/voltage_l1n", "pm5560_grid/voltage_l2n", "pm5560_grid/voltage_l3n", "pm5560_grid/current_l1", "pm5560_grid/current_l2", "pm5560_grid/current_l3"], "config": { "compact": true } },
+    { "equipment_id": "quality_alarms", "equipment_type": "annunciator", "equipment_name": "Quality alarms", "x": 1540, "y": 740, "width": 320, "height": 136, "tags": ["pm5560_grid/thd_voltage", "pm5560_grid/thd_current", "sma_inv_1/ac_current_l1", "sma_inv_1/irradiance"], "config": {} },
+    { "equipment_id": "grid_currents", "equipment_type": "multi_trend", "equipment_name": "Grid currents", "x": 1220, "y": 920, "width": 300, "height": 112, "tags": ["pm5560_grid/current_l1", "pm5560_grid/current_l2", "pm5560_grid/current_l3"], "config": {} },
+    { "equipment_id": "phase_currents", "equipment_type": "bar_chart", "equipment_name": "Inverter phase currents", "x": 1540, "y": 888, "width": 320, "height": 144, "tags": ["sma_inv_1/ac_current_l1", "sma_inv_1/ac_current_l2", "sma_inv_1/ac_current_l3"], "config": {} }
+  ],
+  "connections": [
+    { "connection_id": "c_pv_a", "from_equipment": "pv_a", "to_equipment": "dc_bus", "connection_type": "power", "waypoints": [] },
+    { "connection_id": "c_pv_b", "from_equipment": "pv_b", "to_equipment": "dc_bus", "connection_type": "power", "waypoints": [] },
+    { "connection_id": "c_dc_inv", "from_equipment": "dc_bus", "to_equipment": "inv", "connection_type": "power", "waypoints": [] },
+    { "connection_id": "c_inv_tx", "from_equipment": "inv", "to_equipment": "tx", "connection_type": "power", "waypoints": [] },
+    { "connection_id": "c_tx_q1", "from_equipment": "tx", "to_equipment": "q1", "connection_type": "power", "waypoints": [] },
+    { "connection_id": "c_q1_bus", "from_equipment": "q1", "to_equipment": "grid_bus", "connection_type": "power", "waypoints": [] },
+    { "connection_id": "c_pm_bus", "from_equipment": "pm", "to_equipment": "grid_bus", "connection_type": "power", "waypoints": [] },
+    { "connection_id": "c_pm_table", "from_equipment": "pm", "to_equipment": "voltages", "connection_type": "data", "waypoints": [[1775, 690], [1370, 690]] },
+    { "connection_id": "c_p101_hx", "from_equipment": "p101", "to_equipment": "hx101", "connection_type": "flow", "waypoints": [] },
+    { "connection_id": "c_hx_fan", "from_equipment": "hx101", "to_equipment": "fan101", "connection_type": "flow", "waypoints": [] },
+    { "connection_id": "c_fan_nrv", "from_equipment": "fan101", "to_equipment": "nrv101", "connection_type": "flow", "waypoints": [[1060, 999]] },
+    { "connection_id": "c_nrv_p101", "from_equipment": "nrv101", "to_equipment": "p101", "connection_type": "flow", "waypoints": [[620, 999], [620, 832]] }
+  ]
+}

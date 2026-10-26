@@ -29,6 +29,9 @@ json='content-type: application/json'
 {
   cat "$root/scenarios/solar-farm/voltrus.yaml"
   printf '\ncookie_secure: false\nauth_secret: "%s"\n' "$(openssl rand -hex 24)"
+  # SMTP settings for Data Manager › System › SMTP: the e2e changes and
+  # restores them (nothing listens on :2525, so a test email fails).
+  printf 'smtp:\n  host: 127.0.0.1\n  port: 2525\n  username: ci\n  password: ci-smtp-%s\n  from_address: scada@plant.local\n  from_name: Voltrus CI\n  encryption: none\n' "$(openssl rand -hex 4)"
 } > voltrus.yaml
 
 "$bin/voltrus" voltrus.yaml > server.log 2>&1 &
@@ -91,6 +94,168 @@ curl -fsS -b cookies.txt "$url/api/v1/data-sources" | jq -r '.[] | "\(.id) \(.ke
       "$url/api/v1/data-sources/$id" > /dev/null
   done
 
+# Card kinds for the dashboards: gauges and big numbers beside the default
+# sparklines, the gauges with a range they can show.
+card() {
+  case "$1" in
+    dc_voltage_a | dc_voltage_b) echo '{"chart_type": "gauge", "min_val": 0, "max_val": 800}' ;;
+    ac_power) echo '{"chart_type": "gauge", "min_val": 0, "max_val": 62000}' ;;
+    frequency) echo '{"chart_type": "gauge", "min_val": 49.5, "max_val": 50.5}' ;;
+    dc_current_b | dc_power | efficiency) echo '{"chart_type": "bignumber"}' ;;
+    *) echo "" ;;
+  esac
+}
+curl -fsS -b cookies.txt "$url/api/v1/data-sources" | jq -r '.[] | "\(.id) \(.key)"' |
+  while read -r id key; do
+    body="$(card "$key")"
+    if [ -n "$body" ]; then
+      curl -fsS -b cookies.txt -X PUT -H "$json" -d "$body" \
+        "$url/api/v1/data-sources/$id" > /dev/null
+    fi
+  done
+
+# Devices for the Data Manager's Protocols sections (their screenshots):
+# a DNP3 outstation with points and a BACnet controller with objects, at
+# addresses where nothing answers and never started, so no poller runs
+# and no data source is added (S7 and EtherNet/IP tags would add some).
+post_id() {
+  curl -fsS -b cookies.txt -H "$json" -d "$2" "$url$1" | jq -r .id
+}
+dnp3="$(post_id /api/v1/dnp3/devices '{"name": "RTU substation A", "ip": "127.0.0.1", "port": 20000, "outstation_address": 10}')"
+for point in \
+  '{"name": "feeder_current", "display_name": "Feeder current", "group_num": 30, "variation": 4, "point_index": 0, "data_type": "float32", "scale": 1, "deadband": 0.5}' \
+  '{"name": "breaker_closed", "display_name": "Breaker closed", "group_num": 1, "variation": 2, "point_index": 0, "data_type": "bool", "scale": 1, "deadband": 0}' \
+  '{"name": "energy_import", "display_name": "Energy import", "group_num": 20, "variation": 1, "point_index": 3, "data_type": "uint32", "scale": 0.1, "deadband": 0}'; do
+  post_id "/api/v1/dnp3/devices/$dnp3/points" "$point" > /dev/null
+done
+bacnet="$(post_id /api/v1/bacnet/devices '{"name": "AHU-1 controller", "ip": "127.0.0.1", "port": 47809, "device_instance": 1001, "cov_enabled": true}')"
+for object in \
+  '{"name": "supply_air_temp", "display_name": "Supply air temperature", "object_type": "analogInput", "object_instance": 1, "cov_increment": 0.2}' \
+  '{"name": "fan_command", "display_name": "Fan command", "object_type": "binaryOutput", "object_instance": 1}' \
+  '{"name": "occupancy_mode", "display_name": "Occupancy mode", "object_type": "multiStateValue", "object_instance": 4}'; do
+  post_id "/api/v1/bacnet/devices/$bacnet/objects" "$object" > /dev/null
+done
+post_id /api/v1/s7/devices '{"name": "S7-1500 packaging line", "url": "127.0.0.1:10200", "rack": 0, "slot": 1}' > /dev/null
+post_id /api/v1/enip/devices '{"name": "ControlLogix L85E", "url": "127.0.0.1:44818", "slot": 0, "enabled": false}' > /dev/null
+# A stopped demo flow and a sample script for the Engineering sections'
+# screenshots (the e2e makes and deletes its own).
+curl -fsS -b cookies.txt -H "$json" -d "$(jq -n '{id: "demo_boiler_power", name: "Boiler power", enabled: false,
+  trigger_config: ({type: "modbus", device_id: "*", metric: "", debounce_ms: 1000, on_change_only: false} | tostring),
+  nodes: ([{id: "n1", type: "filter", condition: "payload.metrics.temp > 0"},
+           {id: "n2", type: "expression", output_field: "payload.power_kw", expr: "payload.metrics.voltage * payload.metrics.current * 0.001"},
+           {id: "n3", type: "alarm_out", severity: "warning", source_key: "flow_alert", message: "Boiler power high"}] | tostring),
+  created_at: 0, updated_at: 0}')" "$url/api/v1/flows" > /dev/null
+curl -fsS -b cookies.txt -H "$json" -X POST "$url/api/v1/scripts" \
+  -d '{"name":"Inverter kW to MW","source":"// Scale an inverter reading\nfunction main(input) {\n  return { mw: input.kw / 1000 };\n}\n","cpu_limit_ms":1000,"memory_limit_bytes":8388608}' > /dev/null
+# The Data Manager's Admin group: two more accounts (random passwords,
+# never printed), a read-only API key (its secret is dropped) and three
+# notification rules, so the screenshots show what a plant has. The
+# webhook points at a closed local port and is off.
+for account in "ana.shiftlead demo" "budi.viewer viewer"; do
+  read -r name role <<< "$account"
+  curl -fsS -b cookies.txt -H "$json" \
+    -d "$(jq -n --arg user "$name" --arg pass "seed-$(openssl rand -hex 12)" --arg role "$role" \
+      '{username: $user, password: $pass, role: $role}')" \
+    "$url/api/v1/users" > /dev/null
+done
+curl -fsS -b cookies.txt -H "$json" \
+  -d '{"name": "Grafana read-only", "role": "api", "permissions": "[]"}' \
+  "$url/api/v1/api-keys" | jq -e .id > /dev/null
+for rule in \
+  '{"source_key": "", "channel_type": "email", "config": "[\"control-room@solar.example\"]", "enabled": true}' \
+  '{"source_key": "ac_current_l1", "channel_type": "webhook", "config": "[\"http://127.0.0.1:9/voltrus\"]", "enabled": false}' \
+  '{"source_key": "irradiance", "channel_type": "push", "config": "[\"admin\"]", "enabled": true}'; do
+  curl -fsS -b cookies.txt -H "$json" -d "$rule" "$url/api/v1/notifications/settings" > /dev/null
+done
+# A command target for the mimic's faceplate: the inverter's run register,
+# `remote_run` (1 running, 0 stopped), which INV-1 binds. The scenario has
+# no writable register the simulator keeps (it redraws every value each
+# second, and the server writes one 16-bit word), but the inverter's
+# operating-hours counter (a u64 in registers 42-45) takes a written word
+# as its value and then only creeps up by 1/3600 per second: its low word,
+# 45, holds a written 0 or 1 for an hour. A uint16 register polls it, and a
+# data source whose source_config gives the address lets the WebSocket and
+# REST writes reach it. It starts at 1 (running) further down, written
+# while its write policy allows it, then locked again.
+inverter="sma_inv_1"
+run_address=45
+device="$(curl -fsS -b cookies.txt "$url/api/v1/modbus-devices/$inverter")"
+if ! echo "$device" | jq -e '.registers | any(.name == "remote_run")' > /dev/null; then
+  echo "$device" | jq --argjson address "$run_address" '{registers: ([.registers[]
+      | {name, address, zero_based, register_type, register_area, scale}]
+      + [{name: "remote_run", address: $address, register_type: "uint16", register_area: "holding", scale: 1}])}' \
+    > registers.json
+  curl -fsS -b cookies.txt -X PUT -H "$json" -d @registers.json \
+    "$url/api/v1/modbus-devices/$inverter/registers" > /dev/null
+fi
+run_id="$(curl -fsS -b cookies.txt "$url/api/v1/data-sources" |
+  jq --arg device "$inverter" 'first(.[] | select(.device_id == $device and .key == "remote_run") | .id) // empty')"
+if [ -z "$run_id" ]; then
+  run_id="$(curl -fsS -b cookies.txt -H "$json" \
+    -d "$(jq -n --arg device "$inverter" --argjson address "$run_address" '{key: "remote_run",
+      name: "Remote run", unit: "", min_val: 0, max_val: 1, warn_val: 0, crit_val: 0,
+      base_val: 0, decimals: 0, source_type: "modbus", source_config: {address: $address},
+      device_id: $device, chart_type: "sparkline"}')" \
+    "$url/api/v1/data-sources" | jq .id)"
+fi
+echo "inverter run register: data source $run_id, register $run_address"
+# An HMI mimic for the overview (the web client's SCADA view, the console's
+# Mimic page), unless the plant has one: native/scripts/mimic-solar-farm.json
+# names its tags "<device>/<key>"; here they become data source ids. The
+# analog widgets get ranges they can show.
+mimic="$root/native/scripts/mimic-solar-farm.json"
+mimic_ranges() {
+  case "$1" in
+    irradiance) echo "0 1200" ;;
+    efficiency) echo "90 100" ;;
+    power_factor) echo "0.8 1" ;;
+    temperature) echo "0 250" ;;
+    dc_current_a | dc_current_b) echo "0 110" ;;
+    ac_voltage_l1 | ac_voltage_l2 | ac_voltage_l3) echo "200 260" ;;
+    voltage_l1n | voltage_l2n | voltage_l3n) echo "200 260" ;;
+    current_l1 | current_l2 | current_l3) echo "0 600" ;;
+    ac_current_l1 | ac_current_l2 | ac_current_l3) echo "0 110" ;;
+    thd_voltage | thd_current) echo "0 20" ;;
+    active_power) echo "0 200000" ;;
+    *) echo "" ;;
+  esac
+}
+seeded="$(curl -fsS -b cookies.txt "$url/api/v1/screens/__overview/scada-equipment" | jq '.items | length')"
+if [ ! -f "$mimic" ]; then
+  echo "::warning::no $mimic: the overview gets no mimic"
+elif [ "$seeded" -gt 0 ]; then
+  echo "the overview has a mimic already ($seeded widgets)"
+else
+  sources="$(curl -fsS -b cookies.txt "$url/api/v1/data-sources")"
+  echo "$sources" | jq -r '.[] | "\(.id) \(.key)"' |
+    while read -r id key; do
+      range="$(mimic_ranges "$key")"
+      if [ -n "$range" ]; then
+        read -r low high <<< "$range"
+        curl -fsS -b cookies.txt -X PUT -H "$json" \
+          -d "{\"min_val\": $low, \"max_val\": $high}" \
+          "$url/api/v1/data-sources/$id" > /dev/null
+      fi
+    done
+  ids="$(echo "$sources" | jq 'map({key: "\(.device_id)/\(.key)", value: .id}) | from_entries')"
+  jq --argjson ids "$ids" '
+    def tag($name): ($ids[$name] // error("the plant has no tag \($name)"));
+    {items: [.equipment | to_entries[] | .key as $z | .value
+      | .sensor_bindings = ([.tags[] | tag(.)] | tojson)
+      | .rotation = ((.config.rotation // 0) | tonumber)
+      | .config = (.config
+          | with_entries(if (.value | type) == "string" and (.value | startswith("@"))
+                         then .value = tag(.value[1:]) else . end)
+          | .z = $z | tojson)
+      | del(.tags)]}' "$mimic" > mimic-equipment.json
+  jq '{items: [.connections[] | .waypoints = (.waypoints | tojson)]}' "$mimic" > mimic-connections.json
+  curl -fsS -b cookies.txt -X PUT -H "$json" -d @mimic-equipment.json \
+    "$url/api/v1/screens/__overview/scada-equipment" > /dev/null
+  curl -fsS -b cookies.txt -X PUT -H "$json" -d @mimic-connections.json \
+    "$url/api/v1/screens/__overview/scada-connections" > /dev/null
+  echo "seeded the overview's mimic: $(jq '.items | length' mimic-equipment.json) widgets, $(jq '.items | length' mimic-connections.json) connections"
+fi
+
 "$bin/modbus-sim" --scenario solar-farm --role inverter --port 5020 > inverter.log 2>&1 &
 echo $! > inverter.pid
 "$bin/modbus-sim" --scenario solar-farm --role grid-meter --port 5021 > meter.log 2>&1 &
@@ -104,7 +269,43 @@ for _ in $(seq 1 90); do
 done
 echo "history samples: $stored"
 [ "$stored" -gt 0 ] || { echo "::error::no values reached the server"; tail -50 server.log; exit 1; }
+
+# The Insights sections' data: a shift schedule, a stop of the inverter
+# closed with its reason and one still open on the grid meter. (The recipe
+# the screenshots show is saved by screenshots-macos.sh, after the
+# end-to-end test: the server's config rollback cannot restore a recipe.)
+for shift in '{"name": "Morning", "start_hour": 6, "start_minute": 0, "duration_hours": 8, "days_mask": 31}' \
+  '{"name": "Afternoon", "start_hour": 14, "start_minute": 0, "duration_hours": 8, "days_mask": 31}' \
+  '{"name": "Night", "start_hour": 22, "start_minute": 0, "duration_hours": 8, "days_mask": 127}'; do
+  curl -fsS -b cookies.txt -H "$json" -d "$shift" "$url/api/v1/oee/shifts" > /dev/null
+done
+stop="$(curl -fsS -b cookies.txt -H "$json" -d '{"device_id": "sma_inv_1", "state": "idle"}' \
+  "$url/api/v1/oee/downtime" | jq -r .id)"
+sleep 2
+curl -fsS -b cookies.txt -X PUT -H "$json" -d '{"reason": "Inverter firmware update"}' \
+  "$url/api/v1/oee/downtime/$stop/close" > /dev/null
+curl -fsS -b cookies.txt -H "$json" -d '{"device_id": "pm5560_grid", "state": "maintenance"}' \
+  "$url/api/v1/oee/downtime" > /dev/null
 echo "open alarms: $(curl -fsS -b cookies.txt "$url/api/v1/alarms?status=active&limit=100" | jq length)"
+
+# The inverter runs: remote_run = 1, through the REST write while its write
+# policy allows it; locked again once the simulator reads it back.
+policy="$url/api/v1/data-sources/$run_id/write-policy"
+curl -fsS -b cookies.txt -X PATCH -H "$json" -d '{"writable": true}' "$policy" > /dev/null
+curl -fsS -b cookies.txt -H "$json" -d '{"value": 1, "policy": "immediate"}' \
+  "$url/api/v1/tags/$run_id/write" > /dev/null
+running=false
+for _ in $(seq 1 30); do
+  if curl -fsS -b cookies.txt "$url/api/v1/data" |
+    jq -e --argjson id "$run_id" 'any(.[]; .id == $id and .value == 1)' > /dev/null; then
+    running=true
+    break
+  fi
+  sleep 1
+done
+curl -fsS -b cookies.txt -X PATCH -H "$json" -d '{"writable": false}' "$policy" > /dev/null
+$running || { echo "::error::the inverter's run register did not take 1"; tail -50 server.log; exit 1; }
+echo "inverter run register: 1 (running)"
 
 echo "server: $url"
 if [ -n "${GITHUB_ENV:-}" ]; then

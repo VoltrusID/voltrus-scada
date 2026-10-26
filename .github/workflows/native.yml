@@ -6,7 +6,7 @@ name: Native console
 
 on:
   push:
-    branches: [main, native-v2]
+    branches: [main, native-v2, native-parity, 'native-*']
     paths:
       - native/**
       - src/**
@@ -91,13 +91,36 @@ jobs:
       - name: Start the solar-farm plant
         run: native/scripts/ci-server.sh "$RUNNER_TEMP/plant"
 
+      # One test at a time: each signs in, and a sign-in revokes the user's
+      # older refresh tokens, which the sign-out check relies on.
       - name: End-to-end against the live server
         env:
           VOLTRUS_E2E_EXPECT_UPDATES: "1"
-        run: cargo test --locked -p voltrus-scada-native --test e2e_live -- --nocapture
+        run: cargo test --locked -p voltrus-scada-native --test e2e_live -- --nocapture --test-threads=1
 
       - name: Bundle
         run: native/scripts/bundle-macos.sh target/release/voltrus-native dist
+
+      # 20 s of the synthetic 10k-tag plant (no server) through the same
+      # store path as the WebSocket, switching pages every 2 s; the report
+      # (frames, frame times, drops, per-page build times) lands in the log
+      # and as an artifact; a miss of the frame budget fails the job. Then 10 s of
+      # the animation showcase (--stress-profile).
+      - name: Stress pass
+        run: |
+          # The stress test needs no server: the plant (server, simulators)
+          # is paused for it, so its polling does not share the runner's few
+          # cores with the measured window, and resumed for the screenshots.
+          pause() { for pid in "$RUNNER_TEMP"/plant/*.pid; do kill -"$1" "$(cat "$pid")" 2>/dev/null || true; done; }
+          pause STOP
+          trap 'pause CONT' EXIT
+          STRESS_ENFORCE=1 \
+            native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-report.txt
+          # The showcase's figures are reported and warned about, not
+          # enforced: it repaints the whole window every frame, and its drops
+          # follow the runner's GPU (see frame_phases_ms present).
+          STRESS_PROFILE=1 STRESS_SECONDS=10 \
+            native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-profile-report.txt
 
       - name: Screenshots
         run: native/scripts/screenshots-macos.sh "dist/Voltrus SCADA.app" dist/screenshots
@@ -114,6 +137,15 @@ jobs:
         with:
           name: voltrus-native-screenshots
           path: dist/screenshots
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: voltrus-native-stress-report
+          path: |
+            dist/stress-report.txt
+            dist/stress-profile-report.txt
           if-no-files-found: ignore
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -135,7 +167,8 @@ jobs:
         run: |
           tar -czf dist/voltrus-demo-plant.tar.gz \
             target/release/voltrus target/release/modbus-sim \
-            native/scripts/ci-server.sh scenarios/solar-farm
+            native/scripts/ci-server.sh native/scripts/mimic-solar-farm.json \
+            scenarios/solar-farm
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -4,60 +4,220 @@
 //!
 //! The actor waits only on the operator's own sign-in. Every other REST call
 //! (tags, alarms, history, alarm actions, password changes, token renewals
-//! and the sign-in before a reconnect) runs as its own task and comes back as
-//! an input tagged with its session, so tag updates keep flowing while the
-//! server answers, and a signed-out session's answers are dropped.
+//! and every generic [`Command::Call`]) runs as its own task and comes back
+//! as an input tagged with its session, so tag updates keep flowing while
+//! the server answers, and a signed-out session's answers are dropped.
 //!
-//! When the server refuses the stored password (changed elsewhere, account
-//! locked) the session ends instead of trying again: every wrong password
-//! counts towards locking the account.
+//! The session renews its tokens with its refresh token
+//! (`POST /auth/refresh`), before they expire and before a reconnect; the
+//! password is not kept (only while the server wants it changed). When the
+//! server refuses a renewal (revoked, expired, account locked) the session
+//! ends instead of trying again.
+//!
+//! # Generic REST calls
+//!
+//! A feature that needs an endpoint does not add a command or an event:
+//! it sends `Command::Call { key, call }` with a [`Call`] built from the
+//! [`VoltrusApi`] helpers, and gets `Event::Reply { key, reply }` back with
+//! the decoded answer (decoded here, off the UI thread). The [`CallKey`]
+//! names the feature (`"alarms.summary"`) and an optional argument, so the
+//! console routes the reply to the page that asked.
 
+use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::hash::{BuildHasher, Hasher};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
+use serde::de::DeserializeOwned;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::api::{self, Alarm, DataSourceSummary, HistorySeries, VoltrusApi};
+use crate::api::{self, Alarm, DataSource, HistorySeries, Method, VoltrusApi};
+use crate::stress::{self, StressFeed, StressOptions};
 use crate::ws_types::{ClientMessage, ServerMessage, TagUpdateEntry};
 
+/// Names a generic REST call so its answer finds the code that asked:
+/// `"<page id>.<what>"` (the console routes by the part before the dot),
+/// plus an argument such as an alarm id or a page number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CallKey {
+    pub name: &'static str,
+    pub arg: i64,
+}
+
+impl CallKey {
+    pub const fn new(name: &'static str) -> Self {
+        Self { name, arg: 0 }
+    }
+
+    #[must_use]
+    pub const fn with(self, arg: i64) -> Self {
+        Self {
+            name: self.name,
+            arg,
+        }
+    }
+
+    /// The part of the name before the first dot: the page id.
+    pub fn scope(&self) -> &'static str {
+        self.name.split('.').next().unwrap_or(self.name)
+    }
+}
+
+type CallFuture = Pin<Box<dyn Future<Output = Result<Box<dyn Any + Send>, String>> + Send>>;
+type CallFn = Box<dyn FnOnce(VoltrusApi) -> CallFuture + Send>;
+
+/// A REST call to run with the session's client. Build one with
+/// [`Call::get`], [`Call::send`], [`Call::send_empty`] or, for anything
+/// else, [`Call::new`].
+pub struct Call(CallFn);
+
+impl Call {
+    /// Any async work with the session's client; its result is the reply.
+    pub fn new<T, F, Fut>(call: F) -> Self
+    where
+        T: Send + 'static,
+        F: FnOnce(VoltrusApi) -> Fut + Send + 'static,
+        Fut: Future<Output = anyhow::Result<T>> + Send + 'static,
+    {
+        Self(Box::new(move |api: VoltrusApi| -> CallFuture {
+            Box::pin(async move {
+                call(api)
+                    .await
+                    .map(|value| Box::new(value) as Box<dyn Any + Send>)
+                    .map_err(|error| error.to_string())
+            })
+        }))
+    }
+
+    /// `GET path`, decoded as `T`.
+    pub fn get<T: DeserializeOwned + Send + 'static>(path: impl Into<String>) -> Self {
+        let path = path.into();
+        Self::new(move |api| async move { api.get_json::<T>(&path).await })
+    }
+
+    /// `method path` with a JSON body, the answer decoded as `T`.
+    pub fn send<T: DeserializeOwned + Send + 'static>(
+        method: Method,
+        path: impl Into<String>,
+        body: serde_json::Value,
+    ) -> Self {
+        let path = path.into();
+        Self::new(move |api| async move { api.send_json::<_, T>(method, &path, &body).await })
+    }
+
+    /// `method path` without a body, the answer decoded as `T`
+    /// (`serde::de::IgnoredAny` when only success matters).
+    pub fn send_empty<T: DeserializeOwned + Send + 'static>(
+        method: Method,
+        path: impl Into<String>,
+    ) -> Self {
+        let path = path.into();
+        Self::new(move |api| async move { api.send_empty::<T>(method, &path).await })
+    }
+}
+
+/// The answer to a [`Command::Call`]: the decoded value, or why there is
+/// none.
+pub struct Reply(Result<Box<dyn Any + Send>, String>);
+
+impl Reply {
+    pub fn failed(error: impl Into<String>) -> Self {
+        Self(Err(error.into()))
+    }
+
+    pub fn ok<T: Send + 'static>(value: T) -> Self {
+        Self(Ok(Box::new(value)))
+    }
+
+    /// The value, if the call succeeded and answered a `T`.
+    pub fn take<T: 'static>(self) -> Result<T, String> {
+        let value = self.0?;
+        value
+            .downcast::<T>()
+            .map(|value| *value)
+            .map_err(|_| format!("the reply is not a {}", std::any::type_name::<T>()))
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.0.as_ref().err().map(String::as_str)
+    }
+}
+
+impl fmt::Debug for Reply {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.0 {
+            Ok(_) => f.write_str("Reply(Ok(..))"),
+            Err(error) => f.debug_tuple("Reply").field(&Err::<(), _>(error)).finish(),
+        }
+    }
+}
+
 /// What the window asks for.
-#[derive(Clone)]
 pub enum Command {
     SignIn {
         url: String,
         username: String,
         password: String,
     },
+    /// End the session: the server is told (`POST /auth/logout`, which
+    /// revokes the refresh token) and the socket closes.
     SignOut,
     /// Replace the signed-in user's password. An empty `current` means the
-    /// password the session signed in with.
+    /// password the session signed in with, kept only while the server
+    /// wants it changed.
     ChangePassword {
         current: String,
         new: String,
     },
+    /// Stream these tag keys (WebSocket `Subscribe` takes keys).
     Subscribe(Vec<String>),
-    /// Write `value` to a tag. The console knows tags by `key`; the server
-    /// addresses writes by the data source's numeric `id`.
+    /// Write `value` to the tag with this data source id.
     Write {
-        key: String,
         id: i64,
         value: f64,
     },
     Acknowledge(i64),
     AcknowledgeAll,
+    /// Shelve an alarm for `seconds` with the operator's `reason`
+    /// (`POST /alarms/{id}/shelf`; the server takes an empty reason too).
     Shelve {
         alarm: i64,
         seconds: u64,
+        reason: String,
     },
     Unshelve(i64),
     RefreshAlarms,
     /// Load history for every tag over `range` (`30m`, `1h`, `6h`, `24h`, `7d`).
     History(String),
+    /// A generic REST call for the session; answered by [`Event::Reply`]
+    /// with the same key.
+    Call {
+        key: CallKey,
+        call: Call,
+    },
+    /// End any session and feed a synthetic plant instead (see
+    /// [`crate::stress`]); `SignOut` stops it. A session it ends is signed
+    /// out of the server, as by `SignOut`.
+    Stress(StressOptions),
+    /// Stop the actor, signing the session out of the server first (for a
+    /// moment at most); see [`Handle::shutdown`].
     Shutdown,
+    /// Fetch the tag list again (after a data source was added, changed,
+    /// removed or reordered); answered by [`Event::Tags`] as at sign-in.
+    RefreshTags,
+    /// A call to a public endpoint of the server at `base`, without a
+    /// session (the sign-in card's sign-in methods and edition): answered
+    /// by [`Event::PublicReply`] under the same key, signed in or not.
+    Public {
+        base: String,
+        key: CallKey,
+        call: Call,
+    },
 }
 
 /// Passwords stay out of logs.
@@ -72,23 +232,38 @@ impl fmt::Debug for Command {
             Self::SignOut => f.write_str("SignOut"),
             Self::ChangePassword { .. } => f.debug_struct("ChangePassword").finish_non_exhaustive(),
             Self::Subscribe(tags) => f.debug_tuple("Subscribe").field(tags).finish(),
-            Self::Write { key, id, value } => f
+            Self::Write { id, value } => f
                 .debug_struct("Write")
-                .field("key", key)
                 .field("id", id)
                 .field("value", value)
                 .finish(),
             Self::Acknowledge(id) => f.debug_tuple("Acknowledge").field(id).finish(),
             Self::AcknowledgeAll => f.write_str("AcknowledgeAll"),
-            Self::Shelve { alarm, seconds } => f
+            Self::Shelve {
+                alarm,
+                seconds,
+                reason,
+            } => f
                 .debug_struct("Shelve")
                 .field("alarm", alarm)
                 .field("seconds", seconds)
+                .field("reason", reason)
                 .finish(),
             Self::Unshelve(id) => f.debug_tuple("Unshelve").field(id).finish(),
             Self::RefreshAlarms => f.write_str("RefreshAlarms"),
             Self::History(range) => f.debug_tuple("History").field(range).finish(),
+            Self::Call { key, .. } => f
+                .debug_struct("Call")
+                .field("key", key)
+                .finish_non_exhaustive(),
+            Self::Stress(options) => f.debug_tuple("Stress").field(options).finish(),
             Self::Shutdown => f.write_str("Shutdown"),
+            Self::RefreshTags => f.write_str("RefreshTags"),
+            Self::Public { base, key, .. } => f
+                .debug_struct("Public")
+                .field("base", base)
+                .field("key", key)
+                .finish_non_exhaustive(),
         }
     }
 }
@@ -131,7 +306,7 @@ pub struct RaisedAlarm {
 }
 
 /// What the window hears back.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Event {
     Link(Link),
     SignedIn {
@@ -143,9 +318,14 @@ pub enum Event {
     },
     SignInFailed(String),
     PasswordChanged(Result<(), String>),
-    Tags(Vec<DataSourceSummary>),
+    Tags(Vec<DataSource>),
     Updates(Vec<TagUpdateEntry>),
-    Alarms(Vec<Alarm>),
+    Alarms {
+        alarms: Vec<Alarm>,
+        /// A status had more than [`OPEN_ALARMS_LIMIT`] open alarms: only
+        /// the newest of each are listed.
+        capped: bool,
+    },
     /// The open alarms could not be fetched: the list shown is stale.
     AlarmsFailed(String),
     AlarmRaised(RaisedAlarm),
@@ -153,8 +333,9 @@ pub enum Event {
         range: String,
         series: HashMap<String, HistorySeries>,
     },
+    /// The answer to a write to the tag with this data source id.
     Written {
-        tag: String,
+        tag: i64,
         result: Result<String, String>,
         /// The answer came after the write was reported unanswered.
         late: bool,
@@ -164,17 +345,59 @@ pub enum Event {
         action: String,
         result: Result<(), String>,
     },
+    /// The answer to a [`Command::Call`].
+    Reply {
+        key: CallKey,
+        reply: Reply,
+    },
+    /// A device's link to the server came up or went down.
+    DeviceStatus {
+        device_id: String,
+        online: bool,
+        latency_ms: Option<u64>,
+    },
+    /// The answer to a [`Command::Public`].
+    PublicReply {
+        key: CallKey,
+        reply: Reply,
+    },
 }
 
 /// Cheap handle for sending commands to the actor.
 #[derive(Clone, Debug)]
 pub struct Handle {
     commands: mpsc::UnboundedSender<Command>,
+    /// Answers once the actor has stopped (`None` without an actor).
+    stopped: Option<Arc<Mutex<std::sync::mpsc::Receiver<()>>>>,
 }
 
 impl Handle {
     pub fn send(&self, command: Command) -> bool {
         self.commands.send(command).is_ok()
+    }
+
+    /// Stop the actor ([`Command::Shutdown`]), waiting up to `wait` for it
+    /// to sign the session out of the server.
+    pub fn shutdown(&self, wait: Duration) {
+        if self.send(Command::Shutdown)
+            && let Some(stopped) = &self.stopped
+            && let Ok(stopped) = stopped.lock()
+        {
+            let _ = stopped.recv_timeout(wait);
+        }
+    }
+
+    /// A handle with no actor behind it: the commands sent wait on the
+    /// returned receiver, for tests of the window side.
+    pub fn recorder() -> (Self, mpsc::UnboundedReceiver<Command>) {
+        let (commands, receiver) = mpsc::unbounded_channel();
+        (
+            Self {
+                commands,
+                stopped: None,
+            },
+            receiver,
+        )
     }
 }
 
@@ -182,17 +405,25 @@ impl Handle {
 pub fn start() -> std::io::Result<(Handle, async_channel::Receiver<Event>)> {
     let (command_tx, command_rx) = mpsc::unbounded_channel();
     let (event_tx, event_rx) = async_channel::unbounded();
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::channel();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .thread_name("scada-io")
+        // Network and the stress feed must not take the CPU from frames.
+        .on_thread_start(crate::perf::below_the_ui)
         .enable_all()
         .build()?;
     std::thread::Builder::new()
         .name("scada-runtime".into())
-        .spawn(move || runtime.block_on(actor(command_rx, Out(event_tx))))?;
+        .spawn(move || {
+            crate::perf::below_the_ui();
+            runtime.block_on(actor(command_rx, Out(event_tx)));
+            let _ = stopped_tx.send(());
+        })?;
     Ok((
         Handle {
             commands: command_tx,
+            stopped: Some(Arc::new(Mutex::new(stopped_rx))),
         },
         event_rx,
     ))
@@ -205,6 +436,11 @@ impl Out {
     fn send(&self, event: Event) {
         let _ = self.0.try_send(event);
     }
+
+    /// Events the window has not taken yet.
+    fn backlog(&self) -> usize {
+        self.0.len()
+    }
 }
 
 enum Input {
@@ -214,8 +450,10 @@ enum Input {
     Retry(u64),
     /// A write of session `u64` the server has not confirmed in time.
     WriteTimeout(u64, String),
-    /// Time for session `u64` to sign in again before its token expires.
-    Renew(u64),
+    /// Time for session `u64` to renew its tokens before they expire; the
+    /// second number is the renewal it was scheduled for (see
+    /// `Session::renewal`), so only the latest schedule renews.
+    Renew(u64, u64),
     /// A REST answer for session `u64`.
     Rest(u64, Rest),
 }
@@ -229,8 +467,9 @@ enum Socket {
 
 /// What a REST task brings back to the actor.
 enum Rest {
-    Tags(Result<Vec<DataSourceSummary>, String>),
-    Alarms(Result<Vec<Alarm>, String>),
+    Tags(Result<Vec<DataSource>, String>),
+    /// The open alarms, and whether a list came back full (more may be open).
+    Alarms(Result<(Vec<Alarm>, bool), String>),
     History {
         range: String,
         result: Result<HashMap<String, HistorySeries>, String>,
@@ -239,16 +478,12 @@ enum Rest {
         action: String,
         result: Result<(), String>,
     },
-    PasswordChanged {
-        new: String,
-        result: Result<(), String>,
-    },
-    /// A renewal sign-in: the new token.
-    Renewed(Result<String, SignInError>),
-    /// The sign-in before reopening socket `socket`: the new token.
-    Reconnect {
-        socket: u64,
-        result: Result<String, SignInError>,
+    PasswordChanged(Result<(), String>),
+    /// A renewal (`POST /auth/refresh`): the new tokens.
+    Renewed(Result<Tokens, SignInError>),
+    Reply {
+        key: CallKey,
+        reply: Reply,
     },
 }
 
@@ -268,14 +503,23 @@ impl SignInError {
     }
 }
 
-/// Sign in again with a copy of the session's client; the new token.
-async fn sign_in_again(
-    mut api: VoltrusApi,
-    username: String,
-    password: String,
-) -> Result<String, SignInError> {
-    match api.login(&username, &password).await {
-        Ok(_) => Ok(api.token.unwrap_or_default()),
+/// A session's tokens after a renewal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Tokens {
+    token: String,
+    /// The server revoked the one the renewal sent.
+    refresh: String,
+}
+
+/// Renew the tokens with a copy of the session's client and its refresh
+/// token: no password, and the user's other sessions keep theirs (a new
+/// sign-in would revoke every refresh token of the user).
+async fn renew_tokens(mut api: VoltrusApi) -> Result<Tokens, SignInError> {
+    match api.refresh_session().await {
+        Ok(()) => Ok(Tokens {
+            token: api.token.unwrap_or_default(),
+            refresh: api.refresh.unwrap_or_default(),
+        }),
         Err(error) => Err(SignInError::new(&error)),
     }
 }
@@ -323,10 +567,10 @@ const LATE_WRITES: usize = 32;
 struct Writes {
     nonce: String,
     next: u64,
-    /// Command id → tag key.
-    pending: HashMap<String, String>,
+    /// Command id → data source id.
+    pending: HashMap<String, i64>,
     /// Timed-out writes, oldest first.
-    late: VecDeque<(String, String)>,
+    late: VecDeque<(String, i64)>,
 }
 
 impl Writes {
@@ -340,7 +584,7 @@ impl Writes {
     }
 
     /// A new command id for a write to `tag`.
-    fn issue(&mut self, tag: String) -> String {
+    fn issue(&mut self, tag: i64) -> String {
         self.next += 1;
         let id = format!("native-{}-{}", self.nonce, self.next);
         self.pending.insert(id.clone(), tag);
@@ -353,18 +597,18 @@ impl Writes {
     }
 
     /// The tag of a write that waited too long, if it still waited.
-    fn time_out(&mut self, id: &str) -> Option<String> {
+    fn time_out(&mut self, id: &str) -> Option<i64> {
         let tag = self.pending.remove(id)?;
         if self.late.len() == LATE_WRITES {
             self.late.pop_front();
         }
-        self.late.push_back((id.to_owned(), tag.clone()));
+        self.late.push_back((id.to_owned(), tag));
         Some(tag)
     }
 
     /// The tag of an acknowledged write of ours, and whether it had timed
     /// out.
-    fn acknowledge(&mut self, id: &str) -> Option<(String, bool)> {
+    fn acknowledge(&mut self, id: &str) -> Option<(i64, bool)> {
         if let Some(tag) = self.pending.remove(id) {
             return Some((tag, false));
         }
@@ -373,7 +617,7 @@ impl Writes {
     }
 
     /// The tags of every waiting write, when the connection drops.
-    fn abandon(&mut self) -> Vec<String> {
+    fn abandon(&mut self) -> Vec<i64> {
         self.pending.drain().map(|(_, tag)| tag).collect()
     }
 }
@@ -392,12 +636,13 @@ fn nonce() -> String {
 }
 
 /// The password a change starts from: the console does not ask again for
-/// the one it signed in with, so an empty `given` means the session's.
-fn current_password(given: String, session: &str) -> String {
+/// the one it signed in with, so an empty `given` means the session's (kept
+/// only while the server wants it changed); `None` when there is none.
+fn current_password(given: String, session: Option<&str>) -> Option<String> {
     if given.is_empty() {
-        session.to_owned()
+        session.map(str::to_owned)
     } else {
-        given
+        Some(given)
     }
 }
 
@@ -405,9 +650,10 @@ struct Session {
     /// Never reused: answers for an older session are dropped.
     id: u64,
     api: VoltrusApi,
-    username: String,
-    /// Kept in memory only, to sign in again when the token expires.
-    password: String,
+    /// The password signed in with, kept in memory only while the server
+    /// wants it changed (the change needs it); renewals use the refresh
+    /// token.
+    password: Option<String>,
     socket: Option<mpsc::Sender<ClientMessage>>,
     /// Identifies the current socket; events from older ones are ignored.
     generation: u64,
@@ -417,6 +663,14 @@ struct Session {
     failures: u32,
     alarms: Refresh,
     writes: Writes,
+    /// A renewal is on its way: the refresh token changes with each, so a
+    /// second one at the same time would be refused.
+    renewing: bool,
+    /// Counts renewals; a scheduled [`Input::Renew`] for an older one is
+    /// dropped, so reconnects do not start a second renewal schedule.
+    renewal: u64,
+    /// The closed socket to reopen once the renewal on its way ends.
+    reopen: Option<u64>,
 }
 
 pub fn ws_url(base: &str) -> String {
@@ -429,8 +683,8 @@ pub fn ws_url(base: &str) -> String {
     format!("{scheme}/api/v1/ws")
 }
 
-/// Signing in again this often keeps the 15-minute session token fresh for
-/// REST calls.
+/// Renewing this often keeps the 15-minute session token fresh for REST
+/// calls.
 const RENEW_EVERY: Duration = Duration::from_secs(10 * 60);
 
 /// After a renewal the server did not answer, try again this soon: the
@@ -439,6 +693,12 @@ const RENEW_RETRY: Duration = Duration::from_secs(30);
 
 /// How long a write may wait for the server's acknowledgement.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long quitting waits for the server to sign the session out.
+const LOGOUT_WAIT: Duration = Duration::from_secs(2);
+
+/// The most open alarms of one status a fetch lists.
+pub const OPEN_ALARMS_LIMIT: usize = 200;
 
 pub fn backoff(failures: u32) -> Duration {
     match failures {
@@ -493,19 +753,35 @@ fn spawn_rest(
 /// their own lists; resolved alarms are dropped.
 fn fetch_alarms(inputs: &mpsc::UnboundedSender<Input>, session: &Session) {
     let api = session.api.clone();
+    // One more than listed, to know whether there are more.
+    let limit = OPEN_ALARMS_LIMIT as i64 + 1;
     spawn_rest(inputs, session.id, async move {
         let (active, acknowledged, shelved) = tokio::join!(
-            api.alarms("active", 200),
-            api.alarms("acknowledged", 200),
-            api.alarms("shelved", 200),
+            api.alarms("active", limit),
+            api.alarms("acknowledged", limit),
+            api.alarms("shelved", limit),
         );
         Rest::Alarms(match (active, acknowledged, shelved) {
             (Ok(active), Ok(acknowledged), Ok(shelved)) => {
-                Ok(open_alarms([active, acknowledged, shelved]))
+                let (lists, capped) = cap_lists([active, acknowledged, shelved]);
+                Ok((open_alarms(lists), capped))
             }
             (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => Err(error.to_string()),
         })
     });
+}
+
+/// Lists fetched with one row more than [`OPEN_ALARMS_LIMIT`] (newest
+/// first): each cut to the limit, and whether any had more.
+pub fn cap_lists(mut lists: [Vec<Alarm>; 3]) -> ([Vec<Alarm>; 3], bool) {
+    let mut capped = false;
+    for list in &mut lists {
+        if list.len() > OPEN_ALARMS_LIMIT {
+            list.truncate(OPEN_ALARMS_LIMIT);
+            capped = true;
+        }
+    }
+    (lists, capped)
 }
 
 /// The unresolved alarms of several lists, each once, in list order.
@@ -525,6 +801,9 @@ struct Actor {
     out: Out,
     inputs: mpsc::UnboundedSender<Input>,
     session: Option<Session>,
+    /// The synthetic plant's feed while a stress test runs instead of a
+    /// session; dropping it stops the feed.
+    stress: Option<AbortOnDrop>,
     subscribed: Vec<String>,
     /// Session and socket ids. Never reused, so neither a signed-out
     /// session's answers nor an old socket's messages pass for current ones.
@@ -537,6 +816,7 @@ impl Actor {
             out,
             inputs,
             session: None,
+            stress: None,
             subscribed: Vec::new(),
             ids: 0,
         }
@@ -554,7 +834,7 @@ impl Actor {
             Input::Socket(socket) => self.socket(socket),
             Input::Retry(generation) => self.retry(generation),
             Input::WriteTimeout(session, id) => self.write_timeout(session, &id),
-            Input::Renew(session) => self.renew(session),
+            Input::Renew(session, renewal) => self.renew(session, renewal),
             Input::Rest(session, rest) => {
                 if self.session.as_ref().is_some_and(|s| s.id == session) {
                     self.rest(rest);
@@ -576,13 +856,14 @@ impl Actor {
                 let mut api = VoltrusApi::new(&url);
                 match api.login(&username, &password).await {
                     Ok(login) => {
+                        let must_change = login.must_change_password;
                         self.out.send(Event::SignedIn {
                             username: login.username,
                             role: login.role,
                             server: api.base.clone(),
-                            must_change_password: login.must_change_password,
+                            must_change_password: must_change,
                         });
-                        self.begin(api, username, password);
+                        self.begin(api, must_change.then_some(password));
                     }
                     Err(error) => {
                         self.out.send(Event::SignInFailed(error.to_string()));
@@ -596,18 +877,23 @@ impl Actor {
                         .send(Event::PasswordChanged(Err("Not signed in".into())));
                     return true;
                 };
-                let current = current_password(current, &s.password);
+                let Some(current) = current_password(current, s.password.as_deref()) else {
+                    self.out.send(Event::PasswordChanged(Err(
+                        "Enter the current password".into()
+                    )));
+                    return true;
+                };
                 let api = s.api.clone();
                 spawn_rest(&self.inputs, s.id, async move {
-                    let result = api
-                        .change_password(&current, &new)
-                        .await
-                        .map_err(|error| error.to_string());
-                    Rest::PasswordChanged { new, result }
+                    Rest::PasswordChanged(
+                        api.change_password(&current, &new)
+                            .await
+                            .map_err(|error| error.to_string()),
+                    )
                 });
             }
             Command::SignOut => {
-                self.end_session();
+                self.sign_out();
                 self.out.send(Event::Link(Link::SignedOut));
             }
             Command::Subscribe(tags) => {
@@ -620,7 +906,7 @@ impl Actor {
                     let _ = socket.try_send(ClientMessage::Subscribe { tag_ids: tags });
                 }
             }
-            Command::Write { key, id, value } => self.write(key, id, value),
+            Command::Write { id, value } => self.write(id, value),
             Command::Acknowledge(id) => {
                 self.action(format!("Acknowledge alarm {id}"), move |api| {
                     Box::pin(async move { api.ack_alarm(id).await })
@@ -631,12 +917,13 @@ impl Actor {
                     Box::pin(async move { api.ack_all().await })
                 });
             }
-            Command::Shelve { alarm, seconds } => {
+            Command::Shelve {
+                alarm,
+                seconds,
+                reason,
+            } => {
                 self.action(format!("Shelve alarm {alarm}"), move |api| {
-                    Box::pin(async move {
-                        api.shelve_alarm(alarm, seconds, "Shelved from the operator console")
-                            .await
-                    })
+                    Box::pin(async move { api.shelve_alarm(alarm, seconds, &reason).await })
                 });
             }
             Command::Unshelve(id) => {
@@ -654,13 +941,72 @@ impl Actor {
                     });
                 }
             }
-            Command::Shutdown => return false,
+            Command::Call { key, call } => match &self.session {
+                Some(s) => {
+                    let api = s.api.clone();
+                    spawn_rest(&self.inputs, s.id, async move {
+                        Rest::Reply {
+                            key,
+                            reply: Reply((call.0)(api).await),
+                        }
+                    });
+                }
+                None => self.out.send(Event::Reply {
+                    key,
+                    reply: Reply::failed(if self.stress.is_some() {
+                        "A stress test has no server to ask"
+                    } else {
+                        "Not signed in"
+                    }),
+                }),
+            },
+            Command::Stress(options) => {
+                // A real session the stress run replaces is signed out of
+                // the server, so its refresh token does not outlive it.
+                self.sign_out();
+                self.stress = Some(spawn_stress(self.out.clone(), options));
+            }
+            Command::Shutdown => {
+                // Quitting signs out too, waiting a moment at most.
+                if let Some(s) = self.end_session() {
+                    let _ = tokio::time::timeout(LOGOUT_WAIT, s.api.logout()).await;
+                }
+                return false;
+            }
+            Command::RefreshTags => {
+                if let Some(s) = &self.session {
+                    let api = s.api.clone();
+                    spawn_rest(&self.inputs, s.id, async move {
+                        Rest::Tags(api.data_sources().await.map_err(|error| error.to_string()))
+                    });
+                }
+            }
+            Command::Public { base, key, call } => {
+                let out = self.out.clone();
+                let api = VoltrusApi::new(&base);
+                tokio::spawn(async move {
+                    let reply = Reply((call.0)(api).await);
+                    out.send(Event::PublicReply { key, reply });
+                });
+            }
         }
         true
     }
 
-    /// Start a session after a successful sign-in.
-    fn begin(&mut self, api: VoltrusApi, username: String, password: String) {
+    /// End the session and revoke it on the server too; nobody waits for
+    /// the answer.
+    fn sign_out(&mut self) {
+        if let Some(s) = self.end_session() {
+            let api = s.api;
+            tokio::spawn(async move {
+                let _ = api.logout().await;
+            });
+        }
+    }
+
+    /// Start a session after a successful sign-in; `password` only when the
+    /// server wants it changed.
+    fn begin(&mut self, api: VoltrusApi, password: Option<String>) {
         self.subscribed.clear();
         let id = self.next_id();
         let generation = self.next_id();
@@ -670,12 +1016,11 @@ impl Actor {
         spawn_rest(&self.inputs, id, async move {
             Rest::Tags(tags.data_sources().await.map_err(|error| error.to_string()))
         });
-        // The server's tokens last 15 minutes; sign in again well before.
-        schedule(&self.inputs, RENEW_EVERY, Input::Renew(id));
+        // The server's tokens last 15 minutes; renew well before.
+        schedule(&self.inputs, RENEW_EVERY, Input::Renew(id, 0));
         self.session = Some(Session {
             id,
             api,
-            username,
             password,
             socket: None,
             generation,
@@ -683,13 +1028,18 @@ impl Actor {
             failures: 0,
             alarms: Refresh::default(),
             writes: Writes::new(nonce()),
+            renewing: false,
+            renewal: 0,
+            reopen: None,
         });
         self.refresh_alarms();
     }
 
-    /// Drop the session: its socket task is aborted and its answers ignored.
+    /// Drop the session (its socket task is aborted and its answers
+    /// ignored) or stop the stress feed.
     fn end_session(&mut self) -> Option<Session> {
         self.subscribed.clear();
+        self.stress = None;
         self.session.take()
     }
 
@@ -733,10 +1083,10 @@ impl Actor {
         }
     }
 
-    fn write(&mut self, key: String, id: i64, value: f64) {
+    fn write(&mut self, id: i64, value: f64) {
         let Some(s) = self.session.as_mut() else {
             self.out.send(Event::Written {
-                tag: key,
+                tag: id,
                 result: Err("Not connected".into()),
                 late: false,
             });
@@ -744,13 +1094,13 @@ impl Actor {
         };
         let Some(socket) = s.socket.as_ref() else {
             self.out.send(Event::Written {
-                tag: key,
+                tag: id,
                 result: Err("Not connected".into()),
                 late: false,
             });
             return;
         };
-        let command_id = s.writes.issue(key.clone());
+        let command_id = s.writes.issue(id);
         let message = ClientMessage::TagWrite {
             tag_id: id.to_string(),
             value,
@@ -759,7 +1109,7 @@ impl Actor {
         if socket.try_send(message).is_err() {
             s.writes.cancel(&command_id);
             self.out.send(Event::Written {
-                tag: key,
+                tag: id,
                 result: Err("The connection is busy; try again".into()),
                 late: false,
             });
@@ -788,30 +1138,40 @@ impl Actor {
         }
     }
 
-    fn renew(&self, session: u64) {
-        let Some(s) = self.session.as_ref().filter(|s| s.id == session) else {
+    /// A scheduled renewal: only the latest schedule of the session renews.
+    fn renew(&mut self, session: u64, renewal: u64) {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.id == session && s.renewal == renewal)
+        {
+            self.start_renewal();
+        }
+    }
+
+    /// Renew the session's tokens, unless a renewal is already on its way
+    /// (it then serves this one too).
+    fn start_renewal(&mut self) {
+        let Some(s) = self.session.as_mut().filter(|s| !s.renewing) else {
             return;
         };
-        let task = sign_in_again(s.api.clone(), s.username.clone(), s.password.clone());
+        s.renewing = true;
+        let task = renew_tokens(s.api.clone());
         spawn_rest(&self.inputs, s.id, async move { Rest::Renewed(task.await) });
     }
 
-    fn retry(&self, generation: u64) {
+    fn retry(&mut self, generation: u64) {
         let Some(s) = self
             .session
-            .as_ref()
+            .as_mut()
             .filter(|s| s.generation == generation && s.socket.is_none())
         else {
             return;
         };
-        // The token may have expired while the socket was down.
-        let task = sign_in_again(s.api.clone(), s.username.clone(), s.password.clone());
-        spawn_rest(&self.inputs, s.id, async move {
-            Rest::Reconnect {
-                socket: generation,
-                result: task.await,
-            }
-        });
+        // The token may have expired while the socket was down: renew,
+        // then reopen.
+        s.reopen = Some(generation);
+        self.start_renewal();
     }
 
     /// A REST answer for the current session.
@@ -829,7 +1189,7 @@ impl Actor {
                     fetch_alarms(&self.inputs, s);
                 }
                 self.out.send(match result {
-                    Ok(alarms) => Event::Alarms(alarms),
+                    Ok((alarms, capped)) => Event::Alarms { alarms, capped },
                     Err(error) => Event::AlarmsFailed(error),
                 });
             }
@@ -844,73 +1204,69 @@ impl Actor {
                 self.out.send(Event::Done { action, result });
                 self.refresh_alarms();
             }
-            Rest::PasswordChanged { new, result } => {
+            Rest::PasswordChanged(result) => {
                 if result.is_ok()
                     && let Some(s) = self.session.as_mut()
                 {
-                    // Renewals and reconnects sign in with the new password.
-                    s.password = new;
+                    // Changed: the password is not needed any more.
+                    s.password = None;
                 }
                 self.out.send(Event::PasswordChanged(result));
             }
             Rest::Renewed(result) => self.renewed(result),
-            Rest::Reconnect { socket, result } => self.reconnect(socket, result),
+            Rest::Reply { key, reply } => self.out.send(Event::Reply { key, reply }),
         }
     }
 
-    fn renewed(&mut self, result: Result<String, SignInError>) {
-        match result {
-            Err(error) if error.refused => self.refuse(&error.message),
-            result => {
-                let Some(s) = self.session.as_mut() else {
-                    return;
-                };
-                let next = match result {
-                    Ok(token) => {
-                        s.api.token = Some(token);
-                        RENEW_EVERY
-                    }
-                    // The old token serves a few more minutes.
-                    Err(_) => RENEW_RETRY,
-                };
-                schedule(&self.inputs, next, Input::Renew(s.id));
-            }
-        }
-    }
-
-    fn reconnect(&mut self, socket: u64, result: Result<String, SignInError>) {
-        if self
-            .session
-            .as_ref()
-            .is_none_or(|s| s.generation != socket || s.socket.is_some())
+    /// A renewal ended: keep both new tokens (the server revoked the
+    /// refresh token it was sent), schedule the next, and reopen the socket
+    /// that waited for it.
+    fn renewed(&mut self, result: Result<Tokens, SignInError>) {
+        if let Err(error) = &result
+            && error.refused
         {
+            self.refuse(&error.message);
             return;
         }
+        let generation = self.next_id();
+        let Some(s) = self.session.as_mut() else {
+            return;
+        };
+        s.renewing = false;
+        s.renewal += 1;
+        let reopen = s
+            .reopen
+            .take()
+            .filter(|socket| *socket == s.generation && s.socket.is_none());
         match result {
-            Err(error) if error.refused => self.refuse(&error.message),
-            Ok(token) => {
-                let generation = self.next_id();
-                let Some(s) = self.session.as_mut() else {
-                    return;
-                };
-                s.api.token = Some(token.clone());
-                s.generation = generation;
-                // Replaces (and so aborts) the previous socket's task.
-                s.reader =
-                    spawn_socket(self.inputs.clone(), generation, ws_url(&s.api.base), token);
+            Ok(tokens) => {
+                s.api.token = Some(tokens.token.clone());
+                s.api.refresh = Some(tokens.refresh);
+                schedule(&self.inputs, RENEW_EVERY, Input::Renew(s.id, s.renewal));
+                if reopen.is_some() {
+                    s.generation = generation;
+                    // Replaces (and so aborts) the previous socket's task.
+                    s.reader = spawn_socket(
+                        self.inputs.clone(),
+                        generation,
+                        ws_url(&s.api.base),
+                        tokens.token,
+                    );
+                }
             }
             Err(error) => {
-                let Some(s) = self.session.as_mut() else {
-                    return;
-                };
-                s.failures += 1;
-                let wait = backoff(s.failures);
-                self.out.send(Event::Link(Link::Reconnecting {
-                    attempt: s.failures,
-                    retry_in_secs: wait.as_secs(),
-                    reason: format!("Sign-in failed: {}", error.message),
-                }));
-                schedule(&self.inputs, wait, Input::Retry(socket));
+                // The old token serves a few more minutes.
+                schedule(&self.inputs, RENEW_RETRY, Input::Renew(s.id, s.renewal));
+                if let Some(socket) = reopen {
+                    s.failures += 1;
+                    let wait = backoff(s.failures);
+                    self.out.send(Event::Link(Link::Reconnecting {
+                        attempt: s.failures,
+                        retry_in_secs: wait.as_secs(),
+                        reason: format!("Renewing the session failed: {}", error.message),
+                    }));
+                    schedule(&self.inputs, wait, Input::Retry(socket));
+                }
             }
         }
     }
@@ -1030,10 +1386,17 @@ impl Actor {
             // The socket's token was refused: reconnecting with it would
             // fail the same way.
             ServerMessage::AuthError { message } => self.refuse(&message),
-            ServerMessage::AuthOk { .. }
-            | ServerMessage::Pong
-            | ServerMessage::DeviceStatus { .. }
-            | ServerMessage::HaStatus { .. } => {}
+            ServerMessage::DeviceStatus {
+                device_id,
+                online,
+                latency_ms,
+            } => self.out.send(Event::DeviceStatus {
+                device_id,
+                online,
+                latency_ms,
+            }),
+            ServerMessage::AuthOk { .. } | ServerMessage::Pong | ServerMessage::HaStatus { .. } => {
+            }
         }
     }
 }
@@ -1045,6 +1408,49 @@ impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
     }
+}
+
+/// Batches the window has not taken yet beyond which the stress feed skips
+/// a tick rather than queue without bound: a console that cannot keep up
+/// shows it as a lower applied rate, not as growing memory.
+const STRESS_BACKLOG: usize = 64;
+
+/// The user and server a stress test signs in as.
+pub const STRESS_USER: &str = "stress";
+pub const STRESS_SERVER: &str = "stress://synthetic-plant";
+
+/// Act out a session with a synthetic plant: signed in, live, its tag list,
+/// then a batch of updates every [`stress::TICK`] until dropped.
+fn spawn_stress(out: Out, options: StressOptions) -> AbortOnDrop {
+    AbortOnDrop(tokio::spawn(async move {
+        let mut feed = StressFeed::new(options);
+        out.send(Event::SignedIn {
+            username: STRESS_USER.into(),
+            role: "admin".into(),
+            server: STRESS_SERVER.into(),
+            must_change_password: false,
+        });
+        out.send(Event::Link(Link::Live));
+        out.send(Event::Tags(feed.tags()));
+        out.send(Event::Alarms {
+            alarms: Vec::new(),
+            capped: false,
+        });
+        let mut ticker = tokio::time::interval(stress::TICK);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            if out.backlog() > STRESS_BACKLOG {
+                continue;
+            }
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |elapsed| {
+                    i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+                });
+            out.send(Event::Updates(feed.next_batch(now)));
+        }
+    }))
 }
 
 /// Connect, authenticate, then forward every server message tagged with
@@ -1123,7 +1529,7 @@ mod tests {
         runtime: tokio::runtime::Runtime,
         actor: Actor,
         events: async_channel::Receiver<Event>,
-        _inputs: mpsc::UnboundedReceiver<Input>,
+        inputs: mpsc::UnboundedReceiver<Input>,
     }
 
     impl Harness {
@@ -1138,7 +1544,7 @@ mod tests {
                 runtime,
                 actor: Actor::new(Out(out), inputs),
                 events,
-                _inputs: receiver,
+                inputs: receiver,
             }
         }
 
@@ -1150,7 +1556,8 @@ mod tests {
             let mut api = VoltrusApi::new(url);
             api.token = Some("token".into());
             let _entered = self.runtime.enter();
-            self.actor.begin(api, "admin".into(), "secret".into());
+            api.refresh = Some("refresh".into());
+            self.actor.begin(api, None);
             self.session().id
         }
 
@@ -1241,9 +1648,12 @@ mod tests {
         h.events();
         h.feed(Input::Rest(
             first,
-            Rest::Tags(Ok(vec![DataSourceSummary::default()])),
+            Rest::Tags(Ok(vec![DataSource::default()])),
         ));
-        h.feed(Input::Rest(first, Rest::Alarms(Ok(vec![Alarm::default()]))));
+        h.feed(Input::Rest(
+            first,
+            Rest::Alarms(Ok((vec![Alarm::default()], false))),
+        ));
         h.feed(Input::Rest(
             first,
             Rest::Action {
@@ -1265,7 +1675,7 @@ mod tests {
         );
         h.feed(Input::Rest(
             second,
-            Rest::Tags(Ok(vec![DataSourceSummary::default()])),
+            Rest::Tags(Ok(vec![DataSource::default()])),
         ));
         assert!(matches!(h.events().as_slice(), [Event::Tags(tags)] if tags.len() == 1));
     }
@@ -1332,13 +1742,8 @@ mod tests {
         let (sender, _queue) = mpsc::channel(4);
         h.socket(Socket::Open(old, sender));
         h.socket(Socket::Closed(old, "gone".into()));
-        h.feed(Input::Rest(
-            id,
-            Rest::Reconnect {
-                socket: old,
-                result: Ok("fresh".into()),
-            },
-        ));
+        h.feed(Input::Retry(old));
+        h.feed(Input::Rest(id, Rest::Renewed(Ok(tokens("fresh", "r2")))));
         let current = h.session().generation;
         assert_ne!(old, current);
         assert_eq!(h.session().api.token.as_deref(), Some("fresh"));
@@ -1351,6 +1756,25 @@ mod tests {
         assert!(h.events().is_empty());
         h.socket(Socket::Message(current, batch()));
         assert!(matches!(h.events().as_slice(), [Event::Updates(_)]));
+    }
+
+    #[test]
+    fn a_full_alarm_list_is_cut_and_reported() {
+        let alarms = |count: i64, from: i64| -> Vec<Alarm> {
+            (from..from + count)
+                .map(|id| Alarm {
+                    id,
+                    ..Alarm::default()
+                })
+                .collect()
+        };
+        let limit = OPEN_ALARMS_LIMIT as i64;
+        let (lists, capped) = cap_lists([alarms(limit + 1, 0), alarms(3, 1000), Vec::new()]);
+        assert!(capped, "one more than the limit came back");
+        assert_eq!(lists[0].len(), OPEN_ALARMS_LIMIT);
+        assert_eq!(lists[1].len(), 3);
+        let (_, capped) = cap_lists([alarms(limit, 0), Vec::new(), Vec::new()]);
+        assert!(!capped, "exactly the limit is all of them");
     }
 
     #[test]
@@ -1374,7 +1798,7 @@ mod tests {
         assert!(h.session().alarms.running, "signing in fetches the alarms");
         h.feed(Input::Command(Command::RefreshAlarms));
         assert!(h.session().alarms.dirty);
-        h.feed(Input::Rest(id, Rest::Alarms(Ok(Vec::new()))));
+        h.feed(Input::Rest(id, Rest::Alarms(Ok((Vec::new(), false)))));
         assert_eq!(
             h.session().alarms,
             Refresh {
@@ -1386,23 +1810,23 @@ mod tests {
         assert_eq!(h.session().alarms, Refresh::default());
         assert!(matches!(
             h.events().as_slice(),
-            [Event::Alarms(_), Event::AlarmsFailed(error)] if error == "HTTP 502"
+            [Event::Alarms { .. }, Event::AlarmsFailed(error)] if error == "HTTP 502"
         ));
     }
 
     #[test]
     fn writes_match_only_their_own_acks_even_late_ones() {
         let mut writes = Writes::new("abc".into());
-        let first = writes.issue("a".into());
-        let second = writes.issue("b".into());
+        let first = writes.issue(11);
+        let second = writes.issue(12);
         assert_ne!(first, second);
         assert!(first.starts_with("native-abc-"));
         assert_eq!(writes.acknowledge("native-other-1"), None);
-        assert_eq!(writes.time_out(&first).as_deref(), Some("a"));
+        assert_eq!(writes.time_out(&first), Some(11));
         assert_eq!(writes.time_out(&first), None, "reported once");
-        assert_eq!(writes.acknowledge(&first), Some(("a".into(), true)));
+        assert_eq!(writes.acknowledge(&first), Some((11, true)));
         assert_eq!(writes.acknowledge(&first), None);
-        assert_eq!(writes.abandon(), ["b"]);
+        assert_eq!(writes.abandon(), [12]);
         assert_eq!(writes.acknowledge(&second), None);
         assert_ne!(nonce(), nonce());
     }
@@ -1411,13 +1835,7 @@ mod tests {
     fn a_write_goes_out_on_the_socket_and_a_late_ack_corrects_its_timeout() {
         let mut h = Harness::new();
         let id = h.sign_in();
-        let write = || {
-            Input::Command(Command::Write {
-                key: "a".into(),
-                id: 7,
-                value: 1.5,
-            })
-        };
+        let write = || Input::Command(Command::Write { id: 7, value: 1.5 });
         h.feed(write());
         let (sender, mut queue) = mpsc::channel(4);
         let generation = h.session().generation;
@@ -1451,8 +1869,15 @@ mod tests {
                 Event::Link(Link::Live),
                 Event::Written { result: Err(_), late: false, .. },
                 Event::Written { tag, result: Ok(detail), late: true },
-            ] if not_connected == "Not connected" && tag == "a" && detail == "ok (12 ms)"
+            ] if not_connected == "Not connected" && *tag == 7 && detail == "ok (12 ms)"
         ));
+    }
+
+    fn tokens(token: &str, refresh: &str) -> Tokens {
+        Tokens {
+            token: token.into(),
+            refresh: refresh.into(),
+        }
     }
 
     #[test]
@@ -1461,23 +1886,21 @@ mod tests {
         let id = h.sign_in();
         let generation = h.session().generation;
         h.socket(Socket::Closed(generation, "gone".into()));
+        h.feed(Input::Retry(generation));
+        assert!(h.session().renewing, "a reconnect renews the token first");
         // A server that is merely unreachable is tried again.
-        h.feed(Input::Rest(
-            id,
-            Rest::Reconnect {
-                socket: generation,
-                result: Err(unreachable()),
-            },
-        ));
+        h.feed(Input::Rest(id, Rest::Renewed(Err(unreachable()))));
         assert!(h.actor.session.is_some());
+        assert!(matches!(
+            h.events().last(),
+            Some(Event::Link(Link::Reconnecting { .. }))
+        ));
+        h.feed(Input::Retry(generation));
         h.feed(Input::Rest(
             id,
-            Rest::Reconnect {
-                socket: generation,
-                result: Err(refused("Invalid credentials")),
-            },
+            Rest::Renewed(Err(refused("Invalid credentials"))),
         ));
-        assert!(h.actor.session.is_none(), "no more sign-in attempts");
+        assert!(h.actor.session.is_none(), "no more renewals");
         h.socket(Socket::Closed(generation, "gone".into()));
         h.feed(Input::Retry(generation));
         let events = h.events();
@@ -1493,7 +1916,7 @@ mod tests {
         let id = h.sign_in();
         h.feed(Input::Rest(id, Rest::Renewed(Err(unreachable()))));
         assert!(h.actor.session.is_some(), "a missed renewal is tried again");
-        h.feed(Input::Rest(id, Rest::Renewed(Ok("renewed".into()))));
+        h.feed(Input::Rest(id, Rest::Renewed(Ok(tokens("renewed", "r2")))));
         assert_eq!(h.session().api.token.as_deref(), Some("renewed"));
         h.feed(Input::Rest(
             id,
@@ -1524,27 +1947,76 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_current_password_means_the_sessions() {
-        assert_eq!(current_password(String::new(), "signed-in"), "signed-in");
-        assert_eq!(current_password("typed".into(), "signed-in"), "typed");
+    fn a_renewal_keeps_the_new_refresh_token_for_the_sign_out() {
         let mut h = Harness::new();
         let id = h.sign_in();
+        assert_eq!(h.session().api.refresh.as_deref(), Some("refresh"));
+        h.feed(Input::Renew(id, 0));
+        assert!(h.session().renewing);
+        h.feed(Input::Rest(id, Rest::Renewed(Ok(tokens("t2", "r2")))));
+        let s = h.session();
+        assert_eq!(s.api.token.as_deref(), Some("t2"));
+        assert_eq!(
+            s.api.refresh.as_deref(),
+            Some("r2"),
+            "the server revoked the first refresh token; sign-out sends this one"
+        );
+        assert!(!s.renewing);
+        assert_eq!(s.renewal, 1);
+    }
+
+    #[test]
+    fn one_renewal_at_a_time_and_only_the_latest_schedule() {
+        let mut h = Harness::new();
+        let id = h.sign_in();
+        let generation = h.session().generation;
+        h.feed(Input::Renew(id, 0));
+        // The socket drops while the renewal is on its way: the reconnect
+        // waits for it rather than sending the same refresh token again.
+        h.socket(Socket::Closed(generation, "gone".into()));
+        h.feed(Input::Retry(generation));
+        assert_eq!(h.session().reopen, Some(generation));
+        h.feed(Input::Rest(id, Rest::Renewed(Ok(tokens("t2", "r2")))));
+        assert_ne!(h.session().generation, generation, "the socket reopened");
+        assert_eq!(h.session().reopen, None);
+        // The schedule from before the renewal is stale.
+        h.feed(Input::Renew(id, 0));
+        assert!(!h.session().renewing);
+        h.feed(Input::Renew(id, 1));
+        assert!(h.session().renewing);
+    }
+
+    #[test]
+    fn the_password_is_kept_only_until_the_wanted_change() {
+        assert_eq!(
+            current_password(String::new(), Some("signed-in")).as_deref(),
+            Some("signed-in")
+        );
+        assert_eq!(
+            current_password("typed".into(), None).as_deref(),
+            Some("typed")
+        );
+        assert_eq!(current_password(String::new(), None), None);
+        let mut h = Harness::new();
+        let id = h.sign_in();
+        assert_eq!(h.session().password, None, "renewals do not need it");
+        h.feed(Input::Command(Command::ChangePassword {
+            current: String::new(),
+            new: "n3w-secret".into(),
+        }));
+        assert!(matches!(
+            h.events().as_slice(),
+            [Event::PasswordChanged(Err(error))] if error == "Enter the current password"
+        ));
+
+        h.actor.session.as_mut().expect("a session").password = Some("secret".into());
         h.feed(Input::Rest(
             id,
-            Rest::PasswordChanged {
-                new: "rejected".into(),
-                result: Err("Current password is incorrect".into()),
-            },
+            Rest::PasswordChanged(Err("Current password is incorrect".into())),
         ));
-        assert_eq!(h.session().password, "secret");
-        h.feed(Input::Rest(
-            id,
-            Rest::PasswordChanged {
-                new: "n3w-secret".into(),
-                result: Ok(()),
-            },
-        ));
-        assert_eq!(h.session().password, "n3w-secret", "used to sign in again");
+        assert_eq!(h.session().password.as_deref(), Some("secret"));
+        h.feed(Input::Rest(id, Rest::PasswordChanged(Ok(()))));
+        assert_eq!(h.session().password, None, "not kept once changed");
         assert!(matches!(
             h.events().as_slice(),
             [
@@ -1552,6 +2024,68 @@ mod tests {
                 Event::PasswordChanged(Ok(()))
             ]
         ));
+    }
+
+    /// Accepts connections until `POST /api/v1/auth/logout` arrives; its
+    /// request head.
+    fn logout_request(listener: &std::net::TcpListener) -> Option<String> {
+        use std::io::{Read, Write};
+        let mut others = Vec::new();
+        loop {
+            let (mut connection, _) = listener.accept().ok()?;
+            connection
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .ok()?;
+            let mut head = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                match connection.read(&mut byte) {
+                    Ok(1) => head.push(byte[0]),
+                    _ => return None,
+                }
+            }
+            if head.starts_with(b"POST /api/v1/auth/logout ") {
+                let _ = connection.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                );
+                return Some(String::from_utf8_lossy(&head).into_owned());
+            }
+            others.push(connection);
+        }
+    }
+
+    /// A session against a server that records its sign-out, ended by
+    /// `command`: the sign-out's request head, if one came.
+    fn sign_out_by(command: Command) -> Option<String> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let url = format!("http://{}", listener.local_addr().expect("address"));
+        let (report, logout) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = report.send(logout_request(&listener));
+        });
+        let mut h = Harness::new();
+        h.sign_in_at(&url);
+        h.run_for(Duration::from_millis(100));
+        h.feed(Input::Command(command));
+        h.run_for(Duration::from_millis(300));
+        logout.recv_timeout(Duration::from_secs(10)).ok().flatten()
+    }
+
+    #[test]
+    fn quitting_and_a_stress_run_sign_the_session_out() {
+        for command in [
+            Command::Shutdown,
+            Command::Stress(StressOptions::default()),
+            Command::SignOut,
+        ] {
+            let name = format!("{command:?}");
+            let head = sign_out_by(command)
+                .unwrap_or_else(|| panic!("{name} did not sign the session out"));
+            assert!(
+                head.contains("voltrus_refresh=refresh"),
+                "{name} revokes the refresh token: {head}"
+            );
+        }
     }
 
     #[test]
@@ -1568,5 +2102,168 @@ mod tests {
         let text = format!("{sign_in:?} {change:?}");
         assert!(text.contains("admin"));
         assert!(!text.contains("hunter"));
+    }
+
+    /// The answer a spawned REST task sent back to the actor, if one did
+    /// within a second.
+    fn spawned_reply(h: &mut Harness) -> Option<(u64, CallKey, Reply)> {
+        for _ in 0..100 {
+            h.run_for(Duration::from_millis(10));
+            while let Ok(input) = h.inputs.try_recv() {
+                if let Input::Rest(session, Rest::Reply { key, reply }) = input {
+                    return Some((session, key, reply));
+                }
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn a_generic_call_runs_with_the_session_and_answers_under_its_key() {
+        let mut h = Harness::new();
+        let id = h.sign_in();
+        let key = CallKey::new("alarms.summary").with(3);
+        assert_eq!(key.scope(), "alarms");
+        h.feed(Input::Command(Command::Call {
+            key,
+            call: Call::new(|api| async move { Ok(format!("{} answered", api.base)) }),
+        }));
+        let (session, answered, reply) = spawned_reply(&mut h).expect("the call ran");
+        assert_eq!((session, answered), (id, key));
+        h.events();
+        h.feed(Input::Rest(session, Rest::Reply { key, reply }));
+        let Some(Event::Reply { key: got, reply }) = h.events().pop() else {
+            panic!("expected the reply as an event");
+        };
+        assert_eq!(got, key);
+        assert_eq!(
+            reply.take::<String>().as_deref(),
+            Ok("http://127.0.0.1:9 answered")
+        );
+
+        // A reply decoded as another type says so instead of panicking.
+        let wrong = Reply::ok(5_i64).take::<String>();
+        assert!(wrong.is_err_and(|error| error.contains("String")));
+    }
+
+    #[test]
+    fn calls_need_a_session_and_an_ended_sessions_replies_are_dropped() {
+        let mut h = Harness::new();
+        let key = CallKey::new("commands.list");
+        h.feed(Input::Command(Command::Call {
+            key,
+            call: Call::get::<serde_json::Value>("/api/v1/commands"),
+        }));
+        let Some(Event::Reply { reply, .. }) = h.events().pop() else {
+            panic!("expected a failed reply");
+        };
+        assert_eq!(reply.error(), Some("Not signed in"));
+
+        let old = h.sign_in();
+        h.feed(Input::Command(Command::SignOut));
+        h.sign_in();
+        h.events();
+        h.feed(Input::Rest(
+            old,
+            Rest::Reply {
+                key,
+                reply: Reply::ok(1_i64),
+            },
+        ));
+        assert!(
+            h.events().is_empty(),
+            "the signed-out session's answer is dropped"
+        );
+    }
+
+    #[test]
+    fn device_status_messages_become_events() {
+        let mut h = Harness::new();
+        h.sign_in();
+        let generation = h.session().generation;
+        h.events();
+        h.socket(Socket::Message(
+            generation,
+            ServerMessage::DeviceStatus {
+                device_id: "inverter-2".into(),
+                online: false,
+                latency_ms: Some(40),
+            },
+        ));
+        assert!(matches!(
+            h.events().as_slice(),
+            [Event::DeviceStatus { device_id, online: false, latency_ms: Some(40) }]
+                if device_id == "inverter-2"
+        ));
+    }
+
+    #[test]
+    fn a_stress_test_acts_out_a_session_until_signed_out() {
+        let mut h = Harness::new();
+        h.sign_in();
+        let options = StressOptions {
+            tags: 50,
+            rate: 5_000,
+            seed: 1,
+            ..StressOptions::default()
+        };
+        // `feed` runs inside the runtime, so the feed task spawns there.
+        h.feed(Input::Command(Command::Stress(options)));
+        assert!(
+            h.actor.session.is_none(),
+            "the stress test replaces the session"
+        );
+        h.run_for(Duration::from_millis(200));
+        let events = h.events();
+        assert!(matches!(
+            &events[..4],
+            [
+                Event::SignedIn { username, server, .. },
+                Event::Link(Link::Live),
+                Event::Tags(tags),
+                Event::Alarms { alarms, capped: false },
+            ] if username == STRESS_USER && server == STRESS_SERVER && tags.len() == 50 && alarms.is_empty()
+        ));
+        let updates: usize = events[4..]
+            .iter()
+            .map(|event| match event {
+                Event::Updates(batch) => batch.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(updates >= 50, "batches of 50 every 10 ms, got {updates}");
+
+        h.feed(Input::Command(Command::SignOut));
+        h.run_for(Duration::from_millis(50));
+        h.events();
+        h.run_for(Duration::from_millis(100));
+        assert!(h.events().is_empty(), "signing out stops the feed");
+    }
+
+    #[test]
+    fn a_public_call_answers_without_a_session() {
+        let mut h = Harness::new();
+        let key = CallKey::new("shell.providers");
+        h.feed(Input::Command(Command::Public {
+            base: "http://plant.local:3000/".into(),
+            key,
+            call: Call::new(|api| async move { Ok((api.base.clone(), api.token.is_none())) }),
+        }));
+        let mut answer = None;
+        for _ in 0..100 {
+            h.run_for(Duration::from_millis(10));
+            if let Some(Event::PublicReply { key: got, reply }) = h.events().pop() {
+                answer = Some((got, reply));
+                break;
+            }
+        }
+        let (got, reply) = answer.expect("the public call answered");
+        assert_eq!(got, key);
+        assert_eq!(
+            reply.take::<(String, bool)>(),
+            Ok(("http://plant.local:3000".to_owned(), true)),
+            "the server's base without a trailing slash, and no token"
+        );
+        assert!(h.actor.session.is_none(), "no session was started");
     }
 }
