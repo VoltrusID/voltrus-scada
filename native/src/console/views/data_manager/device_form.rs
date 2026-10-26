@@ -1230,13 +1230,23 @@ fn table(
     (rows.into(), list)
 }
 
+/// The row under the cursor; with no cursor yet (focus elsewhere, a
+/// launch's `--overlay`), the first row, which the cursor then takes.
 fn cursor_row(
     protocol: &'static Protocol,
     console: &mut Console,
     cx: &mut Context<Console>,
 ) -> Option<(Row, Rc<Vec<Value>>)> {
-    let cursor = console.list(protocol.list_id, cx).cursor?;
     let (rows, list) = table(protocol, console, cx);
+    let nav = console.list(protocol.list_id, cx);
+    let cursor = match nav.cursor {
+        Some(cursor) => cursor,
+        None if !rows.is_empty() => {
+            nav.select(0);
+            0
+        }
+        None => return None,
+    };
     rows.get(cursor).map(|row| (*row, list))
 }
 
@@ -1581,7 +1591,7 @@ pub(crate) fn render(
             .flex()
             .items_center()
             .gap(SPACE_3)
-            .w(px(200.0))
+            .w(px(180.0))
             .child(vt_ui::icon(Icon::Search, ICON_MD, theme.fg_dim))
             .children(search_field.map(|field| div().flex_1().child(field)))
             .into_any_element(),
@@ -1591,15 +1601,26 @@ pub(crate) fn render(
             if tool.scope != Scope::Section {
                 continue;
             }
+            // Icon buttons: the header keeps room for the title at 1024.
+            // T runs the first section tool.
+            let first = protocol
+                .tools
+                .iter()
+                .position(|tool| tool.scope == Scope::Section);
+            let tip: SharedString = if first == Some(index) {
+                format!("{}  T", tool.label).into()
+            } else {
+                tool.label.into()
+            };
             controls.push(
-                Button::new(
+                IconButton::new(
                     ElementId::NamedInteger(
                         format!("data-{}-tool", protocol.id).into(),
                         index as u64,
                     ),
-                    tool.label,
+                    tool.icon,
                 )
-                .icon(tool.icon)
+                .tooltip(tip)
                 .on_click(cx.listener(move |console, _, window, cx| {
                     run_tool(protocol, console, &protocol.tools[index], None, window, cx);
                 }))
@@ -1608,12 +1629,11 @@ pub(crate) fn render(
         }
         if protocol.import.is_some() {
             controls.push(
-                Button::new(
+                IconButton::new(
                     SharedString::from(format!("data-{}-import", protocol.id)),
-                    "Import…",
+                    Icon::Upload,
                 )
-                .icon(Icon::Upload)
-                .tooltip("I · or drop device files here")
+                .tooltip("Import device files…  I (or drop them here)")
                 .disabled(importing)
                 .on_click(
                     cx.listener(move |console, _, _, cx| prompt_import(protocol, console, cx)),

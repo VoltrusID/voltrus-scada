@@ -195,7 +195,7 @@ pub(crate) static PROTOCOL: Protocol = Protocol {
     duplicate: false,
     about: "An OPC UA server the console polls for the nodes you pick. Add one with N.",
     unrouted: Some(
-        "This server does not list OPC UA devices: its router serves POST /api/v1/opcua/devices but not GET (the open core leaves the list to an edition). Ask for an edition that routes it, or manage OPC UA from the web client of one.",
+        "Its router cannot list OPC UA devices (it serves no GET for them; the open core leaves that to an edition). An edition that routes the list gets this section in full.",
     ),
 };
 
