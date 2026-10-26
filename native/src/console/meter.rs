@@ -118,6 +118,11 @@ pub struct FrameMeter {
     /// When the last batch of events was applied, since the last frame.
     last_batch: Option<Instant>,
     late: LateStarts,
+    /// The UI thread's CPU time when the frame being built started.
+    thread_start: Option<f64>,
+    /// Frames the UI thread spent over `perf::STALL_MS` waiting or off
+    /// the CPU, and the longest such wait.
+    stalls: (usize, f64),
 }
 
 impl Default for FrameMeter {
@@ -149,6 +154,8 @@ impl Default for FrameMeter {
             last_total: None,
             last_batch: None,
             late: LateStarts::default(),
+            thread_start: None,
+            stalls: (0, 0.0),
         }
     }
 }
@@ -215,6 +222,7 @@ impl FrameMeter {
         self.last_total = None;
         self.marks = Marks::default();
         self.current = Some((delay, interval));
+        self.thread_start = perf::thread_cpu_ms();
         self.building = Some(now);
         self.last_start = Some(now);
         self.recent.push_back(now);
@@ -306,6 +314,11 @@ impl FrameMeter {
         };
         let (delay_ms, interval_ms) = self.current.take().unwrap_or((None, None));
         let cpu_ms = ms(start, now);
+        let on_cpu_ms = self
+            .thread_start
+            .take()
+            .zip(perf::thread_cpu_ms())
+            .map(|(from, to)| (to - from).max(0.0));
         let first_show = std::mem::take(&mut self.first_show);
         let render_ms = std::mem::take(&mut self.frame_render);
         let switched = self.switch.take();
@@ -322,10 +335,19 @@ impl FrameMeter {
             return;
         }
         let marks = self.marks;
+        let mut split = (None, None);
         if let (Some(laid_out), Some(painting)) = (marks.laid_out, marks.painting) {
             keep(&mut self.phases[0], ms(start, laid_out));
             keep(&mut self.phases[1], ms(laid_out, painting));
             keep(&mut self.phases[2], ms(painting, now));
+            split = (Some(ms(laid_out, painting)), Some(ms(painting, now)));
+        }
+        if let Some(on_cpu) = on_cpu_ms {
+            let waited = cpu_ms - on_cpu;
+            if waited > perf::STALL_MS {
+                self.stalls.0 += 1;
+                self.stalls.1 = self.stalls.1.max(waited);
+            }
         }
         self.stats.record(Frame {
             interval_ms,
@@ -366,6 +388,9 @@ impl FrameMeter {
             page: self.page,
             render_ms,
             note,
+            on_cpu_ms,
+            views_ms: split.0,
+            paint_ms: split.1,
         });
     }
 
@@ -421,6 +446,11 @@ impl FrameMeter {
         })
     }
 
+    /// Frames that waited over `perf::STALL_MS`, and the longest wait.
+    pub fn stalls(&self) -> (usize, f64) {
+        self.stalls
+    }
+
     pub fn late_starts(&self) -> LateStarts {
         self.late
     }
@@ -465,6 +495,7 @@ impl FrameMeter {
         self.warm_up.clear();
         self.phases = Default::default();
         self.late = LateStarts::default();
+        self.stalls = (0, 0.0);
     }
 }
 
@@ -698,5 +729,21 @@ mod tests {
             33.0,
             "the pause is no interval"
         );
+    }
+
+    #[test]
+    fn a_long_frame_the_thread_did_not_work_through_is_a_stall() {
+        let mut meter = FrameMeter::default();
+        let mut at = Instant::now();
+        // 60 ms of wall time, next to no CPU time on this thread.
+        frame(&mut meter, &mut at, "tags", 0.1, 60);
+        frame(&mut meter, &mut at, "tags", 0.1, 5);
+        let (count, longest) = meter.stalls();
+        assert_eq!(count, 1);
+        assert!(longest > 50.0 && longest <= 60.0, "{longest}");
+        let slowest = &meter.slowest()[0];
+        assert!(slowest.on_cpu_ms.is_some_and(|ms| ms < 10.0));
+        meter.reset();
+        assert_eq!(meter.stalls(), (0, 0.0));
     }
 }
