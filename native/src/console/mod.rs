@@ -1555,6 +1555,7 @@ impl Console {
             phases: meter.phases(),
             late: meter.late_starts(),
             on_next_vsync: meter.stats.on_next_vsync(),
+            stalls: meter.stalls(),
             slowest: meter.slowest(),
         })
     }
