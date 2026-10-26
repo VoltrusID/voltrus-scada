@@ -1692,9 +1692,9 @@ fn load_card(console: &mut Console, cx: &mut Context<Console>) -> Option<AnyElem
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::insights_kit::testing::{open, sent, signed_in};
     use super::super::{SECTIONS, visible};
+    use super::*;
     use crate::console::pages::Role;
 
     fn summer() -> Recipe {
@@ -1719,9 +1719,17 @@ mod tests {
         h.keys("down enter");
         assert!(h.update(|console, _, _| console.overlay_is(SHEET)));
         h.update(|console, _, _| {
-            let values = &console.state::<State>().sheet.as_ref().expect("open").values;
+            let values = &console
+                .state::<State>()
+                .sheet
+                .as_ref()
+                .expect("open")
+                .values;
             assert_eq!(values.len(), 2);
-            assert!(values.iter().all(|(_, _, at)| at.is_some()), "each finds its tag");
+            assert!(
+                values.iter().all(|(_, _, at)| at.is_some()),
+                "each finds its tag"
+            );
         });
         h.keys("escape");
         assert!(!h.update(|console, _, _| console.overlay_is(SHEET)));
@@ -1788,7 +1796,6 @@ mod tests {
         assert!(h.update(|console, _, _| console.overlay.is_none()));
         assert!(h.calls().is_empty(), "nothing is asked of the server");
     }
-
 
     #[test]
     fn a_retry_replaces_the_failed_command_it_retries() {

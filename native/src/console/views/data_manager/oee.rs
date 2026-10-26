@@ -1845,8 +1845,8 @@ fn shifts_list(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::insights_kit::testing::{open, sent, signed_in};
+    use super::*;
     use crate::console::testing::Harness;
 
     fn metrics() -> OeeMetrics {
@@ -1899,7 +1899,10 @@ mod tests {
         h.keys("left left left enter");
         assert_eq!(at(&mut h), (0, 0), "back to OEE, the first figure");
         // A stale answer is dropped.
-        h.reply(metrics_key.with(metrics_key.arg - 1), Reply::ok(OeeMetrics::default()));
+        h.reply(
+            metrics_key.with(metrics_key.arg - 1),
+            Reply::ok(OeeMetrics::default()),
+        );
         assert!(h.update(|console, _, _| {
             matches!(&console.state::<State>().metrics.value, Some(Ok(m)) if m.oee == 0.9)
         }));
@@ -1916,7 +1919,10 @@ mod tests {
         let close = sent(&calls, "data.oee.close").expect("the close is sent");
         h.reply(close, Reply::ok(IgnoredAny));
         h.draw();
-        assert!(!h.update(|console, _, _| console.overlay_is(CLOSE)), "closed");
+        assert!(
+            !h.update(|console, _, _| console.overlay_is(CLOSE)),
+            "closed"
+        );
         assert!(
             sent(&h.calls(), "data.oee.events").is_some(),
             "the downtime is fetched again"
@@ -1936,7 +1942,6 @@ mod tests {
         );
         assert!(h.calls().is_empty());
     }
-
 
     #[test]
     fn the_figures_read_their_part_of_the_metrics() {

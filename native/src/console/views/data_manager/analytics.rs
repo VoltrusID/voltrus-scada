@@ -1452,9 +1452,9 @@ fn label(text: &str, origin: Point<Pixels>, color: Hsla, window: &mut Window, cx
 
 #[cfg(test)]
 mod tests {
+    use super::super::insights_kit::testing::{open, sent, signed_in};
     use super::*;
     use voltrus_scada_native::api::insights::AggregatedMetric;
-    use super::super::insights_kit::testing::{open, sent, signed_in};
 
     fn hourly(starts: &[i64]) -> Vec<Bucket> {
         starts
@@ -1500,7 +1500,10 @@ mod tests {
         h.keys("enter");
         h.draw();
         h.keys("left");
-        assert_eq!(h.update(|console, _, _| console.state::<State>().cursor), Some(1));
+        assert_eq!(
+            h.update(|console, _, _| console.state::<State>().cursor),
+            Some(1)
+        );
         h.keys("enter");
         let state = |h: &mut crate::console::testing::Harness| {
             h.update(|console, _, _| {
@@ -1508,14 +1511,17 @@ mod tests {
                 (state.levels.len(), state.span.map(|span| span.interval))
             })
         };
-        assert_eq!(state(&mut h), (1, Some(300)), "the hour in five-minute bars");
+        assert_eq!(
+            state(&mut h),
+            (1, Some(300)),
+            "the hour in five-minute bars"
+        );
         let finer = sent(&h.calls(), "data.analytics.aggregate").expect("its buckets");
         assert_eq!(finer.arg, aggregate.arg + 1);
         h.keys("backspace");
         assert_eq!(state(&mut h), (0, Some(3600)), "back out, as it was");
         assert_eq!(h.update(|console, _, _| buckets_of(console).len()), 3);
     }
-
 
     fn buckets(starts: &[i64]) -> Vec<Bucket> {
         starts

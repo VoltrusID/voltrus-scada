@@ -14,11 +14,8 @@
 //! section, Esc in the section comes back to the sidebar (and Esc there
 //! stays put).
 
-pub(crate) mod analytics;
-pub(crate) mod insights_kit;
-pub(crate) mod oee;
-pub(crate) mod recipes;
 pub(crate) mod admin_kit;
+pub(crate) mod analytics;
 pub(crate) mod api_keys;
 pub(crate) mod bacnet;
 pub(crate) mod device_form;
@@ -27,10 +24,13 @@ pub(crate) mod edr;
 pub(crate) mod enip;
 pub(crate) mod flows;
 pub(crate) mod imports;
+pub(crate) mod insights_kit;
 pub(crate) mod modbus;
 pub(crate) mod mqtt;
 pub(crate) mod notification_rules;
+pub(crate) mod oee;
 pub(crate) mod opcua;
+pub(crate) mod recipes;
 pub(crate) mod roles;
 pub(crate) mod s7;
 pub(crate) mod scripts;
@@ -161,6 +161,7 @@ pub static SECTIONS: &[SectionSpec] = &[
         focus: Some(recipes::focus),
         on_reply: Some(recipes::on_reply),
         search: Some(recipes::search),
+    },
     // Protocols: Modbus reads are open to every signed-in user (writes need
     // an operator); the other protocols' handlers all check for admin.
     SectionSpec {
