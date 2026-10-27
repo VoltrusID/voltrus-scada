@@ -131,7 +131,12 @@ pub trait Extension: Send + Sync + 'static {
         "community"
     }
 
-    /// Resolve the licence once at startup. The core default is
+    /// Resolve the licence once at startup. An add-on fills the per-site
+    /// fields of `LicenseStatus::Valid` (`site`, `support_until`) from the
+    /// signed activation blob; Core derives `support` (active, lapsed, none)
+    /// from them and exposes them on `/api/license/status` and
+    /// `/api/v1/system/features`. Support state is informational: it must
+    /// never limit Core. The core default is
     /// [`LicenseStatus::Community`], which enables everything in the core.
     fn resolve_license<'a>(&'a self, _storage: &'a Storage) -> BoxFuture<'a, LicenseStatus> {
         Box::pin(async { LicenseStatus::Community })

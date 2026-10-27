@@ -52,7 +52,7 @@ licence key; a lapsed or missing key never limits Core.
 | RTSP video cameras | | | yes |
 | Support | community | standard | priority SLA |
 
-Integrator and Enterprise are sold as a lifetime licence or monthly, per site.
+Integrator and Enterprise are sold as a lifetime licence or monthly, per site. A per-site key can also carry an annual support contract; a lapsed contract never limits Core or anything already licensed (plan: [docs/licensing-per-site-plan.md](docs/licensing-per-site-plan.md)).
 Current prices: <https://voltrus.id/voltrus-scada>. Official Voltrus binaries
 are Core plus the add-on. Details of the split and how it is built:
 [docs/open-core.md](docs/open-core.md).

@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useWsConnected } from '../store/dashboardStore'
 import type { Screen } from '../types'
+import { useLicense } from '../LicenseContext'
+import { siteLabel, supportLabel, supportState } from '../edition/license'
 
 interface Props {
   activeAlarmCount: number
@@ -18,6 +20,9 @@ const VIEW_LABELS: Record<string, string> = {
 
 export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Props) {
   const wsConnected = useWsConnected()
+  const license = useLicense()
+  const site = siteLabel(license)
+  const support = supportLabel(license)
   const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
@@ -87,6 +92,18 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--crit)" strokeWidth="2.5"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
             <span style={{ color: 'var(--crit)', fontWeight: 700 }}>{activeAlarmCount} Alarm{activeAlarmCount !== 1 ? 's' : ''}</span>
+          </div>
+        </>
+      )}
+
+      {(site || support) && (
+        <>
+          <div style={{ width: 1, height: 14, background: 'var(--border)', flexShrink: 0 }} />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 1, minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+            {site && <span style={{ color: 'var(--fg)', fontWeight: 600 }}>{site}</span>}
+            {support && (
+              <span style={{ color: supportState(license) === 'lapsed' ? 'var(--warn)' : 'var(--muted)' }}>{support}</span>
+            )}
           </div>
         </>
       )}

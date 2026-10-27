@@ -96,6 +96,11 @@ pub(super) fn run_migrations(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE license_activation ADD COLUMN tier TEXT;");
     let _ = conn.execute_batch("ALTER TABLE license_activation ADD COLUMN device_limit INTEGER;");
 
+    // Migration: per-site licence and annual support contract
+    let _ = conn.execute_batch("ALTER TABLE license_activation ADD COLUMN site_id TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE license_activation ADD COLUMN site_name TEXT;");
+    let _ = conn.execute_batch("ALTER TABLE license_activation ADD COLUMN support_until INTEGER;");
+
     // Migration: add recipes table
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS recipes (

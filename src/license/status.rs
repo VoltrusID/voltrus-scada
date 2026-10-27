@@ -1,13 +1,41 @@
 use super::tier::LicenseTier;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 // ── Licence status ──
+
+/// The site a per-site licence key is issued for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LicenseSite {
+    pub id: String,
+    pub name: String,
+}
+
+/// Annual support contract state, derived from `support_until` and the clock.
+/// Informational only: nothing in Core is gated on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupportState {
+    Active,
+    Lapsed,
+    None,
+}
+
+impl SupportState {
+    /// `support_until` is active while `now` is before it, lapsed from it on.
+    pub fn at(support_until: Option<i64>, now: i64) -> Self {
+        match support_until {
+            None => SupportState::None,
+            Some(until) if now < until => SupportState::Active,
+            Some(_) => SupportState::Lapsed,
+        }
+    }
+}
 
 /// Why the current tier is what it is.
 ///
 /// Only `Valid` unlocks add-on features. Every other status runs as Community:
 /// an invalid, expired or missing licence never blocks the core.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status")]
 pub enum LicenseStatus {
     /// Open core without an add-on edition.
@@ -25,6 +53,15 @@ pub enum LicenseStatus {
         /// entitlement working for existing customers.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         legacy_white_label: bool,
+        /// The site this key is issued for (per-site licences). `None` for
+        /// keys issued before per-site licensing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        site: Option<LicenseSite>,
+        /// End of the annual support contract, Unix seconds. `None` = no
+        /// support contract (lifetime keys, grandfathered keys). Lapsed
+        /// support never limits Core or anything already licensed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        support_until: Option<i64>,
     },
     Unactivated {
         message: String,
@@ -66,6 +103,39 @@ impl LicenseStatus {
                     ..
                 }
             )
+    }
+
+    /// Support contract state at `now` (Unix seconds). `None` unless `Valid`
+    /// with a `support_until`.
+    pub fn support_at(&self, now: i64) -> SupportState {
+        match self {
+            LicenseStatus::Valid { support_until, .. } => SupportState::at(*support_until, now),
+            _ => SupportState::None,
+        }
+    }
+
+    /// Support contract state right now.
+    pub fn support(&self) -> SupportState {
+        self.support_at(time::OffsetDateTime::now_utc().unix_timestamp())
+    }
+
+    /// The per-site and support fields every licence endpoint reports:
+    /// `site` (object or null), `support_until` (Unix seconds or null) and the
+    /// derived `support` (`active`, `lapsed`, `none`).
+    pub fn site_support_json(&self) -> serde_json::Value {
+        let (site, support_until) = match self {
+            LicenseStatus::Valid {
+                site,
+                support_until,
+                ..
+            } => (site.clone(), *support_until),
+            _ => (None, None),
+        };
+        serde_json::json!({
+            "site": site,
+            "support_until": support_until,
+            "support": self.support(),
+        })
     }
 
     pub fn feature_flags(&self) -> serde_json::Value {

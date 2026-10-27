@@ -5,6 +5,9 @@ import {
   FEATURE_FLAG_KEYS,
   hasFeature,
   normalizeLicense,
+  siteLabel,
+  supportLabel,
+  supportState,
 } from '../src/edition/license.ts'
 import { mergeTabs } from '../src/edition/tabs.ts'
 import { ENTERPRISE_NS, registerLocales } from '../src/edition/locales.ts'
@@ -124,4 +127,41 @@ test('registerLocales adds each language under the enterprise namespace', () => 
 
 test('registerLocales is a no-op without bundles', () => {
   registerLocales({ addResourceBundle: () => assert.fail('must not be called') }, undefined)
+})
+
+test('normalizeLicense tolerates a status without site or support fields', () => {
+  const info = normalizeLicense({ status: 'Valid', tier: 'enterprise', feature_flags: {}, license_key: 'k' })
+  assert.equal(info.site, undefined)
+  assert.equal(info.support_until, undefined)
+  assert.equal(supportState(info), 'none')
+  assert.equal(supportLabel(info), null)
+  assert.equal(siteLabel(info), null)
+})
+
+test('normalizeLicense parses site and support, ignoring malformed values', () => {
+  const info = normalizeLicense({
+    status: 'Valid', tier: 'integrator', feature_flags: {},
+    site: { id: 's1', name: 'Plant A' }, support_until: 1_900_000_000, support: 'active',
+  })
+  assert.deepEqual(info.site, { id: 's1', name: 'Plant A' })
+  assert.equal(info.support_until, 1_900_000_000)
+  assert.equal(siteLabel(info), 'Plant A')
+  const bad = normalizeLicense({ site: { id: 1 }, support_until: 'soon', support: 'gold' })
+  assert.equal(bad.site, undefined)
+  assert.equal(bad.support_until, undefined)
+  assert.equal(bad.support, undefined)
+})
+
+test('supportLabel covers active, lapsed and none', () => {
+  const until = Date.UTC(2027, 0, 15) / 1000
+  const base = { status: 'Valid' as const, tier: 'integrator' as const, feature_flags: COMMUNITY_LICENSE.feature_flags }
+  assert.equal(supportLabel({ ...base, support_until: until }, until - 1), 'Support until 2027-01-15')
+  assert.equal(
+    supportLabel({ ...base, support_until: until }, until),
+    'Support lapsed 2027-01-15 — renew to keep receiving updates',
+  )
+  assert.equal(supportLabel({ ...base, support_until: null }, until), null)
+  assert.equal(supportLabel(COMMUNITY_LICENSE, until), null)
+  // The server's derived state wins over the local clock.
+  assert.equal(supportState({ ...base, support_until: until, support: 'lapsed' }, until - 1), 'lapsed')
 })
