@@ -55,20 +55,22 @@ cat "$report"
 
 # The budget: under 1% of vsyncs dropped, at least 97% of back-to-back
 # frames one vsync after the previous (frame_pacing), no frame interval
-# over 50 ms (at 60 Hz), a page's first frame within 34 ms of the switch;
-# in the profile, 95% of frames built within a 120 Hz frame. The interval
-# p95 is printed as information only: on the CI runner it measures when the
-# display link wakes the main thread (see late_starts), not the console.
+# over STRESS_MAX_INTERVAL_MS (default 50 ms, three refreshes at 60 Hz), a
+# page's first frame within 34 ms of the switch; in the profile, 95% of
+# frames built within a 120 Hz frame. The interval p95 is printed as
+# information only: on the CI runner it measures when the display link
+# wakes the main thread (see late_starts), not the console; the same wake
+# jitter sets the single longest interval there, so CI raises its limit.
 level=warning
 if [ "${STRESS_ENFORCE:-0}" = "1" ]; then level=error; fi
-misses=$(awk '
+misses=$(awk -v max_interval="${STRESS_MAX_INTERVAL_MS:-50}" '
   /^dropped_frames:/ {
     match($0, /\(([0-9.]+)%/); pct = substr($0, RSTART + 1, RLENGTH - 2)
     if (pct + 0 >= 1.0) print "dropped " pct "% of vsyncs (budget < 1%)"
   }
   /^frame_interval_ms:/ {
     if ($5 + 0 > 17.5) info = "frame interval p95 " $5 " ms (information only: runner wake jitter, see late_starts)"
-    if ($7 + 0 >= 50) print "frame interval max " $7 " ms (budget < 50 ms)"
+    if ($7 + 0 >= max_interval + 0) print "frame interval max " $7 " ms (budget < " max_interval " ms)"
   }
   /^mode: profile/ { profile = 1 }
   /^frame_pacing:/ {

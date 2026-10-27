@@ -114,7 +114,10 @@ jobs:
           pause() { for pid in "$RUNNER_TEMP"/plant/*.pid; do kill -"$1" "$(cat "$pid")" 2>/dev/null || true; done; }
           pause STOP
           trap 'pause CONT' EXIT
-          STRESS_ENFORCE=1 \
+          # The longest frame interval on the hosted runner follows display-link
+          # wake jitter (54-72 ms seen while the slowest frame drew in 30 ms),
+          # so CI allows up to 100 ms; locally the budget stays 50 ms.
+          STRESS_ENFORCE=1 STRESS_MAX_INTERVAL_MS=100 \
             native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-report.txt
           # The showcase's figures are reported and warned about, not
           # enforced: it repaints the whole window every frame, and its drops
