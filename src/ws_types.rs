@@ -69,6 +69,18 @@ pub enum ServerMessage {
         value: f64,
         ts: i64,
     },
+    /// An existing alarm changed state. `event` is `acknowledged`, `resolved`,
+    /// `shelved` or `unshelved`; `state` is the alarm's state afterwards
+    /// (`active`, `acknowledged`, `shelved` or `resolved`); `actor` is the user
+    /// behind it, or `None` when the system did it (a resolve, an expired shelf).
+    AlarmUpdate {
+        alarm_id: i64,
+        tag_id: String,
+        event: String,
+        state: String,
+        actor: Option<String>,
+        ts: i64,
+    },
     Pong,
     HaStatus {
         role: String,
@@ -239,5 +251,31 @@ mod tests {
             msgpack_bytes.len() < json_bytes.len(),
             "MessagePack should be smaller than JSON"
         );
+    }
+
+    /// SCADA-17 S9: clients read the named-field map form (`to_vec_named`) and the tag.
+    #[test]
+    fn test_alarm_update_roundtrip() {
+        let msg = ServerMessage::AlarmUpdate {
+            alarm_id: 7,
+            tag_id: "PLC01.temp".to_string(),
+            event: "acknowledged".to_string(),
+            state: "acknowledged".to_string(),
+            actor: Some("operator".to_string()),
+            ts: 1700000000,
+        };
+        let bytes = rmp_serde::to_vec_named(&msg).unwrap();
+        let value: serde_json::Value = rmp_serde::from_slice(&bytes).unwrap();
+        assert_eq!(value["type"], "AlarmUpdate");
+        assert_eq!(value["actor"], "operator");
+        match rmp_serde::from_slice::<ServerMessage>(&bytes).unwrap() {
+            ServerMessage::AlarmUpdate {
+                alarm_id, event, ..
+            } => {
+                assert_eq!(alarm_id, 7);
+                assert_eq!(event, "acknowledged");
+            }
+            other => panic!("expected AlarmUpdate, got {other:?}"),
+        }
     }
 }

@@ -58,7 +58,10 @@ impl Storage {
             )
             .context("Delete shortcuts failed")?;
             for (data_source_id, shortcut) in &entries {
-                let sc = shortcut.as_deref().unwrap_or("");
+                // A null or empty shortcut means "none": no row.
+                let Some(sc) = shortcut.as_deref().filter(|s| !s.is_empty()) else {
+                    continue;
+                };
                 tx.execute(
                     "INSERT INTO user_shortcuts (user_id, data_source_id, shortcut) VALUES (?1, ?2, ?3)",
                     rusqlite::params![user_id, data_source_id, sc],
@@ -135,6 +138,8 @@ impl Storage {
             )
             .context("Delete nav shortcuts failed")?;
             for (target, shortcut) in &entries {
+                // Unlike a tag's, an empty nav entry is kept: it overrides the
+                // target's default with "none" (see `get_nav_shortcuts`).
                 let sc = shortcut.as_deref().unwrap_or("");
                 tx.execute(
                     "INSERT INTO user_nav_shortcuts (user_id, target, shortcut) VALUES (?1, ?2, ?3)",

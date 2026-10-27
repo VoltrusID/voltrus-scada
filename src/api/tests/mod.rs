@@ -1,3 +1,4 @@
+mod alarms;
 mod analytics;
 mod api_keys;
 mod audit_log;
@@ -14,9 +15,12 @@ mod import_nodered;
 mod license_status;
 mod mqtt_broker;
 mod naming_convention;
+mod notifications;
 mod protocol_routes;
 mod scripts;
 mod shift_report;
+mod shortcuts;
+mod status_codes;
 mod system;
 mod tag_tree;
 mod ui_preferences;

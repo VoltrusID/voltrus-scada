@@ -32,7 +32,14 @@ pub struct AlarmListQuery {
     pub limit: Option<i64>,
 }
 
-/// GET /api/alarms?status=active|acknowledged|all&priority=...&state=...&shelved=true|false&limit=50
+/// GET /api/v1/alarms?status=active|acknowledged|shelved|all&priority=...&state=...&shelved=true|false&limit=50
+///
+/// `status` narrows by lifecycle, so the names are narrower than they read:
+/// `active` is the alarms still waiting for an operator (state `active`, not
+/// acknowledged); an acknowledged alarm that has not cleared is not in it, but
+/// in `acknowledged`, which also holds acknowledged alarms that have since
+/// resolved. `shelved` is the shelved alarms. Anything else, `all` included,
+/// is every alarm. Resolved alarms carry `resolved_at`.
 #[utoipa::path(
     get,
     path = "/api/v1/alarms",
@@ -124,10 +131,15 @@ pub async fn acknowledge_alarm(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     let cooldown = get_cooldown_secs(&state.storage).await;
-    state
+    let changed = state
         .storage
         .acknowledge_alarm(id, &user.username, cooldown)
         .await?;
+    state.ws_manager.broadcast_alarm_updates(
+        "acknowledged",
+        Some(&user.username),
+        changed.as_slice(),
+    );
     Ok(Json(json!({"ok": true})))
 }
 
@@ -146,10 +158,13 @@ pub async fn acknowledge_all(
     Extension(user): Extension<AuthUser>,
 ) -> Result<impl IntoResponse, AppError> {
     let cooldown = get_cooldown_secs(&state.storage).await;
-    state
+    let changed = state
         .storage
         .acknowledge_all(&user.username, cooldown)
         .await?;
+    state
+        .ws_manager
+        .broadcast_alarm_updates("acknowledged", Some(&user.username), &changed);
     Ok(Json(json!({"ok": true})))
 }
 
@@ -175,10 +190,13 @@ pub async fn shelf_alarm(
 ) -> Result<impl IntoResponse, AppError> {
     let now = crate::timeutil::now_secs();
     let shelved_until = now + body.duration_secs as i64;
-    state
+    let changed = state
         .storage
         .shelf_alarm(id, shelved_until, &user.username, &body.reason)
         .await?;
+    state
+        .ws_manager
+        .broadcast_alarm_updates("shelved", Some(&user.username), changed.as_slice());
     Ok(Json(json!({"ok": true, "shelved_until": shelved_until})))
 }
 
@@ -199,7 +217,10 @@ pub async fn unshelf_alarm(
     State(state): State<AppState>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
-    state.storage.unshelf_alarm(id).await?;
+    let changed = state.storage.unshelf_alarm(id).await?;
+    state
+        .ws_manager
+        .broadcast_alarm_updates("unshelved", None, changed.as_slice());
     Ok(Json(json!({"ok": true})))
 }
 

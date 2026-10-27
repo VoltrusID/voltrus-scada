@@ -1084,8 +1084,6 @@ fn led(c: &mut Canvas<'_>, item: &Item, xf: &Xf) {
                 fade(hmi.border, 0.15)
             }
         };
-        // The web draws segment a twice.
-        segment(c, &v, lines[0].0, lines[0].1, paint_of(lit[0]), line);
         for (seg, on) in lines.iter().zip(lit) {
             segment(c, &v, seg.0, seg.1, paint_of(on), line);
         }

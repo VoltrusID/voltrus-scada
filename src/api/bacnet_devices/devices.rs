@@ -19,7 +19,7 @@ pub async fn list_devices(
     Extension(user): Extension<AuthUser>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let devices = state.storage.list_bacnet_devices().await?;
@@ -63,7 +63,7 @@ pub async fn create_device(
     Json(req): Json<CreateBacnetDeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     if req.name.is_empty() {
@@ -137,7 +137,7 @@ pub async fn update_device(
     Json(req): Json<UpdateBacnetDeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     state
@@ -186,7 +186,7 @@ pub async fn delete_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Stop poller if running
@@ -233,7 +233,7 @@ pub async fn start_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Load device from DB
@@ -313,7 +313,7 @@ pub async fn stop_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device_key = format!("bacnet_{}", id);

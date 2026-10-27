@@ -34,10 +34,21 @@ export interface AlarmEvent {
   ts: number;
 }
 
+/** An existing alarm changed state; `actor` is null when the system did it. */
+export interface AlarmUpdateEvent {
+  alarm_id: number;
+  tag_id: string;
+  event: 'acknowledged' | 'resolved' | 'shelved' | 'unshelved';
+  state: string;
+  actor: string | null;
+  ts: number;
+}
+
 type TagUpdateCallback = (update: TagUpdate) => void;
 type TagBatchCallback = (updates: TagUpdate[]) => void;
 type CommandAckCallback = (ack: CommandAck) => void;
 type AlarmCallback = (alarm: AlarmEvent) => void;
+type AlarmUpdateCallback = (update: AlarmUpdateEvent) => void;
 type DeviceStatusCallback = (status: DeviceStatus) => void;
 type DisconnectCallback = () => void;
 
@@ -50,6 +61,7 @@ export class VoltrusWebSocket {
   private tagBatchCallbacks: TagBatchCallback[] = [];
   private commandAckCallbacks: CommandAckCallback[] = [];
   private alarmCallbacks: AlarmCallback[] = [];
+  private alarmUpdateCallbacks: AlarmUpdateCallback[] = [];
   private deviceStatusCallbacks: DeviceStatusCallback[] = [];
   private disconnectCallbacks: DisconnectCallback[] = [];
   private url = '';
@@ -133,6 +145,9 @@ export class VoltrusWebSocket {
       case 'Alarm':
         this.alarmCallbacks.forEach(cb => cb(msg as unknown as AlarmEvent));
         break;
+      case 'AlarmUpdate':
+        this.alarmUpdateCallbacks.forEach(cb => cb(msg as unknown as AlarmUpdateEvent));
+        break;
       case 'DeviceStatus':
         this.deviceStatusCallbacks.forEach(cb => cb(msg as unknown as DeviceStatus));
         break;
@@ -168,6 +183,7 @@ export class VoltrusWebSocket {
     this.tagBatchCallbacks = [];
     this.commandAckCallbacks = [];
     this.alarmCallbacks = [];
+    this.alarmUpdateCallbacks = [];
     this.deviceStatusCallbacks = [];
     this.disconnectCallbacks = [];
     this.connectCallbacks = [];
@@ -183,6 +199,7 @@ export class VoltrusWebSocket {
   offTagBatch(cb: TagBatchCallback): void { this.tagBatchCallbacks = this.tagBatchCallbacks.filter(c => c !== cb); }
   onCommandAck(cb: CommandAckCallback): void { this.commandAckCallbacks.push(cb); }
   onAlarm(cb: AlarmCallback): void { this.alarmCallbacks.push(cb); }
+  onAlarmUpdate(cb: AlarmUpdateCallback): void { this.alarmUpdateCallbacks.push(cb); }
   onDeviceStatus(cb: DeviceStatusCallback): void { this.deviceStatusCallbacks.push(cb); }
   onDisconnect(cb: DisconnectCallback): void { this.disconnectCallbacks.push(cb); }
   onConnect(cb: () => void): void { this.connectCallbacks.push(cb); }

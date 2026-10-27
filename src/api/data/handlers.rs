@@ -29,6 +29,9 @@ pub async fn get_data(
 /// `sensor` (comma-separated tag keys) and `device` narrow the answer to those tags.
 /// `agg` is `sampling` (default), `avg` or `minmax`: the last two bucket the series into
 /// `interval` and `minmax` adds `min` and `max` arrays next to `values`.
+/// `data` is keyed by tag key, and keys are not unique (two devices may share a register
+/// name), so the later source overwrites the earlier one; `keyed_by=id` keys it by data
+/// source id (the `id` of each `sensors` entry) instead, which is always unique.
 /// Returns compact format: each sensor has {values: [f64], start: unix_ms, interval: ms, count: usize}
 #[utoipa::path(
     get,
@@ -47,6 +50,7 @@ pub async fn get_history(
     let detail = params.detail.as_deref();
     let agg = params.agg.as_deref().unwrap_or("sampling");
     let screen_id = params.screen.as_deref();
+    let keyed_by_id = params.keyed_by.as_deref() == Some("id");
     let data_sources = history::filter_sources(
         state.storage.list_data_sources(screen_id).await?,
         params.sensor.as_deref(),
@@ -114,6 +118,11 @@ pub async fn get_history(
     };
 
     for data_source in &data_sources {
+        let series_key = if keyed_by_id {
+            data_source.id.to_string()
+        } else {
+            data_source.key.clone()
+        };
         data_source_summaries.push(DataSourceSummary {
             id: data_source.id,
             key: data_source.key.clone(),
@@ -236,7 +245,7 @@ pub async fn get_history(
             sensor_data.insert("start".into(), json!(start * 1000));
             sensor_data.insert("interval".into(), json!(interval_ms));
             sensor_data.insert("count".into(), json!(0));
-            data_map.insert(data_source.key.clone(), json!(sensor_data));
+            data_map.insert(series_key.clone(), json!(sensor_data));
         } else {
             let values: Vec<f64> = points.iter().map(|p| p.value).collect();
             let first_ts = points[0].timestamp;
@@ -255,7 +264,7 @@ pub async fn get_history(
             sensor_data.insert("start".into(), json!(first_ts * 1000));
             sensor_data.insert("interval".into(), json!(calc_interval));
             sensor_data.insert("count".into(), json!(points.len()));
-            data_map.insert(data_source.key.clone(), json!(sensor_data));
+            data_map.insert(series_key.clone(), json!(sensor_data));
         }
     }
 

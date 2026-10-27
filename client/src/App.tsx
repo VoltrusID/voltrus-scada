@@ -124,10 +124,14 @@ export function AppInner() {
     if (wsRef.current) return
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const ws = new VoltrusWebSocket()
+    // A raise, acknowledge, shelve or resolve from anywhere: fetch the alarm lists again.
+    const refreshAlarms = () => { queryClient.invalidateQueries({ queryKey: ['alarms'] }) }
+    ws.onAlarm(refreshAlarms)
+    ws.onAlarmUpdate(refreshAlarms)
     ws.connect(`${protocol}//${window.location.host}/api/v1/ws`)
     wsRef.current = ws
     setWsInstance(ws)
-  }, [])
+  }, [queryClient])
 
   const disconnectWS = useCallback(() => {
     wsRef.current?.disconnect()

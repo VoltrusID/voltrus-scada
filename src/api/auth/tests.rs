@@ -33,7 +33,7 @@ fn test_verify_token_wrong_secret() {
 
 #[test]
 fn test_verify_token_expired() {
-    use base64::engine::general_purpose::STANDARD;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as ENCODING;
     let claims = TokenClaims {
         username: "admin".to_string(),
         exp: 0, // expired
@@ -41,7 +41,7 @@ fn test_verify_token_expired() {
     };
     let payload = serde_json::to_string(&claims).unwrap();
     let sig = hmac_sign(&payload, "secret");
-    let token = format!("{}.{}", STANDARD.encode(&payload), sig);
+    let token = format!("{}.{}", ENCODING.encode(&payload), sig);
     assert!(verify_token(&token, "secret").is_none());
 }
 

@@ -22,7 +22,7 @@ pub async fn list_objects(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let objects = state.storage.list_bacnet_objects(id).await?;
@@ -52,7 +52,7 @@ pub async fn add_object(
     Json(req): Json<CreateBacnetObjectRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Validate object type
@@ -143,7 +143,7 @@ pub async fn remove_object(
     Path((_device_id, object_id)): Path<(i64, i64)>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     state.storage.delete_bacnet_object(object_id).await?;
@@ -182,7 +182,7 @@ pub async fn browse_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Load device from DB

@@ -50,6 +50,7 @@ use utoipa::{Modify, OpenApi};
         // Data
         crate::api::data::get_data,
         crate::api::data::get_history,
+        crate::api::telemetry_delete::delete_telemetry,
         crate::api::data::export_csv,
         crate::api::data::export_data,
         // Modbus devices
@@ -125,6 +126,7 @@ use utoipa::{Modify, OpenApi};
         // MQTT broker
         crate::api::mqtt_broker::get_status,
         crate::api::mqtt_broker::update_config,
+        crate::api::mqtt_broker::clear_config,
         crate::api::mqtt_broker::start_broker,
         crate::api::mqtt_broker::stop_broker,
         crate::api::mqtt_broker::get_topics,

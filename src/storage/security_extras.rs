@@ -172,19 +172,19 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut sql = String::from(
-                "SELECT id, author_id, shift_date, shift_period, what_happened, whats_pending, what_to_watch, created_at
-                 FROM shift_handovers WHERE 1=1"
+                "SELECT h.id, h.author_id, h.shift_date, h.shift_period, h.what_happened, h.whats_pending, h.what_to_watch, h.created_at, u.username
+                 FROM shift_handovers h LEFT JOIN users u ON u.id = h.author_id WHERE 1=1"
             );
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-            if let Some(ref d) = shift_date {
-                sql.push_str(" AND shift_date = ?");
+            if let Some(d) = &shift_date {
+                sql.push_str(" AND h.shift_date = ?");
                 params.push(Box::new(d.clone()));
             }
-            if let Some(ref p) = shift_period {
-                sql.push_str(" AND shift_period = ?");
+            if let Some(p) = &shift_period {
+                sql.push_str(" AND h.shift_period = ?");
                 params.push(Box::new(p.clone()));
             }
-            sql.push_str(" ORDER BY shift_date DESC, shift_period ASC");
+            sql.push_str(" ORDER BY h.shift_date DESC, h.shift_period ASC");
             let mut stmt = conn.prepare(&sql).context("Prepare shift handovers failed")?;
             let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
             let rows = stmt.query_map(param_refs.as_slice(), |row| {
@@ -197,6 +197,7 @@ impl Storage {
                     whats_pending: row.get(5)?,
                     what_to_watch: row.get(6)?,
                     created_at: row.get(7)?,
+                    author_username: row.get(8)?,
                 })
             }).context("Query shift handovers failed")?;
             rows.collect::<Result<Vec<_>, _>>().context("Collect shift handovers failed")
@@ -208,8 +209,8 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let result = conn.query_row(
-                "SELECT id, author_id, shift_date, shift_period, what_happened, whats_pending, what_to_watch, created_at
-                 FROM shift_handovers WHERE id = ?1",
+                "SELECT h.id, h.author_id, h.shift_date, h.shift_period, h.what_happened, h.whats_pending, h.what_to_watch, h.created_at, u.username
+                 FROM shift_handovers h LEFT JOIN users u ON u.id = h.author_id WHERE h.id = ?1",
                 rusqlite::params![id],
                 |row| {
                     Ok(ShiftHandover {
@@ -221,6 +222,7 @@ impl Storage {
                         whats_pending: row.get(5)?,
                         what_to_watch: row.get(6)?,
                         created_at: row.get(7)?,
+                        author_username: row.get(8)?,
                     })
                 },
             ).ok();

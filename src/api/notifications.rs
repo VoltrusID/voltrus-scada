@@ -24,6 +24,116 @@ pub async fn list_notification_settings(
     Ok(Json(settings))
 }
 
+fn validate_channel_type(channel_type: &str) -> Result<(), AppError> {
+    match channel_type {
+        "email" | "webhook" | "push" | "sms" => Ok(()),
+        _ => Err(AppError::bad_request(
+            "channel_type must be 'email', 'webhook', 'push', or 'sms'",
+        )),
+    }
+}
+
+/// SMS is an Enterprise add-on feature.
+fn ensure_sms_allowed(state: &AppState, channel_type: &str) -> Result<(), AppError> {
+    if channel_type == "sms" && !state.tier().sms_notifications() {
+        return Err(AppError::forbidden(
+            "SMS notifications require an Integrator or Enterprise licence",
+        ));
+    }
+    Ok(())
+}
+
+/// The targets of an email, webhook or push setting: a non-empty JSON array of strings.
+fn string_targets(config: &str) -> Result<Vec<String>, AppError> {
+    let targets: Vec<String> = serde_json::from_str(config).map_err(|_| {
+        AppError::bad_request(
+            "config must be a JSON array of strings (email addresses or webhook URLs)",
+        )
+    })?;
+    if targets.is_empty() {
+        return Err(AppError::bad_request("config array must not be empty"));
+    }
+    Ok(targets)
+}
+
+/// Each email address has an `@` and a `.`, each webhook URL starts with `http://` or `https://`.
+fn check_string_targets(channel_type: &str, targets: &[String]) -> Result<(), AppError> {
+    match channel_type {
+        "email" => {
+            if let Some(bad) = targets
+                .iter()
+                .find(|t| !t.contains('@') || !t.contains('.'))
+            {
+                return Err(AppError::bad_request(format!(
+                    "invalid email address: {bad}"
+                )));
+            }
+        }
+        "webhook" => {
+            if let Some(bad) = targets
+                .iter()
+                .find(|t| !t.starts_with("http://") && !t.starts_with("https://"))
+            {
+                return Err(AppError::bad_request(format!(
+                    "invalid webhook URL (must start with http:// or https://): {bad}"
+                )));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// The targets of an SMS setting: a non-empty JSON array of objects.
+fn sms_targets(config: &str) -> Result<Vec<serde_json::Value>, AppError> {
+    let targets: Vec<serde_json::Value> = serde_json::from_str(config).map_err(|_| {
+        AppError::bad_request(
+            "SMS config must be a JSON array of objects with 'phone' and 'carrier' fields",
+        )
+    })?;
+    if targets.is_empty() {
+        return Err(AppError::bad_request("config array must not be empty"));
+    }
+    Ok(targets)
+}
+
+/// Each SMS target has a phone and a carrier the edition's gateway knows.
+fn check_sms_targets(targets: &[serde_json::Value]) -> Result<(), AppError> {
+    for target in targets {
+        let phone = target["phone"].as_str().unwrap_or("");
+        let carrier = target["carrier"].as_str().unwrap_or("");
+        if phone.is_empty() {
+            return Err(AppError::bad_request(
+                "each SMS target must have a 'phone' field",
+            ));
+        }
+        if carrier.is_empty() {
+            return Err(AppError::bad_request(
+                "each SMS target must have a 'carrier' field",
+            ));
+        }
+        if crate::edition::sms_sender()
+            .and_then(|s| s.carrier_gateway(carrier))
+            .is_none()
+        {
+            return Err(AppError::bad_request(format!(
+                "unknown carrier '{carrier}'. Supported: att, verizon, tmobile, sprint, uscellular"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The checks `POST` and `PUT /notifications/settings` share: `config` has the
+/// shape its channel needs.
+fn validate_config(channel_type: &str, config: &str) -> Result<(), AppError> {
+    if channel_type == "sms" {
+        check_sms_targets(&sms_targets(config)?)
+    } else {
+        check_string_targets(channel_type, &string_targets(config)?)
+    }
+}
+
 /// POST /api/v1/notifications/settings
 #[utoipa::path(
     post,
@@ -41,97 +151,9 @@ pub async fn create_notification_setting(
     State(state): State<AppState>,
     Json(req): Json<CreateNotificationSettingRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Validate channel_type
-    if req.channel_type != "email"
-        && req.channel_type != "webhook"
-        && req.channel_type != "push"
-        && req.channel_type != "sms"
-    {
-        return Err(AppError(anyhow::anyhow!(
-            "channel_type must be 'email', 'webhook', 'push', or 'sms'"
-        )));
-    }
-
-    // SMS is an Enterprise add-on feature.
-    if req.channel_type == "sms" && !state.tier().sms_notifications() {
-        return Err(AppError(anyhow::anyhow!(
-            "SMS notifications require an Integrator or Enterprise licence"
-        )));
-    }
-
-    // Validate config based on channel type
-    if req.channel_type == "sms" {
-        // SMS config: JSON array of objects with "phone" and "carrier" fields
-        let sms_targets: Vec<serde_json::Value> = match serde_json::from_str(&req.config) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(AppError(anyhow::anyhow!(
-                    "SMS config must be a JSON array of objects with 'phone' and 'carrier' fields"
-                )));
-            }
-        };
-        if sms_targets.is_empty() {
-            return Err(AppError(anyhow::anyhow!("config array must not be empty")));
-        }
-        for target in &sms_targets {
-            let phone = target["phone"].as_str().unwrap_or("");
-            let carrier = target["carrier"].as_str().unwrap_or("");
-            if phone.is_empty() {
-                return Err(AppError(anyhow::anyhow!(
-                    "each SMS target must have a 'phone' field"
-                )));
-            }
-            if carrier.is_empty() {
-                return Err(AppError(anyhow::anyhow!(
-                    "each SMS target must have a 'carrier' field"
-                )));
-            }
-            if crate::edition::sms_sender()
-                .and_then(|s| s.carrier_gateway(carrier))
-                .is_none()
-            {
-                return Err(AppError(anyhow::anyhow!(
-                    "unknown carrier '{}'. Supported: att, verizon, tmobile, sprint, uscellular",
-                    carrier
-                )));
-            }
-        }
-    } else {
-        // Email/webhook/push config: JSON array of strings
-        let targets: Vec<String> = match serde_json::from_str(&req.config) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(AppError(anyhow::anyhow!(
-                    "config must be a JSON array of strings (email addresses or webhook URLs)"
-                )));
-            }
-        };
-
-        if targets.is_empty() {
-            return Err(AppError(anyhow::anyhow!("config array must not be empty")));
-        }
-
-        // Validate individual entries based on channel type
-        if req.channel_type == "email" {
-            for entry in &targets {
-                if !entry.contains('@') || !entry.contains('.') {
-                    return Err(AppError(anyhow::anyhow!(
-                        "invalid email address: {}",
-                        entry
-                    )));
-                }
-            }
-        } else if req.channel_type == "webhook" {
-            for entry in &targets {
-                if !entry.starts_with("http://") && !entry.starts_with("https://") {
-                    return Err(AppError(anyhow::anyhow!(
-                        "invalid webhook URL (must start with http:// or https://): {}",
-                        entry
-                    )));
-                }
-            }
-        }
-    }
+    validate_channel_type(&req.channel_type)?;
+    ensure_sms_allowed(&state, &req.channel_type)?;
+    validate_config(&req.channel_type, &req.config)?;
 
     let id = state
         .storage
@@ -170,31 +192,25 @@ pub async fn update_notification_setting(
     Path(id): Path<i64>,
     Json(req): Json<UpdateNotificationSettingRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Validate channel_type if provided
-    if let Some(ref ct) = req.channel_type
-        && ct != "email"
-        && ct != "webhook"
-        && ct != "push"
-        && ct != "sms"
-    {
-        return Err(AppError(anyhow::anyhow!(
-            "channel_type must be 'email', 'webhook', 'push', or 'sms'"
-        )));
+    if let Some(ct) = &req.channel_type {
+        validate_channel_type(ct)?;
+        ensure_sms_allowed(&state, ct)?;
     }
 
-    // Validate config if provided
-    if let Some(ref cfg) = req.config {
-        let targets: Vec<String> = match serde_json::from_str(cfg) {
-            Ok(v) => v,
-            Err(_) => {
-                return Err(AppError(anyhow::anyhow!(
-                    "config must be a JSON array of strings"
-                )));
-            }
-        };
-        if targets.is_empty() {
-            return Err(AppError(anyhow::anyhow!("config array must not be empty")));
-        }
+    // The config has to suit the channel it ends up with: the new values
+    // where sent, the stored ones for the rest.
+    if req.channel_type.is_some() || req.config.is_some() {
+        let current = state
+            .storage
+            .get_all_notification_settings()
+            .await?
+            .into_iter()
+            .find(|s| s.id == id)
+            .ok_or_else(|| AppError::not_found("Notification setting not found"))?;
+        validate_config(
+            req.channel_type.as_deref().unwrap_or(&current.channel_type),
+            req.config.as_deref().unwrap_or(&current.config),
+        )?;
     }
 
     state
@@ -252,34 +268,20 @@ pub async fn test_notification(
     Json(req): Json<TestNotificationRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if req.channel_type != "email" && req.channel_type != "webhook" && req.channel_type != "sms" {
-        return Err(AppError(anyhow::anyhow!(
-            "channel_type must be 'email', 'webhook', or 'sms' (push is tested via browser subscription)"
-        )));
+        return Err(AppError::bad_request(
+            "channel_type must be 'email', 'webhook', or 'sms' (push is tested via browser subscription)",
+        ));
     }
 
-    // SMS is an Enterprise add-on feature.
-    if req.channel_type == "sms" && !state.tier().sms_notifications() {
-        return Err(AppError(anyhow::anyhow!(
-            "SMS notifications require an Integrator or Enterprise licence"
-        )));
-    }
+    ensure_sms_allowed(&state, &req.channel_type)?;
 
     let source_key = req.source_key.as_deref().unwrap_or("test_source");
     let source_name = format!("Test Notification ({})", source_key);
 
     match req.channel_type.as_str() {
         "email" => {
-            let targets: Vec<String> = match serde_json::from_str(&req.config) {
-                Ok(v) => v,
-                Err(_) => {
-                    return Err(AppError(anyhow::anyhow!(
-                        "config must be a JSON array of email addresses"
-                    )));
-                }
-            };
-            if targets.is_empty() {
-                return Err(AppError(anyhow::anyhow!("config array must not be empty")));
-            }
+            let targets = string_targets(&req.config)?;
+            check_string_targets("email", &targets)?;
 
             let alarm_data = crate::notification::email::AlarmEmailData {
                 source_key: source_key.to_string(),
@@ -311,21 +313,12 @@ pub async fn test_notification(
                         "results": results,
                     })))
                 }
-                None => Err(AppError(anyhow::anyhow!("SMTP is not configured"))),
+                None => Err(AppError::bad_request("SMTP is not configured")),
             }
         }
         "webhook" => {
-            let targets: Vec<String> = match serde_json::from_str(&req.config) {
-                Ok(v) => v,
-                Err(_) => {
-                    return Err(AppError(anyhow::anyhow!(
-                        "config must be a JSON array of webhook URLs"
-                    )));
-                }
-            };
-            if targets.is_empty() {
-                return Err(AppError(anyhow::anyhow!("config array must not be empty")));
-            }
+            let targets = string_targets(&req.config)?;
+            check_string_targets("webhook", &targets)?;
 
             let payload = crate::notification::webhook::WebhookPayload {
                 severity: "warning".to_string(),
@@ -356,22 +349,12 @@ pub async fn test_notification(
             })))
         }
         "sms" => {
-            let sms_targets: Vec<serde_json::Value> = match serde_json::from_str(&req.config) {
-                Ok(v) => v,
-                Err(_) => {
-                    return Err(AppError(anyhow::anyhow!(
-                        "config must be a JSON array of objects with 'phone' and 'carrier' fields"
-                    )));
-                }
-            };
-            if sms_targets.is_empty() {
-                return Err(AppError(anyhow::anyhow!("config array must not be empty")));
-            }
+            let sms_targets = sms_targets(&req.config)?;
 
             let Some(sender) = crate::edition::sms_sender() else {
-                return Err(AppError(anyhow::anyhow!(
-                    "SMS delivery is not available in this edition"
-                )));
+                return Err(AppError::bad_request(
+                    "SMS delivery is not available in this edition",
+                ));
             };
             let smtp_cfg = state.smtp_config.read().await;
             match smtp_cfg.as_ref() {
@@ -399,9 +382,9 @@ pub async fn test_notification(
                         "results": results,
                     })))
                 }
-                None => Err(AppError(anyhow::anyhow!(
-                    "SMTP is not configured (required for SMS gateway)"
-                ))),
+                None => Err(AppError::bad_request(
+                    "SMTP is not configured (required for SMS gateway)",
+                )),
             }
         }
         _ => unreachable!(),

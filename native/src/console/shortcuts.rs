@@ -450,7 +450,7 @@ pub enum Entry {
 /// sets `entry` to `combo` (`None` removes it). Both routes replace the
 /// user's whole map, so the body carries every entry. Navigation keeps a
 /// removed target as `null` (the server stores it as "none", overriding
-/// its default); tags drop it.
+/// its default); tags drop it (the server stores no entry for a tag).
 pub fn save_body(
     map: &ShortcutMap,
     key: &str,

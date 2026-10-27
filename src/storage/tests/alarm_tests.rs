@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::AlarmTransition;
 
 #[tokio::test]
 async fn test_create_and_list_alarm() {
@@ -398,4 +399,99 @@ async fn test_list_alarms_between_is_half_open_and_uncapped() {
             .unwrap()
             .is_empty()
     );
+}
+
+/// SCADA-17 S9: the summary counted only the exact priorities `critical`,
+/// `warning` and `info`; any other waiting alarm was in no bucket.
+#[tokio::test]
+async fn test_alarm_summary_counts_every_waiting_alarm() {
+    let storage = Storage::new_in_memory().unwrap();
+    {
+        let conn = storage.conn.lock().unwrap();
+        for (key, priority) in [
+            ("a", "critical"),
+            ("b", "Critical"),
+            ("c", "warning"),
+            ("d", "high"),
+            ("e", "medium"),
+            ("f", "info"),
+            ("g", "low"),
+            ("h", "advisory"),
+        ] {
+            conn.execute(
+                "INSERT INTO alarms (source_key, severity, value, threshold, message, triggered_at, priority, state)
+                 VALUES (?1, 'warning', 1, 0, 'm', 100, ?2, 'active')",
+                rusqlite::params![key, priority],
+            )
+            .unwrap();
+        }
+    }
+
+    let summary = storage.get_alarm_summary().await.unwrap();
+    assert_eq!(summary.active_critical, 2);
+    assert_eq!(summary.active_warning, 3);
+    assert_eq!(summary.active_info, 3);
+}
+
+/// SCADA-17 S9: the lifecycle calls report what changed, for the WebSocket push.
+#[tokio::test]
+async fn test_lifecycle_calls_report_the_alarms_they_changed() {
+    let storage = Storage::new_in_memory().unwrap();
+    let id = storage
+        .create_alarm("tag1", "critical", 100.0, 90.0, "Over", 0.0)
+        .await
+        .unwrap();
+    let change = |state: &str| AlarmTransition {
+        alarm_id: id,
+        source_key: "tag1".to_string(),
+        state: state.to_string(),
+    };
+
+    assert_eq!(
+        storage.acknowledge_alarm(id, "admin", 0).await.unwrap(),
+        Some(change("acknowledged"))
+    );
+    assert_eq!(
+        storage.acknowledge_alarm(999, "admin", 0).await.unwrap(),
+        None
+    );
+
+    let until = crate::timeutil::now_secs() - 10;
+    assert_eq!(
+        storage
+            .shelf_alarm(id, until, "admin", "Expired")
+            .await
+            .unwrap(),
+        Some(change("shelved"))
+    );
+    assert_eq!(
+        storage.auto_unshelf_expired_alarms().await.unwrap(),
+        [change("acknowledged")]
+    );
+    assert_eq!(
+        storage.unshelf_alarm(id).await.unwrap(),
+        Some(change("acknowledged"))
+    );
+
+    assert_eq!(
+        storage.resolve_active_alarms("tag1", None).await.unwrap(),
+        [change("resolved")]
+    );
+    assert!(
+        storage
+            .resolve_active_alarms("tag1", None)
+            .await
+            .unwrap()
+            .is_empty(),
+        "already resolved: nothing changes"
+    );
+
+    storage
+        .create_alarm("tag2", "info", 1.0, 0.0, "Low", 0.0)
+        .await
+        .unwrap();
+    let all = storage.acknowledge_all("operator", 0).await.unwrap();
+    assert_eq!(all.len(), 1, "only tag2 was still unacknowledged");
+    assert_eq!(all[0].source_key, "tag2");
+    assert_eq!(all[0].state, "acknowledged");
 }

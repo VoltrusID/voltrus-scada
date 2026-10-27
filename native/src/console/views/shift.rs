@@ -903,7 +903,7 @@ fn handover_card(
                         .flex_1()
                         .text_size(FONT_SMALL)
                         .text_color(theme.fg_muted)
-                        .child(format!("by user #{}", entry.author_id)),
+                        .child(format!("by {}", entry.author())),
                 )
                 .child(
                     div()
@@ -1110,7 +1110,7 @@ fn report_view(
         .iter()
         .map(|entry| {
             report_line(
-                Some(pill(format!("#{}", entry.author_id), theme.info).into_any_element()),
+                Some(pill(entry.author(), theme.info).into_any_element()),
                 div()
                     .child(mention_text(&entry.what_happened, &theme))
                     .into_any_element(),

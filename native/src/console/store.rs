@@ -1,8 +1,8 @@
 //! The console's copy of the plant: every tag's latest value, status and
 //! history, fed by the runtime's events. No UI here.
 //!
-//! Tags are known by their data source id. The WebSocket and the history
-//! name them by key, and several devices may share a key (two inverters'
+//! Tags are known by their data source id. The WebSocket names them by key
+//! (the history is read by id), and several devices may share a key (two inverters'
 //! `frequency`): the server sends one update per data source, in the order
 //! of its data source list, so the n-th update for a key in a batch belongs
 //! to the n-th tag with that key in the list (`GET /api/v1/data-sources`
@@ -426,11 +426,11 @@ impl Store {
 
     /// Load server history, replacing what each tag had up to its last
     /// bucket; the live samples after that bucket stay. A tag the server has
-    /// no samples for keeps its own. The history is keyed by key, so of
-    /// tags sharing a key only the first gets it.
+    /// no samples for keeps its own. The history is keyed by data source id
+    /// (`/history?keyed_by=id`), so tags sharing a key each get their own.
     pub fn backfill(&mut self, series: &HashMap<String, HistorySeries>) {
-        for (key, series) in series {
-            let Some(index) = self.by_key(key) else {
+        for (id, series) in series {
+            let Some(index) = id.parse::<i64>().ok().and_then(|id| self.position(id)) else {
                 continue;
             };
             let tag = &mut self.tags[index];
@@ -684,7 +684,7 @@ mod tests {
         store.replace(vec![info("a")]);
         store.apply(&[update("a", 9.0, 100, "normal")]);
         let series = HashMap::from([(
-            "a".to_string(),
+            info("a").id.to_string(),
             HistorySeries {
                 values: vec![1.0, 2.0],
                 start: 50_000,
@@ -698,6 +698,24 @@ mod tests {
     }
 
     #[test]
+    fn tags_sharing_a_key_each_get_their_own_backfill() {
+        let mut store = Store::default();
+        store.replace(vec![info_with(1, "frequency"), info_with(2, "frequency")]);
+        let series = |value: f64| HistorySeries {
+            values: vec![value],
+            start: 50_000,
+            interval: 10_000,
+        };
+        store.backfill(&HashMap::from([
+            ("1".to_string(), series(49.9)),
+            ("2".to_string(), series(50.1)),
+            ("not-an-id".to_string(), series(0.0)),
+        ]));
+        assert_eq!(store.tags[0].history.latest(), Some((50_000.0, 49.9)));
+        assert_eq!(store.tags[1].history.latest(), Some((50_000.0, 50.1)));
+    }
+
+    #[test]
     fn the_span_starts_at_the_first_sample_and_empty_history_keeps_live_values() {
         let mut store = Store::default();
         store.replace(vec![info("a")]);
@@ -707,7 +725,7 @@ mod tests {
             update("a", 2.0, 160, "normal"),
         ]);
         assert_eq!(store.tags[0].span_ms(200_000.0), Some(100_000.0));
-        let empty = HashMap::from([("a".to_string(), HistorySeries::default())]);
+        let empty = HashMap::from([(info("a").id.to_string(), HistorySeries::default())]);
         store.backfill(&empty);
         assert_eq!(store.tags[0].history.len(), 2);
     }
@@ -771,7 +789,7 @@ mod tests {
         let start = 1_000_000;
         let interval = 8 * 60_000;
         let series = HashMap::from([(
-            "a".to_string(),
+            info("a").id.to_string(),
             HistorySeries {
                 values: vec![5.0; 180],
                 start,
@@ -808,7 +826,7 @@ mod tests {
             store.apply(&[update("a", value, second, "normal")]);
         }
         let series = HashMap::from([(
-            "a".to_string(),
+            info("a").id.to_string(),
             HistorySeries {
                 values: vec![1.0, 2.0, 3.0],
                 start: 81_000,
@@ -958,7 +976,7 @@ mod tests {
         store.apply(&[update("a", 2.0, 550, "normal")]);
         assert_eq!(store.span_ms(600_000.0), Some(200_000.0));
         let series = HashMap::from([(
-            "a".to_string(),
+            info("a").id.to_string(),
             HistorySeries {
                 values: vec![1.0],
                 start: 100_000,

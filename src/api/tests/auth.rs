@@ -278,3 +278,20 @@ async fn test_full_auth_flow() {
 
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+/// S7: the `Set-Cookie` value of the access token is what a non-browser
+/// client hands to the WebSocket `Auth` message, which does not decode
+/// cookies. It must be usable as is: nothing in it needs percent-encoding.
+#[tokio::test]
+async fn test_login_token_cookie_works_unencoded_for_websocket_auth() {
+    let state = seeded_admin_app_state().await;
+    let app = create_router(state.clone());
+    let raw = admin_cookie(&app).await;
+
+    assert!(!raw.contains('%'), "token cookie is percent-encoded: {raw}");
+    // Exactly what the WebSocket `Auth` path runs on the received token.
+    let claims = crate::api::auth_middleware::verify_session(&state, &raw)
+        .await
+        .expect("raw Set-Cookie token must verify");
+    assert_eq!(claims.username, "admin");
+}
