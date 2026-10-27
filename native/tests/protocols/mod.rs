@@ -277,10 +277,7 @@ async fn opcua(api: &VoltrusApi, tag: u32) {
     .await;
     let path = format!("{base}/{id}");
     let listed = rows::<OpcUaDeviceRow>(get(api, base).await).unwrap();
-    let row = listed
-        .iter()
-        .find(|row| row["id"] == id)
-        .expect("listed");
+    let row = listed.iter().find(|row| row["id"] == id).expect("listed");
     assert_eq!(row["security_policy"], "None");
     assert_eq!(row["node_count"], 0);
     send(
