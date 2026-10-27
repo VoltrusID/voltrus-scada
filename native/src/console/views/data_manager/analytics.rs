@@ -21,11 +21,11 @@ use gpui::{
     PathBuilder, Pixels, Point, SharedString, TextRun, Window, actions, canvas, div, fill, font,
     point, px, size, uniform_list,
 };
-use time::UtcOffset;
 use voltrus_scada_native::api::insights::{
     self, ANALYTICS_RANGES, Bucket, ComparisonResult, Overall, buckets_csv, halves, overall,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::Icon;
 use vt_ui::chart::{format_value, value_scale};
 use vt_ui::components::{Button, IconButton, Segment, empty_state, kbd, pill, segmented};
@@ -769,11 +769,11 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 plot,
                 focus: chart.clone(),
                 focused: chart.is_focused(window),
-                offset: console.utc_offset,
+                zone: console.zone.clone(),
             },
             cx,
         ),
-        (Some(_), Mode::Compare) => compare_view(compare, &unit, console.utc_offset, &theme),
+        (Some(_), Mode::Compare) => compare_view(compare, &unit, &console.zone, &theme),
     };
 
     div()
@@ -837,7 +837,7 @@ struct AggregateView {
     plot: Rc<Cell<Option<Bounds<Pixels>>>>,
     focus: FocusHandle,
     focused: bool,
-    offset: UtcOffset,
+    zone: LocalZone,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -860,7 +860,7 @@ fn aggregate_view(view: AggregateView, cx: &mut Context<Console>) -> AnyElement 
         return keyed(frame, cx).into_any_element();
     };
     let buckets = Rc::clone(buckets);
-    let offset = view.offset;
+    let zone = view.zone;
     let shown_at = view.hover.or(view.cursor);
     let unit = view.unit;
 
@@ -874,8 +874,8 @@ fn aggregate_view(view: AggregateView, cx: &mut Context<Console>) -> AnyElement 
     } else {
         format!(
             "{} – {} · {} buckets · drilled {} level{}",
-            local_time(span.from, offset),
-            local_time(span.to, offset),
+            local_time(span.from, &zone),
+            local_time(span.to, &zone),
             bucket_label(span.interval),
             view.depth,
             if view.depth == 1 { "" } else { "s" }
@@ -935,8 +935,8 @@ fn aggregate_view(view: AggregateView, cx: &mut Context<Console>) -> AnyElement 
             .text_size(FONT_SMALL)
             .child(div().text_color(theme.fg).child(format!(
                 "{} – {}",
-                local_time(*start, offset),
-                local_time(start + span.interval, offset)
+                local_time(*start, &zone),
+                local_time(start + span.interval, &zone)
             )))
             .child(
                 div()
@@ -975,7 +975,7 @@ fn aggregate_view(view: AggregateView, cx: &mut Context<Console>) -> AnyElement 
         hover: view.hover,
         focused: view.focused,
         limits: view.limits,
-        offset,
+        zone,
         plot: Rc::clone(&view.plot),
     };
     let plot = view.plot;
@@ -1104,7 +1104,7 @@ fn with_unit(value: f64, unit: &str) -> String {
 fn compare_view(
     compare: Option<Result<ComparisonResult, String>>,
     unit: &str,
-    offset: UtcOffset,
+    zone: &LocalZone,
     theme: &Theme,
 ) -> AnyElement {
     let compared = match compare {
@@ -1166,8 +1166,8 @@ fn compare_view(
                     } else {
                         format!(
                             "{} – {}",
-                            local_time(metric.first_ts, offset),
-                            local_time(metric.last_ts, offset)
+                            local_time(metric.first_ts, zone),
+                            local_time(metric.last_ts, zone)
                         )
                     }),
             )
@@ -1281,7 +1281,7 @@ struct BarChart {
     hover: Option<usize>,
     focused: bool,
     limits: Vec<(f64, Hsla)>,
-    offset: UtcOffset,
+    zone: LocalZone,
     plot: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
@@ -1376,9 +1376,9 @@ fn paint(
     }
     let (from_ms, to_ms) = (from * 1000.0, to * 1000.0);
     let step = tick_step(to_ms - from_ms, f32::from(plot.size.width));
-    for at in ticks(from_ms, to_ms, step, spec.offset) {
+    for at in ticks(from_ms, to_ms, step, &spec.zone) {
         let x = x_of(at / 1000.0);
-        let text = tick_label(at, step, to_ms - from_ms, spec.offset);
+        let text = tick_label(at, step, to_ms - from_ms, &spec.zone);
         let shaped = shape(&text, theme.fg_dim, window);
         let left = (x - shaped.width * 0.5)
             .max(plot.left())

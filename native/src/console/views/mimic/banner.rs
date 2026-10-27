@@ -205,7 +205,7 @@ pub(crate) fn render(
                             .flex_none()
                             .font_family(MONO)
                             .text_color(theme.fg_dim)
-                            .child(local_time(alarm.triggered_at, console.utc_offset)),
+                            .child(local_time(alarm.triggered_at, &console.zone)),
                     )
                     .child(
                         div()

@@ -434,14 +434,14 @@ pub(super) fn state_line(
             Icon::CircleCheck,
             alarm.resolved_at.map_or_else(
                 || "Resolved".to_owned(),
-                |at| format!("Resolved {}", local_time(at, console.utc_offset)),
+                |at| format!("Resolved {}", local_time(at, &console.zone)),
             ),
             theme.success,
         )
     } else if is_shelved(alarm) {
         let mut text = alarm.shelved_until.map_or_else(
             || "Shelved".to_owned(),
-            |until| format!("Shelved until {}", local_time(until, console.utc_offset)),
+            |until| format!("Shelved until {}", local_time(until, &console.zone)),
         );
         if let Some(by) = &alarm.shelved_by {
             text.push_str(&format!(" by {by}"));
@@ -646,7 +646,7 @@ fn alarm_row(
                     div()
                         .font_family(MONO)
                         .text_size(FONT_SMALL)
-                        .child(local_time(alarm.triggered_at, console.utc_offset)),
+                        .child(local_time(alarm.triggered_at, &console.zone)),
                 )
                 .child(
                     div()

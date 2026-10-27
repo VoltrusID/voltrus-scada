@@ -33,6 +33,7 @@ use voltrus_scada_native::api::insights::{
 use voltrus_scada_native::api::ops::QueuedCommand;
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use voltrus_scada_native::tag_api::WriteAccepted;
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::Icon;
 use vt_ui::chart::format_value;
 use vt_ui::components::{Button, IconButton, field, kbd, pill};
@@ -863,7 +864,7 @@ fn submit_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
 #[allow(clippy::too_many_lines)]
 fn sheet_view(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let Some(sheet) = console
         .state_ref::<State>()
         .and_then(|state| state.sheet.as_ref())
@@ -974,7 +975,7 @@ fn sheet_view(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
                                 .child(format!(
                                     "{} · updated {}",
                                     recipe.device_id,
-                                    local_time(recipe.updated_at, offset)
+                                    local_time(recipe.updated_at, &zone)
                                 )),
                         ),
                 )
@@ -1314,7 +1315,7 @@ const ACTIONS_W: f32 = 96.0;
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     ensure_search(console, window, cx);
     let theme = theme(cx).clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let options = devices(console);
     let shown_rows = Rc::new(rows(console, cx));
     let state = console.state::<State>();
@@ -1475,7 +1476,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                             Some(recipe) => {
                                 let values = counts.get(&recipe.id).copied().unwrap_or_default();
                                 recipe_row(
-                                    recipe, values, row, cursor, focused, wide, offset, &theme, cx,
+                                    recipe, values, row, cursor, focused, wide, &zone, &theme, cx,
                                 )
                             }
                         })
@@ -1535,7 +1536,7 @@ fn recipe_row(
     cursor: Option<usize>,
     focused: bool,
     wide: bool,
-    offset: time::UtcOffset,
+    zone: &LocalZone,
     theme: &Theme,
     cx: &mut Context<Console>,
 ) -> AnyElement {
@@ -1635,7 +1636,7 @@ fn recipe_row(
                 .flex_none()
                 .font_family(MONO)
                 .text_color(theme.fg_muted)
-                .child(local_time(recipe.updated_at, offset)),
+                .child(local_time(recipe.updated_at, zone)),
         )
         .child(
             div()

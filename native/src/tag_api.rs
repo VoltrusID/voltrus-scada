@@ -7,9 +7,10 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
-use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
+use time::{Date, Month, PrimitiveDateTime, Time};
 
 use crate::api::HistorySeries;
+use crate::zone::LocalZone;
 
 // ── Writes ────────────────────────────────────────────────────────────────
 
@@ -704,12 +705,11 @@ pub fn stats(samples: &[(f64, f64)], from_ms: f64, to_ms: f64) -> Option<Stats> 
 
 // ── Times on the operator's clock ─────────────────────────────────────────
 
-/// `2026-10-25 14:05:09` on the clock at `offset`.
-pub fn format_local(at_ms: i64, offset: UtcOffset) -> String {
-    let Ok(at) = OffsetDateTime::from_unix_timestamp(at_ms.div_euclid(1000)) else {
+/// `2026-10-25 14:05:09` on the clock of `zone` at that instant.
+pub fn format_local(at_ms: i64, zone: &LocalZone) -> String {
+    let Some(at) = zone.at(at_ms.div_euclid(1000)) else {
         return "—".to_owned();
     };
-    let at = at.to_offset(offset);
     format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
         at.year(),
@@ -722,8 +722,10 @@ pub fn format_local(at_ms: i64, offset: UtcOffset) -> String {
 }
 
 /// `2026-10-25 14:05` or `2026-10-25 14:05:09` (a `T` works as the
-/// separator too) on the clock at `offset`, as Unix ms.
-pub fn parse_local(text: &str, offset: UtcOffset) -> Option<i64> {
+/// separator too) on the clock of `zone` at that wall time, as Unix ms. A
+/// time the clock skipped reads as after the change, one it showed twice as
+/// the first pass.
+pub fn parse_local(text: &str, zone: &LocalZone) -> Option<i64> {
     let text = text.trim();
     let (date, clock) = text.split_once([' ', 'T'])?;
     let mut date_parts = date.trim().split('-');
@@ -745,16 +747,16 @@ pub fn parse_local(text: &str, offset: UtcOffset) -> Option<i64> {
     }
     let date = Date::from_calendar_date(year, Month::try_from(month).ok()?, day).ok()?;
     let clock = Time::from_hms(hour, minute, second).ok()?;
-    let at = PrimitiveDateTime::new(date, clock).assume_offset(offset);
-    Some(at.unix_timestamp().saturating_mul(1000))
+    let at = zone.unix_from_local(PrimitiveDateTime::new(date, clock))?;
+    Some(at.saturating_mul(1000))
 }
 
 /// A custom chart span from two local times, `from` before `to`.
-pub fn parse_between(from: &str, to: &str, offset: UtcOffset) -> Result<Span, String> {
-    let start_ms = parse_local(from, offset)
-        .ok_or_else(|| format!("From: “{}” is not a time", from.trim()))?;
+pub fn parse_between(from: &str, to: &str, zone: &LocalZone) -> Result<Span, String> {
+    let start_ms =
+        parse_local(from, zone).ok_or_else(|| format!("From: “{}” is not a time", from.trim()))?;
     let end_ms =
-        parse_local(to, offset).ok_or_else(|| format!("To: “{}” is not a time", to.trim()))?;
+        parse_local(to, zone).ok_or_else(|| format!("To: “{}” is not a time", to.trim()))?;
     if start_ms <= 0 {
         return Err("From: the server keeps no history that old".into());
     }
@@ -781,7 +783,7 @@ pub fn csv(
     columns: &[CsvColumn<'_>],
     from_ms: f64,
     to_ms: f64,
-    offset: UtcOffset,
+    zone: &LocalZone,
 ) -> (String, usize) {
     let windows: Vec<&[(f64, f64)]> = columns
         .iter()
@@ -806,7 +808,7 @@ pub fn csv(
     out.push('\n');
     let mut cursors = vec![0_usize; windows.len()];
     for at in &instants {
-        let _ = write!(out, "{},{}", *at as i64, format_local(*at as i64, offset));
+        let _ = write!(out, "{},{}", *at as i64, format_local(*at as i64, zone));
         for (window, cursor) in windows.iter().zip(cursors.iter_mut()) {
             out.push(',');
             while *cursor < window.len() && window[*cursor].0 < *at {
@@ -1176,21 +1178,48 @@ mod tests {
 
     #[test]
     fn local_times_round_trip_on_the_operator_clock() {
-        let offset = UtcOffset::from_hms(7, 0, 0).unwrap();
-        let at = parse_local("2026-10-25 14:05:09", offset).unwrap();
+        let zone = &LocalZone::named("Asia/Jakarta").unwrap();
+        let at = parse_local("2026-10-25 14:05:09", zone).unwrap();
         assert_eq!(at, 1_792_911_909_000);
-        assert_eq!(format_local(at, offset), "2026-10-25 14:05:09");
+        assert_eq!(format_local(at, zone), "2026-10-25 14:05:09");
         assert_eq!(
-            parse_local("2026-10-25T14:05", offset),
+            parse_local("2026-10-25T14:05", zone),
             Some(1_792_911_900_000)
         );
-        assert_eq!(parse_local("2026-13-01 00:00", offset), None);
-        assert_eq!(parse_local("yesterday", offset), None);
-        assert!(parse_between("2026-10-25 14:00", "2026-10-25 13:00", offset).is_err());
+        assert_eq!(parse_local("2026-13-01 00:00", zone), None);
+        assert_eq!(parse_local("yesterday", zone), None);
+        assert!(parse_between("2026-10-25 14:00", "2026-10-25 13:00", zone).is_err());
         assert!(matches!(
-            parse_between("2026-10-25 13:00", "2026-10-25 14:00", offset),
+            parse_between("2026-10-25 13:00", "2026-10-25 14:00", zone),
             Ok(Span::Between { .. })
         ));
+    }
+
+    #[test]
+    fn local_times_follow_the_daylight_saving_change() {
+        let zone = &LocalZone::named("America/New_York").unwrap();
+        let before = 1_793_462_400_000; // 2026-10-31 12:00 EDT
+        let after = 1_793_638_800_000; // 2026-11-02 12:00 EST
+        assert_eq!(format_local(before, zone), "2026-10-31 12:00:00");
+        assert_eq!(format_local(after, zone), "2026-11-02 12:00:00");
+        assert_eq!(parse_local("2026-10-31 12:00", zone), Some(before));
+        assert_eq!(parse_local("2026-11-02 12:00", zone), Some(after));
+        // A custom range across the change spans the real 49 hours.
+        let Ok(Span::Between { start_ms, end_ms }) =
+            parse_between("2026-10-31 12:00", "2026-11-02 12:00", zone)
+        else {
+            panic!("a range");
+        };
+        assert_eq!(end_ms - start_ms, 49 * 3_600_000);
+        // The CSV's local column reads each row on its own offset.
+        let samples = [(before as f64, 1.0), (after as f64, 2.0)];
+        let columns = [CsvColumn {
+            key: "p",
+            samples: &samples,
+        }];
+        let (text, _) = csv(&columns, before as f64, after as f64, zone);
+        assert!(text.contains(",2026-10-31 12:00:00,1\n"), "{text}");
+        assert!(text.contains(",2026-11-02 12:00:00,2\n"), "{text}");
     }
 
     #[test]
@@ -1226,7 +1255,7 @@ mod tests {
                 samples: &current,
             },
         ];
-        let (text, rows) = csv(&columns, 1000.0, 3000.0, UtcOffset::UTC);
+        let (text, rows) = csv(&columns, 1000.0, 3000.0, &LocalZone::utc());
         assert_eq!(rows, 3);
         assert_eq!(
             text,

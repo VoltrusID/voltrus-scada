@@ -199,7 +199,7 @@ fn shelve_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
                 "{} · {} · raised {}",
                 alarm_source(console, alarm),
                 alarms::priority(alarm),
-                local_time(alarm.triggered_at, console.utc_offset)
+                local_time(alarm.triggered_at, &console.zone)
             )
         },
     );
@@ -296,7 +296,7 @@ fn shelve_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
                         .text_color(theme.fg_muted)
                         .child(format!(
                             "Hidden from the open alarms and silent until {}; it comes back by itself.",
-                            local_time(until, console.utc_offset)
+                            local_time(until, &console.zone)
                         )),
                 ),
         )
@@ -573,7 +573,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
             .child(format!("Alarm {id} is no longer listed"))
             .into_any_element();
     };
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let source = alarm_source(console, &alarm);
     let priority = alarms::priority(&alarm).to_owned();
     let (state_icon, state_text, state_color) = state_line(console, &alarm, &theme);
@@ -611,7 +611,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
             "Raised",
             format!(
                 "{} · {} ago",
-                local_time(alarm.triggered_at, offset),
+                local_time(alarm.triggered_at, &zone),
                 age(now - alarm.triggered_at)
             ),
             &theme,
@@ -625,7 +625,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
             "Acknowledged",
             format!(
                 "{} by {}",
-                local_time(at, offset),
+                local_time(at, &zone),
                 alarm.acknowledged_by.as_deref().unwrap_or("someone")
             ),
             &theme,
@@ -637,7 +637,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
                 "Shelved until",
                 format!(
                     "{} by {}",
-                    local_time(until, offset),
+                    local_time(until, &zone),
                     alarm.shelved_by.as_deref().unwrap_or("someone")
                 ),
                 &theme,
@@ -648,10 +648,10 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
         }
     }
     if let Some(at) = alarm.resolved_at {
-        facts.push(fact("Resolved", local_time(at, offset), &theme));
+        facts.push(fact("Resolved", local_time(at, &zone), &theme));
     }
     if let Some(until) = alarm.cooldown_until.filter(|until| *until > now) {
-        facts.push(fact("Cooldown until", local_time(until, offset), &theme));
+        facts.push(fact("Cooldown until", local_time(until, &zone), &theme));
     }
     if !alarm.message.is_empty() {
         facts.push(fact("Message", alarm.message.clone(), &theme));
@@ -875,11 +875,10 @@ fn journal(
                             )
                             .child(div().text_size(FONT_SMALL).text_color(theme.fg_dim).child(
                                 match &entry.actor {
-                                    Some(actor) if !actor.is_empty() => format!(
-                                        "{} · {actor}",
-                                        local_time(entry.at, console.utc_offset)
-                                    ),
-                                    _ => local_time(entry.at, console.utc_offset),
+                                    Some(actor) if !actor.is_empty() => {
+                                        format!("{} · {actor}", local_time(entry.at, &console.zone))
+                                    }
+                                    _ => local_time(entry.at, &console.zone),
                                 },
                             )),
                     )

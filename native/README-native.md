@@ -243,6 +243,17 @@ JetBrains Mono for values.
   sign-in.
 - **Status bar clock** on the computer's time, beside the server's version
   and the console's.
+- **Time zone**: every time (alarms, audit, commands, exports, analytics,
+  snapshots, MQTT messages, the status bar, the chart axis) shows on the
+  computer's zone with the offset that zone had at that instant, so a time
+  from before a daylight-saving change reads as the wall clock read then,
+  not one hour off. Date and time inputs (`2026-11-01 01:30`) are read with
+  the zone's rules at that wall time: a time the clock skipped reads as
+  after the change, a repeated one as its first pass. The zone is re-read
+  once a second (`TZ`, else the `/etc/localtime` link, the way macOS
+  records the zone), so changing it in System Settings updates every time
+  within a second or two without a restart. A zone is the `LocalZone`
+  handle in `zone.rs`, on the IANA rules of `jiff`.
 - **Operations pages** in the More menu (and the palette): **Commands**
   (the write command queue: a History of every command, filtered by status
   with `[` `]` and paged with ← →, an Active list fetched every 2 s while it
@@ -334,7 +345,9 @@ GPUI also supports Linux (X11 or Wayland), which is not tested here.
 
 ```
 native/src/
-  lib.rs            api, runtime, ws_types, stress, perf and tag_api (no UI; used by the tests)
+  lib.rs            api, runtime, ws_types, stress, perf, tag_api and zone (no UI; used by the tests)
+  zone.rs           the operator's time zone: the offset at each instant, wall times read
+                    with the zone's rules, the system zone re-read when it changes
   tag_api.rs        tag writes and policies, tag tree, naming convention, annotations,
                     the detail chart's history query, CSV
   api.rs            REST client: login and logout cookies, generic JSON helpers,

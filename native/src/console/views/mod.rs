@@ -41,8 +41,8 @@ use gpui::{
     Action, Animation, AnimationExt as _, AnyElement, AnyView, App, Context, Div, ElementId,
     FontWeight, Hsla, SharedString, Window, canvas, div, px,
 };
-use time::{OffsetDateTime, UtcOffset};
 use voltrus_scada_native::api::Alarm;
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::chart::format_value;
 use vt_ui::theme::*;
 
@@ -639,14 +639,13 @@ pub(crate) fn capitalized(text: &str) -> String {
     })
 }
 
-/// A Unix time on the operator's clock: `14:05:09`, or `3 Mar 14:05` when
-/// it is not today.
-pub(crate) fn local_time(unix_secs: i64, offset: UtcOffset) -> String {
-    let Ok(at) = OffsetDateTime::from_unix_timestamp(unix_secs) else {
+/// A Unix time on the operator's clock as it read then: `14:05:09`, or
+/// `3 Mar 14:05` when it is not today.
+pub(crate) fn local_time(unix_secs: i64, zone: &LocalZone) -> String {
+    let Some(at) = zone.at(unix_secs) else {
         return "—".into();
     };
-    let at = at.to_offset(offset);
-    let today = OffsetDateTime::now_utc().to_offset(offset).date();
+    let today = zone.now().date();
     if at.date() == today {
         format!("{:02}:{:02}:{:02}", at.hour(), at.minute(), at.second())
     } else {
@@ -805,14 +804,19 @@ mod tests {
 
     #[test]
     fn times_show_on_the_given_clock() {
-        let now = OffsetDateTime::now_utc().unix_timestamp();
-        let offset = UtcOffset::from_hms(7, 0, 0).unwrap();
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let jakarta = LocalZone::named("Asia/Jakarta").unwrap();
         assert_eq!(
-            local_time(now, offset).len(),
+            local_time(now, &jakarta).len(),
             8,
             "today shows the time only"
         );
-        assert_eq!(local_time(0, UtcOffset::UTC), "1 Jan 00:00");
+        assert_eq!(local_time(0, &LocalZone::utc()), "1 Jan 00:00");
+        // Each time reads on the offset it had: noon either side of the
+        // 2020-11-01 change is noon.
+        let york = LocalZone::named("America/New_York").unwrap();
+        assert_eq!(local_time(1_604_160_000, &york), "31 Oct 12:00");
+        assert_eq!(local_time(1_604_336_400, &york), "2 Nov 12:00");
         assert_eq!(host("https://scada.plant:3000"), "scada.plant:3000");
     }
 

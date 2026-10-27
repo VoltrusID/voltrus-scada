@@ -46,11 +46,11 @@ use gpui::{
     AppContext as _, Context, Entity, FocusHandle, ScrollHandle, SharedString, Subscription, Task,
     Window, px,
 };
-use time::UtcOffset;
 use voltrus_scada_native::api::Alarm;
 use voltrus_scada_native::perf::{self, Report};
 use voltrus_scada_native::runtime::{Call, CallKey, Command, Event, Handle, Link, Reply};
 use voltrus_scada_native::stress::StressOptions;
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
 use vt_ui::theme::ThemeCatalog;
 
@@ -229,8 +229,8 @@ pub struct Launch {
     /// The Data Manager's section to show (`--section`), a
     /// [`data_manager_section`] id.
     pub section: Option<String>,
-    /// Read before any thread started: `time` cannot ask the system later.
-    pub utc_offset: UtcOffset,
+    /// The computer's time zone at launch.
+    pub zone: LocalZone,
     /// `--appearance`: pinned light (false) or dark (true); the server's
     /// theme preference is then not applied.
     pub appearance: Option<bool>,
@@ -260,8 +260,9 @@ pub struct Console {
     pub server: String,
     /// The server's version (`GET /api/v1/version`), once it answered.
     pub server_version: Option<String>,
-    /// For showing alarm times on the operator's clock.
-    pub utc_offset: UtcOffset,
+    /// The operator's clock: every time shows on the offset it had at that
+    /// instant. Re-read from the system once a second.
+    pub zone: LocalZone,
     pub store: Store,
     pub alarms: Vec<Alarm>,
     /// Why the alarm list could not be fetched last time: it is stale.
@@ -487,6 +488,11 @@ impl Console {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 tick += 1;
                 let alive = this.update(cx, |console, cx| {
+                    // The computer's zone changed (travel, a daylight-saving
+                    // rule): the notify below redraws every time on it.
+                    if let Some(zone) = console.zone.refresh() {
+                        console.zone = zone;
+                    }
                     if console.phase == Phase::Console {
                         if tick.is_multiple_of(ALARM_REFRESH_SECS) {
                             console.send(Command::RefreshAlarms);
@@ -519,7 +525,7 @@ impl Console {
             user: None,
             server: String::new(),
             server_version: None,
-            utc_offset: launch.utc_offset,
+            zone: launch.zone,
             store: Store::default(),
             alarms: Vec::new(),
             alarms_error: None,

@@ -423,7 +423,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let theme = theme(cx).clone();
     let shown = rows(console, cx);
     let list = keys(console);
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let now = now_secs();
     let state = console.state::<State>();
     let error = match &state.keys {
@@ -557,7 +557,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                             format!(
                                                 "{} · {}",
                                                 key.created_by,
-                                                local_time(key.created_at, offset)
+                                                local_time(key.created_at, &zone)
                                             ),
                                             CREATED,
                                             theme.fg_dim,
@@ -567,7 +567,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                     .child(cell(
                                         key.last_used_at.map_or_else(
                                             || "never".to_owned(),
-                                            |at| local_time(at, offset),
+                                            |at| local_time(at, &zone),
                                         ),
                                         USED,
                                         theme.fg_dim,
@@ -577,9 +577,9 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                         match key.expires_at {
                                             None => "never".to_owned(),
                                             Some(at) if expired => {
-                                                format!("expired {}", local_time(at, offset))
+                                                format!("expired {}", local_time(at, &zone))
                                             }
-                                            Some(at) => local_time(at, offset),
+                                            Some(at) => local_time(at, &zone),
                                         },
                                         EXPIRES,
                                         if expired { theme.danger } else { theme.fg_dim },

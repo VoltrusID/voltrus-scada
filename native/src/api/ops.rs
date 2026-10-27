@@ -9,9 +9,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
+use time::{Date, Month, PrimitiveDateTime, Time};
 
 use super::{Alarm, Method, ServerError, VoltrusApi};
+use crate::zone::LocalZone;
 
 impl VoltrusApi {
     /// `GET path` as text, for the CSV downloads (`/api/v1/audit/export`,
@@ -707,9 +708,11 @@ pub fn format_date(date: Date) -> String {
 }
 
 /// `YYYY-MM-DD`, `YYYY-MM-DD HH:MM` or `YYYY-MM-DD HH:MM:SS` (a `T` also
-/// separates) on `offset`'s clock, as Unix seconds. A bare date is its
-/// first second, or with `end_of_day` its last.
-pub fn parse_local(text: &str, offset: UtcOffset, end_of_day: bool) -> Option<i64> {
+/// separates) on `zone`'s clock, as Unix seconds. A bare date is its
+/// first second, or with `end_of_day` its last. The zone's offset is the one
+/// in force at that wall time; a time the clock skipped reads as after the
+/// change, one it showed twice as the first pass.
+pub fn parse_local(text: &str, zone: &LocalZone, end_of_day: bool) -> Option<i64> {
     let text = text.trim();
     let (date, clock) = match text.split_once([' ', 'T']) {
         Some((date, clock)) => (date, Some(clock.trim())),
@@ -730,19 +733,14 @@ pub fn parse_local(text: &str, offset: UtcOffset, end_of_day: bool) -> Option<i6
         None if end_of_day => Time::from_hms(23, 59, 59).ok()?,
         None => Time::MIDNIGHT,
     };
-    Some(
-        PrimitiveDateTime::new(date, time)
-            .assume_offset(offset)
-            .unix_timestamp(),
-    )
+    zone.unix_from_local(PrimitiveDateTime::new(date, time))
 }
 
-/// Unix seconds as `YYYY-MM-DD HH:MM` on `offset`'s clock.
-pub fn format_local(unix_secs: i64, offset: UtcOffset) -> String {
-    OffsetDateTime::from_unix_timestamp(unix_secs).map_or_else(
-        |_| "—".to_owned(),
+/// Unix seconds as `YYYY-MM-DD HH:MM` on `zone`'s clock at that instant.
+pub fn format_local(unix_secs: i64, zone: &LocalZone) -> String {
+    zone.at(unix_secs).map_or_else(
+        || "—".to_owned(),
         |at| {
-            let at = at.to_offset(offset);
             format!(
                 "{} {:02}:{:02}",
                 format_date(at.date()),
@@ -1047,7 +1045,7 @@ mod tests {
 
     #[test]
     fn local_dates_read_on_the_operators_clock() {
-        let jakarta = UtcOffset::from_hms(7, 0, 0).unwrap();
+        let jakarta = &LocalZone::named("Asia/Jakarta").unwrap();
         // 2026-10-25 00:00 in Jakarta is 2026-10-24 17:00 UTC.
         assert_eq!(
             parse_local("2026-10-25", jakarta, false),
@@ -1069,6 +1067,34 @@ mod tests {
         assert_eq!(parse_local("2026-02-30", jakarta, false), None);
         assert_eq!(format_local(1_792_913_400, jakarta), "2026-10-25 14:30");
         assert_eq!(format_date(parse_date(" 2026-1-5 ").unwrap()), "2026-01-05");
+    }
+
+    #[test]
+    fn local_times_follow_the_daylight_saving_change() {
+        let york = &LocalZone::named("America/New_York").unwrap();
+        // An alarm at noon on each side of 2026-11-01's change.
+        let before = 1_793_462_400; // 2026-10-31 12:00 EDT
+        let after = 1_793_638_800; // 2026-11-02 12:00 EST
+        assert_eq!(format_local(before, york), "2026-10-31 12:00");
+        assert_eq!(format_local(after, york), "2026-11-02 12:00");
+        assert_eq!(parse_local("2026-10-31 12:00", york, false), Some(before));
+        assert_eq!(parse_local("2026-11-02 12:00", york, false), Some(after));
+        // A range over the change reads each end on its own offset: a day
+        // on the wall is 25 hours that Sunday.
+        let day = parse_local("2026-11-01", york, false).unwrap();
+        let end = parse_local("2026-11-01", york, true).unwrap();
+        assert_eq!(end - day, 25 * 3600 - 1);
+        assert_eq!(format_local(day, york), "2026-11-01 00:00");
+        assert_eq!(format_local(end, york), "2026-11-01 23:59");
+        // The hour the clocks skip reads as after the change.
+        let skipped = parse_local("2026-03-08 02:30", york, false).unwrap();
+        assert_eq!(format_local(skipped, york), "2026-03-08 03:30");
+        // A night shift, 22:00 to 06:00 on the wall.
+        let night = |from: &str, to: &str| {
+            parse_local(to, york, false).unwrap() - parse_local(from, york, false).unwrap()
+        };
+        assert_eq!(night("2026-10-31 22:00", "2026-11-01 06:00"), 9 * 3600);
+        assert_eq!(night("2026-03-07 22:00", "2026-03-08 06:00"), 7 * 3600);
     }
 
     #[test]

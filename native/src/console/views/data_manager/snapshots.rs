@@ -21,6 +21,7 @@ use voltrus_scada_native::api::eng_snapshots::{
     self as model, Change, DiffSummary, SnapshotDetail, SnapshotSummary, SortKey,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::Icon;
 use vt_ui::components::{Button, IconButton, empty_state, kbd, pill};
 use vt_ui::text_input::{InputEvent, TextInput};
@@ -490,14 +491,14 @@ fn element_id(name: &'static str, id: i64) -> ElementId {
     ElementId::NamedInteger(name.into(), u64::try_from(id).unwrap_or(0))
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct RowLook {
     cursor: Option<usize>,
     focused: bool,
     from: Option<i64>,
     to: Option<i64>,
     operator: bool,
-    offset: time::UtcOffset,
+    zone: LocalZone,
     /// Width of the label column.
     label: f32,
 }
@@ -613,7 +614,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         from,
         to,
         operator,
-        offset: console.utc_offset,
+        zone: console.zone.clone(),
         label: label_width,
     };
     let scroll = console.list(LIST, cx).scroll.clone();
@@ -657,7 +658,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                     let theme = vt_ui::theme::theme(cx).clone();
                     range
                         .map(|row| match rows.get(row).copied() {
-                            Some(index) => snapshot_row(console, index, row, look, &theme, cx),
+                            Some(index) => snapshot_row(console, index, row, &look, &theme, cx),
                             None => tail_row(ROW),
                         })
                         .collect::<Vec<_>>()
@@ -805,7 +806,7 @@ fn snapshot_row(
     console: &Console,
     index: usize,
     row: usize,
-    look: RowLook,
+    look: &RowLook,
     theme: &Theme,
     cx: &mut Context<Console>,
 ) -> AnyElement {
@@ -862,7 +863,7 @@ fn snapshot_row(
         })
         .child(mono(format!("#{id}"), ID, theme.fg_dim))
         .child(mono(
-            local_time(snapshot.created_at, look.offset),
+            local_time(snapshot.created_at, &look.zone),
             CREATED,
             theme.fg_muted,
         ))
@@ -1230,7 +1231,7 @@ fn detail_sheet(
                 format!("#{id} · {}", summary.title()),
                 format!(
                     "{} · {} · {} · {} rows · {}",
-                    local_time(summary.created_at, console.utc_offset),
+                    local_time(summary.created_at, &console.zone),
                     summary.trigger,
                     summary.created_by.as_deref().unwrap_or("server"),
                     summary.total_rows(),
@@ -1394,7 +1395,7 @@ fn create_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
 /// The rollback confirmation: Enter or the button rolls back, Esc keeps.
 fn rollback_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let state = console.state::<State>();
     let Some(snapshot) = state.confirm.clone() else {
         return div().into_any_element();
@@ -1438,7 +1439,7 @@ fn rollback_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Conso
                 .text_color(theme.fg_muted)
                 .child(format!(
                     "Restores the configuration saved {} — {} ({}).",
-                    local_time(snapshot.created_at, offset),
+                    local_time(snapshot.created_at, &zone),
                     snapshot.title(),
                     snapshot.counts_line()
                 ))

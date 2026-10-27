@@ -493,7 +493,7 @@ fn render_runs(
     cx: &mut Context<Console>,
 ) -> AnyElement {
     let theme = theme(cx).clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let Some(runs) = console.state::<State>().runs.as_ref() else {
         return div().into_any_element();
     };
@@ -582,7 +582,7 @@ fn render_runs(
                                     .flex_none()
                                     .font_family(MONO)
                                     .text_size(FONT_SMALL)
-                                    .child(local_time(run.started_at, offset)),
+                                    .child(local_time(run.started_at, &zone)),
                             )
                             .child(
                                 div()

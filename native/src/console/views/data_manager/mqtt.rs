@@ -1020,7 +1020,7 @@ fn overview(
     let config = status.config;
     let clients: Rc<[model::ConnectedClient]> = status.clients.clone().into();
     let count = clients.len();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let list = keyboard_list(
         ListKeys {
             id: CLIENTS,
@@ -1143,7 +1143,7 @@ fn overview(
                                     .text_color(theme.fg_muted)
                                     .child(format!(
                                         "{} · {} ago",
-                                        local_time(client.connected_at, offset),
+                                        local_time(client.connected_at, &zone),
                                         age(now - client.connected_at)
                                     )),
                             )
@@ -1454,7 +1454,7 @@ fn topics_tab(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                         .font_family(MONO)
                                         .text_size(FONT_CAPTION)
                                         .text_color(theme.fg_dim)
-                                        .child(local_time(message.timestamp, console.utc_offset))
+                                        .child(local_time(message.timestamp, &console.zone))
                                         .when(message.retain, |this| {
                                             this.child(pill("RETAIN", theme.warning))
                                         }),
@@ -1516,7 +1516,9 @@ fn messages_tab(
     let theme = theme(cx).clone();
     let messages: Rc<[model::RecentMessage]> = log(console, cx).into();
     let count = messages.len();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
+    // The list's rows own a copy; the detail below reads its own.
+    let rows_zone = zone.clone();
     let loaded = console
         .state_ref::<State>()
         .and_then(|state| state.messages.as_ref())
@@ -1587,7 +1589,7 @@ fn messages_tab(
                                                 .font_family(MONO)
                                                 .text_size(FONT_SMALL)
                                                 .text_color(theme.fg_dim)
-                                                .child(local_time(message.timestamp, offset)),
+                                                .child(local_time(message.timestamp, &rows_zone)),
                                         )
                                         .child(
                                             div()
@@ -1650,7 +1652,7 @@ fn messages_tab(
                     .gap(SPACE_3)
                     .text_size(FONT_SMALL)
                     .text_color(theme.fg_muted)
-                    .child(local_time(message.timestamp, offset))
+                    .child(local_time(message.timestamp, &zone))
                     .when(message.retain, |this| {
                         this.child(pill("RETAIN", theme.warning))
                     }),

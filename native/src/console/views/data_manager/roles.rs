@@ -380,7 +380,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let theme = theme(cx).clone();
     let shown = rows(console, cx);
     let list = roles(console);
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let state = console.state::<State>();
     let error = match &state.roles {
         Some(Err(error)) => Some(error.clone()),
@@ -505,7 +505,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                     .child(cell(summary(role), PERMS, theme.fg_muted, true))
                                     .when(wide, |this| {
                                         this.child(cell(
-                                            local_time(role.created_at, offset),
+                                            local_time(role.created_at, &zone),
                                             CREATED,
                                             theme.fg_dim,
                                             true,

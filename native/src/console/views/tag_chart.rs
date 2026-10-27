@@ -14,7 +14,7 @@ use gpui::{
     App, Bounds, ContentMask, Hsla, PathBuilder, Pixels, Point, SharedString, TextRun, Window,
     canvas, fill, font, point, px, size,
 };
-use time::{OffsetDateTime, UtcOffset};
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::chart::{format_value, needs_lanes, value_scale};
 use vt_ui::theme::*;
 
@@ -43,7 +43,7 @@ pub(crate) struct ChartSpec {
     pub marks: Vec<f64>,
     /// The crosshair's time.
     pub cursor: Option<f64>,
-    pub offset: UtcOffset,
+    pub zone: LocalZone,
     pub plot: PlotCell,
 }
 
@@ -138,25 +138,45 @@ pub(crate) fn tick_step(span_ms: f64, width: f32) -> f64 {
         .unwrap_or(STEPS[STEPS.len() - 1])
 }
 
+/// Steps from which a tick is placed on the offset in force at the tick
+/// itself, so a day's midnight stays midnight across a daylight-saving
+/// change. A shorter step divides the hour, and the change moves the clock
+/// by whole hours: its ticks stay round on the offset at the start.
+const WALL_STEP_MS: f64 = 3.0 * 3_600_000.0;
+
 /// The ticks in `[from, to]`, on round times of the operator's clock.
-pub(crate) fn ticks(from_ms: f64, to_ms: f64, step: f64, offset: UtcOffset) -> Vec<f64> {
-    let shift = f64::from(offset.whole_seconds()) * 1000.0;
-    let mut at = ((from_ms + shift) / step).ceil() * step - shift;
-    let mut out = Vec::new();
-    while at <= to_ms && out.len() < 64 {
-        out.push(at);
-        at += step;
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn ticks(from_ms: f64, to_ms: f64, step: f64, zone: &LocalZone) -> Vec<f64> {
+    let offset_ms =
+        |at_ms: f64| f64::from(zone.offset_secs((at_ms / 1000.0).floor() as i64)) * 1000.0;
+    let shift = offset_ms(from_ms);
+    // The wall clock's round times, as milliseconds since 1970 on the wall.
+    let mut wall = ((from_ms + shift) / step).ceil() * step;
+    let mut out: Vec<f64> = Vec::new();
+    while out.len() < 64 {
+        let at = if step < WALL_STEP_MS {
+            wall - shift
+        } else {
+            wall - offset_ms(wall - shift)
+        };
+        if at > to_ms {
+            break;
+        }
+        // A tick the change skipped or repeated may fall out of order.
+        if at >= from_ms && out.last().is_none_or(|last| at > *last) {
+            out.push(at);
+        }
+        wall += step;
     }
     out
 }
 
 /// A tick's label: seconds for short steps, the day for long spans.
 #[allow(clippy::cast_possible_truncation)]
-pub(crate) fn tick_label(at_ms: f64, step: f64, span_ms: f64, offset: UtcOffset) -> String {
-    let Ok(at) = OffsetDateTime::from_unix_timestamp((at_ms / 1000.0).floor() as i64) else {
+pub(crate) fn tick_label(at_ms: f64, step: f64, span_ms: f64, zone: &LocalZone) -> String {
+    let Some(at) = zone.at((at_ms / 1000.0).floor() as i64) else {
         return String::new();
     };
-    let at = at.to_offset(offset);
     let month = at.month().to_string();
     let month = month.get(..3).unwrap_or(&month);
     if step >= 86_400_000.0 {
@@ -235,13 +255,13 @@ fn paint(
     // Time labels on round times.
     let span = to - from;
     let step = tick_step(span, f32::from(plot.size.width));
-    for at in ticks(from, to, step, spec.offset) {
+    for at in ticks(from, to, step, &spec.zone) {
         let x = x_of(at, from, span, plot);
         window.paint_quad(fill(
             Bounds::new(point(x, plot.top()), size(px(1.0), plot.size.height)),
             theme.border.alpha(0.5),
         ));
-        let text = tick_label(at, step, span, spec.offset);
+        let text = tick_label(at, step, span, &spec.zone);
         let shaped = shape(&text, theme.fg_dim, window);
         let left = (x - shaped.width * 0.5)
             .max(plot.left())
@@ -508,27 +528,53 @@ mod tests {
 
     #[test]
     fn ticks_fall_on_round_times_of_the_local_clock() {
-        let offset = UtcOffset::from_hms(7, 0, 0).unwrap();
+        let zone = &LocalZone::named("Asia/Jakarta").unwrap();
         // 12:59:30 to 14:01:00 on a UTC+7 clock: ticks at 13:00 and 14:00.
         let from = 1_792_911_570_000.0 - 3_600_000.0;
-        let ticks = ticks(from, from + 3_690_000.0, 3_600_000.0, offset);
+        let ticks = ticks(from, from + 3_690_000.0, 3_600_000.0, zone);
         assert_eq!(ticks.len(), 2);
         assert_eq!(
-            tick_label(ticks[0], 3_600_000.0, 3_690_000.0, offset),
+            tick_label(ticks[0], 3_600_000.0, 3_690_000.0, zone),
             "13:00"
         );
         assert_eq!(
-            tick_label(ticks[1], 3_600_000.0, 3_690_000.0, offset),
+            tick_label(ticks[1], 3_600_000.0, 3_690_000.0, zone),
             "14:00"
         );
         assert_eq!(
-            tick_label(0.0, 1_000.0, 60_000.0, UtcOffset::UTC),
+            tick_label(0.0, 1_000.0, 60_000.0, &LocalZone::utc()),
             "00:00:00"
         );
         assert_eq!(
-            tick_label(0.0, 86_400_000.0, 7.0 * 86_400_000.0, UtcOffset::UTC),
+            tick_label(0.0, 86_400_000.0, 7.0 * 86_400_000.0, &LocalZone::utc()),
             "1 Jan"
         );
+    }
+
+    #[test]
+    fn day_ticks_stay_on_midnight_across_a_daylight_saving_change() {
+        let york = &LocalZone::named("America/New_York").unwrap();
+        let day = 86_400_000.0;
+        // 2020-10-31 12:00 EDT to 2020-11-03 11:00 EST; the clocks went back
+        // early on 1 November.
+        let from = 1_604_160_000_000.0;
+        let ticks = ticks(from, from + 3.0 * day - 3_600_000.0, day, york);
+        let labels: Vec<String> = ticks
+            .iter()
+            .map(|at| tick_label(*at, day, 3.0 * day, york))
+            .collect();
+        assert_eq!(labels, ["1 Nov", "2 Nov", "3 Nov"]);
+        assert!(
+            (ticks[1] - ticks[0] - 25.0 * 3_600_000.0).abs() < f64::EPSILON,
+            "1 November is 25 hours long"
+        );
+        // Six-hour ticks stay on 00, 06, 12 and 18 o'clock either side.
+        let six = super::ticks(from, from + 4.0 * day, 6.0 * 3_600_000.0, york);
+        assert!(six.len() > 12);
+        for at in &six {
+            let wall = york.at((*at / 1000.0) as i64).unwrap();
+            assert_eq!((wall.hour() % 6, wall.minute()), (0, 0));
+        }
     }
 
     #[test]
