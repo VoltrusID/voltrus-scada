@@ -3,6 +3,7 @@ mod api_key_tests;
 mod command_tests;
 mod downsampling_tests;
 mod hub_tests;
+mod license_tests;
 mod modbus_tests;
 mod oee_tests;
 mod security_tests;

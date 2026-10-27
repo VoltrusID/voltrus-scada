@@ -148,6 +148,34 @@ pub struct LicenseStatus {
     pub days_remaining: Option<i64>,
     pub grace: bool,
     pub message: Option<String>,
+    /// Per-site licence: the site the key is issued for.
+    pub site: Option<LicenseSite>,
+    /// End of the annual support contract, Unix seconds.
+    pub support_until: Option<i64>,
+    /// `active`, `lapsed` or `none` (the server's derived state).
+    pub support: String,
+}
+
+/// The site a per-site licence is issued for.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct LicenseSite {
+    pub id: String,
+    pub name: String,
+}
+
+/// `YYYY-MM-DD` (UTC) of a Unix timestamp.
+fn civil_date(unix: i64) -> String {
+    let z = unix.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// The edition a licence unlocks.
@@ -189,6 +217,28 @@ impl LicenseStatus {
             .filter(|(_, value)| **value == serde_json::Value::Bool(true))
             .map(|(name, _)| name.as_str())
             .collect()
+    }
+
+    /// The site name of a per-site licence.
+    pub fn site_name(&self) -> Option<&str> {
+        self.site
+            .as_ref()
+            .map(|site| site.name.as_str())
+            .filter(|name| !name.is_empty())
+    }
+
+    /// The support contract line (never limits anything), if there is a
+    /// contract. `lapsed` is the server's word.
+    pub fn support_note(&self) -> Option<String> {
+        let until = self.support_until?;
+        let date = civil_date(until);
+        match self.support.as_str() {
+            "active" => Some(format!("Support until {date}")),
+            "lapsed" => Some(format!(
+                "Support lapsed {date} — renew to keep receiving updates"
+            )),
+            _ => None,
+        }
     }
 
     /// One line about the licence beyond its tier, if there is anything to
@@ -330,6 +380,33 @@ mod tests {
         assert_eq!(list.notifications[0].reference_id, Some(31));
         assert!(!list.notifications[0].read && list.notifications[1].read);
         assert_eq!(list.notifications[1].reference_id, None);
+    }
+
+    #[test]
+    fn the_licence_reports_site_and_support() {
+        let live: LicenseStatus = serde_json::from_str(
+            r#"{"status":"Valid","tier":"integrator","grace":false,"site":{"id":"s1","name":"Plant A"},
+                "support_until":1800403200,"support":"active"}"#,
+        )
+        .unwrap();
+        assert_eq!(live.site_name(), Some("Plant A"));
+        assert_eq!(
+            live.support_note().as_deref(),
+            Some("Support until 2027-01-20")
+        );
+        let lapsed: LicenseStatus = serde_json::from_str(
+            r#"{"status":"Valid","tier":"integrator","support_until":1800403200,"support":"lapsed"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            lapsed.support_note().as_deref(),
+            Some("Support lapsed 2027-01-20 — renew to keep receiving updates")
+        );
+        let old: LicenseStatus =
+            serde_json::from_str(r#"{"status":"Valid","tier":"enterprise"}"#).unwrap();
+        assert_eq!(old.site_name(), None);
+        assert_eq!(old.support_note(), None);
+        assert_eq!(civil_date(0), "1970-01-01");
     }
 
     #[test]

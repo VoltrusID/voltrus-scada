@@ -193,6 +193,11 @@ pub struct LicenseActivationRow {
     pub expires_at: Option<String>,
     pub tier: Option<String>,
     pub device_limit: Option<u32>,
+    /// Per-site licence: the site the key is issued for.
+    pub site_id: Option<String>,
+    pub site_name: Option<String>,
+    /// End of the annual support contract, Unix seconds; `None` = none.
+    pub support_until: Option<i64>,
 }
 
 // ── Security Audit types (v0.22.0 IEC 62443) ──

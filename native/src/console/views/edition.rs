@@ -33,10 +33,18 @@ pub fn badge(console: &mut Console, cx: &mut Context<Console>) -> Option<AnyElem
     let theme = theme(cx).clone();
     let license = console.state::<Shell>().license.clone()?;
     let tier = license.tier();
-    let tip = SharedString::from(match license.note() {
-        Some(note) => format!("{} edition · {note}", tier.label()),
-        None => format!("{} edition", tier.label()),
-    });
+    let mut tip = format!("{} edition", tier.label());
+    for part in license
+        .site_name()
+        .map(|site| format!("Site {site}"))
+        .into_iter()
+        .chain(license.note())
+        .chain(license.support_note())
+    {
+        tip.push_str(" · ");
+        tip.push_str(&part);
+    }
+    let tip = SharedString::from(tip);
     Some(
         div()
             .id("edition")
@@ -52,6 +60,20 @@ pub fn sign_in_edition(console: &mut Console, cx: &mut Context<Console>) -> Opti
     let theme = theme(cx).clone();
     let license = console.state::<Shell>().license.clone()?;
     let tier = license.tier();
+    let line = [
+        license.site_name().map(str::to_owned),
+        license.note(),
+        license.support_note(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" · ");
+    let line = if line.is_empty() {
+        "edition".to_owned()
+    } else {
+        line
+    };
     Some(
         div()
             .flex()
@@ -60,7 +82,7 @@ pub fn sign_in_edition(console: &mut Console, cx: &mut Context<Console>) -> Opti
             .text_size(FONT_SMALL)
             .text_color(theme.fg_muted)
             .child(pill(tier.label(), tier_color(tier, &theme)))
-            .child(license.note().unwrap_or_else(|| "edition".to_owned()))
+            .child(line)
             .into_any_element(),
     )
 }
