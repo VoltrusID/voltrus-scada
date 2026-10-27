@@ -21,9 +21,11 @@ mod commands;
 mod data;
 mod devices;
 mod flows;
+mod project;
 mod screens;
 mod system;
 mod tags;
+mod templates;
 
 /// Which principals may call a tool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,6 +35,29 @@ pub enum Access {
     /// Principals the REST operational write routes admit: admin, demo,
     /// integration. Every call is audit-logged.
     Write,
+    /// Admin sessions only, for tools that expose the whole configuration but
+    /// change nothing. API and integration keys are refused. Audit-logged.
+    AdminRead,
+    /// Admin sessions only, for tools that import or replace configuration.
+    /// API and integration keys are refused. Audit-logged.
+    AdminWrite,
+}
+
+impl Access {
+    /// The tool changes no state (MCP `readOnlyHint`).
+    pub fn read_only(self) -> bool {
+        matches!(self, Access::Read | Access::AdminRead)
+    }
+
+    /// Only the admin role may call the tool.
+    pub fn admin_only(self) -> bool {
+        matches!(self, Access::AdminRead | Access::AdminWrite)
+    }
+
+    /// Every call is written to the audit log as `mcp:<tool>`.
+    pub fn audited(self) -> bool {
+        self != Access::Read
+    }
 }
 
 /// Who is calling, and the server they are calling.
@@ -88,6 +113,8 @@ static REGISTRY: LazyLock<Vec<Tool>> = LazyLock::new(|| {
     tools.extend(screens::tools());
     tools.extend(flows::tools());
     tools.extend(commands::tools());
+    tools.extend(templates::tools());
+    tools.extend(project::tools());
     tools
 });
 

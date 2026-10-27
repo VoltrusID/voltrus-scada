@@ -25,6 +25,11 @@ The same operations are available over HTTP for admins:
 | `GET /api/v1/project/export` | the single-file YAML as a download |
 | `POST /api/v1/project/import?mode=merge\|replace&dry_run=true\|false` | YAML body; returns the plan (dry run) or the result |
 
+AI agents reach the same operations through the MCP tools `project_export_yaml`,
+`project_plan_import` (dry run) and `project_apply_import` (`mode` merge or
+replace). Like the routes they need a signed-in admin: API and integration keys are
+refused. See `docs/mcp.md`.
+
 An invalid project answers `400` with `{"error", "issues": [{severity, at, message}]}`.
 A real import first takes a configuration snapshot (`trigger: import`) and restarts
 the Modbus pollers of devices it touched. Other protocols pick up changes on the
@@ -41,6 +46,7 @@ next server restart.
 | `dnp3_devices` | DNP3 device with `points` | `name` |
 | `bacnet_devices` | BACnet device with `objects` | `name` |
 | `voltrus_plc_devices` | Voltrus PLC device with `tags` | `name` |
+| `device_templates` | device template (Modbus registers or BACnet objects) of source `local` or `catalog:<url>` | `template_id` + `version` + `source` |
 | `sim_profiles` | simulation profile | `name` |
 | `scripts` | script | `name` |
 | `tags` | data source: limits, alarm thresholds, ISA-18.2 delays, write policy, `source_config` | `ref` = `device/key` |
@@ -72,6 +78,50 @@ logs, annotations and shift handovers.
 **Not in the database, so not in a project:** the server's own `config.yaml`
 (listen address, MQTT broker, SMTP, the `retention:` tiers, HA, TLS). Per-camera
 snapshot retention is part of `cameras`.
+
+### Device templates
+
+`device_templates` carries the library of [device templates](device-templates.md)
+that belong to the installation: those saved from a device or imported from a file
+(`source: local`) and those imported from a catalog (`source: catalog:<url>`). The
+built-in templates ship with the server and are never exported; a project that lists
+one (`source: builtin`) is invalid. A template is identified by `template_id`,
+`version` and `source` together, so two versions of one template, or the same id
+from two catalogs, are separate entities.
+
+The entity is the template file with its `format` line left out and `source` added:
+the same fields, the same validation (semantic version, register types and areas,
+unique names, ...) and the same defaults the template routes apply. A template a
+hand-written project leaves short (no `port`, `unit_id`, `endianness`,
+`interval_ms`, `license`) is stored and exported with those filled in, so applying
+the exported file again changes nothing.
+
+```yaml
+device_templates:
+- template_id: acme-pm100
+  version: 1.0.0
+  source: local
+  manufacturer: Acme
+  model: PM100
+  protocol: modbus
+  description: Power meter
+  verified: true
+  verified_notes: Firmware 2.1 at site A
+  quirks: [Word order is swapped]
+  port: 1502
+  interval_ms: 2000
+  unit_id: 3
+  endianness: swapped
+  registers:
+  - {name: voltage, offset: 0, register_type: float32, register_area: holding, scale: 1.0, unit: V}
+  - {name: energy, offset: 2, register_type: int32, register_area: input, scale: 0.1, writable: true}
+```
+
+Devices created from a template do not remember it: the device carries its own
+registers (`modbus_devices`), so a project stays complete without the template.
+In **replace** mode templates the project does not list are deleted like any other
+entity, so an old project without a `device_templates` section removes the stored
+local and catalog templates; use merge for partial files.
 
 Derived columns are recomputed on import the way the API does when saving: a
 script's syntax error, and a custom metric's `tag_refs` and validation error.
@@ -119,7 +169,7 @@ tags/<device>.yaml            a list: all tags of one device
 screens/<id>.yaml             flows/<id>.yaml   scripts/<name>.yaml   recipes/<name>.yaml
 sim_profiles.yaml  notifications.yaml  webhooks.yaml  egress_jobs.yaml  reports.yaml
 cameras.yaml  hub_sites.yaml  equipment_templates.yaml  shifts.yaml
-custom_metrics.yaml  assets.yaml   (each a list)
+device_templates.yaml  custom_metrics.yaml  assets.yaml   (each a list)
 settings.yaml                 a mapping
 ```
 
@@ -216,6 +266,23 @@ modbus_devices:
     scale: 1.0
   - name: power
     address: 40005
+    register_type: float32
+    register_area: holding
+    scale: 1.0
+device_templates:
+- template_id: acme-pm100
+  version: 1.0.0
+  source: local
+  manufacturer: Acme
+  model: PM100
+  protocol: modbus
+  port: 502
+  interval_ms: 1000
+  unit_id: 1
+  endianness: big
+  registers:
+  - name: voltage
+    offset: 0
     register_type: float32
     register_area: holding
     scale: 1.0

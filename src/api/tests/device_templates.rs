@@ -41,7 +41,7 @@ async fn call(
     send_request(app, method, uri, None, Some(cookie), body).await
 }
 
-fn modbus_template(id: &str, version: &str) -> Value {
+pub(super) fn modbus_template(id: &str, version: &str) -> Value {
     json!({
         "format": "voltrus-device-template/1",
         "template_id": id,
@@ -775,7 +775,7 @@ async fn viewers_read_but_do_not_write() {
 }
 
 /// A catalog served from a local socket: `files` maps a path to its bytes.
-async fn serve(files: HashMap<String, Vec<u8>>) -> String {
+pub(super) async fn serve(files: HashMap<String, Vec<u8>>) -> String {
     let files = std::sync::Arc::new(files);
     let app = Router::new().fallback(move |uri: Uri| {
         let files = files.clone();
@@ -794,7 +794,7 @@ async fn serve(files: HashMap<String, Vec<u8>>) -> String {
     format!("http://{addr}")
 }
 
-fn entry(t: &Value, path: &str, sha: &str) -> Value {
+pub(super) fn entry(t: &Value, path: &str, sha: &str) -> Value {
     json!({
         "template_id": t["template_id"], "manufacturer": t["manufacturer"], "model": t["model"],
         "protocol": t["protocol"], "version": t["version"], "verified": t["verified"],

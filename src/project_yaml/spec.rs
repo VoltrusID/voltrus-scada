@@ -632,6 +632,73 @@ static HUB_SITES: Plain = Plain {
     hook: None,
 };
 
+// ── Device templates ──
+
+const TEMPLATE_REGISTER: &[Field] = &[
+    Field::r("name", Text),
+    Field::r("offset", Int),
+    Field::d("register_type", Text, S("float32")),
+    Field::d("register_area", Text, S("holding")),
+    Field::d("scale", Real, R(1.0)),
+    Field::d("unit", Text, S("")).lean(),
+    Field::d("description", Text, S("")).lean(),
+    Field::d("writable", Bool, B(false)).lean(),
+];
+
+const TEMPLATE_OBJECT: &[Field] = &[
+    Field::r("object_type", Text),
+    Field::r("object_instance", Int),
+    Field::d("property", Text, S("presentValue")),
+    Field::r("name", Text),
+    Field::d("display_name", Text, S("")).lean(),
+    Field::d("cov_increment", Real, R(0.0)).lean(),
+    Field::d("unit", Text, S("")).lean(),
+    Field::d("description", Text, S("")).lean(),
+    Field::d("writable", Bool, B(false)).lean(),
+];
+
+/// The stored `body` is not a field of a project: the template's own fields
+/// stand in for it (see `templates.rs`).
+const DEVICE_TEMPLATE: &[Field] = &[
+    Field::r("template_id", Text),
+    Field::r("version", Text),
+    Field::r("source", Text),
+    Field::r("manufacturer", Text),
+    Field::r("model", Text),
+    Field::r("protocol", Text),
+    Field::d("description", Text, S("")).virt().lean(),
+    Field::d("verified", Bool, B(false)).lean(),
+    Field::d("verified_notes", Text, S("")).virt().lean(),
+    Field::d("quirks", Json, Arr).virt().lean(),
+    Field::d("license", Text, S("CC-BY-4.0")).virt().lean(),
+    Field::o("port", Int).virt(),
+    Field::o("interval_ms", Int).virt(),
+    Field::o("unit_id", Int).virt(),
+    Field::o("endianness", Text).virt(),
+    Field::d("registers", List(TEMPLATE_REGISTER), Arr)
+        .virt()
+        .lean(),
+    Field::o("cov_enabled", Bool).virt(),
+    Field::o("cov_lifetime", Int).virt(),
+    Field::d("objects", List(TEMPLATE_OBJECT), Arr)
+        .virt()
+        .lean(),
+    Field::o("body", Json),
+];
+
+static DEVICE_TEMPLATES: Plain = Plain {
+    table: "device_templates",
+    pk: Pk::Auto,
+    stamp: Stamp::Secs,
+    created: Some("created_at"),
+    updated: None,
+    children: &[],
+    hook: Some(Hook {
+        export: super::templates::export,
+        import: super::templates::import,
+    }),
+};
+
 // ── Equipment, shifts, metrics, assets ──
 
 const EQUIPMENT_TEMPLATE: &[Field] = &[
@@ -934,6 +1001,16 @@ pub static SECTIONS: &[Section] = &[
         key: &["name"],
         unique: false,
         kind: Kind::Plain(&PLC),
+    },
+    Section {
+        name: "device_templates",
+        label: "device template",
+        path: "device_templates",
+        layout: Layout::File,
+        fields: DEVICE_TEMPLATE,
+        key: &["template_id", "version", "source"],
+        unique: true,
+        kind: Kind::Plain(&DEVICE_TEMPLATES),
     },
     Section {
         name: "sim_profiles",

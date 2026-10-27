@@ -16,7 +16,7 @@ mod config_snapshots;
 mod csv_import;
 pub(crate) mod data;
 pub(crate) mod data_sources;
-mod device_templates;
+pub(crate) mod device_templates;
 #[cfg(feature = "dnp3")]
 mod dnp3_devices;
 mod edr_compat;

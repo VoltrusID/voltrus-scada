@@ -51,6 +51,10 @@ INSERT INTO bacnet_objects (device_id,object_type,object_instance,property,name,
 INSERT INTO voltrus_plc_devices (id,name,url,transport,interval_ms,enabled,created_at) VALUES (1,'Voltrus PLC','plc://10.0.0.10','grpc',1000,1,100);
 INSERT INTO voltrus_plc_tags (device_id,variable_name,display_name,data_type,created_at) VALUES (1,'MAIN.counter','Counter','DINT',100);
 INSERT INTO sim_profiles (id,name,data_type,config,created_at) VALUES (1,'noisy','float','{"period":30,"amp":2}',100);
+INSERT INTO device_templates (template_id,source,version,manufacturer,model,protocol,verified,body,created_at) VALUES
+ ('acme-pm100','local','1.0.0','Acme','PM100','modbus',1,'{"format":"voltrus-device-template/1","template_id":"acme-pm100","manufacturer":"Acme","model":"PM100","protocol":"modbus","description":"Power meter","version":"1.0.0","verified":true,"verified_notes":"Firmware 2.1 at site A","quirks":["Word order is swapped","Offsets are 0-based"],"source":"local","license":"CC-BY-4.0","port":1502,"interval_ms":2000,"unit_id":3,"endianness":"swapped","registers":[{"name":"voltage","offset":0,"register_type":"float32","register_area":"holding","scale":1.0,"unit":"V","description":"Phase voltage"},{"name":"energy","offset":2,"register_type":"int32","register_area":"input","scale":0.1,"writable":true}]}',100),
+ ('acme-pm100','local','1.1.0','Acme','PM100','modbus',0,'{"format":"voltrus-device-template/1","template_id":"acme-pm100","manufacturer":"Acme","model":"PM100","protocol":"modbus","version":"1.1.0","source":"local","port":502,"interval_ms":1000,"unit_id":1,"endianness":"big","registers":[{"name":"voltage","offset":0}]}',101),
+ ('vav-1','catalog:https://catalog.example.com/index.json','2.0.0','Globex','VAV-1','bacnet',0,'{"format":"voltrus-device-template/1","template_id":"vav-1","manufacturer":"Globex","model":"VAV-1","protocol":"bacnet","version":"2.0.0","source":"catalog:https://catalog.example.com/index.json","license":"CC0-1.0","port":47808,"interval_ms":5000,"cov_enabled":true,"cov_lifetime":600,"objects":[{"object_type":"analogInput","object_instance":1,"property":"presentValue","name":"room_temp","display_name":"Room temperature","cov_increment":0.5,"unit":"degC"},{"object_type":"binaryValue","object_instance":2,"name":"occupied","writable":true}]}',102);
 
 INSERT INTO data_sources (id,key,name,unit,color,min_val,max_val,warn_val,crit_val,base_val,sort_order,decimals,source_type,source_config,device_id,equipment_id,chart_type,writable,write_min,write_max,write_max_rate,write_requires_reason,write_deadband,sim_value,path,on_delay_secs,off_delay_secs) VALUES
  (1,'voltage','Voltage','V','#f59e0b',0,450,400,420,380,0,1,'modbus','{}','plts_1',NULL,'sparkline',0,NULL,NULL,NULL,0,NULL,NULL,'site/plts1/voltage',5,10),
@@ -198,6 +202,7 @@ const CONFIG_TABLES: &[&str] = &[
     "bacnet_objects",
     "voltrus_plc_devices",
     "voltrus_plc_tags",
+    "device_templates",
     "sim_profiles",
     "scripts",
     "data_sources",
@@ -1031,4 +1036,209 @@ fn script_sources_with_awkward_whitespace_survive_yaml() {
             "{doc}"
         );
     }
+}
+
+// ── Device templates ──
+
+const MINIMAL_TEMPLATE: &str = r#"
+format: voltrus-project/1
+device_templates:
+- template_id: bare
+  version: 1.0.0
+  source: local
+  manufacturer: Acme
+  model: Bare
+  protocol: modbus
+  registers:
+  - {name: v, offset: 0}
+"#;
+
+async fn stored_templates(storage: &Storage) -> Vec<crate::device_templates::DeviceTemplate> {
+    let mut all = storage.list_device_templates().await.unwrap();
+    all.sort_by(|a, b| {
+        (&a.template_id, &a.source, &a.version).cmp(&(&b.template_id, &b.source, &b.version))
+    });
+    all
+}
+
+#[tokio::test]
+async fn device_templates_export_as_flat_template_fields() {
+    let a = seeded().await;
+    let doc = export_project_yaml(&a).await.unwrap();
+    let text = to_yaml(&doc);
+    assert!(!text.contains("body:"), "the stored body leaked:\n{text}");
+    assert!(!text.contains("voltrus-device-template/1"));
+    let templates = doc.entities("device_templates");
+    assert_eq!(templates.len(), 3);
+    let keys: Vec<String> = templates
+        .iter()
+        .map(|t| super::export::entity_key(spec::section("device_templates").unwrap(), t))
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "acme-pm100/1.0.0/local",
+            "acme-pm100/1.1.0/local",
+            "vav-1/2.0.0/catalog:https://catalog.example.com/index.json",
+        ]
+    );
+    let pm = &templates[0];
+    assert_eq!(
+        pm.get("endianness").and_then(|v| v.as_str()),
+        Some("swapped")
+    );
+    assert_eq!(
+        pm.get("registers")
+            .and_then(|v| v.as_sequence())
+            .map(|s| s.len()),
+        Some(2)
+    );
+    // Defaults are omitted, so a register with only a name and an offset stays short.
+    let second = templates[1]
+        .get("registers")
+        .and_then(|v| v.as_sequence())
+        .unwrap()[0]
+        .as_mapping()
+        .unwrap();
+    assert!(second.get("unit").is_none() && second.get("writable").is_none());
+}
+
+#[tokio::test]
+async fn device_templates_import_recreates_identical_templates() {
+    let a = seeded().await;
+    let doc = parse_project_yaml(&export_text(&a).await).unwrap();
+    let b = fresh();
+    let plan = apply_import_with_env(&b, &doc, Mode::Merge, env_for(&a).await)
+        .await
+        .unwrap();
+    assert_eq!(plan.sections["device_templates"].create, 3);
+
+    let (before, after) = (stored_templates(&a).await, stored_templates(&b).await);
+    assert_eq!(before.len(), 3);
+    assert_eq!(
+        before, after,
+        "templates changed on the way through a project"
+    );
+    // The row columns the template routes search on match the body.
+    assert_eq!(
+        scalar_text(
+            &b,
+            "SELECT group_concat(template_id || ':' || manufacturer || ':' || protocol || ':' || verified, ',') FROM (SELECT * FROM device_templates ORDER BY template_id, version)"
+        )
+        .await,
+        "acme-pm100:Acme:modbus:1,acme-pm100:Acme:modbus:0,vav-1:Globex:bacnet:0"
+    );
+}
+
+#[tokio::test]
+async fn hand_written_template_is_stored_normalised_and_then_unchanged() {
+    let s = fresh();
+    let doc = doc_of(MINIMAL_TEMPLATE);
+    let plan = apply_import(&s, &doc, Mode::Merge).await.unwrap();
+    assert_eq!(plan.totals.create, 1);
+
+    let stored = stored_templates(&s).await;
+    assert_eq!(stored.len(), 1);
+    // The routes' defaults were filled in, exactly as for a template saved over HTTP.
+    assert_eq!(stored[0].port, Some(502));
+    assert_eq!(stored[0].unit_id, Some(1));
+    assert_eq!(stored[0].endianness.as_deref(), Some("big"));
+    assert_eq!(stored[0].interval_ms, Some(1000));
+    assert_eq!(stored[0].license, "CC-BY-4.0");
+    assert_eq!(stored[0].format, "voltrus-device-template/1");
+
+    // Applying the same file again has nothing to do, and the export is stable.
+    let again = plan_import(&s, &doc, Mode::Replace).await.unwrap();
+    assert!(!again.has_changes(), "{}", again.render());
+    let exported = export_project_yaml(&s).await.unwrap();
+    assert_eq!(
+        exported.entities("device_templates"),
+        doc.entities("device_templates")
+    );
+}
+
+#[tokio::test]
+async fn device_template_update_and_replace_semantics() {
+    let s = fresh();
+    apply_import(&s, &doc_of(MINIMAL_TEMPLATE), Mode::Merge)
+        .await
+        .unwrap();
+
+    let changed = MINIMAL_TEMPLATE.replace("model: Bare", "model: Bare 2");
+    let plan = apply_import(&s, &doc_of(&changed), Mode::Merge)
+        .await
+        .unwrap();
+    assert_eq!(plan.totals.update, 1);
+    assert_eq!(plan.changes[0].fields, ["model"]);
+    assert_eq!(stored_templates(&s).await[0].model, "Bare 2");
+
+    // A project that lists other things leaves templates alone in merge mode...
+    apply_import(&s, &doc_of(SMALL), Mode::Merge).await.unwrap();
+    assert_eq!(stored_templates(&s).await.len(), 1);
+    // ...and deletes them in replace mode, like every other section.
+    let plan = apply_import(&s, &doc_of(SMALL), Mode::Replace)
+        .await
+        .unwrap();
+    assert_eq!(plan.sections["device_templates"].delete, 1);
+    assert!(stored_templates(&s).await.is_empty());
+}
+
+#[tokio::test]
+async fn invalid_device_templates_are_reported_with_their_key() {
+    let s = fresh();
+    let cases = [
+        (
+            MINIMAL_TEMPLATE.replace("source: local", "source: builtin"),
+            "built-in templates",
+        ),
+        (
+            MINIMAL_TEMPLATE.replace("source: local", "source: remote"),
+            "must be 'local' or 'catalog:<url>'",
+        ),
+        (
+            MINIMAL_TEMPLATE.replace(
+                "{name: v, offset: 0}",
+                "{name: v, offset: 0, register_type: float16}",
+            ),
+            "register_type 'float16'",
+        ),
+        (
+            MINIMAL_TEMPLATE.replace("version: 1.0.0", "version: one"),
+            "semantic version",
+        ),
+        (
+            MINIMAL_TEMPLATE.replace("protocol: modbus", "protocol: bacnet"),
+            "registers do not apply to a bacnet template",
+        ),
+        (
+            MINIMAL_TEMPLATE.replace("  model: Bare", "  model: Bare\n  body: {x: 1}"),
+            "`body` is how the server stores a template",
+        ),
+    ];
+    for (text, expected) in cases {
+        let doc = doc_of(&text);
+        let err = plan_import(&s, &doc, Mode::Merge).await.unwrap_err();
+        let issues: Vec<String> = invalid(&err).0.iter().map(|i| i.to_string()).collect();
+        assert!(
+            issues
+                .iter()
+                .any(|m| m.contains(expected) && m.contains("device_templates[bare/")),
+            "expected '{expected}' in {issues:?}"
+        );
+    }
+    assert!(stored_templates(&s).await.is_empty());
+}
+
+#[tokio::test]
+async fn duplicate_device_template_keys_are_rejected() {
+    let doc = doc_of(&format!(
+        "{MINIMAL_TEMPLATE}- template_id: bare\n  version: 1.0.0\n  source: local\n  manufacturer: Acme\n  model: Other\n  protocol: modbus\n  registers:\n  - {{name: v, offset: 0}}\n"
+    ));
+    let err = plan_import(&fresh(), &doc, Mode::Merge).await.unwrap_err();
+    assert!(
+        invalid(&err)
+            .0
+            .iter()
+            .any(|i| i.message.contains("duplicate device template"))
+    );
 }

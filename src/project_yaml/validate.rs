@@ -236,6 +236,11 @@ fn check_plain(ctx: &mut Ctx<'_>, sec: &Section, e: &Mapping, at: &str) {
                 );
             }
         }
+        super::templates::SECTION => {
+            for message in super::templates::check(e) {
+                ctx.error(at.to_string(), message);
+            }
+        }
         _ => {}
     }
 }

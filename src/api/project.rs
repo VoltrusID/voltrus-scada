@@ -2,7 +2,9 @@
 //!
 //! The format, validation and secret handling live in `crate::project_yaml`;
 //! these handlers add the HTTP framing, a pre-import configuration snapshot and
-//! the poller restarts a live server needs after devices changed.
+//! the poller restarts a live server needs after devices changed. The MCP
+//! project tools call [`export_yaml`] and [`run_import`], so both entry points
+//! snapshot, import, resync pollers and audit the same way.
 
 use axum::Json;
 use axum::extract::{Extension, Query, State};
@@ -12,7 +14,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{AppError, AppState, AuthUser};
-use crate::project_yaml::{self, InvalidProject, Mode};
+use crate::project_yaml::{self, ImportPlan, InvalidProject, Mode};
 
 #[derive(Debug, Deserialize)]
 pub struct ImportQuery {
@@ -29,6 +31,22 @@ fn truthy(v: &Option<String>) -> bool {
     )
 }
 
+/// `merge` when absent or empty, else the named mode.
+pub fn parse_mode(mode: Option<&str>) -> Result<Mode, AppError> {
+    match mode {
+        None | Some("") => Ok(Mode::Merge),
+        Some(m) => m
+            .parse()
+            .map_err(|e: anyhow::Error| AppError::bad_request(e.to_string())),
+    }
+}
+
+/// The whole configuration as project YAML.
+pub async fn export_yaml(state: &AppState) -> anyhow::Result<String> {
+    let doc = project_yaml::export_project_yaml(&state.storage).await?;
+    Ok(project_yaml::to_yaml(&doc))
+}
+
 /// GET /api/v1/project/export -- whole configuration as one YAML document
 #[utoipa::path(
     get,
@@ -41,8 +59,7 @@ fn truthy(v: &Option<String>) -> bool {
     security(("api_key" = []), ("cookie_auth" = []))
 )]
 pub async fn export_project(State(state): State<AppState>) -> Result<Response, AppError> {
-    let doc = project_yaml::export_project_yaml(&state.storage).await?;
-    let yaml = project_yaml::to_yaml(&doc);
+    let yaml = export_yaml(&state).await?;
     Ok((
         [
             (header::CONTENT_TYPE, "application/yaml; charset=utf-8"),
@@ -56,19 +73,97 @@ pub async fn export_project(State(state): State<AppState>) -> Result<Response, A
         .into_response())
 }
 
-fn invalid_response(e: &InvalidProject) -> Response {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(json!({
-            "error": e.to_string(),
-            "issues": e.0,
-        })),
-    )
-        .into_response()
+/// Why an import did not run.
+pub enum ImportError {
+    /// The YAML does not parse as a project, or the project fails validation.
+    Invalid(InvalidProject),
+    /// The text is not a project at all (YAML syntax, wrong format).
+    Unreadable(String),
+    /// The server failed while planning or writing.
+    Failed(anyhow::Error),
+}
+
+impl std::fmt::Display for ImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ImportError::Invalid(e) => e.fmt(f),
+            ImportError::Unreadable(m) => f.write_str(m),
+            ImportError::Failed(e) => write!(f, "{e:#}"),
+        }
+    }
+}
+
+impl IntoResponse for ImportError {
+    fn into_response(self) -> Response {
+        match self {
+            ImportError::Invalid(e) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": e.to_string(),
+                    "issues": e.0,
+                })),
+            )
+                .into_response(),
+            ImportError::Unreadable(m) => AppError::bad_request(m).into_response(),
+            ImportError::Failed(e) => AppError(e).into_response(),
+        }
+    }
 }
 
 fn find_invalid(e: &anyhow::Error) -> Option<&InvalidProject> {
     e.chain().find_map(|c| c.downcast_ref::<InvalidProject>())
+}
+
+/// Parse `body` and plan (`dry_run`) or apply it. An applied import takes a
+/// rollback snapshot first, restarts the Modbus pollers it touched and is
+/// audit-logged; a dry run writes nothing.
+pub async fn run_import(
+    state: &AppState,
+    auth: &AuthUser,
+    body: &str,
+    mode: Mode,
+    dry_run: bool,
+) -> Result<ImportPlan, ImportError> {
+    let doc = project_yaml::parse_project_yaml(body).map_err(|e| match find_invalid(&e) {
+        Some(invalid) => ImportError::Invalid(invalid.clone()),
+        None => ImportError::Unreadable(format!("{e:#}")),
+    })?;
+
+    let result = if dry_run {
+        project_yaml::plan_import(&state.storage, &doc, mode).await
+    } else {
+        // Rollback point: the snapshot covers the tables snapshots know about.
+        let _ = state
+            .storage
+            .create_config_snapshot(
+                Some("pre-import"),
+                Some("Automatic snapshot before a project import"),
+                "import",
+                Some(&auth.username),
+            )
+            .await;
+        project_yaml::apply_import(&state.storage, &doc, mode).await
+    };
+    let plan = result.map_err(|e| match find_invalid(&e) {
+        Some(invalid) => ImportError::Invalid(invalid.clone()),
+        None => ImportError::Failed(e),
+    })?;
+
+    if !dry_run {
+        #[cfg(feature = "modbus")]
+        sync_modbus_pollers(state, &plan).await;
+
+        state.audit_logger.log(crate::security::AuditEvent {
+            action: "project_import".to_string(),
+            username: auth.username.clone(),
+            resource: "project".to_string(),
+            details: Some(format!(
+                "mode={mode:?} create={} update={} delete={}",
+                plan.totals.create, plan.totals.update, plan.totals.delete
+            )),
+        });
+    }
+    Ok(plan)
 }
 
 /// POST /api/v1/project/import?mode=merge|replace&dry_run=true -- YAML body
@@ -94,64 +189,13 @@ pub async fn import_project(
     Query(q): Query<ImportQuery>,
     body: String,
 ) -> Result<Response, AppError> {
-    let mode: Mode = match q.mode.as_deref() {
-        None | Some("") => Mode::Merge,
-        Some(m) => m
-            .parse()
-            .map_err(|e: anyhow::Error| AppError::bad_request(e.to_string()))?,
-    };
-    let dry_run = truthy(&q.dry_run);
-
-    let doc = match project_yaml::parse_project_yaml(&body) {
-        Ok(d) => d,
-        Err(e) => {
-            return Ok(match find_invalid(&e) {
-                Some(invalid) => invalid_response(invalid),
-                None => AppError::bad_request(format!("{e:#}")).into_response(),
-            });
-        }
-    };
-
-    let result = if dry_run {
-        project_yaml::plan_import(&state.storage, &doc, mode).await
-    } else {
-        // Rollback point: the snapshot covers the tables snapshots know about.
-        let _ = state
-            .storage
-            .create_config_snapshot(
-                Some("pre-import"),
-                Some("Automatic snapshot before a project import"),
-                "import",
-                Some(&auth.username),
-            )
-            .await;
-        project_yaml::apply_import(&state.storage, &doc, mode).await
-    };
-    let plan = match result {
-        Ok(p) => p,
-        Err(e) => {
-            return Ok(match find_invalid(&e) {
-                Some(invalid) => invalid_response(invalid),
-                None => AppError(e).into_response(),
-            });
-        }
-    };
-
-    if !dry_run {
-        #[cfg(feature = "modbus")]
-        sync_modbus_pollers(&state, &plan).await;
-
-        state.audit_logger.log(crate::security::AuditEvent {
-            action: "project_import".to_string(),
-            username: auth.username.clone(),
-            resource: "project".to_string(),
-            details: Some(format!(
-                "mode={mode:?} create={} update={} delete={}",
-                plan.totals.create, plan.totals.update, plan.totals.delete
-            )),
-        });
-    }
-    Ok(Json(plan).into_response())
+    let mode = parse_mode(q.mode.as_deref())?;
+    Ok(
+        match run_import(&state, &auth, &body, mode, truthy(&q.dry_run)).await {
+            Ok(plan) => Json(plan).into_response(),
+            Err(e) => e.into_response(),
+        },
+    )
 }
 
 /// Pollers run from a copy of the device configuration; bring them in line

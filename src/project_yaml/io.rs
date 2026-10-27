@@ -154,6 +154,9 @@ fn canonicalize(sec: &Section, e: &mut Mapping) {
     {
         e.remove("ref");
     }
+    if sec.name == super::templates::SECTION {
+        super::templates::canonicalize(e);
+    }
 }
 
 // ── Files ──

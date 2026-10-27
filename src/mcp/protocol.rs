@@ -23,7 +23,9 @@ const INSTRUCTIONS: &str = "Voltrus SCADA: industrial monitoring server. \
 Tags (data sources) are the points that carry values; devices (Modbus) poll registers; \
 a tag with source_type \"modbus\", device_id = the device id and key = the register name shows that register's live value. \
 Read tools are always available; write tools (create/delete/update/acknowledge/start/stop/write_tag) need an integration API key or an operator login. \
-read_live_values gives current values, read_history gives trends. write_tag queues a command and honours the tag's write policy.";
+read_live_values gives current values, read_history gives trends. write_tag queues a command and honours the tag's write policy. \
+Device templates describe known hardware (registers or objects): list_device_templates finds one, instantiate_device_template creates the device. \
+import_catalog_template and the project_* tools (YAML export, import plan, apply) are limited to a signed-in admin; API and integration keys are refused.";
 
 pub fn error_response(id: Value, code: i64, message: impl Into<String>) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message.into()}})
@@ -124,7 +126,7 @@ fn tools_list() -> Value {
     let list: Vec<Value> = tools::registry()
         .iter()
         .map(|tool| {
-            let write = tool.access == Access::Write;
+            let read_only = tool.access.read_only();
             json!({
                 "name": tool.name,
                 "title": tool.title,
@@ -132,7 +134,7 @@ fn tools_list() -> Value {
                 "inputSchema": (tool.input_schema)(),
                 "annotations": {
                     "title": tool.title,
-                    "readOnlyHint": !write,
+                    "readOnlyHint": read_only,
                     "destructiveHint": tool.destructive,
                     "openWorldHint": false,
                 },
@@ -157,6 +159,24 @@ async fn tools_call(state: &AppState, user: &AuthUser, id: Value, params: Value)
         return error_response(id, INVALID_PARAMS, format!("unknown tool: {name}"));
     };
 
+    if tool.access.admin_only() && user.role != "admin" {
+        state.audit_logger.log(crate::security::AuditEvent {
+            action: format!("mcp:{name}:denied"),
+            username: user.username.clone(),
+            resource: format!("mcp_tool:{name}"),
+            details: Some(format!("role={}", user.role)),
+        });
+        return error_response(
+            id,
+            FORBIDDEN,
+            format!(
+                "tool '{name}' reads or replaces the whole configuration and is limited to a \
+                 signed-in admin; this credential has role '{}'. API and integration keys cannot \
+                 call it.",
+                user.role
+            ),
+        );
+    }
     if tool.access == Access::Write && !role_allows_operational_writes(&user.role) {
         state.audit_logger.log(crate::security::AuditEvent {
             action: format!("mcp:{name}:denied"),
@@ -185,7 +205,7 @@ async fn tools_call(state: &AppState, user: &AuthUser, id: Value, params: Value)
         .unwrap_or_default();
     let outcome = (tool.call)(&ctx, arguments).await;
 
-    if tool.access == Access::Write {
+    if tool.access.audited() {
         let (status, detail) = match &outcome {
             Ok(_) => ("ok", String::new()),
             Err(e) => (

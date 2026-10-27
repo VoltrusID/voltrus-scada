@@ -88,7 +88,10 @@ the key travels in a header.
 
 Read tools work with any authenticated principal. Write tools need the `admin`,
 `demo` or `integration` role (the rule the REST operational write routes use);
-for a read-only key they fail with JSON-RPC error `-32003`.
+for a read-only key they fail with JSON-RPC error `-32003`. Tools marked
+**admin** are for a signed-in admin session only, the rule the REST routes behind
+the admin guard use: API keys and integration keys get `-32003` and a message
+saying so.
 
 | Tool | Access | What it does |
 | --- | --- | --- |
@@ -113,12 +116,34 @@ for a read-only key they fail with JSON-RPC error `-32003`.
 | `start_flow` / `stop_flow` | write | Enable or disable a flow. |
 | `write_tag` | write | Queue a setpoint write through the tag's write policy. |
 | `get_command_status` | read | Outcome of a queued write. |
+| `list_device_templates` | read | Search the device template library (`q`, `manufacturer`, `protocol`, `source`). |
+| `get_device_template` | read | One template in full: defaults, registers or objects, quirks. |
+| `instantiate_device_template` | write | Create a device from a template (name, ip, optional overrides) and start polling it. BACnet needs an admin login, as on the BACnet routes. |
+| `save_device_as_template` | write | Save an existing device and its registers or objects as a local template. |
+| `list_template_catalog` | read | List the public template catalog the server is configured to use. Takes no URL. |
+| `import_catalog_template` | **admin** | Download a catalog template, check its sha256 and store it. Takes no URL. |
+| `project_export_yaml` | **admin** | The whole configuration as one `voltrus-project/1` YAML document (secrets as `${ENV}` references). |
+| `project_plan_import` | **admin** | Dry run of a project import: what would be created, updated and deleted. Writes nothing. |
+| `project_apply_import` | **admin** | Import a project (`mode` merge or replace) in one transaction, after a rollback snapshot. |
 
 Every tool publishes a JSON Schema (`inputSchema`) with `additionalProperties:
 false`, and returns structured JSON (`structuredContent`, mirrored as text).
 Mistakes in the arguments or refusals by the server (write policy, naming
 convention, unknown ids) come back as a result with `isError: true` and a message
 the model can act on; they are not HTTP failures.
+
+Device templates are known hardware: an agent finds one with
+`list_device_templates`, creates the device with `instantiate_device_template`
+and then tags its registers with `create_tag`. See
+[device-templates.md](device-templates.md). The catalog tools only ever use the
+catalog URL configured on the server; the model cannot supply one.
+
+The project tools work on [the YAML project format](project-format.md). Export
+and import cover every device, tag, screen and flow, so they are admin-only even
+though `project_export_yaml` only reads. The intended order is
+`project_export_yaml`, edit, `project_plan_import`, review the plan with the
+user, `project_apply_import`; `replace` mode deletes whatever the document does
+not list.
 
 A Modbus register becomes a tag only through `create_tag` with
 `source_type: "modbus"`, `device_id` = the device id and `key` = the register
@@ -140,7 +165,10 @@ value arrives.
   detection); no credentials is 401 with `WWW-Authenticate: Bearer`. The global
   rate limiter, 1 MB body limit and security headers apply to `/mcp`.
 - **Least privilege.** Admin-only operations (users, roles, API keys, licence,
-  security settings, backups) have no tool. An `integration` key can do what the
+  security settings, backups) have no tool. The exceptions are the whole-project
+  tools and `import_catalog_template`, which are callable only with an admin
+  session: an `integration` key is refused with `-32003` even though it may write.
+  An `integration` key can do what the
   operational REST routes allow: change devices, tags, screens, flows, and write
   setpoints. Treat it like an operator login; give read-only agents an `api` key.
   Revoke it from the API keys page when the agent is done.
@@ -149,7 +177,8 @@ value arrives.
   deadband, rate limit and reason requirements are enforced. Tool descriptions
   tell the model to write only on explicit instruction, but the policy is the
   control, not the prompt.
-- **Audit.** Every write tool call is logged to the audit log with the
+- **Audit.** Every write tool call, and every call of an admin tool (including
+  `project_export_yaml` and the dry run), is logged to the audit log with the
   principal (`api_key:<id>` or the username), the tool, the argument names and
   the outcome; refused calls are logged as `mcp:<tool>:denied`. The underlying
   handlers add their own entries as for REST. Argument values are not logged.
@@ -165,7 +194,8 @@ value arrives.
 ## Extending
 
 Tools live in `src/mcp/tools/*.rs`. A module returns a `Vec<Tool>` (name,
-description, input schema, access level, async function) and is listed in
+description, input schema, access level `Read`, `Write`, `AdminRead` or
+`AdminWrite`, async function) and is listed in
 `mcp::tools::registry()`. Call the existing axum handler through
 `from_handler(...)` so a new tool inherits the REST route's validation and
 behaviour instead of copying it.

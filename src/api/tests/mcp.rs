@@ -19,6 +19,8 @@ const WRITE_TOOLS: &[&str] = &[
     "start_flow",
     "stop_flow",
     "write_tag",
+    "instantiate_device_template",
+    "save_device_as_template",
 ];
 
 const READ_TOOLS: &[&str] = &[
@@ -32,7 +34,21 @@ const READ_TOOLS: &[&str] = &[
     "list_screens",
     "list_flows",
     "get_command_status",
+    "list_device_templates",
+    "get_device_template",
+    "list_template_catalog",
 ];
+
+/// Admin sessions only; API and integration keys are refused.
+const ADMIN_TOOLS: &[&str] = &[
+    "import_catalog_template",
+    "project_export_yaml",
+    "project_plan_import",
+    "project_apply_import",
+];
+
+/// Admin-only tools that change state (the others only read).
+const ADMIN_WRITE_TOOLS: &[&str] = &["import_catalog_template", "project_apply_import"];
 
 enum Auth<'a> {
     None,
@@ -134,18 +150,29 @@ async fn make_key(app: &Router, cookie: &str, role: &str) -> (i64, String) {
 
 struct Fixture {
     app: Router,
+    storage: Storage,
     api_key: String,
     integration_key: String,
     cookie: String,
 }
 
+impl Fixture {
+    /// Cookie header value of the admin session.
+    fn admin_cookie(&self) -> String {
+        format!("voltrus_token={}", self.cookie)
+    }
+}
+
 async fn fixture() -> Fixture {
-    let app = test_app_with_seeded_admin().await;
+    let state = seeded_admin_app_state().await;
+    let storage = state.storage.clone();
+    let app = create_router(state);
     let cookie = admin_cookie(&app).await;
     let (_, api_key) = make_key(&app, &cookie, "api").await;
     let (_, integration_key) = make_key(&app, &cookie, "integration").await;
     Fixture {
         app,
+        storage,
         api_key,
         integration_key,
         cookie,
@@ -344,7 +371,7 @@ async fn mcp_tools_list_has_every_tool_with_a_schema() {
     let (_, resp) = rpc(&f.app, Auth::Bearer(&f.api_key), "tools/list", json!({})).await;
     let tools = resp["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for expected in READ_TOOLS.iter().chain(WRITE_TOOLS) {
+    for expected in READ_TOOLS.iter().chain(WRITE_TOOLS).chain(ADMIN_TOOLS) {
         assert!(
             names.contains(expected),
             "missing tool {expected}: {names:?}"
@@ -352,10 +379,11 @@ async fn mcp_tools_list_has_every_tool_with_a_schema() {
     }
     assert_eq!(
         names.len(),
-        READ_TOOLS.len() + WRITE_TOOLS.len(),
+        READ_TOOLS.len() + WRITE_TOOLS.len() + ADMIN_TOOLS.len(),
         "{names:?}"
     );
-    // Admin-only operations are not exposed.
+    // Users, roles, API keys, licence and security have no tool; the admin tools
+    // are the project and catalog ones listed above.
     for name in &names {
         for forbidden in ["user", "role", "api_key", "license", "password"] {
             assert!(!name.contains(forbidden), "{name} must not be exposed");
@@ -367,8 +395,8 @@ async fn mcp_tools_list_has_every_tool_with_a_schema() {
         assert!(tool["inputSchema"]["properties"].is_object(), "{name}");
         assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{name}");
         assert!(tool["description"].as_str().unwrap().len() > 40, "{name}");
-        let write = WRITE_TOOLS.contains(&name);
-        assert_eq!(tool["annotations"]["readOnlyHint"], !write, "{name}");
+        let writes = WRITE_TOOLS.contains(&name) || ADMIN_WRITE_TOOLS.contains(&name);
+        assert_eq!(tool["annotations"]["readOnlyHint"], !writes, "{name}");
     }
     // required[] names only declared properties.
     for tool in tools {
@@ -1113,4 +1141,635 @@ async fn mcp_alarms_list_and_acknowledge() {
         acked["alarms"][0]["acknowledged_by"],
         format!("api_key:{int_id}")
     );
+}
+
+// ── Device templates ──
+
+const BUILTIN_PM5560: &str = "schneider-electric-pm5560";
+
+#[tokio::test]
+async fn mcp_template_search_and_get_work_with_an_api_key() {
+    let f = fixture().await;
+    let key = Auth::Bearer(&f.api_key);
+
+    let all = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_device_templates",
+        json!({}),
+    )
+    .await;
+    assert!(all["count"].as_u64().unwrap() >= 1, "{all}");
+    let found = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_device_templates",
+        json!({"q": "pm5560", "protocol": "modbus", "source": "builtin"}),
+    )
+    .await;
+    let row = found["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["template_id"] == BUILTIN_PM5560)
+        .unwrap_or_else(|| panic!("pm5560 not listed: {found}"));
+    assert_eq!(row["source"], "builtin");
+    let none = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_device_templates",
+        json!({"manufacturer": "No Such Maker"}),
+    )
+    .await;
+    assert_eq!(none["count"], 0);
+
+    let t = ok(
+        &f.app,
+        key,
+        "get_device_template",
+        json!({"template_id": BUILTIN_PM5560}),
+    )
+    .await;
+    assert_eq!(t["template_id"], BUILTIN_PM5560);
+    assert_eq!(t["read_only"], true);
+    assert!(!t["registers"].as_array().unwrap().is_empty());
+
+    let missing = tool_err(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "get_device_template",
+        json!({"template_id": "no-such-template"}),
+    )
+    .await;
+    assert!(missing.contains("No device template"), "{missing}");
+    let bad = tool_err(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_device_templates",
+        json!({"colour": "red"}),
+    )
+    .await;
+    assert!(bad.contains("invalid arguments"), "{bad}");
+}
+
+#[cfg(feature = "modbus")]
+#[tokio::test]
+async fn mcp_instantiate_template_with_an_integration_key_and_save_it_back() {
+    let f = fixture().await;
+    let args = json!({
+        "template_id": BUILTIN_PM5560, "name": "Grid meter", "ip": "127.0.0.1", "port": 1, "unit_id": 3
+    });
+
+    // A read-only key may look, not create.
+    let refused = call(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "instantiate_device_template",
+        args.clone(),
+    )
+    .await;
+    assert_eq!(refused["error"]["code"], -32003, "{refused}");
+    assert_eq!(f.storage.list_modbus_devices().await.unwrap().len(), 0);
+
+    let template = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "get_device_template",
+        json!({"template_id": BUILTIN_PM5560}),
+    )
+    .await;
+    let registers = template["registers"].as_array().unwrap().len();
+
+    let made = ok(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "instantiate_device_template",
+        args.clone(),
+    )
+    .await;
+    assert_eq!(made["id"], "grid-meter", "{made}");
+    assert_eq!(made["protocol"], "modbus");
+    assert_eq!(made["item_count"], registers);
+
+    // It is a real device with the template's registers and the overrides.
+    let device = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_devices",
+        json!({"id": "grid-meter"}),
+    )
+    .await;
+    assert_eq!(device["registers"].as_array().unwrap().len(), registers);
+    assert_eq!(device["device"]["unit_id"], 3);
+    assert_eq!(
+        device["registers"][0]["name"],
+        template["registers"][0]["name"]
+    );
+
+    // The same id again is the route's conflict, reported as a tool error.
+    let again = tool_err(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "instantiate_device_template",
+        args,
+    )
+    .await;
+    assert!(
+        again.contains("already exists") && again.contains("409"),
+        "{again}"
+    );
+    let unknown = tool_err(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "instantiate_device_template",
+        json!({"template_id": "no-such-template", "name": "X", "ip": "127.0.0.1"}),
+    )
+    .await;
+    assert!(unknown.contains("No device template"), "{unknown}");
+
+    // Save the configured device as a local template, then find it.
+    let save = json!({
+        "device_id": "grid-meter", "manufacturer": "Schneider Electric", "model": "PM5560 on site",
+        "version": "1.0.1", "verified": true, "quirks": ["Port 1 is a test port"]
+    });
+    let refused = call(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "save_device_as_template",
+        save.clone(),
+    )
+    .await;
+    assert_eq!(refused["error"]["code"], -32003, "{refused}");
+    let saved = ok(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "save_device_as_template",
+        save.clone(),
+    )
+    .await;
+    assert_eq!(saved["source"], "local");
+    assert_eq!(saved["version"], "1.0.1");
+    let id = saved["template_id"].as_str().unwrap().to_string();
+
+    let listed = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_device_templates",
+        json!({"source": "local"}),
+    )
+    .await;
+    assert_eq!(listed["count"], 1, "{listed}");
+    let t = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "get_device_template",
+        json!({"template_id": id, "source": "local"}),
+    )
+    .await;
+    assert_eq!(t["registers"].as_array().unwrap().len(), registers);
+    assert_eq!(t["verified"], true);
+    assert_eq!(t["read_only"], false);
+    let dup = tool_err(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "save_device_as_template",
+        save,
+    )
+    .await;
+    assert!(dup.contains("already exists"), "{dup}");
+}
+
+#[cfg(feature = "bacnet")]
+#[tokio::test]
+async fn mcp_bacnet_templates_keep_the_admin_rule_of_the_bacnet_routes() {
+    let f = fixture().await;
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/device-templates",
+        None,
+        Some(&f.admin_cookie()),
+        Some(json!({
+            "format": "voltrus-device-template/1", "template_id": "ahu-1", "manufacturer": "Globex",
+            "model": "AHU", "protocol": "bacnet", "version": "1.0.0",
+            "objects": [{"object_type": "analogInput", "object_instance": 1, "name": "sat"}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let args = json!({"template_id": "ahu-1", "name": "AHU 1", "ip": "10.0.0.5"});
+    let refused = tool_err(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "instantiate_device_template",
+        args.clone(),
+    )
+    .await;
+    assert!(
+        refused.contains("Admin access required") && refused.contains("403"),
+        "{refused}"
+    );
+    assert_eq!(f.storage.list_bacnet_devices().await.unwrap().len(), 0);
+
+    let made = ok(
+        &f.app,
+        Auth::Cookie(&f.admin_cookie()),
+        "instantiate_device_template",
+        args,
+    )
+    .await;
+    assert_eq!(made["protocol"], "bacnet", "{made}");
+    assert_eq!(made["item_count"], 1);
+}
+
+#[tokio::test]
+async fn mcp_catalog_import_is_refused_for_keys_and_works_for_an_admin() {
+    use super::device_templates::{entry, modbus_template, serve};
+    use crate::device_templates::catalog::{SETTING_CATALOG_URL, sha256_hex};
+
+    let f = fixture().await;
+    let template = modbus_template("acme-cat", "1.0.0");
+    let bytes = serde_json::to_vec_pretty(&template).unwrap();
+    let index = json!({
+        "format": "voltrus-template-catalog/1",
+        "templates": [entry(&template, "templates/acme-cat.json", &sha256_hex(&bytes))]
+    });
+    let base = serve(std::collections::HashMap::from([
+        (
+            "/cat/index.json".to_string(),
+            serde_json::to_vec(&index).unwrap(),
+        ),
+        ("/cat/templates/acme-cat.json".to_string(), bytes),
+    ]))
+    .await;
+    let url = format!("{base}/cat/index.json");
+    f.storage
+        .upsert_setting(SETTING_CATALOG_URL, &url)
+        .await
+        .unwrap();
+
+    // The tool takes no URL: it is not in the schema, and passing one is an error.
+    let (_, listed) = rpc(&f.app, Auth::Bearer(&f.api_key), "tools/list", json!({})).await;
+    for name in ["list_template_catalog", "import_catalog_template"] {
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap();
+        assert!(
+            tool["inputSchema"]["properties"].get("url").is_none(),
+            "{name}"
+        );
+    }
+    let smuggled = tool_err(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_template_catalog",
+        json!({"url": "http://127.0.0.1:1/evil.json"}),
+    )
+    .await;
+    assert!(smuggled.contains("invalid arguments"), "{smuggled}");
+
+    // Reading the configured catalog needs no more than an API key.
+    let cat = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_template_catalog",
+        json!({}),
+    )
+    .await;
+    assert_eq!(cat["url"], url.as_str());
+    assert_eq!(cat["templates"][0]["template_id"], "acme-cat");
+    assert_eq!(cat["templates"][0]["installed"], false);
+
+    // Importing is for an admin session.
+    let args = json!({"template_id": "acme-cat"});
+    for key in [&f.api_key, &f.integration_key] {
+        let refused = call(
+            &f.app,
+            Auth::Bearer(key),
+            "import_catalog_template",
+            args.clone(),
+        )
+        .await;
+        assert_eq!(refused["error"]["code"], -32003, "{refused}");
+        let message = refused["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("admin") && message.contains("integration keys"),
+            "{message}"
+        );
+    }
+    assert!(f.storage.list_device_templates().await.unwrap().is_empty());
+
+    let imported = ok(
+        &f.app,
+        Auth::Cookie(&f.admin_cookie()),
+        "import_catalog_template",
+        args.clone(),
+    )
+    .await;
+    assert_eq!(imported["template_id"], "acme-cat", "{imported}");
+    assert_eq!(imported["source"], format!("catalog:{url}"));
+    let stored = f.storage.list_device_templates().await.unwrap();
+    assert_eq!(stored.len(), 1);
+    assert_eq!(stored[0].source, format!("catalog:{url}"));
+
+    let cat = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_template_catalog",
+        json!({}),
+    )
+    .await;
+    assert_eq!(cat["templates"][0]["installed"], true);
+    let again = tool_err(
+        &f.app,
+        Auth::Cookie(&f.admin_cookie()),
+        "import_catalog_template",
+        args,
+    )
+    .await;
+    assert!(again.contains("already exists"), "{again}");
+}
+
+// ── Project ──
+
+const PROJECT_YAML: &str = r#"
+format: voltrus-project/1
+device_templates:
+- template_id: mcp-meter
+  version: 1.0.0
+  source: local
+  manufacturer: Acme
+  model: M1
+  protocol: modbus
+  registers:
+  - {name: voltage, offset: 0}
+tags:
+- {key: mcp_v, name: MCP V, min: 0, max: 10, base: 5}
+"#;
+
+#[tokio::test]
+async fn mcp_project_export_is_admin_only() {
+    let f = fixture().await;
+    ok(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "create_tag",
+        json!({"key": "exported_tag", "name": "Exported tag"}),
+    )
+    .await;
+
+    for key in [&f.api_key, &f.integration_key] {
+        let refused = call(&f.app, Auth::Bearer(key), "project_export_yaml", json!({})).await;
+        assert_eq!(refused["error"]["code"], -32003, "{refused}");
+        let message = refused["error"]["message"].as_str().unwrap();
+        assert!(message.contains("admin"), "{message}");
+    }
+
+    let cookie = f.admin_cookie();
+    let out = ok(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_export_yaml",
+        json!({}),
+    )
+    .await;
+    assert_eq!(out["format"], "voltrus-project/1");
+    let yaml = out["yaml"].as_str().unwrap();
+    assert!(yaml.starts_with("format: voltrus-project/1\n"), "{yaml}");
+    assert!(yaml.contains("exported_tag"));
+    assert_eq!(out["bytes"], yaml.len());
+    // What the HTTP route exports is what the tool returns, and it parses back.
+    let (status, _, body) = {
+        let resp = f
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/project/export")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
+    };
+    assert_eq!(status, StatusCode::OK);
+    let strip = |s: &str| {
+        s.lines()
+            .filter(|l| !l.starts_with("generated_at"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(strip(&body), strip(yaml));
+    crate::project_yaml::parse_project_yaml(yaml).unwrap();
+}
+
+#[tokio::test]
+async fn mcp_project_import_tools_refuse_keys_and_plan_writes_nothing() {
+    let f = fixture().await;
+    let cookie = f.admin_cookie();
+    let args = json!({"yaml": PROJECT_YAML});
+
+    for tool in ["project_plan_import", "project_apply_import"] {
+        for key in [&f.api_key, &f.integration_key] {
+            let refused = call(&f.app, Auth::Bearer(key), tool, args.clone()).await;
+            assert_eq!(refused["error"]["code"], -32003, "{tool}: {refused}");
+        }
+    }
+    assert!(f.storage.list_device_templates().await.unwrap().is_empty());
+    assert_eq!(f.storage.list_data_sources(None).await.unwrap().len(), 0);
+
+    // The dry run reports the plan and writes nothing: no rows, no snapshot.
+    let snapshots_before = f.storage.list_config_snapshots(1000).await.unwrap().len();
+    let plan = ok(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_plan_import",
+        args.clone(),
+    )
+    .await;
+    assert_eq!(plan["dry_run"], true, "{plan}");
+    assert_eq!(plan["mode"], "merge");
+    assert_eq!(plan["totals"]["create"], 2);
+    assert_eq!(plan["sections"]["device_templates"]["create"], 1);
+    assert!(
+        plan["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["section"] == "device_templates"
+                && c["key"] == "mcp-meter/1.0.0/local"
+                && c["action"] == "create")
+    );
+    assert!(f.storage.list_device_templates().await.unwrap().is_empty());
+    assert_eq!(f.storage.list_data_sources(None).await.unwrap().len(), 0);
+    assert_eq!(
+        f.storage.list_config_snapshots(1000).await.unwrap().len(),
+        snapshots_before
+    );
+
+    // Mistakes come back as tool errors with the location, and still write nothing.
+    let invalid = tool_err(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_plan_import",
+        json!({"yaml": PROJECT_YAML.replace("protocol: modbus", "protocol: modbus\n  colour: red")}),
+    )
+    .await;
+    assert!(
+        invalid.contains("device_templates[0]") && invalid.contains("colour"),
+        "{invalid}"
+    );
+    let bad_mode = tool_err(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_plan_import",
+        json!({"yaml": PROJECT_YAML, "mode": "wipe"}),
+    )
+    .await;
+    assert!(bad_mode.contains("unknown import mode"), "{bad_mode}");
+    let not_yaml = tool_err(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_plan_import",
+        json!({"yaml": "- [unclosed"}),
+    )
+    .await;
+    assert!(!not_yaml.is_empty());
+    assert!(f.storage.list_device_templates().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mcp_project_apply_import_writes_and_replace_deletes() {
+    let f = fixture().await;
+    let cookie = f.admin_cookie();
+
+    let snapshots_before = f.storage.list_config_snapshots(1000).await.unwrap().len();
+    let applied = ok(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_apply_import",
+        json!({"yaml": PROJECT_YAML}),
+    )
+    .await;
+    assert_eq!(applied["dry_run"], false, "{applied}");
+    assert_eq!(applied["totals"]["create"], 2);
+    let templates = f.storage.list_device_templates().await.unwrap();
+    assert_eq!(templates.len(), 1);
+    assert_eq!(templates[0].template_id, "mcp-meter");
+    assert_eq!(templates[0].port, Some(502));
+    assert_eq!(f.storage.list_data_sources(None).await.unwrap().len(), 1);
+    // Same pre-import snapshot as the HTTP route.
+    assert_eq!(
+        f.storage.list_config_snapshots(1000).await.unwrap().len(),
+        snapshots_before + 1
+    );
+
+    // The tool and the template tools see the imported template.
+    let t = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "get_device_template",
+        json!({"template_id": "mcp-meter"}),
+    )
+    .await;
+    assert_eq!(t["registers"][0]["name"], "voltage");
+
+    // Nothing left to do on a second plan, in either mode.
+    for mode in ["merge", "replace"] {
+        let plan = ok(
+            &f.app,
+            Auth::Cookie(&cookie),
+            "project_plan_import",
+            json!({"yaml": PROJECT_YAML, "mode": mode}),
+        )
+        .await;
+        assert_eq!(plan["totals"]["create"], 0, "{mode}: {plan}");
+        assert_eq!(plan["totals"]["update"], 0, "{mode}: {plan}");
+        assert_eq!(plan["totals"]["delete"], 0, "{mode}: {plan}");
+    }
+
+    // Replace with a project that lists neither removes both.
+    let replaced = ok(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_apply_import",
+        json!({"yaml": "format: voltrus-project/1\n", "mode": "replace"}),
+    )
+    .await;
+    assert_eq!(replaced["mode"], "replace");
+    assert_eq!(replaced["totals"]["delete"], 2, "{replaced}");
+    assert!(f.storage.list_device_templates().await.unwrap().is_empty());
+    assert_eq!(f.storage.list_data_sources(None).await.unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn mcp_admin_tool_calls_are_audit_logged() {
+    let mut state = seeded_admin_app_state().await;
+    let (logger, mut rx) = crate::security::AuditLogger::new();
+    state.audit_logger = logger;
+    let app = create_router(state);
+    let cookie = admin_cookie(&app).await;
+    let (int_id, int_key) = make_key(&app, &cookie, "integration").await;
+    let cookie = format!("voltrus_token={cookie}");
+
+    let refused = call(
+        &app,
+        Auth::Bearer(&int_key),
+        "project_export_yaml",
+        json!({}),
+    )
+    .await;
+    assert_eq!(refused["error"]["code"], -32003);
+    ok(
+        &app,
+        Auth::Cookie(&cookie),
+        "project_export_yaml",
+        json!({}),
+    )
+    .await;
+    ok(
+        &app,
+        Auth::Cookie(&cookie),
+        "project_plan_import",
+        json!({"yaml": PROJECT_YAML}),
+    )
+    .await;
+
+    let mut events = Vec::new();
+    while let Ok(e) = rx.try_recv() {
+        events.push(e);
+    }
+    let denied = events
+        .iter()
+        .find(|e| e.action == "mcp:project_export_yaml:denied")
+        .unwrap_or_else(|| panic!("no denied event in {events:?}"));
+    assert_eq!(denied.username, format!("api_key:{int_id}"));
+    assert!(
+        denied
+            .details
+            .as_deref()
+            .unwrap()
+            .contains("role=integration")
+    );
+    for tool in ["project_export_yaml", "project_plan_import"] {
+        let e = events
+            .iter()
+            .find(|e| e.action == format!("mcp:{tool}"))
+            .unwrap_or_else(|| panic!("no {tool} event in {events:?}"));
+        assert_eq!(e.username, "admin");
+        assert!(e.details.as_deref().unwrap().contains("outcome=ok"));
+    }
+    // A dry run is not an import.
+    assert!(!events.iter().any(|e| e.action == "project_import"));
 }

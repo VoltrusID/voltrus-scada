@@ -4,7 +4,8 @@
 //! every protocol with their registers/nodes/tags/points, tags with alarm and
 //! write policies, screens with layouts and mimics, flows, scripts, recipes,
 //! notification rules, integrations, simulation profiles, equipment templates,
-//! shifts, custom metrics, assets and a whitelist of settings. Everything is
+//! local and catalog device templates (built-ins are not exported), shifts,
+//! custom metrics, assets and a whitelist of settings. Everything is
 //! keyed by natural keys (never database ids), secrets are `${ENV}` references,
 //! and runtime data (telemetry, alarms, audit, users, API keys, sessions,
 //! licence) is out of scope. See `docs/project-format.md`.
@@ -22,6 +23,7 @@ pub mod model;
 pub mod norm;
 pub mod secrets;
 pub mod spec;
+pub mod templates;
 pub mod validate;
 
 #[cfg(test)]

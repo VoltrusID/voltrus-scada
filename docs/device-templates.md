@@ -167,6 +167,22 @@ admin-only as on the BACnet routes. A catalog import is admin-only.
 The OpenAPI document (`/api/v1/openapi.json`, with the `openapi` feature) lists
 the same routes under the *Device Templates* tag.
 
+## MCP tools
+
+AI clients use the same operations through [the MCP server](mcp.md):
+`list_device_templates`, `get_device_template`, `list_template_catalog` (read),
+`instantiate_device_template` and `save_device_as_template` (integration key or
+operator login) and `import_catalog_template` (signed-in admin only; API and
+integration keys are refused). The tools call the routes above, so BACnet devices
+stay admin-only, and `list_template_catalog` / `import_catalog_template` only use
+the configured catalog: there is no `url` argument.
+
+## In a project
+
+Local and catalog templates are part of a [project file](project-format.md#device-templates)
+(`device_templates`), so a configuration moved with `voltrus project export` / `import`
+brings its template library along. Built-in templates are not exported.
+
 ## Catalog
 
 A catalog is a static folder served over HTTP(S): an `index.json` and the

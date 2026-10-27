@@ -12,7 +12,9 @@
 //! Authorisation is per tool: read tools need any authenticated principal,
 //! write tools need the role the REST operational write routes need
 //! ([`crate::api::role_allows_operational_writes`]). Admin-only operations
-//! (users, roles, API keys, licence, security) have no tool at all.
+//! (users, roles, API keys, licence, security) have no tool at all; the
+//! whole-project export/import and the catalog import are the exceptions, and
+//! only a signed-in admin may call them (`Access::AdminRead`/`AdminWrite`).
 //!
 //! Add a tool by creating a module under `tools/` that returns a `Vec<Tool>`
 //! and listing it in [`tools::registry`].
