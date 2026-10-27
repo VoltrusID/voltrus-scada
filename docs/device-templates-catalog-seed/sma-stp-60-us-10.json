@@ -1,0 +1,174 @@
+{
+  "format": "voltrus-device-template/1",
+  "template_id": "sma-stp-60-us-10",
+  "manufacturer": "SMA",
+  "model": "STP 60-US-10",
+  "protocol": "modbus",
+  "description": "Sunny Tripower 60TL-US 60kW String Inverter",
+  "version": "1.0.0",
+  "verified": false,
+  "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
+  "quirks": [
+    "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0.",
+    "Not mapped: unsigned 64-bit counters (Daily_Yield (offset 34, kWh), Total_Yield (offset 38, kWh), Operating_Time (offset 42, h)) because the poller has no uint64 type; their 4 registers each are still counted in the offsets."
+  ],
+  "license": "CC-BY-4.0",
+  "port": 502,
+  "interval_ms": 1000,
+  "unit_id": 1,
+  "endianness": "big",
+  "registers": [
+    {
+      "name": "DC_Voltage_A",
+      "offset": 0,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "DC input voltage string A"
+    },
+    {
+      "name": "DC_Voltage_B",
+      "offset": 2,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "DC input voltage string B"
+    },
+    {
+      "name": "DC_Current_A",
+      "offset": 4,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "DC input current string A"
+    },
+    {
+      "name": "DC_Current_B",
+      "offset": 6,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "DC input current string B"
+    },
+    {
+      "name": "DC_Power",
+      "offset": 8,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "W",
+      "description": "Total DC input power"
+    },
+    {
+      "name": "AC_Voltage_L1",
+      "offset": 10,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "AC output voltage L1-N"
+    },
+    {
+      "name": "AC_Voltage_L2",
+      "offset": 12,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "AC output voltage L2-N"
+    },
+    {
+      "name": "AC_Voltage_L3",
+      "offset": 14,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "AC output voltage L3-N"
+    },
+    {
+      "name": "AC_Current_L1",
+      "offset": 16,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "AC output current L1"
+    },
+    {
+      "name": "AC_Current_L2",
+      "offset": 18,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "AC output current L2"
+    },
+    {
+      "name": "AC_Current_L3",
+      "offset": 20,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "AC output current L3"
+    },
+    {
+      "name": "AC_Power",
+      "offset": 22,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "W",
+      "description": "Total AC active power output"
+    },
+    {
+      "name": "AC_Frequency",
+      "offset": 24,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "Hz",
+      "description": "Grid frequency"
+    },
+    {
+      "name": "Efficiency",
+      "offset": 26,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "%",
+      "description": "Current conversion efficiency"
+    },
+    {
+      "name": "PowerFactor",
+      "offset": 28,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "description": "AC power factor (displacement)"
+    },
+    {
+      "name": "Temperature",
+      "offset": 30,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "°C",
+      "description": "Inverter heatsink temperature"
+    },
+    {
+      "name": "Irradiance",
+      "offset": 32,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "W/m²",
+      "description": "Plane-of-array irradiance (from sensor)"
+    }
+  ]
+}

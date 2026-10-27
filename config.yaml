@@ -130,3 +130,9 @@ devices:
 #     users: []                       # when mode = "config":
 #                                     #   - username: "user1"
 #                                     #     password: "pass1"
+
+# Device template catalog (optional - default is the public VoltrusID catalog;
+# see docs/device-templates.md)
+# device_templates:
+#   catalog_url: "https://raw.githubusercontent.com/VoltrusID/voltrus-device-templates/main/index.json"
+

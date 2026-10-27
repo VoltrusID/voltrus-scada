@@ -50,6 +50,17 @@ pub struct AppConfig {
     pub watchdog: WatchdogConfig,
     #[serde(default)]
     pub networks: Vec<NetworkConfig>,
+    #[serde(default)]
+    pub device_templates: DeviceTemplatesConfig,
+}
+
+/// `device_templates:` in the config file.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DeviceTemplatesConfig {
+    /// Catalog index URL, written to the `device_templates.catalog_url` setting at startup.
+    /// Default: the public VoltrusID catalog.
+    #[serde(default)]
+    pub catalog_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

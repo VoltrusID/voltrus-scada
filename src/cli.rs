@@ -35,6 +35,8 @@ USAGE:
     voltrus egress run <ID> [CONFIG]     Manually trigger a data egress job
     voltrus export [OPTIONS]            Export project to .voltrus-scada archive
     voltrus import <FILE> [OPTIONS]     Import project from .voltrus-scada archive
+    voltrus template builtins <DIR>     Write the built-in device templates as files into DIR
+    voltrus template catalog <DIR>      Write DIR/index.json listing the template files in DIR with sha256
 
 BACKUP OPTIONS:
     --output <PATH>    Output archive path (default: voltrus-backup-YYYYMMDD-HHMMSS.tar.gz)
@@ -111,6 +113,7 @@ pub async fn handle_cli(args: &[String], ext: &dyn crate::edition::Extension) ->
         "egress" => handle_egress(args).await,
         "export" => handle_export(args),
         "import" => handle_import(args),
+        "template" => handle_template(args),
         "--dump-openapi" => handle_dump_openapi(),
         other if other.starts_with('-') => {
             eprintln!("Unknown option: {}", other);
@@ -118,6 +121,46 @@ pub async fn handle_cli(args: &[String], ext: &dyn crate::edition::Extension) ->
             std::process::exit(1);
         }
         _ => false,
+    }
+}
+
+/// `voltrus template builtins <DIR>` and `voltrus template catalog <DIR>`: build the files of a public template catalog.
+fn handle_template(args: &[String]) -> bool {
+    let usage = || {
+        eprintln!("Usage: voltrus template builtins <DIR>   Write the built-in templates to DIR");
+        eprintln!(
+            "       voltrus template catalog <DIR>    Write DIR/index.json (sha256 of every template file in DIR)"
+        );
+        std::process::exit(1);
+    };
+    let (Some(sub), Some(dir)) = (args.get(2), args.get(3)) else {
+        usage();
+        return true;
+    };
+    let dir = std::path::Path::new(dir);
+    let result = match sub.as_str() {
+        "builtins" => crate::device_templates::write_builtins(dir)
+            .map(|n| format!("Wrote {n} built-in template files to {}", dir.display())),
+        "catalog" => crate::device_templates::write_catalog_index(dir).map(|n| {
+            format!(
+                "Wrote {} listing {n} templates",
+                dir.join("index.json").display()
+            )
+        }),
+        _ => {
+            usage();
+            return true;
+        }
+    };
+    match result {
+        Ok(msg) => {
+            println!("{msg}");
+            true
+        }
+        Err(e) => {
+            eprintln!("Error: {e:#}");
+            std::process::exit(1);
+        }
     }
 }
 

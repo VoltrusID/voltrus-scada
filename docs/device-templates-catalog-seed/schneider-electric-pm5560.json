@@ -1,0 +1,147 @@
+{
+  "format": "voltrus-device-template/1",
+  "template_id": "schneider-electric-pm5560",
+  "manufacturer": "Schneider Electric",
+  "model": "PM5560",
+  "protocol": "modbus",
+  "description": "PM5560 3-Phase Power Quality Meter (0.2S, CT/VT)",
+  "version": "1.0.0",
+  "verified": false,
+  "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
+  "quirks": [
+    "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0.",
+    "Not mapped: unsigned 64-bit counters (Energy_Import (offset 28, kWh), Energy_Export (offset 32, kWh)) because the poller has no uint64 type; their 4 registers each are still counted in the offsets."
+  ],
+  "license": "CC-BY-4.0",
+  "port": 502,
+  "interval_ms": 1000,
+  "unit_id": 1,
+  "endianness": "big",
+  "registers": [
+    {
+      "name": "Voltage_L1N",
+      "offset": 0,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "L1-N voltage"
+    },
+    {
+      "name": "Voltage_L2N",
+      "offset": 2,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "L2-N voltage"
+    },
+    {
+      "name": "Voltage_L3N",
+      "offset": 4,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "L3-N voltage"
+    },
+    {
+      "name": "Current_L1",
+      "offset": 6,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "L1 current (via CT)"
+    },
+    {
+      "name": "Current_L2",
+      "offset": 8,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "L2 current (via CT)"
+    },
+    {
+      "name": "Current_L3",
+      "offset": 10,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "L3 current (via CT)"
+    },
+    {
+      "name": "Active_Power",
+      "offset": 12,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "W",
+      "description": "3-phase active power"
+    },
+    {
+      "name": "Reactive_Power",
+      "offset": 14,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "var",
+      "description": "3-phase reactive power"
+    },
+    {
+      "name": "Apparent_Power",
+      "offset": 16,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "VA",
+      "description": "3-phase apparent power"
+    },
+    {
+      "name": "Power_Factor",
+      "offset": 18,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "description": "Overall power factor"
+    },
+    {
+      "name": "Frequency",
+      "offset": 20,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "Hz",
+      "description": "Grid frequency"
+    },
+    {
+      "name": "THD_Voltage",
+      "offset": 22,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "%",
+      "description": "Avg voltage THD"
+    },
+    {
+      "name": "THD_Current",
+      "offset": 24,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "%",
+      "description": "Avg current THD"
+    },
+    {
+      "name": "Temperature",
+      "offset": 26,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "°C",
+      "description": "Internal temperature"
+    }
+  ]
+}

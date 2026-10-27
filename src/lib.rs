@@ -26,6 +26,7 @@ pub mod compression;
 pub mod config;
 pub mod config_export;
 pub mod deadband;
+pub mod device_templates;
 #[cfg(any(
     feature = "modbus",
     feature = "opcua",
@@ -80,3 +81,8 @@ pub mod ws_types;
 mod app;
 
 pub use app::run;
+
+// The simulator device profiles are shared with the `*-sim` binaries by path;
+// the built-in device templates are generated from them.
+#[path = "sim_profiles.rs"]
+mod sim_profiles;

@@ -16,6 +16,7 @@ mod config_snapshots;
 mod csv_import;
 pub(crate) mod data;
 mod data_sources;
+mod device_templates;
 #[cfg(feature = "dnp3")]
 mod dnp3_devices;
 mod edr_compat;
@@ -883,6 +884,22 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/templates/preview",
             post(vertical_templates::preview_template),
         )
+        .route(
+            "/api/v1/device-templates",
+            get(device_templates::list_templates),
+        )
+        .route(
+            "/api/v1/device-templates/catalog",
+            get(device_templates::get_catalog),
+        )
+        .route(
+            "/api/v1/device-templates/{id}",
+            get(device_templates::get_template),
+        )
+        .route(
+            "/api/v1/device-templates/{id}/export",
+            get(device_templates::export_template),
+        )
         .route("/api/v1/wizard/create", post(wizard::wizard_create))
         .route(
             "/api/v1/wizard/health-check",
@@ -1195,6 +1212,22 @@ pub fn create_router(state: AppState) -> Router {
             get(vertical_templates::get_template),
         )
         .route(
+            "/api/v1/device-templates",
+            post(device_templates::create_template),
+        )
+        .route(
+            "/api/v1/device-templates/from-device/{device_id}",
+            post(device_templates::template_from_device),
+        )
+        .route(
+            "/api/v1/device-templates/{id}",
+            delete(device_templates::delete_template),
+        )
+        .route(
+            "/api/v1/device-templates/{id}/instantiate",
+            post(device_templates::instantiate_template),
+        )
+        .route(
             "/api/v1/templates/{id}/instantiate",
             post(vertical_templates::instantiate_template),
         );
@@ -1255,6 +1288,10 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/users/{id}/role",
             get(rbac::get_user_role).put(rbac::assign_user_role),
+        )
+        .route(
+            "/api/v1/device-templates/catalog/import",
+            post(device_templates::import_from_catalog),
         )
         // API keys (admin-only)
         .route(

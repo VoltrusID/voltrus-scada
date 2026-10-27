@@ -450,4 +450,25 @@ pub(super) fn run_migrations(conn: &Connection) {
         );
         CREATE INDEX IF NOT EXISTS idx_alarm_journal_alarm ON alarm_journal(alarm_id, at);",
     );
+
+    // Migration: shared device template library. `body` is the canonical
+    // voltrus-device-template/1 JSON; the other columns repeat what lists and
+    // lookups filter on. Built-in templates are generated at startup and not stored.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS device_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            version TEXT NOT NULL,
+            manufacturer TEXT NOT NULL,
+            model TEXT NOT NULL,
+            protocol TEXT NOT NULL,
+            verified INTEGER NOT NULL DEFAULT 0,
+            body TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(template_id, source, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_templates_manufacturer
+            ON device_templates(manufacturer, model);",
+    );
 }

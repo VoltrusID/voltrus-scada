@@ -10,6 +10,7 @@ mod cq_commands;
 mod cq_policies;
 mod device_crud;
 mod device_layouts;
+mod device_templates;
 #[cfg(feature = "dnp3")]
 mod dnp3;
 mod downsampling;
