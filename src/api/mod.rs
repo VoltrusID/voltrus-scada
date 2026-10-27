@@ -1,5 +1,5 @@
 mod ai_copilot;
-mod alarms;
+pub(crate) mod alarms;
 mod analytics;
 mod annotations;
 mod api_keys;
@@ -10,12 +10,12 @@ pub mod auth;
 mod auth_middleware;
 #[cfg(feature = "bacnet")]
 mod bacnet_devices;
-mod commands;
+pub(crate) mod commands;
 mod compression;
 mod config_snapshots;
 mod csv_import;
 pub(crate) mod data;
-mod data_sources;
+pub(crate) mod data_sources;
 mod device_templates;
 #[cfg(feature = "dnp3")]
 mod dnp3_devices;
@@ -24,7 +24,7 @@ mod edr_compat;
 mod enip_devices;
 mod excel_import;
 mod firmware_catalog;
-mod flows;
+pub(crate) mod flows;
 mod generators;
 pub(crate) mod hardware_cert;
 mod import_nodered;
@@ -33,7 +33,7 @@ mod layouts;
 mod license;
 mod maintenance;
 #[cfg(feature = "modbus")]
-mod modbus_devices;
+pub(crate) mod modbus_devices;
 #[cfg(feature = "mqtt-broker")]
 mod mqtt_broker;
 mod naming_convention;
@@ -48,7 +48,7 @@ mod rbac;
 mod recipes;
 #[cfg(feature = "s7")]
 mod s7_devices;
-mod screens;
+pub(crate) mod screens;
 #[cfg(feature = "scripts")]
 mod scripts;
 mod settings;
@@ -1324,13 +1324,21 @@ pub fn create_router(state: AppState) -> Router {
             cookie_auth_middleware,
         ));
 
+    // MCP endpoint (Streamable HTTP, JSON-RPC): same authentication as the REST
+    // API, authorisation per tool inside the endpoint.
+    #[cfg(feature = "mcp")]
+    let mcp_router = crate::mcp::router(state.clone());
+
     // API router with CORS, rate limiting, security headers, body limit
     let api_router = Router::new()
         .merge(public)
         .merge(protected)
         .merge(demo_protected)
         .merge(admin_protected)
-        .merge(import_router)
+        .merge(import_router);
+    #[cfg(feature = "mcp")]
+    let api_router = api_router.merge(mcp_router);
+    let api_router = api_router
         .route("/api/v1/{*path}", get(api_not_found))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1386,6 +1394,7 @@ pub fn create_router(state: AppState) -> Router {
 // Middleware types re-exported from middleware module
 pub use auth_middleware::{
     AuthUser, admin_only_middleware, cookie_auth_middleware, demo_allowed_middleware,
+    role_allows_operational_writes,
 };
 
 #[cfg(test)]

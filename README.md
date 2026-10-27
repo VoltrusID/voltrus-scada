@@ -30,6 +30,9 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   a command queue with write read-back, simulation mode.
 * **API:** REST with an OpenAPI document, plus TypeScript and Python SDKs in
   [`sdks/`](sdks) (MIT licensed).
+* **AI agents (MCP):** a Model Context Protocol server built into the server at
+  `/mcp`, so Claude and other MCP clients can read values, manage devices and
+  tags, and acknowledge alarms with an API key. See [docs/mcp.md](docs/mcp.md).
 * **Operations:** OEE and downtime, shift handover, asset inventory with NIS2
   export, config snapshots, backup and restore.
 * **Security:** local accounts with Argon2, role-based access control, API
@@ -155,7 +158,7 @@ sdks/           TypeScript and Python SDKs (MIT)
 native/         experimental native operator console (GPUI)
 scenarios/      simulated plants for testing
 deploy/         example systemd unit
-docs/           open-core split, notes
+docs/           open-core split, MCP server, notes
 ```
 
 ## Contributing
