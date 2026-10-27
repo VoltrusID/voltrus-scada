@@ -1061,8 +1061,7 @@ fn reap(child: std::process::Child) {
 
 /// The status bar's clock on the operator's time: `Sat 25 Oct 14:05:09`.
 pub fn clock(console: &Console) -> String {
-    let now = OffsetDateTime::now_utc().to_offset(console.utc_offset);
-    clock_text(now)
+    clock_text(console.zone.now())
 }
 
 fn clock_text(now: OffsetDateTime) -> String {

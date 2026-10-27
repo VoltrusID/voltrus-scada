@@ -486,7 +486,7 @@ pub(crate) fn open_dialog(
 }
 
 fn open_range(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     if console.state::<DetailState>().from.is_none() {
         let from = text_field("2026-10-25 13:00", InputKind::Text, true, cx);
         let to = text_field("2026-10-25 14:00", InputKind::Text, true, cx);
@@ -513,10 +513,10 @@ fn open_range(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         return;
     };
     from.update(cx, |field, cx| {
-        field.set_text(tag_api::format_local(start, offset), cx);
+        field.set_text(tag_api::format_local(start, &zone), cx);
     });
     to.update(cx, |field, cx| {
-        field.set_text(tag_api::format_local(end, offset), cx);
+        field.set_text(tag_api::format_local(end, &zone), cx);
     });
     let overlay = Overlay::modal("tag-range", px(420.0), range_dialog, cx);
     console.open_overlay(overlay, window, cx);
@@ -530,7 +530,7 @@ fn apply_range(console: &mut Console, window: &mut Window, cx: &mut Context<Cons
     };
     let from = from.read(cx).value().to_owned();
     let to = to.read(cx).value().to_owned();
-    match tag_api::parse_between(&from, &to, console.utc_offset) {
+    match tag_api::parse_between(&from, &to, &console.zone) {
         Ok(span) => {
             set_span(console, span, cx);
             console.close_overlay(window, cx);
@@ -570,14 +570,14 @@ fn open_note(
     }
     #[allow(clippy::cast_possible_truncation)]
     let at = at.unwrap_or_else(now_ms) as i64;
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let state = console.state::<DetailState>();
     state.note_error = None;
     let (Some(time), Some(text)) = (state.note_time.clone(), state.note_text.clone()) else {
         return;
     };
     time.update(cx, |field, cx| {
-        field.set_text(tag_api::format_local(at, offset), cx);
+        field.set_text(tag_api::format_local(at, &zone), cx);
     });
     let overlay = Overlay::modal("tag-note", px(440.0), note_dialog, cx);
     console.open_overlay(overlay, window, cx);
@@ -591,7 +591,7 @@ fn save_note(console: &mut Console, window: &mut Window, cx: &mut Context<Consol
         return;
     };
     let key = console.store.tags[index].info.key.clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let state = console.state::<DetailState>();
     let (Some(time), Some(text)) = (state.note_time.clone(), state.note_text.clone()) else {
         return;
@@ -603,7 +603,7 @@ fn save_note(console: &mut Console, window: &mut Window, cx: &mut Context<Consol
     } else {
         None
     };
-    let at = tag_api::parse_local(&time, offset);
+    let at = tag_api::parse_local(&time, &zone);
     match (error, at) {
         (Some(error), _) => state.note_error = Some(error),
         (None, None) => {
@@ -739,13 +739,13 @@ pub(crate) fn export_csv(console: &mut Console, cx: &mut Context<Console>) {
             samples: samples.as_slice(),
         })
         .collect();
-    let (text, rows) = tag_api::csv(&csv_columns, from, to, console.utc_offset);
+    let (text, rows) = tag_api::csv(&csv_columns, from, to, &console.zone);
     if rows == 0 {
         console.show_toast("The chart shows no samples to export", true, cx);
         return;
     }
     #[allow(clippy::cast_possible_truncation)]
-    let stamp = tag_api::format_local(now_ms() as i64, console.utc_offset).replace([' ', ':'], "-");
+    let stamp = tag_api::format_local(now_ms() as i64, &console.zone).replace([' ', ':'], "-");
     let name = format!("{}-{stamp}.csv", console.store.tags[index].info.key);
     let directory = dirs::download_dir()
         .or_else(dirs::home_dir)
@@ -1007,7 +1007,7 @@ pub(crate) fn panel(
         limits,
         marks,
         cursor,
-        offset: console.utc_offset,
+        zone: console.zone.clone(),
         plot: Rc::clone(&plot),
     };
     let span_caption = match query.span {
@@ -1021,8 +1021,8 @@ pub(crate) fn panel(
         #[allow(clippy::cast_possible_truncation)]
         Span::Between { start_ms, end_ms } => format!(
             "{} → {}",
-            tag_api::format_local(start_ms, console.utc_offset),
-            tag_api::format_local(end_ms, console.utc_offset)
+            tag_api::format_local(start_ms, &console.zone),
+            tag_api::format_local(end_ms, &console.zone)
         ),
     };
     let resolution = if loading {
@@ -1452,7 +1452,7 @@ fn notes_section(
         .map(|(_, notes)| notes.clone())
         .unwrap_or_default();
     let error = state.notes_error.clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let list = keyboard_list(
         ListKeys {
             id: NOTES,
@@ -1505,7 +1505,7 @@ fn notes_section(
                                 .font_family(MONO)
                                 .text_size(FONT_CAPTION)
                                 .text_color(theme.fg_dim)
-                                .child(local_time(note.data_timestamp, offset)),
+                                .child(local_time(note.data_timestamp, &zone)),
                         )
                         .child(
                             div()

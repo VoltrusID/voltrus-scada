@@ -669,7 +669,7 @@ fn close_dialog_view(
     cx: &mut Context<Console>,
 ) -> AnyElement {
     let theme = theme(cx).clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let Some(form) = console.state::<State>().close.as_ref() else {
         return div().into_any_element();
     };
@@ -678,7 +678,7 @@ fn close_dialog_view(
         "{} {} since {} ({})",
         event.device_id,
         event.state,
-        local_time(event.started_at, offset),
+        local_time(event.started_at, &zone),
         duration_label(event.duration_at(time_now_secs()))
     );
     let mut body = vec![
@@ -1531,7 +1531,7 @@ fn events_list(
 ) -> AnyElement {
     let theme = theme(cx).clone();
     let operator = console.is_operator();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let value = console.state::<State>().events.value.clone();
     let rows = match value {
         None => return notice("Fetching the downtime…", false, &theme),
@@ -1554,7 +1554,7 @@ fn events_list(
         return list
             .flex_1()
             .child(notice(
-                format!("No downtime started since {}.", local_time(span.0, offset)),
+                format!("No downtime started since {}.", local_time(span.0, &zone)),
                 false,
                 &theme,
             ))
@@ -1659,7 +1659,7 @@ fn events_list(
                                         .flex_none()
                                         .font_family(MONO)
                                         .text_color(theme.fg_muted)
-                                        .child(local_time(event.started_at, offset)),
+                                        .child(local_time(event.started_at, &zone)),
                                 )
                                 .when(ended_column, |this| {
                                     this.child(
@@ -1668,7 +1668,7 @@ fn events_list(
                                                 Some(ended) => div()
                                                     .font_family(MONO)
                                                     .text_color(theme.fg_muted)
-                                                    .child(local_time(ended, offset))
+                                                    .child(local_time(ended, &zone))
                                                     .into_any_element(),
                                                 None => {
                                                     pill("open", theme.warning).into_any_element()

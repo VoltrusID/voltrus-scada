@@ -581,7 +581,7 @@ fn audit_row(
         Some(shelve) => {
             let mut parts = Vec::new();
             if let Some(until) = shelve.until {
-                parts.push(format!("until {}", local_time(until, console.utc_offset)));
+                parts.push(format!("until {}", local_time(until, &console.zone)));
             }
             if let Some(reason) = shelve.reason {
                 parts.push(format!("“{reason}”"));
@@ -621,7 +621,7 @@ fn audit_row(
                     div()
                         .font_family(MONO)
                         .text_size(FONT_SMALL)
-                        .child(local_time(entry.created_at, console.utc_offset)),
+                        .child(local_time(entry.created_at, &console.zone)),
                 )
                 .child(
                     div()

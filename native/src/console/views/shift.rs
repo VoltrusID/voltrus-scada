@@ -13,12 +13,13 @@ use gpui::{
     AnyElement, AnyWindowHandle, Context, ElementId, Entity, FontWeight, HighlightStyle,
     SharedString, StyledText, Subscription, Window, div, px,
 };
-use time::{Duration as Days, OffsetDateTime};
+use time::Duration as Days;
 use voltrus_scada_native::api::Method;
 use voltrus_scada_native::api::ops::{
     self, Created, Handover, HandoverList, NewHandover, SHIFT_PERIODS, ShiftReport, mention_spans,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::Icon;
 use vt_ui::components::{Button, IconButton, Segment, empty_state, kbd, pill, segmented};
 use vt_ui::text_input::{InputEvent, TextInput};
@@ -102,7 +103,7 @@ impl State {
 
 /// Today's date and the shift of this hour, on the operator's clock.
 fn now_shift(console: &Console) -> (String, usize) {
-    let now = OffsetDateTime::now_utc().to_offset(console.utc_offset);
+    let now = console.zone.now();
     let period = ops::shift_of_hour(now.hour());
     (
         ops::format_date(now.date()),
@@ -814,7 +815,7 @@ fn log_list(
             .into_any_element()
         }
     } else {
-        let offset = console.utc_offset;
+        let zone = console.zone.clone();
         div()
             .id("shift-log")
             .size_full()
@@ -824,7 +825,7 @@ fn log_list(
             .pt(SPACE_7)
             .pb(LIST_TAIL)
             .children(log.iter().enumerate().map(|(row, entry)| {
-                handover_card(entry, row, focused && cursor == Some(row), offset, &theme)
+                handover_card(entry, row, focused && cursor == Some(row), &zone, &theme)
             }))
             .into_any_element()
     };
@@ -872,7 +873,7 @@ fn handover_card(
     entry: &Handover,
     row: usize,
     ring: bool,
-    offset: time::UtcOffset,
+    zone: &LocalZone,
     theme: &Theme,
 ) -> AnyElement {
     div()
@@ -910,7 +911,7 @@ fn handover_card(
                         .font_family(MONO)
                         .text_size(FONT_SMALL)
                         .text_color(theme.fg_dim)
-                        .child(ops::format_local(entry.created_at, offset)),
+                        .child(ops::format_local(entry.created_at, zone)),
                 ),
         )
         .child(note(
@@ -1021,7 +1022,7 @@ fn report_view(
     cx: &mut Context<Console>,
 ) -> AnyElement {
     let theme = theme(cx).clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let list = keyboard_list(
         ListKeys {
             id: REPORT_LIST,
@@ -1067,8 +1068,8 @@ fn report_view(
             .map_or_else(String::new, |(start, end)| {
                 format!(
                     "{} – {} (server hours, UTC)",
-                    ops::format_local(start, offset),
-                    ops::format_local(end, offset)
+                    ops::format_local(start, &zone),
+                    ops::format_local(end, &zone)
                 )
             });
 
@@ -1085,7 +1086,7 @@ fn report_view(
             report_line(
                 Some(pill(alarm.severity.to_uppercase(), color).into_any_element()),
                 text(what),
-                local_time(alarm.triggered_at, offset),
+                local_time(alarm.triggered_at, &zone),
                 &theme,
             )
         })
@@ -1100,7 +1101,7 @@ fn report_view(
                     "{} · user #{}",
                     note.annotation_text, note.author_id
                 )),
-                local_time(note.created_at, offset),
+                local_time(note.created_at, &zone),
                 &theme,
             )
         })
@@ -1114,7 +1115,7 @@ fn report_view(
                 div()
                     .child(mention_text(&entry.what_happened, &theme))
                     .into_any_element(),
-                local_time(entry.created_at, offset),
+                local_time(entry.created_at, &zone),
                 &theme,
             )
         })
@@ -1145,7 +1146,7 @@ fn report_view(
                     .into_any_element(),
                 ),
                 text(what),
-                local_time(event.created_at, offset),
+                local_time(event.created_at, &zone),
                 &theme,
             )
         })
@@ -1181,7 +1182,7 @@ fn report_view(
                             .text_color(theme.fg_dim)
                             .child(SharedString::from(format!(
                                 "Updated {} · every 30 s",
-                                local_time(at, offset)
+                                local_time(at, &zone)
                             ))),
                     )
                 }),

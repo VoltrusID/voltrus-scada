@@ -13,6 +13,7 @@ use voltrus_scada_native::api::ops::{
     self, AGGREGATIONS, EXPORT_MAX, ExportQuery, Format, INTERVALS, Saved,
 };
 use voltrus_scada_native::runtime::{CallKey, Reply};
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::Icon;
 use vt_ui::components::{Button, IconButton, Segment, segmented};
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
@@ -148,7 +149,7 @@ fn field_event(
 
 /// Fill the range with quick range `index`, ending now.
 fn set_preset(console: &mut Console, index: usize, cx: &mut Context<Console>) {
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let Some(form) = &mut console.state::<State>().form else {
         return;
     };
@@ -159,8 +160,8 @@ fn set_preset(console: &mut Console, index: usize, cx: &mut Context<Console>) {
     form.preset = Some(index);
     form.error = None;
     let (from, to) = (
-        ops::format_local(now - span, offset),
-        ops::format_local(now, offset),
+        ops::format_local(now - span, &zone),
+        ops::format_local(now, &zone),
     );
     form.from.update(cx, |field, cx| field.set_text(from, cx));
     form.to.update(cx, |field, cx| field.set_text(to, cx));
@@ -169,13 +170,13 @@ fn set_preset(console: &mut Console, index: usize, cx: &mut Context<Console>) {
 
 /// What the form asks the server for; why not, when something does not
 /// read.
-fn query(form: &Form, offset: time::UtcOffset, cx: &gpui::App) -> Result<ExportQuery, String> {
+fn query(form: &Form, zone: &LocalZone, cx: &gpui::App) -> Result<ExportQuery, String> {
     let time = |field: &Entity<TextInput>, end: bool, name: &str| {
         let text = value(field, cx);
         if text.is_empty() {
             Ok(None)
         } else {
-            ops::parse_local(&text, offset, end)
+            ops::parse_local(&text, zone, end)
                 .map(Some)
                 .ok_or_else(|| format!("{name} reads YYYY-MM-DD or YYYY-MM-DD HH:MM"))
         }
@@ -213,14 +214,14 @@ fn query(form: &Form, offset: time::UtcOffset, cx: &gpui::App) -> Result<ExportQ
 
 /// Ask where to save, then fetch the rows into the file.
 fn export(console: &mut Console, cx: &mut Context<Console>) {
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let Some(form) = &mut console.state::<State>().form else {
         return;
     };
     if form.busy {
         return;
     }
-    let query = match query(form, offset, cx) {
+    let query = match query(form, &zone, cx) {
         Ok(query) => query,
         Err(problem) => {
             form.error = Some(problem);
@@ -230,7 +231,7 @@ fn export(console: &mut Console, cx: &mut Context<Console>) {
     };
     form.busy = true;
     form.error = None;
-    let now = OffsetDateTime::now_utc().to_offset(offset);
+    let now = zone.now();
     let name = format!(
         "telemetry-{}-{:02}{:02}.{}",
         ops::format_date(now.date()),

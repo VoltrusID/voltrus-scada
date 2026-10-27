@@ -11,7 +11,7 @@ use gpui::{
     App, AppContext as _, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point,
     px, size,
 };
-use time::UtcOffset;
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::theme::{self, ThemeCatalog};
 
 use console::{Console, Launch, LaunchOverlay, Page, StressPlan, TagDialog};
@@ -260,10 +260,6 @@ fn parse(args: &[String]) -> Result<Options, String> {
 }
 
 fn main() -> ExitCode {
-    // `time` can only read the local offset while the process has one
-    // thread, so ask before GPUI or the network runtime start any.
-    let utc_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-
     let args: Vec<String> = std::env::args().skip(1).collect();
     let options = match parse(&args) {
         Ok(options) => options,
@@ -303,7 +299,7 @@ fn main() -> ExitCode {
         screen: options.screen,
         edit: options.edit,
         section: options.section,
-        utc_offset,
+        zone: LocalZone::system(),
         appearance: options.dark,
         keys: options.keys,
     };

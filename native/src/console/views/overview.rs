@@ -242,7 +242,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                 .child(format!(
                                     "{} · {}",
                                     alarm_summary(alarm),
-                                    local_time(alarm.triggered_at, console.utc_offset)
+                                    local_time(alarm.triggered_at, &console.zone)
                                 )),
                         ),
                 )

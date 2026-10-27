@@ -2958,10 +2958,9 @@ async fn live_data_manager_insights() {
     );
     let overall = insights::overall(&buckets).expect("figures");
     assert!(overall.min <= overall.avg && overall.avg <= overall.max);
-    // As the section does: from the first stored value, so both halves
-    // hold some (the server answers 500 for an empty one).
-    let (start, end) = insights::compare_span(from, to, &buckets).expect("a span to compare");
-    let (current, previous) = insights::halves(start, end);
+    // As the section does: the server answers an empty half with no values,
+    // so the plain halves of the range are asked for.
+    let (current, previous) = insights::halves(from, to);
     let compared: ComparisonResult = api
         .get_json(&insights::compare_path(
             &tag.device_id,

@@ -14,6 +14,8 @@
 //!   convention, annotations and the tag detail's history queries.
 //! - [`device_file`]: Modbus Poll and BACnet Explorer device files, parsed
 //!   for import (a port of the web client's `deviceFileImport.ts`).
+//! - [`zone`]: the operator's time zone with its daylight-saving rules, for
+//!   showing and reading local times.
 //! - [`mimic`]: HMI mimic screens: the server's SCADA rows, the editable
 //!   screen model, the symbol library's geometry, live states, connection
 //!   routes and the faceplate's command rules.
@@ -26,3 +28,4 @@ pub mod screens;
 pub mod stress;
 pub mod tag_api;
 pub mod ws_types;
+pub mod zone;

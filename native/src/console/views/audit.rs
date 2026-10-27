@@ -17,6 +17,7 @@ use voltrus_scada_native::api::ops::{
     self, AuditEntry, AuditPage, AuditQuery, AuditSort, Format, Saved,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::Icon;
 use vt_ui::components::{Button, IconButton, empty_state, pill};
 use vt_ui::text_input::{InputEvent, TextInput};
@@ -165,7 +166,7 @@ fn field_event(
 /// The query the fields, the sort and the page make; why not, when a date
 /// does not read.
 fn build_query(console: &mut Console, cx: &gpui::App) -> Result<AuditQuery, &'static str> {
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let state = console.state::<State>();
     let mut query = state.query.clone();
     let Some(fields) = &state.fields else {
@@ -176,9 +177,7 @@ fn build_query(console: &mut Console, cx: &gpui::App) -> Result<AuditQuery, &'st
         if text.is_empty() {
             Ok(None)
         } else {
-            ops::parse_local(&text, offset, end)
-                .map(Some)
-                .ok_or(problem)
+            ops::parse_local(&text, &zone, end).map(Some).ok_or(problem)
         }
     };
     query.search = value(&fields.search, cx);
@@ -262,11 +261,7 @@ pub fn export_csv(console: &mut Console, window: &mut Window, cx: &mut Context<C
         }
     };
     console.state::<State>().exporting = true;
-    let today = ops::format_date(
-        time::OffsetDateTime::now_utc()
-            .to_offset(console.utc_offset)
-            .date(),
-    );
+    let today = ops::format_date(console.zone.now().date());
     save_download(
         console,
         CallKey::new("audit.export"),
@@ -343,7 +338,7 @@ fn activate_row(
 
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let state = console.state::<State>();
     let page = state.page.clone();
     let (error, filter_error) = (state.error.clone(), state.filter_error);
@@ -482,6 +477,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .into_any_element(),
         (Some(page), None, None) => {
             let page = page.clone();
+            let zone = zone.clone();
             uniform_list(
                 "audit",
                 shown + tail_rows(shown, ROW_HEIGHT_PX),
@@ -494,7 +490,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                     entry,
                                     row,
                                     (focused && cursor == Some(row), open_id == Some(entry.id)),
-                                    offset,
+                                    &zone,
                                     &theme,
                                     cx,
                                 ),
@@ -571,7 +567,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 .flex_1()
                 .min_h_0()
                 .child(table)
-                .when_some(open, |this, entry| this.child(detail(&entry, offset, cx))),
+                .when_some(open, |this, entry| this.child(detail(&entry, &zone, cx))),
         )
         .into_any_element()
 }
@@ -580,7 +576,7 @@ fn audit_row(
     entry: &AuditEntry,
     row: usize,
     (ring, open): (bool, bool),
-    offset: time::UtcOffset,
+    zone: &LocalZone,
     theme: &Theme,
     cx: &Context<Console>,
 ) -> AnyElement {
@@ -615,7 +611,7 @@ fn audit_row(
                 .flex_none()
                 .font_family(MONO)
                 .text_size(FONT_SMALL)
-                .child(ops::format_local(entry.created_at, offset)),
+                .child(ops::format_local(entry.created_at, zone)),
         )
         .child(
             div()
@@ -654,22 +650,20 @@ fn audit_row(
 }
 
 /// The side panel: one entry in full.
-fn detail(entry: &AuditEntry, offset: time::UtcOffset, cx: &mut Context<Console>) -> AnyElement {
+fn detail(entry: &AuditEntry, zone: &LocalZone, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let at = time::OffsetDateTime::from_unix_timestamp(entry.created_at)
-        .map(|at| at.to_offset(offset))
-        .map_or_else(
-            |_| "—".to_owned(),
-            |at| {
-                format!(
-                    "{} {:02}:{:02}:{:02}",
-                    ops::format_date(at.date()),
-                    at.hour(),
-                    at.minute(),
-                    at.second()
-                )
-            },
-        );
+    let at = zone.at(entry.created_at).map_or_else(
+        || "—".to_owned(),
+        |at| {
+            format!(
+                "{} {:02}:{:02}:{:02}",
+                ops::format_date(at.date()),
+                at.hour(),
+                at.minute(),
+                at.second()
+            )
+        },
+    );
     let fields = [
         ("Time", at),
         ("Action", entry.action.clone()),

@@ -26,7 +26,11 @@ serde_json = "1"
 anyhow = "1"
 toml = "0.8"
 dirs = "5"
-time = { version = "0.3", features = ["macros", "formatting", "local-offset"] }
+# Calendar dates and clock fields; the zone's offset rules are `jiff`'s.
+time = { version = "0.3", features = ["macros", "formatting"] }
+# The operator's time zone with its daylight-saving rules (`zone`); thread-safe,
+# unlike `time`'s local offset, which refuses to ask once threads exist.
+jiff = "0.2"
 # `getrusage` for the performance HUD's memory figure.
 libc = "0.2"
 # The alarm annunciator's output stream (tones are synthesized; no codecs).

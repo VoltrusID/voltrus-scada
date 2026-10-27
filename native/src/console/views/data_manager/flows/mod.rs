@@ -882,7 +882,7 @@ fn flow_row(
         .when(look.updated_column, |this| {
             this.child(mono(
                 if flow.updated_at > 0 {
-                    local_time(flow.updated_at, console.utc_offset)
+                    local_time(flow.updated_at, &console.zone)
                 } else {
                     "—".to_owned()
                 },

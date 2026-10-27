@@ -28,6 +28,7 @@ use gpui::{
 };
 use voltrus_scada_native::api::eng_scripts::{self as api, Script, ScriptExecution, TestResult};
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::Icon;
 use vt_ui::components::{Button, Segment, empty_state, kbd, pill, segmented};
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
@@ -1058,7 +1059,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     );
     let nav = console.list(LIST, cx);
     let (cursor, focused, scroll) = (nav.cursor, nav.focus.is_focused(window), nav.scroll.clone());
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
 
     let body = if let Some(error) = list_error {
         ops_kit::notice(format!("Scripts: {error}"), true, &theme)
@@ -1094,7 +1095,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                                     focused,
                                     open_id,
                                     open_dirty,
-                                    offset,
+                                    zone: &zone,
                                 },
                                 &unsaved,
                                 &theme,
@@ -1200,12 +1201,12 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
 
 /// What every list row of one render shares.
 #[derive(Clone, Copy)]
-struct RowLook {
+struct RowLook<'a> {
     cursor: Option<usize>,
     focused: bool,
     open_id: Option<i64>,
     open_dirty: bool,
-    offset: time::UtcOffset,
+    zone: &'a LocalZone,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1213,7 +1214,7 @@ fn script_row(
     console: &Console,
     index: usize,
     row: usize,
-    look: RowLook,
+    look: RowLook<'_>,
     unsaved: &[i64],
     theme: &Theme,
     cx: &mut Context<Console>,
@@ -1288,7 +1289,7 @@ fn script_row(
                 .font_family(MONO)
                 .text_size(FONT_SMALL)
                 .text_color(theme.fg_dim)
-                .child(local_time(script.updated_at, look.offset)),
+                .child(local_time(script.updated_at, look.zone)),
         )
         .child(
             div()
@@ -1719,7 +1720,7 @@ fn history_panel(
     cx: &mut Context<Console>,
 ) -> AnyElement {
     let theme = theme(cx).clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let state = console.state::<State>();
     let list = match &state.executions {
         Some((for_id, result)) if *for_id == id => Some(result.clone()),
@@ -1793,7 +1794,7 @@ fn history_panel(
                 range
                     .map(|row| match rows.get(row) {
                         Some(execution) => {
-                            execution_row(execution, row, cursor, focused, open, offset, &theme, cx)
+                            execution_row(execution, row, cursor, focused, open, &zone, &theme, cx)
                         }
                         None => tail_row(HISTORY_ROW),
                     })
@@ -1908,7 +1909,7 @@ fn execution_row(
     cursor: Option<usize>,
     focused: bool,
     open: Option<i64>,
-    offset: time::UtcOffset,
+    zone: &LocalZone,
     theme: &Theme,
     cx: &mut Context<Console>,
 ) -> AnyElement {
@@ -1946,7 +1947,7 @@ fn execution_row(
                 .flex_none()
                 .font_family(MONO)
                 .text_size(FONT_SMALL)
-                .child(local_time(execution.created_at, offset)),
+                .child(local_time(execution.created_at, zone)),
         )
         .child(div().w(px(STATUS)).flex_none().child(pill(
             execution.status.to_uppercase(),

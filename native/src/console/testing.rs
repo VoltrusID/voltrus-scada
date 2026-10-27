@@ -5,10 +5,10 @@
 use std::rc::Rc;
 
 use gpui::{Context, Entity, TestAppContext, VisualTestContext, Window};
-use time::UtcOffset;
 use tokio::sync::mpsc::UnboundedReceiver;
 use voltrus_scada_native::api::DataSource;
 use voltrus_scada_native::runtime::{CallKey, Command, Event, Handle, Link, Reply};
+use voltrus_scada_native::zone::LocalZone;
 use vt_ui::theme::{self, ThemeCatalog};
 
 use super::{Console, Launch, Phase};
@@ -43,7 +43,7 @@ impl Harness {
             screen: None,
             edit: false,
             section: None,
-            utc_offset: UtcOffset::UTC,
+            zone: LocalZone::utc(),
             appearance: Some(true),
             keys: None,
         };

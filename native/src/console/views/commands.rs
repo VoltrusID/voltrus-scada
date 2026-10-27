@@ -798,7 +798,7 @@ fn command_row(
                     div()
                         .font_family(MONO)
                         .text_size(FONT_SMALL)
-                        .child(local_time(command.created_at, console.utc_offset)),
+                        .child(local_time(command.created_at, &console.zone)),
                 )
                 .child(
                     div()
@@ -832,13 +832,13 @@ fn detail(
     cx: &mut Context<Console>,
 ) -> AnyElement {
     let theme = theme(cx).clone();
-    let offset = console.utc_offset;
+    let zone = console.zone.clone();
     let (name, key) = tag_name(console, command.data_source_id);
     let state = console.state::<State>();
     let audit = state.audit.clone();
     let cancelling = state.cancels.iter().any(|(_, id)| *id == command.id);
     let color = command_status_color(&command.status, &theme);
-    let when = |at: Option<i64>| at.map_or_else(|| "—".to_owned(), |at| local_time(at, offset));
+    let when = |at: Option<i64>| at.map_or_else(|| "—".to_owned(), |at| local_time(at, &zone));
 
     let mut fields: Vec<(&'static str, String)> = vec![
         (
@@ -920,7 +920,7 @@ fn detail(
                                 } else {
                                     entry.changed_by.as_str()
                                 },
-                                local_time(entry.created_at, offset),
+                                local_time(entry.created_at, &zone),
                                 entry
                                     .reason
                                     .as_ref()
