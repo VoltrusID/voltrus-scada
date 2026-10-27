@@ -230,23 +230,16 @@ fn ensure_history(console: &mut Console) {
     );
 }
 
-/// The samples of the lines `wanted` (tag id, key) out of a history answer
-/// by key. Tags sharing a key share its samples.
+/// The samples of the lines `wanted` (tag ids) out of a history answer keyed
+/// by data source id.
 fn wanted_lines(
     mut series: HashMap<String, Vec<(f64, f64)>>,
-    wanted: &[(i64, &str)],
+    wanted: &[i64],
 ) -> HashMap<i64, Samples> {
-    let mut lines: HashMap<i64, Samples> = HashMap::new();
-    for (position, &(id, key)) in wanted.iter().enumerate() {
-        let shared = wanted[..position]
-            .iter()
-            .find(|(_, other)| *other == key)
-            .and_then(|(other, _)| lines.get(other).cloned());
-        if let Some(samples) = shared.or_else(|| series.remove(key).map(Rc::new)) {
-            lines.insert(id, samples);
-        }
-    }
-    lines
+    wanted
+        .iter()
+        .filter_map(|&id| Some((id, Rc::new(series.remove(&id.to_string())?))))
+        .collect()
 }
 
 /// Ask for the open tag's annotations (operators: the server's route is
@@ -333,14 +326,9 @@ pub(crate) fn on_reply(
             let asked = state.asked.take();
             match reply.take::<(HashMap<String, Vec<(f64, f64)>>, u64)>() {
                 Ok((series, interval)) => {
-                    let store = &console.store;
-                    let wanted: Vec<(i64, &str)> = asked
+                    let wanted: Vec<i64> = asked
                         .iter()
-                        .flat_map(|(_, ids)| ids)
-                        .filter_map(move |id| {
-                            let index = store.position(*id)?;
-                            Some((*id, store.tags[index].info.key.as_str()))
-                        })
+                        .flat_map(|(_, ids)| ids.iter().copied())
                         .collect();
                     let fetched = wanted_lines(series, &wanted);
                     let state = console.state::<DetailState>();
@@ -1931,9 +1919,10 @@ mod tests {
         h
     }
 
-    fn series(keys: &[&str]) -> Series {
-        keys.iter()
-            .map(|key| ((*key).to_owned(), vec![(1000.0, 1.0)]))
+    /// A history answer holding one series for each tag id, keyed by id.
+    fn series(ids: &[i64]) -> Series {
+        ids.iter()
+            .map(|id| (id.to_string(), vec![(1000.0, 1.0)]))
             .collect()
     }
 
@@ -2022,7 +2011,7 @@ mod tests {
         let seq = arg(&h.calls(), "tags.history");
         h.reply(
             CallKey::new("tags.history").with(seq),
-            Reply::ok((series(&["a.p", "b.p", "c.p"]), 1000_u64)),
+            Reply::ok((series(&[7, 8, 9]), 1000_u64)),
         );
         assert_eq!(kept(&mut h), vec![7]);
         // An overlay the answer did not keep is asked for.
@@ -2030,7 +2019,7 @@ mod tests {
         let seq = arg(&h.calls(), "tags.history");
         h.reply(
             CallKey::new("tags.history").with(seq),
-            Reply::ok((series(&["a.p", "b.p", "c.p"]), 1000_u64)),
+            Reply::ok((series(&[7, 8, 9]), 1000_u64)),
         );
         assert_eq!(kept(&mut h), vec![7, 9]);
         // Taking it off again needs nothing new.
@@ -2039,14 +2028,12 @@ mod tests {
     }
 
     #[test]
-    fn wanted_lines_drop_the_rest_and_share_a_key() {
-        let lines = wanted_lines(
-            series(&["a.p", "b.p", "c.p"]),
-            &[(7, "a.p"), (8, "a.p"), (9, "x.p")],
-        );
+    fn wanted_lines_keep_only_the_asked_ids_and_never_share_a_key() {
+        // Tags 7 and 8 may share a key; the answer is by id, so each has its own samples.
+        let lines = wanted_lines(series(&[7, 8, 9]), &[7, 8, 10]);
         let mut ids: Vec<i64> = lines.keys().copied().collect();
         ids.sort_unstable();
         assert_eq!(ids, vec![7, 8]);
-        assert!(Rc::ptr_eq(&lines[&7], &lines[&8]));
+        assert!(!Rc::ptr_eq(&lines[&7], &lines[&8]));
     }
 }

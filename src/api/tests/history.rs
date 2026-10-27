@@ -160,3 +160,49 @@ async fn test_history_filters_by_sensor_and_device() {
     );
     assert!(keys(&history(&app, &cookie, "range=30m&sensor=nope").await).is_empty());
 }
+
+/// SCADA-17 B10: two devices may share a tag key, and `data` keyed by key kept only the later one.
+#[tokio::test]
+async fn test_history_keyed_by_id_keeps_tags_that_share_a_key() {
+    let app = test_app_with_seeded_admin().await;
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+    for device in ["plc-1", "plc-2"] {
+        create_source(
+            &app,
+            &cookie,
+            serde_json::json!({
+                "key": "frequency", "name": "Frequency", "source_type": "random_walk",
+                "device_id": device,
+            }),
+        )
+        .await;
+    }
+
+    let by_key = history(&app, &cookie, "range=30m").await;
+    assert_eq!(by_key["sensors"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        by_key["data"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["frequency"],
+        "the key form is ambiguous and stays as it was"
+    );
+
+    let by_id = history(&app, &cookie, "range=30m&keyed_by=id").await;
+    let mut ids: Vec<String> = by_id["sensors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["id"].as_i64().unwrap().to_string())
+        .collect();
+    ids.sort();
+    let mut keys: Vec<String> = by_id["data"].as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(ids.len(), 2);
+    assert_eq!(keys, ids, "one series per data source id");
+    for id in &ids {
+        assert!(by_id["data"][id]["count"].as_i64().unwrap() > 0, "{id}");
+    }
+}

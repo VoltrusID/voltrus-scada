@@ -1,3 +1,4 @@
+mod alarms;
 mod analytics;
 mod api_keys;
 mod audit_log;

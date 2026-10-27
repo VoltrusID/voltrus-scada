@@ -5,6 +5,8 @@ import { fetchJson, fetchOk } from './fetch'
 export interface ShiftHandover {
   id: number
   author_id: number
+  /** `null` when the author's account no longer exists. */
+  author_username?: string | null
   shift_date: string
   shift_period: string
   what_happened: string

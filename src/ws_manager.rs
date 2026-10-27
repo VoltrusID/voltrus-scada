@@ -155,6 +155,28 @@ impl WsManager {
         self.broadcast_preencoded(&msg);
     }
 
+    /// Tell every connection that `changes` moved to a new state: one
+    /// `AlarmUpdate` per alarm. `actor` is the user behind it, `None` for the
+    /// system.
+    pub fn broadcast_alarm_updates(
+        &self,
+        event: &str,
+        actor: Option<&str>,
+        changes: &[crate::models::AlarmTransition],
+    ) {
+        let ts = crate::timeutil::now_secs();
+        for change in changes {
+            self.broadcast_alarm(ServerMessage::AlarmUpdate {
+                alarm_id: change.alarm_id,
+                tag_id: change.source_key.clone(),
+                event: event.to_string(),
+                state: change.state.clone(),
+                actor: actor.map(str::to_string),
+                ts,
+            });
+        }
+    }
+
     /// Broadcast HA status to all connected clients.
     pub fn broadcast_ha_status(&self, msg: ServerMessage) {
         self.broadcast_preencoded(&msg);

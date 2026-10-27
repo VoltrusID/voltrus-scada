@@ -46,12 +46,12 @@ export function useDashboardData(
   useEffect(() => {
     if (!authed || sensors.length === 0 || initialLoadDone.current) return
     initialLoadDone.current = true
-    fetchJson<{ data: Record<string, any> }>('/api/v1/history?range=30m').then(result => {
+    fetchJson<{ data: Record<string, any> }>(historyUrl({ range: '30m', keyedBy: 'id' })).then(result => {
       if (!result.data) return
       const expanded = expandCompactData(result.data)
       const updates: { id: string; points: DataPoint[]; value: SensorData }[] = []
       for (const s of sensors) {
-        const pts = expanded[s.key]
+        const pts = expanded[String(s.id)]
         if (pts) {
           const trimmed = pts.length > LIVE_PTS ? pts.slice(-LIVE_PTS) : pts
           const last = trimmed[trimmed.length - 1]
@@ -82,6 +82,7 @@ export function useDashboardData(
       sensor: detailSensor?.key,
       detail: historyDetail,
       agg: historyAutoAgg,
+      keyedBy: 'id',
     })
     const wanted = detailSensor ? [detailSensor] : screenSensors
     fetchJson<{ data: Record<string, any> }>(url).then(result => {
@@ -89,7 +90,7 @@ export function useDashboardData(
       const expanded = expandCompactData(result.data)
       const remapped: Record<string, DataPoint[]> = {}
       for (const s of wanted) {
-        const pts = expanded[s.key]
+        const pts = expanded[String(s.id)]
         if (pts) remapped[String(s.id)] = pts
       }
       actions.setHistoryMap(remapped)

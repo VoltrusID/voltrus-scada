@@ -1,7 +1,26 @@
 use super::Storage;
 use anyhow::{Context, Result};
 
-use crate::models::{AlarmAnalyticsEntry, AlarmAuditEntry, AlarmJournalEntry, AlarmSummary};
+use crate::models::{
+    AlarmAnalyticsEntry, AlarmAuditEntry, AlarmJournalEntry, AlarmSummary, AlarmTransition,
+};
+
+/// The alarm's source key and current state as the WebSocket pushes them, or
+/// `None` when there is no such alarm.
+fn transition_of(conn: &rusqlite::Connection, id: i64) -> Option<AlarmTransition> {
+    conn.query_row(
+        "SELECT source_key, COALESCE(state, 'active') FROM alarms WHERE id = ?1",
+        rusqlite::params![id],
+        |row| {
+            Ok(AlarmTransition {
+                alarm_id: id,
+                source_key: row.get(0)?,
+                state: row.get(1)?,
+            })
+        },
+    )
+    .ok()
+}
 
 impl Storage {
     // ── Alarm lifecycle: resolve, acknowledge, shelf ──
@@ -15,7 +34,7 @@ impl Storage {
         &self,
         source_key: &str,
         current_value: Option<f64>,
-    ) -> Result<()> {
+    ) -> Result<Vec<AlarmTransition>> {
         let conn = self.conn.clone();
         let source_key = source_key.to_string();
         tokio::task::spawn_blocking(move || {
@@ -60,7 +79,7 @@ impl Storage {
             };
 
             if alarm_ids.is_empty() {
-                return Ok(());
+                return Ok(Vec::new());
             }
 
             // Resolve the matched alarms
@@ -93,7 +112,14 @@ impl Storage {
                 );
             }
 
-            Ok(())
+            Ok(alarm_ids
+                .into_iter()
+                .map(|alarm_id| AlarmTransition {
+                    alarm_id,
+                    source_key: source_key.clone(),
+                    state: "resolved".to_string(),
+                })
+                .collect())
         })
         .await
         .context("Task join failed")?
@@ -104,7 +130,7 @@ impl Storage {
         id: i64,
         username: &str,
         cooldown_secs: i64,
-    ) -> Result<()> {
+    ) -> Result<Option<AlarmTransition>> {
         let conn = self.conn.clone();
         let username = username.to_string();
         tokio::task::spawn_blocking(move || {
@@ -126,13 +152,17 @@ impl Storage {
                 "INSERT INTO alarm_journal (alarm_id, event, at, actor) VALUES (?1, 'acknowledged', ?2, ?3)",
                 rusqlite::params![id, now, username],
             );
-            Ok(())
+            Ok(transition_of(&conn, id))
         })
         .await
         .context("Task join failed")?
     }
 
-    pub async fn acknowledge_all(&self, username: &str, cooldown_secs: i64) -> Result<()> {
+    pub async fn acknowledge_all(
+        &self,
+        username: &str,
+        cooldown_secs: i64,
+    ) -> Result<Vec<AlarmTransition>> {
         let conn = self.conn.clone();
         let username = username.to_string();
         tokio::task::spawn_blocking(move || {
@@ -157,7 +187,7 @@ impl Storage {
             .context("Acknowledge all alarms failed")?;
 
             // Create audit entries for each acknowledged alarm
-            for alarm_id in alarm_ids {
+            for &alarm_id in &alarm_ids {
                 let _ = conn.execute(
                     "INSERT INTO alarm_audit_log (alarm_id, action, performed_by, details, created_at) VALUES (?1, 'acknowledged', ?2, ?3, ?4)",
                     rusqlite::params![alarm_id, username, format!("{{\"cooldown_secs\":{}}}", cooldown_secs), now],
@@ -169,7 +199,10 @@ impl Storage {
                 );
             }
 
-            Ok(())
+            Ok(alarm_ids
+                .into_iter()
+                .filter_map(|id| transition_of(&conn, id))
+                .collect())
         })
         .await
         .context("Task join failed")?
@@ -183,7 +216,7 @@ impl Storage {
         shelved_until: i64,
         shelved_by: &str,
         reason: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<AlarmTransition>> {
         let conn = self.conn.clone();
         let shelved_by = shelved_by.to_string();
         let reason = reason.to_string();
@@ -205,13 +238,13 @@ impl Storage {
                 "INSERT INTO alarm_journal (alarm_id, event, at, actor) VALUES (?1, 'shelved', ?2, ?3)",
                 rusqlite::params![id, now, shelved_by],
             );
-            Ok(())
+            Ok(transition_of(&conn, id))
         })
         .await
         .context("Task join failed")?
     }
 
-    pub async fn unshelf_alarm(&self, id: i64) -> Result<()> {
+    pub async fn unshelf_alarm(&self, id: i64) -> Result<Option<AlarmTransition>> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
@@ -240,14 +273,14 @@ impl Storage {
                 "INSERT INTO alarm_journal (alarm_id, event, at, actor) VALUES (?1, 'unshelved', ?2, NULL)",
                 rusqlite::params![id, now],
             );
-            Ok(())
+            Ok(transition_of(&conn, id))
         })
         .await
         .context("Task join failed")?
     }
 
     /// Automatically unshelf alarms whose shelved_until timestamp has expired.
-    pub async fn auto_unshelf_expired_alarms(&self) -> Result<()> {
+    pub async fn auto_unshelf_expired_alarms(&self) -> Result<Vec<AlarmTransition>> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
@@ -263,7 +296,7 @@ impl Storage {
             };
 
             if expired_ids.is_empty() {
-                return Ok(());
+                return Ok(Vec::new());
             }
 
             // Unshelf each expired alarm
@@ -294,7 +327,10 @@ impl Storage {
                 );
             }
 
-            Ok(())
+            Ok(expired_ids
+                .iter()
+                .filter_map(|id| transition_of(&conn, *id))
+                .collect())
         })
         .await
         .context("Task join failed")?
@@ -440,6 +476,9 @@ impl Storage {
 
     // ── Alarm summary & analytics ──
 
+    /// Waiting alarms (active and unacknowledged) by priority, ranked case-insensitively:
+    /// `critical`; `high`/`major`/`warning`/`medium` count as warning; any other
+    /// value counts as info, so every waiting alarm falls in exactly one bucket.
     pub async fn get_alarm_summary(&self) -> Result<AlarmSummary> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
@@ -449,7 +488,8 @@ impl Storage {
 
             let active_critical: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM alarms WHERE state = 'active' AND acknowledged_at IS NULL AND priority = 'critical'",
+                    "SELECT COUNT(*) FROM alarms WHERE state = 'active' AND acknowledged_at IS NULL
+                       AND LOWER(COALESCE(priority, severity, '')) = 'critical'",
                     [],
                     |row| row.get(0),
                 )
@@ -457,7 +497,8 @@ impl Storage {
 
             let active_warning: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM alarms WHERE state = 'active' AND acknowledged_at IS NULL AND priority = 'warning'",
+                    "SELECT COUNT(*) FROM alarms WHERE state = 'active' AND acknowledged_at IS NULL
+                       AND LOWER(COALESCE(priority, severity, '')) IN ('high', 'major', 'warning', 'medium')",
                     [],
                     |row| row.get(0),
                 )
@@ -465,7 +506,8 @@ impl Storage {
 
             let active_info: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM alarms WHERE state = 'active' AND acknowledged_at IS NULL AND priority = 'info'",
+                    "SELECT COUNT(*) FROM alarms WHERE state = 'active' AND acknowledged_at IS NULL
+                       AND LOWER(COALESCE(priority, severity, '')) NOT IN ('critical', 'high', 'major', 'warning', 'medium')",
                     [],
                     |row| row.get(0),
                 )

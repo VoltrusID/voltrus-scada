@@ -28,6 +28,16 @@ pub struct Alarm {
     pub alarm_type: String,
 }
 
+/// An alarm that just changed state (resolved, acknowledged, shelved or
+/// unshelved), as the storage reports it for the WebSocket push.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlarmTransition {
+    pub alarm_id: i64,
+    pub source_key: String,
+    /// The alarm's state after the change.
+    pub state: String,
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct AlarmQuery {
     pub status: Option<String>,

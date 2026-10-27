@@ -75,6 +75,16 @@ pub enum ServerMessage {
         value: f64,
         ts: i64,
     },
+    /// An existing alarm changed state: `event` is `acknowledged`, `resolved`,
+    /// `shelved` or `unshelved`; `actor` is `None` when the system did it.
+    AlarmUpdate {
+        alarm_id: i64,
+        tag_id: String,
+        event: String,
+        state: String,
+        actor: Option<String>,
+        ts: i64,
+    },
     Pong,
     HaStatus {
         role: String,

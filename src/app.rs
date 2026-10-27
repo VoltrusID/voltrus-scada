@@ -505,10 +505,13 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                                 } else {
                                     true
                                 };
-                                if resolve_now {
-                                    let _ = storage
+                                if resolve_now
+                                    && let Ok(resolved) = storage
                                         .resolve_active_alarms(&source.key, Some(value))
-                                        .await;
+                                        .await
+                                {
+                                    alarm_ws_manager
+                                        .broadcast_alarm_updates("resolved", None, &resolved);
                                 }
                             }
                         }
@@ -560,12 +563,16 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     // Spawn alarm auto-unshelf task
     {
         let storage = storage.clone();
+        let unshelf_ws_manager = ws_manager.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                if let Err(e) = storage.auto_unshelf_expired_alarms().await {
-                    tracing::warn!("Auto-unshelf task failed: {}", e);
+                match storage.auto_unshelf_expired_alarms().await {
+                    Ok(unshelved) => {
+                        unshelf_ws_manager.broadcast_alarm_updates("unshelved", None, &unshelved);
+                    }
+                    Err(e) => tracing::warn!("Auto-unshelf task failed: {}", e),
                 }
             }
         });
