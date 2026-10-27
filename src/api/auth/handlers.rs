@@ -192,6 +192,25 @@ async fn check_password_and_login(
         );
     }
 
+    if user.disabled {
+        let _ = state
+            .storage
+            .insert_security_event(&crate::models::CreateSecurityEvent {
+                event_type: "login_disabled".into(),
+                severity: "warning".into(),
+                source_ip,
+                user_agent,
+                username: Some(body.username.clone()),
+                details: Some("Login on a disabled account".into()),
+            })
+            .await;
+        return (
+            StatusCode::FORBIDDEN,
+            json!({"error": "Account disabled"}),
+            jar,
+        );
+    }
+
     // Successful login — reset failed attempts and revoke old refresh tokens
     let _ = state.storage.reset_failed_attempts(&body.username).await;
     let _ = state

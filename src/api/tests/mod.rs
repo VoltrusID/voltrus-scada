@@ -12,9 +12,11 @@ mod import_nodered;
 mod license_status;
 mod mqtt_broker;
 mod naming_convention;
+mod scripts;
 mod system;
 mod tag_tree;
 mod ui_preferences;
+mod users;
 
 pub use helpers::*;
 

@@ -69,3 +69,44 @@ async fn test_update_data_source_persists_source_config_and_device_id() {
     assert_eq!(source["source_config"], "{\"low_crit\":2}");
     assert_eq!(source["device_id"], "7");
 }
+
+/// SCADA-16 B2: POST stored a string `source_config` as the JSON text of a
+/// string (quoted and escaped), so the web lost the config of every source it
+/// created or duplicated.
+#[tokio::test]
+async fn test_create_data_source_stores_source_config_like_put() {
+    let app = test_app_with_seeded_admin().await;
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+
+    let create = |config: Option<serde_json::Value>, key: &'static str| {
+        let app = app.clone();
+        let cookie = cookie.clone();
+        async move {
+            let mut body =
+                serde_json::json!({"key": key, "name": key, "source_type": "random_walk"});
+            if let Some(config) = config {
+                body["source_config"] = config;
+            }
+            let (status, created) = send_request(
+                &app,
+                "POST",
+                "/api/v1/data-sources",
+                None,
+                Some(&cookie),
+                Some(body),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED);
+            find_source(&app, &cookie, created["id"].as_i64().unwrap()).await
+        }
+    };
+
+    let from_string = create(Some(serde_json::json!("{\"volatility\":0.1}")), "a").await;
+    assert_eq!(from_string["source_config"], "{\"volatility\":0.1}");
+
+    let from_object = create(Some(serde_json::json!({"volatility": 0.2})), "b").await;
+    assert_eq!(from_object["source_config"], "{\"volatility\":0.2}");
+
+    let absent = create(None, "c").await;
+    assert_eq!(absent["source_config"], "{}");
+}

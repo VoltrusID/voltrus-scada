@@ -468,16 +468,15 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - Tag keys are register names, so two devices may share one (solar-farm has
   `frequency` twice). The console shows the first; keying by device is future
   work.
-- `POST /api/v1/data-sources` stores `source_config` as the text of
-  whatever JSON it gets, so the console sends an object (the web client's
-  string is stored quoted), and ignores the alarm delays, which follow in a
-  `PUT`. `PUT /api/v1/data-sources/{id}` stores a `source_config` string
-  as-is and an object as its JSON text.
+- `POST` and `PUT /api/v1/data-sources` store a `source_config` string
+  as-is and an object as its JSON text (the console sends an object, the web
+  client a string). `POST` ignores the alarm delays, which follow in a
+  `PUT`.
 - `PUT /api/v1/shortcuts` replaces the user's whole map and stores a `null`
   as an empty shortcut instead of removing it: the console sends the full
   map without the cleared entry. The default "permissive" name rule refuses
-  parentheses, so a duplicate is named `<name> copy` (the web's
-  `<name> (Copy)` is refused).
+  parentheses, so a duplicate is named `<name> copy` (the web names its
+  duplicates the same way).
 - `settings/ui-theme` accepts only `light`, `dark` or `system`, so the
   bundled theme chosen for each brightness is kept on the workstation.
 - `PUT /nav-shortcuts` and `PUT /shortcuts` replace the user's whole map,
@@ -519,9 +518,10 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   `POST /mqtt-broker/publish` does not reach the broker's own message log
   on the CI plant. Flows store no wires or positions (process steps run in
   stored order, then the outputs), so the editor's wires reorder steps and
-  positions last while it is open; `start`/`stop` change only the running
-  engine, not `enabled`. Saving a script with fixed source keeps its old
-  `syntax_error`. CSV/Excel imports write readings only (no route removes
+  positions last while it is open; `start`/`stop` store `enabled` as well
+  as changing the running engine (an unknown flow id answers 404). Saving a
+  script with new source re-checks it and clears an old `syntax_error` once
+  it parses. CSV/Excel imports write readings only (no route removes
   them) and replace mode answers 501; the Node-RED import only converts and
   reports.
 - Users, roles and API keys are admin-only routes. A user's role is one of
@@ -529,16 +529,25 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   the operator routes. The server reads the role from the user's row on
   every request, so a role change applies at once and a deleted user is
   signed out; a role or password change or a deletion also revokes the
-  user's refresh tokens. There is no way
-  to disable an account (only delete it), and deleting a user whose
-  handovers or mentions remain fails on a foreign key.
+  user's refresh tokens. `PUT /users/{id}` with `disabled: true` disables an
+  account: its sessions end at once, login answers 403 "Account disabled"
+  (after a correct password), and `disabled: false` re-enables it; the
+  `GET /users` rows carry `disabled`. Deleting a user also deletes their
+  notifications and keeps the annotations and shift handovers they wrote under
+  a hidden `[deleted user]` account. The server refuses demoting, disabling
+  or deleting the last enabled admin, and disabling yourself, with 400
+  (the console's own checks say the same earlier).
 - RBAC roles (`/api/v1/roles`) store a JSON list of permissions, refused
-  unless every one is in `models::ALL_PERMISSIONS` (the web's own list
-  offers names the server refuses); nothing checks them yet, and
-  `PUT /users/{id}/role` assigns one without any route to read it back.
+  unless every one is in `models::ALL_PERMISSIONS` (the web's role editor
+  lists the same 24 names). By design a custom role is an assignable
+  catalogue entry: nothing checks its permissions, and what a user may reach
+  is set by the built-in `role` on the user (see above). `PUT
+  /users/{id}/role` assigns one and `GET /users/{id}/role` reads it back as
+  `{user_id, role_id, role}` (`null` when none is assigned).
 - API keys expire in Unix seconds (the web client sends seconds too) and are shown once; the list keeps only
-  the first eight characters. Their stored permissions are not checked;
-  `api` keys read, `integration` keys also pass operator routes.
+  the first eight characters. Their stored `permissions` text is by design not
+  checked (the create response says so): the key `role` alone decides, `api`
+  keys read, `integration` keys also pass operator routes.
 - `POST /notifications/test` answers 200 with a per-target status (sent or
   the error) for webhooks and email; email needs SMTP configured (else
   500), push is not testable. `PUT /notifications/settings/{id}` checks the

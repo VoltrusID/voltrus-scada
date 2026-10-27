@@ -17,6 +17,26 @@ pub struct OkResponse {
     pub ok: bool,
 }
 
+fn is_known_role(role: &str) -> bool {
+    matches!(role, "admin" | "user" | "demo" | "operator" | "viewer")
+}
+
+fn last_admin_refused(action: &str) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": format!("cannot {action} the last enabled admin")})),
+    )
+        .into_response()
+}
+
+fn reserved_account() -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({"error": "reserved account"})),
+    )
+        .into_response()
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/users",
@@ -52,6 +72,13 @@ pub async fn create_user_handler(
         return Ok((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "username and password are required"})),
+        )
+            .into_response());
+    }
+    if body.username == crate::storage::DELETED_USER {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "username is reserved"})),
         )
             .into_response());
     }
@@ -120,39 +147,64 @@ pub async fn update_user_handler(
         .get_user_by_id(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("User not found"))?;
+    if user.username == crate::storage::DELETED_USER {
+        return Ok(reserved_account());
+    }
+    if let Some(role) = &body.role
+        && !is_known_role(role)
+    {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "unknown role"})),
+        )
+            .into_response());
+    }
+    if body.password.as_deref() == Some("") {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "password cannot be empty"})),
+        )
+            .into_response());
+    }
+    // An enabled admin who is demoted or disabled stops being able to
+    // administer: refuse when no other enabled admin is left, and refuse to
+    // lock yourself out.
+    let demotes = user.role == "admin" && body.role.as_deref().is_some_and(|r| r != "admin");
+    let disables = body.disabled == Some(true) && !user.disabled;
+    if disables && user.username == auth.username {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "cannot disable yourself"})),
+        )
+            .into_response());
+    }
+    if (demotes || (disables && user.role == "admin"))
+        && !user.disabled
+        && state.storage.count_other_active_admins(id).await? == 0
+    {
+        return Ok(last_admin_refused("demote or disable"));
+    }
+
     let mut details = Vec::new();
     if let Some(role) = body.role {
-        if role != "admin"
-            && role != "user"
-            && role != "demo"
-            && role != "operator"
-            && role != "viewer"
-        {
-            return Ok((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "unknown role"})),
-            )
-                .into_response());
-        }
         state.storage.update_user_role(id, &role).await?;
         details.push(format!("role={}", role));
     }
     if let Some(password) = body.password {
-        if password.is_empty() {
-            return Ok((
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "password cannot be empty"})),
-            )
-                .into_response());
-        }
         let hash = hash_password(&password);
         state.storage.update_user_password(id, &hash).await?;
         details.push("password_changed".to_string());
     }
+    if let Some(disabled) = body.disabled
+        && disabled != user.disabled
+    {
+        state.storage.set_user_disabled(id, disabled).await?;
+        details.push(format!("disabled={}", disabled));
+    }
     if !details.is_empty() {
-        // End the user's sessions: the middleware already reads the role from
-        // the database, and revoking refresh tokens stops a changed password
-        // from being bypassed with an old session.
+        // End the user's sessions: the middleware already reads the role and
+        // the disabled flag from the database, and revoking refresh tokens
+        // stops a changed password from being bypassed with an old session.
         state
             .storage
             .revoke_all_user_refresh_tokens(&user.username)
@@ -192,12 +244,21 @@ pub async fn delete_user_handler(
         .get_user_by_id(id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("User not found"))?;
+    if user.username == crate::storage::DELETED_USER {
+        return Ok(reserved_account());
+    }
     if user.username == auth.username {
         return Ok((
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "cannot delete yourself"})),
         )
             .into_response());
+    }
+    if user.role == "admin"
+        && !user.disabled
+        && state.storage.count_other_active_admins(id).await? == 0
+    {
+        return Ok(last_admin_refused("delete"));
     }
     state.storage.delete_user(id).await?;
     state

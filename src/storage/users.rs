@@ -3,6 +3,11 @@ use anyhow::{Context, Result};
 
 use crate::models::User;
 
+/// Username of the account that keeps the annotations and handovers of
+/// deleted users (their `author_id` is a foreign key). It is disabled, has no
+/// usable password and is left out of [`Storage::list_users`].
+pub const DELETED_USER: &str = "[deleted user]";
+
 impl Storage {
     // ── Users ──
 
@@ -12,7 +17,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(failed_attempts, 0), locked_until FROM users WHERE username = ?1")
+                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(failed_attempts, 0), locked_until, COALESCE(disabled, 0) FROM users WHERE username = ?1")
                 .context("Prepare failed")?;
             let mut rows = stmt
                 .query_map(rusqlite::params![username], |row| {
@@ -25,6 +30,7 @@ impl Storage {
                         must_change_password: row.get(5)?,
                         failed_attempts: row.get(6)?,
                         locked_until: row.get(7)?,
+                        disabled: row.get(8)?,
                     })
                 })
                 .context("Query failed")?;
@@ -68,10 +74,10 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(failed_attempts, 0), locked_until FROM users ORDER BY id")
+                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(failed_attempts, 0), locked_until, COALESCE(disabled, 0) FROM users WHERE username != ?1 ORDER BY id")
                 .context("Prepare failed")?;
             let rows = stmt
-                .query_map([], |row| {
+                .query_map(rusqlite::params![DELETED_USER], |row| {
                     Ok(User {
                         id: row.get(0)?,
                         username: row.get(1)?,
@@ -81,6 +87,7 @@ impl Storage {
                         must_change_password: row.get(5)?,
                         failed_attempts: row.get(6)?,
                         locked_until: row.get(7)?,
+                        disabled: row.get(8)?,
                     })
                 })
                 .context("Query failed")?;
@@ -96,7 +103,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(failed_attempts, 0), locked_until FROM users WHERE id = ?1")
+                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(failed_attempts, 0), locked_until, COALESCE(disabled, 0) FROM users WHERE id = ?1")
                 .context("Prepare failed")?;
             let result = stmt
                 .query_row(rusqlite::params![id], |row| {
@@ -109,6 +116,7 @@ impl Storage {
                         must_change_password: row.get(5)?,
                         failed_attempts: row.get(6)?,
                         locked_until: row.get(7)?,
+                        disabled: row.get(8)?,
                     })
                 })
                 .ok();
@@ -303,13 +311,88 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Delete a user. Their notifications go with them; annotations and
+    /// shift handovers they wrote are kept and re-attributed to the
+    /// [`DELETED_USER`] account, since both reference `users(id)`.
     pub async fn delete_user(&self, id: i64) -> Result<()> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute("DELETE FROM users WHERE id = ?1", rusqlite::params![id])
+            let mut conn = conn.lock().unwrap();
+            let tx = conn.transaction().context("Begin delete user failed")?;
+            tx.execute(
+                "DELETE FROM user_notifications WHERE user_id = ?1 OR from_user_id = ?1",
+                rusqlite::params![id],
+            )
+            .context("Delete user notifications failed")?;
+            let authored: i64 = tx
+                .query_row(
+                    "SELECT (SELECT COUNT(*) FROM annotations WHERE author_id = ?1)
+                          + (SELECT COUNT(*) FROM shift_handovers WHERE author_id = ?1)",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .context("Count authored records failed")?;
+            if authored > 0 {
+                tx.execute(
+                    "INSERT OR IGNORE INTO users (username, password_hash, salt, role, disabled)
+                     VALUES (?1, '!', '', 'viewer', 1)",
+                    rusqlite::params![DELETED_USER],
+                )
+                .context("Insert deleted-user account failed")?;
+                let tombstone: i64 = tx
+                    .query_row(
+                        "SELECT id FROM users WHERE username = ?1",
+                        rusqlite::params![DELETED_USER],
+                        |row| row.get(0),
+                    )
+                    .context("Find deleted-user account failed")?;
+                tx.execute(
+                    "UPDATE annotations SET author_id = ?1 WHERE author_id = ?2",
+                    rusqlite::params![tombstone, id],
+                )
+                .context("Re-attribute annotations failed")?;
+                tx.execute(
+                    "UPDATE shift_handovers SET author_id = ?1 WHERE author_id = ?2",
+                    rusqlite::params![tombstone, id],
+                )
+                .context("Re-attribute handovers failed")?;
+            }
+            tx.execute("DELETE FROM users WHERE id = ?1", rusqlite::params![id])
                 .context("Delete user failed")?;
+            tx.commit().context("Commit delete user failed")?;
             Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    pub async fn set_user_disabled(&self, id: i64, disabled: bool) -> Result<()> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "UPDATE users SET disabled = ?1 WHERE id = ?2",
+                rusqlite::params![disabled as i64, id],
+            )
+            .context("Set user disabled failed")?;
+            Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Enabled admins other than `except_id`: the accounts that could still
+    /// administer the plant if `except_id` were demoted, disabled or deleted.
+    pub async fn count_other_active_admins(&self, except_id: i64) -> Result<i64> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM users WHERE role = 'admin' AND COALESCE(disabled, 0) = 0 AND id != ?1",
+                rusqlite::params![except_id],
+                |row| row.get(0),
+            )
+            .context("Count admins failed")
         })
         .await
         .context("Task join failed")?

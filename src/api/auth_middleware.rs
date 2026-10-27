@@ -152,7 +152,7 @@ pub async fn cookie_auth_middleware(
 }
 
 /// Verify an access token and re-read the user from the database: a deleted
-/// user is refused, and the role is the stored one, not the one signed into
+/// or disabled user is refused, and the role is the stored one, not the one signed into
 /// the token when it was issued (a demoted admin loses admin at once).
 /// Fails closed on a storage error.
 pub(crate) async fn verify_session(
@@ -165,13 +165,17 @@ pub(crate) async fn verify_session(
         .get_user_by_username(&claims.username)
         .await
         .ok()??;
+    if user.disabled {
+        return None;
+    }
     claims.role = user.role;
     Some(claims)
 }
 
 /// API key authentication info, inserted for requests authenticated via
 /// X-API-Key / ?api_key=.
-/// Note: permissions field is stored for future use but not yet enforced.
+/// Note: the permissions text is stored and listed but not enforced; `role`
+/// decides access.
 /// `role` is the key's effective role ("api" = read-only, "integration" =
 /// also allowed on demo-allowed operational write routes).
 #[derive(Clone, Debug)]

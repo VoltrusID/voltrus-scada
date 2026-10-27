@@ -1213,7 +1213,10 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/roles/{id}",
             put(rbac::update_role).delete(rbac::delete_role),
         )
-        .route("/api/v1/users/{id}/role", put(rbac::assign_user_role))
+        .route(
+            "/api/v1/users/{id}/role",
+            get(rbac::get_user_role).put(rbac::assign_user_role),
+        )
         // API keys (admin-only)
         .route(
             "/api/v1/api-keys",

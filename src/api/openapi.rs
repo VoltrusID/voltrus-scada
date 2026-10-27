@@ -223,6 +223,7 @@ use utoipa::{Modify, OpenApi};
         crate::api::rbac::create_role,
         crate::api::rbac::update_role,
         crate::api::rbac::delete_role,
+        crate::api::rbac::get_user_role,
         crate::api::rbac::assign_user_role,
         // Annotations
         crate::api::annotations::create_annotation,

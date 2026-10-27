@@ -12,6 +12,8 @@ pub struct CreateApiKeyRequest {
     pub name: String,
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// Free text (the web sends a JSON list), stored and listed as given.
+    /// Not enforced: the key's `role` alone decides what it may call.
     #[serde(default = "default_permissions")]
     pub permissions: String,
     /// Key role. Defaults to "api" (read-only). "integration" keys also pass
@@ -108,7 +110,7 @@ pub async fn create_api_key(
         "role": body.role,
         "key": plain_key,
         "warning": "Store this key securely. It will not be shown again.",
-        "note": "Permissions are stored for future use. All valid API keys currently grant full read access."
+        "note": "Permissions are stored but not enforced: the key role decides access (api = read-only, integration = also operator routes)."
     }))
     .into_response())
 }
