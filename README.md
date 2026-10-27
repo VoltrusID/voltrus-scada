@@ -16,6 +16,8 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
 
 * **Protocols:** Modbus TCP, OPC UA, Siemens S7, EtherNet/IP (CIP), DNP3,
   BACnet/IP, and an embedded MQTT broker. SNMP network scan for asset discovery.
+  Device templates for Modbus and BACnet: built-in, saved from your own
+  devices, or imported from a public catalog.
   Each protocol is a Cargo feature, all on by default.
 * **Dashboards:** responsive grid, free-form canvas, 3D digital twin and a 2D
   SCADA diagram editor, with per-screen layouts.
@@ -28,8 +30,12 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   a command queue with write read-back, simulation mode.
 * **API:** REST with an OpenAPI document, plus TypeScript and Python SDKs in
   [`sdks/`](sdks) (MIT licensed).
+* **AI agents (MCP):** a Model Context Protocol server built into the server at
+  `/mcp`, so Claude and other MCP clients can read values, manage devices and
+  tags, and acknowledge alarms with an API key. See [docs/mcp.md](docs/mcp.md).
 * **Operations:** OEE and downtime, shift handover, asset inventory with NIS2
-  export, config snapshots, backup and restore.
+  export, config snapshots, backup and restore, whole-configuration YAML
+  projects (`voltrus project export|import|validate`).
 * **Security:** local accounts with Argon2, role-based access control, API
   keys, rate limiting, CSRF protection, intrusion detection, audit log.
 * **No limits and no licence key:** unlimited devices, tags and retention.
@@ -52,7 +58,7 @@ licence key; a lapsed or missing key never limits Core.
 | RTSP video cameras | | | yes |
 | Support | community | standard | priority SLA |
 
-Integrator and Enterprise are sold as a lifetime licence or monthly, per site.
+Integrator and Enterprise are sold as a lifetime licence or monthly, per site. A per-site key can also carry an annual support contract; a lapsed contract never limits Core or anything already licensed (plan: [docs/licensing-per-site-plan.md](docs/licensing-per-site-plan.md)).
 Current prices: <https://voltrus.id/voltrus-scada>. Official Voltrus binaries
 are Core plus the add-on. Details of the split and how it is built:
 [docs/open-core.md](docs/open-core.md).
@@ -111,6 +117,21 @@ devices:
 [`config.yaml`](config.yaml) lists more options (retention tiers, SMTP, MQTT
 broker, networks). Devices can also be managed from the web UI.
 
+Modbus and BACnet devices can also be created from shared device templates,
+built in or from a public catalog; see
+[docs/device-templates.md](docs/device-templates.md).
+
+### Configuration as code
+
+`voltrus project export ./site` writes the whole configuration (devices of every
+protocol, tags with alarm and write policies, screens and layouts, flows,
+scripts, recipes, notification rules, ...) as YAML files keyed by names, never
+by database ids. `voltrus project import ./site --dry-run` prints what an
+import would create, update or delete; without `--dry-run` it applies it in one
+transaction (`--mode replace` also deletes what the project does not list).
+Secrets are written as `${ENV_NAME}` references. Format and examples:
+[`docs/project-format.md`](docs/project-format.md).
+
 ### Simulators and scenarios
 
 `cargo run --features modbus --bin modbus-sim` and the other `*-sim` binaries
@@ -149,7 +170,7 @@ sdks/           TypeScript and Python SDKs (MIT)
 native/         experimental native operator console (GPUI)
 scenarios/      simulated plants for testing
 deploy/         example systemd unit
-docs/           open-core split, notes
+docs/           open-core split, MCP server, notes
 ```
 
 ## Contributing

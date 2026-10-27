@@ -143,8 +143,18 @@ pub async fn get_system(State(state): State<AppState>) -> Result<Json<SystemResp
     compute_system_info(&state).await.map(Json)
 }
 
-pub async fn get_active_features() -> Json<serde_json::Value> {
+pub async fn get_active_features(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let license = {
+        let status = state
+            .license_status
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut license = status.site_support_json();
+        license["tier"] = serde_json::to_value(status.tier()).unwrap();
+        license
+    };
     Json(serde_json::json!({
+        "license": license,
         "protocols": {
             "modbus": cfg!(feature = "modbus"),
             "opcua": cfg!(feature = "opcua"),

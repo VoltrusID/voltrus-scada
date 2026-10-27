@@ -1,0 +1,84 @@
+{
+  "format": "voltrus-device-template/1",
+  "template_id": "abb-azl402",
+  "manufacturer": "ABB",
+  "model": "AZL402",
+  "protocol": "modbus",
+  "description": "Water Quality Analyzer (pH, ORP, Turbidity, DO, Cond, Temp)",
+  "version": "1.0.0",
+  "verified": false,
+  "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
+  "quirks": [
+    "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0."
+  ],
+  "license": "CC-BY-4.0",
+  "port": 502,
+  "interval_ms": 1000,
+  "unit_id": 1,
+  "endianness": "big",
+  "registers": [
+    {
+      "name": "pH",
+      "offset": 0,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "pH",
+      "description": "pH value"
+    },
+    {
+      "name": "ORP",
+      "offset": 2,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "mV",
+      "description": "Oxidation-reduction potential"
+    },
+    {
+      "name": "Turbidity",
+      "offset": 4,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "NTU",
+      "description": "Water turbidity"
+    },
+    {
+      "name": "Dissolved_Oxygen",
+      "offset": 6,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "mg/L",
+      "description": "Dissolved oxygen concentration"
+    },
+    {
+      "name": "Conductivity",
+      "offset": 8,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "µS/cm",
+      "description": "Electrical conductivity"
+    },
+    {
+      "name": "Chlorine_Free",
+      "offset": 10,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "mg/L",
+      "description": "Free chlorine residual"
+    },
+    {
+      "name": "Temperature",
+      "offset": 12,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "°C",
+      "description": "Water temperature"
+    }
+  ]
+}

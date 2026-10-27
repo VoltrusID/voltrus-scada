@@ -1,0 +1,85 @@
+{
+  "format": "voltrus-template-catalog/1",
+  "templates": [
+    {
+      "template_id": "abb-azl402",
+      "manufacturer": "ABB",
+      "model": "AZL402",
+      "protocol": "modbus",
+      "version": "1.0.0",
+      "verified": false,
+      "path": "abb-azl402.json",
+      "sha256": "80aba1c0a4491b5a182b503848b39850a670a6b48dd5b8821a1fb2c8944d4606"
+    },
+    {
+      "template_id": "emerson-daniel-1000",
+      "manufacturer": "Emerson",
+      "model": "Daniel 1000",
+      "protocol": "modbus",
+      "version": "1.0.0",
+      "verified": false,
+      "path": "emerson-daniel-1000.json",
+      "sha256": "ba49b7e1684d3d326ea29d44c2dd385e6afaf187dcf0c6d16eacb519a8826ed5"
+    },
+    {
+      "template_id": "endress-hauser-promag-10w-dn50",
+      "manufacturer": "Endress+Hauser",
+      "model": "Promag 10W DN50",
+      "protocol": "modbus",
+      "version": "1.0.0",
+      "verified": false,
+      "path": "endress-hauser-promag-10w-dn50.json",
+      "sha256": "4c76fdc07b999bedb10bee1bff915759f1061d2f1e12d3fcdb9a6c8e06ddb6f0"
+    },
+    {
+      "template_id": "johnson-controls-facility-explorer-fec",
+      "manufacturer": "Johnson Controls",
+      "model": "Facility Explorer FEC",
+      "protocol": "bacnet",
+      "version": "1.0.0",
+      "verified": false,
+      "path": "johnson-controls-facility-explorer-fec.json",
+      "sha256": "66cbda2c6c864d821e577c0115d99d917fef1bea81e94c9940e66894d8304300"
+    },
+    {
+      "template_id": "raritan-px3-5902v",
+      "manufacturer": "Raritan",
+      "model": "PX3-5902V",
+      "protocol": "modbus",
+      "version": "1.0.0",
+      "verified": false,
+      "path": "raritan-px3-5902v.json",
+      "sha256": "9e3a21257eb449c661484f27934ef20bc68308b9d35845390a1d87fdcd41cfab"
+    },
+    {
+      "template_id": "schneider-electric-pm5560",
+      "manufacturer": "Schneider Electric",
+      "model": "PM5560",
+      "protocol": "modbus",
+      "version": "1.0.0",
+      "verified": false,
+      "path": "schneider-electric-pm5560.json",
+      "sha256": "9509dc62d1395c0bc5e0d9942b680a4810c798d3a76c33bee0c4a94bc5b7dd67"
+    },
+    {
+      "template_id": "sma-stp-60-us-10",
+      "manufacturer": "SMA",
+      "model": "STP 60-US-10",
+      "protocol": "modbus",
+      "version": "1.0.0",
+      "verified": false,
+      "path": "sma-stp-60-us-10.json",
+      "sha256": "6d827fbe9b61fe8923884a50a420c8dc5214eb8babf2f0c457f60dea88bbb94e"
+    },
+    {
+      "template_id": "trane-tracer-sc",
+      "manufacturer": "Trane",
+      "model": "Tracer SC+",
+      "protocol": "bacnet",
+      "version": "1.0.0",
+      "verified": false,
+      "path": "trane-tracer-sc.json",
+      "sha256": "97ed412a42632a08f8c8e6f608b840ea26edb289f8d33bd6e72842a53f9f7370"
+    }
+  ]
+}

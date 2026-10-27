@@ -355,7 +355,7 @@ pub async fn scan_modbus_registers(
 }
 
 /// POST /api/v1/modbus-devices/scan-network
-/// Scan a subnet for Modbus TCP devices (Starter+ license required).
+/// Scan a subnet for Modbus TCP devices (no licence required; Core has no device limits).
 #[utoipa::path(
     post,
     operation_id = "modbus_scan_network",

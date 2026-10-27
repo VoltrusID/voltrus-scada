@@ -1,0 +1,76 @@
+{
+  "format": "voltrus-device-template/1",
+  "template_id": "endress-hauser-promag-10w-dn50",
+  "manufacturer": "Endress+Hauser",
+  "model": "Promag 10W DN50",
+  "protocol": "modbus",
+  "description": "Electromagnetic flowmeter, DN50, 0-50 m³/h",
+  "version": "1.0.0",
+  "verified": false,
+  "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
+  "quirks": [
+    "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0.",
+    "Not mapped: unsigned 64-bit counters (Volume_Total (offset 4, m³)) because the poller has no uint64 type; their 4 registers each are still counted in the offsets."
+  ],
+  "license": "CC-BY-4.0",
+  "port": 502,
+  "interval_ms": 1000,
+  "unit_id": 1,
+  "endianness": "big",
+  "registers": [
+    {
+      "name": "Flow_Rate",
+      "offset": 0,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "m³/h",
+      "description": "Instantaneous volume flow rate"
+    },
+    {
+      "name": "Flow_Velocity",
+      "offset": 2,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "m/s",
+      "description": "Flow velocity in pipe"
+    },
+    {
+      "name": "Conductivity",
+      "offset": 8,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "µS/cm",
+      "description": "Fluid conductivity"
+    },
+    {
+      "name": "Temperature",
+      "offset": 10,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "°C",
+      "description": "Process fluid temperature"
+    },
+    {
+      "name": "Pipe_Volume",
+      "offset": 12,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "%",
+      "description": "Pipe fill level"
+    },
+    {
+      "name": "Signal_Quality",
+      "offset": 14,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "%",
+      "description": "Measurement signal quality"
+    }
+  ]
+}

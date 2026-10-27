@@ -1,0 +1,92 @@
+{
+  "format": "voltrus-device-template/1",
+  "template_id": "johnson-controls-facility-explorer-fec",
+  "manufacturer": "Johnson Controls",
+  "model": "Facility Explorer FEC",
+  "protocol": "bacnet",
+  "description": "Water Treatment Building HVAC AHU-1",
+  "version": "1.0.0",
+  "verified": false,
+  "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
+  "quirks": [
+    "Present values only; the object list is the simulator's, a real controller's list depends on its application."
+  ],
+  "license": "CC-BY-4.0",
+  "port": 47808,
+  "interval_ms": 1000,
+  "cov_enabled": false,
+  "cov_lifetime": 3600,
+  "objects": [
+    {
+      "object_type": "analogInput",
+      "object_instance": 1,
+      "property": "presentValue",
+      "name": "ZoneTemp_1",
+      "description": "Chemical room temperature"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 2,
+      "property": "presentValue",
+      "name": "ZoneTemp_2",
+      "description": "Control room temperature"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 3,
+      "property": "presentValue",
+      "name": "SupplyAirTemp",
+      "description": "Supply air temperature"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 4,
+      "property": "presentValue",
+      "name": "Humidity",
+      "description": "Average zone humidity"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 5,
+      "property": "presentValue",
+      "name": "CO2_Level",
+      "description": "Control room CO2"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 6,
+      "property": "presentValue",
+      "name": "ChwSupplyTemp",
+      "description": "Chilled water supply"
+    },
+    {
+      "object_type": "analogOutput",
+      "object_instance": 1,
+      "property": "presentValue",
+      "name": "ZoneSetpoint",
+      "description": "Zone temp setpoint",
+      "writable": true
+    },
+    {
+      "object_type": "binaryInput",
+      "object_instance": 1,
+      "property": "presentValue",
+      "name": "FanStatus",
+      "description": "AHU fan running"
+    },
+    {
+      "object_type": "binaryInput",
+      "object_instance": 2,
+      "property": "presentValue",
+      "name": "FilterAlarm",
+      "description": "Filter clogged"
+    },
+    {
+      "object_type": "multiStateValue",
+      "object_instance": 1,
+      "property": "presentValue",
+      "name": "SystemMode",
+      "description": "1=Off 2=Cool 3=Heat 4=Auto"
+    }
+  ]
+}

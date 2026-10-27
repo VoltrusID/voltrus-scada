@@ -10,6 +10,7 @@ mod cq_commands;
 mod cq_policies;
 mod device_crud;
 mod device_layouts;
+mod device_templates;
 #[cfg(feature = "dnp3")]
 mod dnp3;
 mod downsampling;
@@ -81,6 +82,23 @@ impl Storage {
     /// Simple health check — verify the connection is usable.
     pub fn conn_health(&self) -> bool {
         self.lock_conn().execute_batch("SELECT 1").is_ok()
+    }
+
+    /// Run `f` on the shared connection on a blocking thread. The closure gets
+    /// exclusive access for its whole duration, so it can open one transaction
+    /// that spans several tables. Used by the project YAML import/export.
+    pub(crate) async fn with_conn<T, F>(&self, f: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    {
+        let storage = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = storage.lock_conn();
+            f(&mut conn)
+        })
+        .await
+        .context("Task join failed")?
     }
 
     pub fn new_with_key(path: &str, encryption_key: Option<&str>) -> Result<Self> {

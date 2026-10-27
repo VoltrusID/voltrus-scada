@@ -278,7 +278,7 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
             />
           )}
           {tab === 'modbus' && (
-            <ModbusDeviceManager onClose={onClose} embedded />
+            <ModbusDeviceManager onClose={onClose} embedded isStrictAdmin={isStrictAdmin} />
           )}
           {tab === 'users' && isStrictAdmin && (
             <UserManager onClose={onClose} embedded />
@@ -314,7 +314,7 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
             <Dnp3DeviceManager onClose={onClose} embedded />
           )}
           {tab === 'bacnet' && isAdmin && (
-            <BacnetDeviceManager onClose={onClose} embedded />
+            <BacnetDeviceManager onClose={onClose} embedded isStrictAdmin={isStrictAdmin} />
           )}
           {extraTab && (!extraTab.strictAdmin || isStrictAdmin) && (!extraTab.admin || isAdmin) && extraTab.render({ onClose, license })}
           {tab === 'roles' && isStrictAdmin && (

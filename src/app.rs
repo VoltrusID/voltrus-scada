@@ -755,6 +755,24 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         );
     }
 
+    // A catalog URL in the config file is the device template catalog setting.
+    if let Some(url) = app_config
+        .device_templates
+        .catalog_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|u| !u.is_empty())
+    {
+        match crate::device_templates::catalog::validate_url(url) {
+            Ok(()) => {
+                storage
+                    .upsert_setting(crate::device_templates::catalog::SETTING_CATALOG_URL, url)
+                    .await?;
+            }
+            Err(e) => tracing::warn!("Ignoring device_templates.catalog_url: {e}"),
+        }
+    }
+
     // Let the add-on edition start its own background work before the server listens.
     ext.start(StartContext {
         config: app_config.clone(),

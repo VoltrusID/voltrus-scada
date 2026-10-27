@@ -24,8 +24,8 @@ pub mod command_queue;
 pub mod compliance;
 pub mod compression;
 pub mod config;
-pub mod config_export;
 pub mod deadband;
+pub mod device_templates;
 #[cfg(any(
     feature = "modbus",
     feature = "opcua",
@@ -48,6 +48,8 @@ pub mod health;
 pub mod import_nodered;
 pub mod integration;
 pub mod license;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 #[cfg(feature = "modbus")]
 pub mod modbus;
 pub mod models;
@@ -60,6 +62,7 @@ pub mod oee;
 pub mod opcua;
 pub mod poller_manager;
 pub mod project_export;
+pub mod project_yaml;
 pub mod recipe;
 pub mod retention;
 #[cfg(feature = "s7")]
@@ -80,3 +83,8 @@ pub mod ws_types;
 mod app;
 
 pub use app::run;
+
+// The simulator device profiles are shared with the `*-sim` binaries by path;
+// the built-in device templates are generated from them.
+#[path = "sim_profiles.rs"]
+mod sim_profiles;

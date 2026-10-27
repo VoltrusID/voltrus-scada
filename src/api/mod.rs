@@ -1,5 +1,5 @@
 mod ai_copilot;
-mod alarms;
+pub(crate) mod alarms;
 mod analytics;
 mod annotations;
 mod api_keys;
@@ -10,12 +10,13 @@ pub mod auth;
 mod auth_middleware;
 #[cfg(feature = "bacnet")]
 mod bacnet_devices;
-mod commands;
+pub(crate) mod commands;
 mod compression;
 mod config_snapshots;
 mod csv_import;
 pub(crate) mod data;
-mod data_sources;
+pub(crate) mod data_sources;
+pub(crate) mod device_templates;
 #[cfg(feature = "dnp3")]
 mod dnp3_devices;
 mod edr_compat;
@@ -23,7 +24,7 @@ mod edr_compat;
 mod enip_devices;
 mod excel_import;
 mod firmware_catalog;
-mod flows;
+pub(crate) mod flows;
 mod generators;
 pub(crate) mod hardware_cert;
 mod import_nodered;
@@ -32,7 +33,7 @@ mod layouts;
 mod license;
 mod maintenance;
 #[cfg(feature = "modbus")]
-mod modbus_devices;
+pub(crate) mod modbus_devices;
 #[cfg(feature = "mqtt-broker")]
 mod mqtt_broker;
 mod naming_convention;
@@ -43,11 +44,12 @@ mod oee;
 mod opcua_devices;
 #[cfg(feature = "openapi")]
 pub(crate) mod openapi;
+pub(crate) mod project;
 mod rbac;
 mod recipes;
 #[cfg(feature = "s7")]
 mod s7_devices;
-mod screens;
+pub(crate) mod screens;
 #[cfg(feature = "scripts")]
 mod scripts;
 mod settings;
@@ -883,6 +885,22 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/templates/preview",
             post(vertical_templates::preview_template),
         )
+        .route(
+            "/api/v1/device-templates",
+            get(device_templates::list_templates),
+        )
+        .route(
+            "/api/v1/device-templates/catalog",
+            get(device_templates::get_catalog),
+        )
+        .route(
+            "/api/v1/device-templates/{id}",
+            get(device_templates::get_template),
+        )
+        .route(
+            "/api/v1/device-templates/{id}/export",
+            get(device_templates::export_template),
+        )
         .route("/api/v1/wizard/create", post(wizard::wizard_create))
         .route(
             "/api/v1/wizard/health-check",
@@ -1195,6 +1213,22 @@ pub fn create_router(state: AppState) -> Router {
             get(vertical_templates::get_template),
         )
         .route(
+            "/api/v1/device-templates",
+            post(device_templates::create_template),
+        )
+        .route(
+            "/api/v1/device-templates/from-device/{device_id}",
+            post(device_templates::template_from_device),
+        )
+        .route(
+            "/api/v1/device-templates/{id}",
+            delete(device_templates::delete_template),
+        )
+        .route(
+            "/api/v1/device-templates/{id}/instantiate",
+            post(device_templates::instantiate_template),
+        )
+        .route(
             "/api/v1/templates/{id}/instantiate",
             post(vertical_templates::instantiate_template),
         );
@@ -1231,6 +1265,7 @@ pub fn create_router(state: AppState) -> Router {
     // Demo users CANNOT access these.
     let admin_protected = Router::new()
         .route("/api/v1/seed", post(auth::seed))
+        .route("/api/v1/project/export", get(project::export_project))
         .route(
             "/api/v1/telemetry",
             delete(telemetry_delete::delete_telemetry),
@@ -1256,6 +1291,10 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/users/{id}/role",
             get(rbac::get_user_role).put(rbac::assign_user_role),
         )
+        .route(
+            "/api/v1/device-templates/catalog/import",
+            post(device_templates::import_from_catalog),
+        )
         // API keys (admin-only)
         .route(
             "/api/v1/api-keys",
@@ -1279,6 +1318,7 @@ pub fn create_router(state: AppState) -> Router {
     // CSV/Excel import router with increased body limit (admin-only)
     let import_router = Router::new()
         .route("/api/v1/import/csv", post(csv_import::import_csv))
+        .route("/api/v1/project/import", post(project::import_project))
         .route("/api/v1/import/excel", post(excel_import::import_excel))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB for file upload
         .layer(middleware::from_fn(admin_only_middleware))
@@ -1287,13 +1327,21 @@ pub fn create_router(state: AppState) -> Router {
             cookie_auth_middleware,
         ));
 
+    // MCP endpoint (Streamable HTTP, JSON-RPC): same authentication as the REST
+    // API, authorisation per tool inside the endpoint.
+    #[cfg(feature = "mcp")]
+    let mcp_router = crate::mcp::router(state.clone());
+
     // API router with CORS, rate limiting, security headers, body limit
     let api_router = Router::new()
         .merge(public)
         .merge(protected)
         .merge(demo_protected)
         .merge(admin_protected)
-        .merge(import_router)
+        .merge(import_router);
+    #[cfg(feature = "mcp")]
+    let api_router = api_router.merge(mcp_router);
+    let api_router = api_router
         .route("/api/v1/{*path}", get(api_not_found))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1349,6 +1397,7 @@ pub fn create_router(state: AppState) -> Router {
 // Middleware types re-exported from middleware module
 pub use auth_middleware::{
     AuthUser, admin_only_middleware, cookie_auth_middleware, demo_allowed_middleware,
+    role_allows_operational_writes,
 };
 
 #[cfg(test)]

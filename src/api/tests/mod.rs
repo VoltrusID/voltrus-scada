@@ -8,14 +8,18 @@ mod command_device;
 mod config_snapshots;
 mod csv_import;
 mod data_sources;
+mod device_templates;
 mod flows;
 mod helpers;
 mod history;
 mod import_nodered;
 mod license_status;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod mqtt_broker;
 mod naming_convention;
 mod notifications;
+mod project;
 mod protocol_routes;
 mod scripts;
 mod shift_report;

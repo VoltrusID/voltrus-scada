@@ -43,6 +43,10 @@ Unlocked by a licence key bound to one site. Two plans:
 Licence keys carry a tier and, for monthly plans, an expiry. A lapsed monthly key
 keeps its features for a 7 day grace period and then the install falls back to
 Core. **An invalid, expired or missing licence never limits Core.**
+A per-site key may also carry the site it is issued for and an annual support
+contract (`site`, `support_until`, derived `support`: `active`, `lapsed`, `none`
+on `/api/license/status`); a lapsed contract is informational only. See
+[licensing-per-site-plan.md](licensing-per-site-plan.md).
 
 ## How the split is built
 

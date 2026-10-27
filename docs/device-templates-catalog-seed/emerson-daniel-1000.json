@@ -1,0 +1,102 @@
+{
+  "format": "voltrus-device-template/1",
+  "template_id": "emerson-daniel-1000",
+  "manufacturer": "Emerson",
+  "model": "Daniel 1000",
+  "protocol": "modbus",
+  "description": "Gas Flow Computer (orifice meter, AGA3/AGA8)",
+  "version": "1.0.0",
+  "verified": false,
+  "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
+  "quirks": [
+    "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0.",
+    "Not mapped: unsigned 64-bit counters (Volume_Today (offset 8, MSCF), Volume_Total (offset 12, MMSCF)) because the poller has no uint64 type; their 4 registers each are still counted in the offsets."
+  ],
+  "license": "CC-BY-4.0",
+  "port": 502,
+  "interval_ms": 1000,
+  "unit_id": 1,
+  "endianness": "big",
+  "registers": [
+    {
+      "name": "Diff_Pressure",
+      "offset": 0,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "inH2O",
+      "description": "Orifice differential pressure"
+    },
+    {
+      "name": "Static_Pressure",
+      "offset": 2,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "psig",
+      "description": "Line static pressure"
+    },
+    {
+      "name": "Temperature",
+      "offset": 4,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "°F",
+      "description": "Gas temperature"
+    },
+    {
+      "name": "Flow_Rate",
+      "offset": 6,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "MSCFH",
+      "description": "Instantaneous gas flow rate"
+    },
+    {
+      "name": "Gas_Gravity",
+      "offset": 16,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "description": "Specific gravity (air=1)"
+    },
+    {
+      "name": "Heating_Value",
+      "offset": 18,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "BTU/SCF",
+      "description": "Higher heating value"
+    },
+    {
+      "name": "CH4",
+      "offset": 20,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "mol%",
+      "description": "Methane fraction"
+    },
+    {
+      "name": "CO2",
+      "offset": 22,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "mol%",
+      "description": "Carbon dioxide fraction"
+    },
+    {
+      "name": "H2S",
+      "offset": 24,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "ppm",
+      "description": "Hydrogen sulfide"
+    }
+  ]
+}

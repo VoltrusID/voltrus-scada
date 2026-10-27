@@ -9,7 +9,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT license_key, fingerprint_hash, activation_blob, fingerprint_hostname, fingerprint_cpu, fingerprint_disk_serial, fingerprint_mac, fingerprint_machine_id, activated_at, expires_at, tier, device_limit FROM license_activation ORDER BY id DESC LIMIT 1")
+                .prepare("SELECT license_key, fingerprint_hash, activation_blob, fingerprint_hostname, fingerprint_cpu, fingerprint_disk_serial, fingerprint_mac, fingerprint_machine_id, activated_at, expires_at, tier, device_limit, site_id, site_name, support_until FROM license_activation ORDER BY id DESC LIMIT 1")
                 .context("Prepare failed")?;
             let result = stmt.query_row([], |row| {
                 Ok(crate::models::LicenseActivationRow {
@@ -25,6 +25,9 @@ impl Storage {
                     expires_at: row.get(9)?,
                     tier: row.get(10)?,
                     device_limit: row.get(11)?,
+                    site_id: row.get(12)?,
+                    site_name: row.get(13)?,
+                    support_until: row.get(14)?,
                 })
             }).ok();
             Ok(result)
@@ -41,8 +44,8 @@ impl Storage {
             let conn = conn.lock().unwrap();
             let _ = conn.execute("DELETE FROM license_activation", []);
             conn.execute(
-                "INSERT INTO license_activation (license_key, fingerprint_hash, fingerprint_hostname, fingerprint_cpu, fingerprint_disk_serial, fingerprint_mac, fingerprint_machine_id, activation_blob, activated_at, expires_at, tier, device_limit)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT INTO license_activation (license_key, fingerprint_hash, fingerprint_hostname, fingerprint_cpu, fingerprint_disk_serial, fingerprint_mac, fingerprint_machine_id, activation_blob, activated_at, expires_at, tier, device_limit, site_id, site_name, support_until)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
                 rusqlite::params![
                     row.license_key,
                     row.fingerprint_hash,
@@ -56,6 +59,9 @@ impl Storage {
                     row.expires_at,
                     row.tier,
                     row.device_limit,
+                    row.site_id,
+                    row.site_name,
+                    row.support_until,
                 ],
             ).context("Store license activation failed")?;
             Ok(())

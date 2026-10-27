@@ -7,8 +7,9 @@ import { SimProfileManager } from './components/SimProfileManager'
 import type { ModbusDevice, ModbusRegister } from './types'
 import { FileDropZone, ImportFileButton, ImportNotice } from './components/FileDropZone'
 import { deviceFileKind, parseModbusDeviceFile } from './deviceFileImport'
+import { DeviceTemplatesPanel, SaveAsTemplateDialog } from './components/DeviceTemplatesPanel'
 
-export function ModbusDeviceManager({ onClose, embedded }: { onClose: () => void; embedded?: boolean }) {
+export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onClose: () => void; embedded?: boolean; isStrictAdmin?: boolean }) {
   const { data: devices = [], isLoading } = useModbusDevices()
   const { data: statuses = [] } = useModbusPollerStatus()
   const createMut = useCreateModbusDevice()
@@ -22,6 +23,8 @@ export function ModbusDeviceManager({ onClose, embedded }: { onClose: () => void
   const [dupDevice, setDupDevice] = useState<(ModbusDevice & { registers?: ModbusRegister[] }) | undefined>(undefined)
   const [simDevice, setSimDevice] = useState<ModbusDevice | undefined>(undefined)
   const [showSimProfiles, setShowSimProfiles] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [templateDevice, setTemplateDevice] = useState<ModbusDevice | undefined>(undefined)
   const [importLines, setImportLines] = useState<string[]>([])
   const [simStates, setSimStates] = useState<Record<string, { simulation_mode: boolean; sim_profile_id: number | null; sim_config: string | null }>>({})
 
@@ -97,6 +100,7 @@ export function ModbusDeviceManager({ onClose, embedded }: { onClose: () => void
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
             Sim Profiles
           </button>
+          <button style={{ ...btnStyle, borderColor: 'var(--cyan)', color: 'var(--cyan)' }} onClick={() => setShowTemplates(true)} aria-label="Device templates">Templates</button>
         </div>
       </div>
       <ImportNotice lines={importLines} onDismiss={() => setImportLines([])} />
@@ -164,6 +168,7 @@ export function ModbusDeviceManager({ onClose, embedded }: { onClose: () => void
                   <div style={{ display: 'flex', gap: 4 }}>
                     <button onClick={() => handleEdit(d)} aria-label={`Edit ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Edit</button>
                     <button onClick={() => handleDup(d)} aria-label={`Duplicate ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Dup</button>
+                    <button onClick={() => setTemplateDevice(d)} aria-label={`Save ${d.name || d.id} as template`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Tpl</button>
                     <button onClick={() => restartMut.mutate(d.id)} aria-label={`Restart ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 11 }}>Restart</button>
                     <button onClick={() => handleDelete(d.id)} aria-label={`Delete ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)', cursor: 'pointer', fontSize: 11 }}>Del</button>
                   </div>
@@ -197,6 +202,8 @@ export function ModbusDeviceManager({ onClose, embedded }: { onClose: () => void
         />
       )
     })()}
+    {showTemplates && <DeviceTemplatesPanel protocol="modbus" isAdmin={isStrictAdmin} onClose={() => setShowTemplates(false)} />}
+    {templateDevice && <SaveAsTemplateDialog protocol="modbus" deviceId={templateDevice.id} deviceName={templateDevice.name || templateDevice.id} onClose={() => setTemplateDevice(undefined)} onSaved={line => setImportLines([line])} />}
     {showSimProfiles && (
       <div style={{ position: 'fixed', inset: 0, background: 'var(--bg)', zIndex: 60, display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '16px 24px', display: 'flex', alignItems: 'center', borderBottom: '1px solid var(--border)' }}>
