@@ -130,6 +130,7 @@ impl HistorySeries {
 
 #[derive(Debug, Deserialize)]
 struct HistoryResponse {
+    /// By data source id (`keyed_by=id`).
     #[serde(default)]
     data: std::collections::HashMap<String, HistorySeries>,
 }
@@ -538,13 +539,14 @@ impl VoltrusApi {
         Ok(())
     }
 
-    /// GET /api/v1/history?range=.. — every tag's history, keyed by tag key.
+    /// GET /api/v1/history?range=..&keyed_by=id — every tag's history, keyed
+    /// by data source id (tag keys are not unique).
     pub async fn history(
         &self,
         range: &str,
     ) -> Result<std::collections::HashMap<String, HistorySeries>> {
         Ok(self
-            .get_json::<HistoryResponse>(&format!("/api/v1/history?range={range}"))
+            .get_json::<HistoryResponse>(&format!("/api/v1/history?range={range}&keyed_by=id"))
             .await?
             .data)
     }

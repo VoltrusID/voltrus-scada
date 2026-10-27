@@ -626,6 +626,7 @@ impl HistoryQuery {
             path.push_str("&detail=full");
         }
         let _ = write!(path, "&agg={}", self.agg.param());
+        path.push_str("&keyed_by=id");
         path
     }
 }
@@ -639,7 +640,8 @@ pub fn history_path(query: &HistoryQuery, keys: &[String]) -> String {
     path
 }
 
-/// The detail chart's history answer: the series of the tags asked for, by key.
+/// The detail chart's history answer: the series of the tags asked for, by
+/// data source id (`keyed_by=id`; tag keys are not unique).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct HistoryAnswer {
@@ -1134,14 +1136,17 @@ mod tests {
         assert_eq!(history_path(&query, &[]), query.path());
         assert_eq!(
             history_path(&query, &["inv.p".to_owned(), "PLC 1/t".to_owned()]),
-            "/api/v1/history?range=1h&agg=sampling&sensor=inv.p%2CPLC%201%2Ft"
+            "/api/v1/history?range=1h&agg=sampling&keyed_by=id&sensor=inv.p%2CPLC%201%2Ft"
         );
     }
 
     #[test]
     fn history_queries_name_range_detail_and_aggregation() {
         let query = HistoryQuery::default();
-        assert_eq!(query.path(), "/api/v1/history?range=1h&agg=sampling");
+        assert_eq!(
+            query.path(),
+            "/api/v1/history?range=1h&agg=sampling&keyed_by=id"
+        );
         let query = HistoryQuery {
             span: Span::Last("5m"),
             detail: Detail::Full,
@@ -1149,7 +1154,7 @@ mod tests {
         };
         assert_eq!(
             query.path(),
-            "/api/v1/history?range=30m&detail=full&agg=minmax"
+            "/api/v1/history?range=30m&detail=full&agg=minmax&keyed_by=id"
         );
         let custom = Span::Between {
             start_ms: 1_761_300_000_000,
@@ -1160,11 +1165,11 @@ mod tests {
         assert!(!custom.is_live() && Span::Last("6h").is_live());
         let answer: HistoryAnswer = serde_json::from_str(
             r#"{"sensors": [], "range": "1h", "interval": 10000,
-                "data": {"ac_power": {"values": [1.0, 2.0], "start": 1000, "interval": 10000, "count": 2}}}"#,
+                "data": {"42": {"values": [1.0, 2.0], "start": 1000, "interval": 10000, "count": 2}}}"#,
         )
         .unwrap();
         assert_eq!(
-            chart_samples(&answer.data["ac_power"]),
+            chart_samples(&answer.data["42"]),
             [(1000.0, 1.0), (11000.0, 2.0)]
         );
     }

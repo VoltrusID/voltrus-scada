@@ -58,3 +58,15 @@ test('band points are epoch seconds, ordered, and need both edges', () => {
     { time: 3, lo: 1, hi: 3 },
   ])
 })
+
+// SCADA-17 B10: tag keys are not unique, so the web reads /history keyed by data source id.
+test('history can be keyed by data source id', () => {
+  assert.equal(
+    historyUrl({ range: '30m', keyedBy: 'id' }),
+    '/api/v1/history?range=30m&keyed_by=id',
+  )
+  assert.equal(
+    historyUrl({ range: '1h', screen: 'plant', sensor: 'frequency', keyedBy: 'id' }),
+    '/api/v1/history?range=1h&screen=plant&sensor=frequency&keyed_by=id',
+  )
+})

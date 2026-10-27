@@ -226,6 +226,8 @@ pub const SHIFT_PERIODS: [&str; 3] = ["morning", "afternoon", "night"];
 pub struct Handover {
     pub id: i64,
     pub author_id: i64,
+    /// The author's username; `null` when the account no longer exists.
+    pub author_username: Option<String>,
     /// `YYYY-MM-DD`.
     pub shift_date: String,
     pub shift_period: String,
@@ -233,6 +235,16 @@ pub struct Handover {
     pub whats_pending: String,
     pub what_to_watch: String,
     pub created_at: i64,
+}
+
+impl Handover {
+    /// Who wrote the entry: the username, or `#id` when the account is gone.
+    pub fn author(&self) -> String {
+        match &self.author_username {
+            Some(name) if !name.is_empty() => name.clone(),
+            _ => format!("#{}", self.author_id),
+        }
+    }
 }
 
 /// `GET /api/v1/shift-handover` answers `{handovers, count}`.
@@ -852,6 +864,15 @@ mod tests {
         let list: HandoverList = serde_json::from_str(list).unwrap();
         assert_eq!(list.count, 1);
         assert_eq!(list.handovers[0].shift_period, "night");
+        assert_eq!(
+            list.handovers[0].author(),
+            "#1",
+            "an older server sends no name"
+        );
+        let named: Handover =
+            serde_json::from_str(r#"{"id": 4, "author_id": 2, "author_username": "maria"}"#)
+                .unwrap();
+        assert_eq!(named.author(), "maria");
 
         let report = r#"{
             "shift_date": "2026-10-25", "shift_period": "morning",

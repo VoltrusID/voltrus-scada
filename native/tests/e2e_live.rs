@@ -1399,7 +1399,10 @@ async fn live_tag_tree_policy_writes_notes_and_detail_history() {
         agg: Aggregation::Average,
     };
     let history: HistoryAnswer = api.get_json(&query.path()).await.expect("history");
-    let series = history.data.get(&tag.key).expect("the tag's series");
+    let series = history
+        .data
+        .get(&tag.id.to_string())
+        .expect("the tag's series");
     let samples = tag_api::chart_samples(series);
     assert!(!samples.is_empty(), "the plant recorded the tag");
     #[allow(clippy::cast_precision_loss)]

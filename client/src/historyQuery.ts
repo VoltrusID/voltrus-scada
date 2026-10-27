@@ -9,6 +9,8 @@ export interface HistoryQuery {
   detail?: 'auto' | 'full'
   /** `sampling`, `avg` or `minmax`; only sent with auto detail. */
   agg?: string
+  /** Key the answer's `data` by data source id: tag keys are not unique. Omitted: by tag key. */
+  keyedBy?: 'id'
 }
 
 /** The `GET /api/v1/history` URL for a query. */
@@ -16,6 +18,7 @@ export function historyUrl(q: HistoryQuery): string {
   const params = new URLSearchParams({ range: q.range })
   if (q.screen && q.screen !== 'all') params.set('screen', q.screen)
   if (q.sensor) params.set('sensor', q.sensor)
+  if (q.keyedBy) params.set('keyed_by', q.keyedBy)
   if (q.detail === 'full') params.set('detail', 'full')
   else if (q.agg) params.set('agg', q.agg)
   return `/api/v1/history?${params}`

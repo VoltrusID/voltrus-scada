@@ -1,6 +1,7 @@
 import React from 'react'
 import { registerWidget, WIDGET_MANIFESTS } from './registry'
 import type { WidgetProps } from './types'
+import { ledSegmentLines } from './ledSegments'
 
 const SEGMENTS: Record<string, [boolean, boolean, boolean, boolean, boolean, boolean, boolean]> = {
   '0': [true, true, true, false, true, true, true],
@@ -35,35 +36,16 @@ const LEDDisplayWidget: React.FC<WidgetProps> = (props) => {
 
   const renderDigit = (char: string, idx: number) => {
     const segs = SEGMENTS[char] ?? SEGMENTS[' ']!
-    const [a, b, c, d, e, f, g] = segs
-
-    const ox = idx * 28
-    const dw = 22
-    const dh = 38
+    const lines = ledSegmentLines(idx * 28)
     const sw = 3
-
-    const segColor = (on: boolean) => on ? color : 'var(--border)'
-    const segOpacity = (on: boolean) => on ? 0.9 : 0.15
 
     return (
       <g key={idx}>
-        {a && <line x1={ox + 3} y1={1} x2={ox + dw - 3} y2={1} stroke={segColor(a)} strokeWidth={sw} strokeLinecap="round" opacity={segOpacity(a)} />}
-        {a === false && <line x1={ox + 3} y1={1} x2={ox + dw - 3} y2={1} stroke={segColor(a)} strokeWidth={sw} strokeLinecap="round" opacity={segOpacity(a)} />}
-
-        <line x1={ox + 3} y1={1} x2={ox + dw - 3} y2={1}
-          stroke={segColor(a)} strokeWidth={sw} strokeLinecap="round" opacity={segOpacity(a)} />
-        <line x1={ox + dw + 1} y1={3} x2={ox + dw + 1} y2={dh / 2 - 1}
-          stroke={segColor(b)} strokeWidth={sw} strokeLinecap="round" opacity={segOpacity(b)} />
-        <line x1={ox + dw + 1} y1={dh / 2 + 1} x2={ox + dw + 1} y2={dh - 3}
-          stroke={segColor(c)} strokeWidth={sw} strokeLinecap="round" opacity={segOpacity(c)} />
-        <line x1={ox + 3} y1={dh / 2} x2={ox + dw - 3} y2={dh / 2}
-          stroke={segColor(d)} strokeWidth={sw} strokeLinecap="round" opacity={segOpacity(d)} />
-        <line x1={ox - 1} y1={dh / 2 + 1} x2={ox - 1} y2={dh - 3}
-          stroke={segColor(e)} strokeWidth={sw} strokeLinecap="round" opacity={segOpacity(e)} />
-        <line x1={ox - 1} y1={3} x2={ox - 1} y2={dh / 2 - 1}
-          stroke={segColor(f)} strokeWidth={sw} strokeLinecap="round" opacity={segOpacity(f)} />
-        <line x1={ox + 3} y1={dh - 1} x2={ox + dw - 3} y2={dh - 1}
-          stroke={segColor(g)} strokeWidth={sw} strokeLinecap="round" opacity={segOpacity(g)} />
+        {lines.map((l, i) => (
+          <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2}
+            stroke={segs[i] ? color : 'var(--border)'} strokeWidth={sw} strokeLinecap="round"
+            opacity={segs[i] ? 0.9 : 0.15} />
+        ))}
       </g>
     )
   }

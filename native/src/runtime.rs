@@ -1353,6 +1353,9 @@ impl Actor {
                 }));
                 self.refresh_alarms();
             }
+            // Another operator acknowledged, shelved or unshelved an alarm, or
+            // it cleared: fetch the lists again.
+            ServerMessage::AlarmUpdate { .. } => self.refresh_alarms(),
             ServerMessage::CommandAck {
                 command_id,
                 status,

@@ -3,6 +3,7 @@ import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useShiftHandovers, useCreateShiftHandover, useShiftAutoReport } from './queries'
 import type { ShiftHandover as ShiftHandoverType } from './queries'
 import { btnStyle, inputStyle, labelStyle, labelTextStyle, tabStyle } from './styles'
+import { authorLabel } from './authorLabel'
 
 function formatTimestamp(epoch: number): string {
   return new Date(epoch * 1000).toLocaleString('en-US', {
@@ -202,7 +203,7 @@ function HandoverLogTab({ showCreate, onCreateToggle }: { showCreate: boolean; o
                     fontSize: 11, fontWeight: 600, background: 'rgba(96,165,250,.12)',
                     color: '#60a5fa', textTransform: 'capitalize',
                   }}>{h.shift_period}</span>
-                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>by #{h.author_id}</span>
+                  <span style={{ fontSize: 11, color: 'var(--muted)' }}>by {authorLabel(h.author_username, h.author_id)}</span>
                 </div>
                 <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--font-mono)' }}>
                   {formatTimestamp(h.created_at)}
@@ -272,7 +273,7 @@ function ReportSection({ title, items, color, type }: { title: string; items: an
     if (type === 'handover' || item.what_happened != null) {
       return (
         <div key={i} style={{ fontSize: 12, color: 'var(--text)', padding: '4px 0', display: 'flex', alignItems: 'baseline', gap: 8 }}>
-          <span style={{ fontSize: 11, color: 'var(--cyan)', fontWeight: 600, flexShrink: 0 }}>@{item.author_id}</span>
+          <span style={{ fontSize: 11, color: 'var(--cyan)', fontWeight: 600, flexShrink: 0 }}>@{item.author_username || item.author_id}</span>
           <span style={{ flex: 1 }}>{item.what_happened}</span>
         </div>
       )

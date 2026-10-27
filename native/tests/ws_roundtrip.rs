@@ -170,6 +170,14 @@ fn all_server_message_types_roundtrip() {
             value: 99.0,
             ts: 0,
         },
+        ServerMessage::AlarmUpdate {
+            alarm_id: 1,
+            tag_id: "t".to_string(),
+            event: "acknowledged".to_string(),
+            state: "acknowledged".to_string(),
+            actor: Some("op".to_string()),
+            ts: 0,
+        },
         ServerMessage::Pong,
         ServerMessage::HaStatus {
             role: "primary".to_string(),

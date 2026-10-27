@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { expandCompactData } from '../utils'
 import { queryKeys } from './keys'
 import { fetchJson } from './fetch'
+import { historyUrl } from '../historyQuery'
 
 export function useSystemInfo(enabled: boolean) {
   return useQuery({
@@ -13,12 +14,12 @@ export function useSystemInfo(enabled: boolean) {
   })
 }
 
+/** Every tag's history, keyed by data source id (tag keys are not unique). */
 export function useHistory(range: string, screenId: string, enabled: boolean) {
-  const dp = screenId === 'all' ? '' : `&screen=${screenId}`
   return useQuery({
     queryKey: queryKeys.history(range, screenId),
     queryFn: async () => {
-      const result = await fetchJson<{ data: Record<string, any>; sensors: any[] }>(`/api/v1/history?range=${range}${dp}`)
+      const result = await fetchJson<{ data: Record<string, any>; sensors: any[] }>(historyUrl({ range, screen: screenId, keyedBy: 'id' }))
       if (!result.data) return {}
       return expandCompactData(result.data)
     },

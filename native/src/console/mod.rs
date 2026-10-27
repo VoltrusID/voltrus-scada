@@ -479,8 +479,8 @@ impl Console {
         }
 
         // Once a second: ages and the update rate move on even when no data
-        // arrives, and every few seconds the alarms are fetched again, as
-        // they resolve on the server without a WebSocket message.
+        // arrives, and every few seconds the alarms are fetched again, for an
+        // `AlarmUpdate` lost with a dropped connection.
         let ticker = cx.spawn(async move |this, cx| {
             let mut tick: u64 = 0;
             loop {

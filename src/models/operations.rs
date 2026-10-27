@@ -283,6 +283,9 @@ pub struct ShiftHandover {
     pub what_happened: String,
     pub whats_pending: String,
     pub what_to_watch: String,
+    /// The author's username, `None` when that account no longer exists.
+    #[serde(default)]
+    pub author_username: Option<String>,
     pub created_at: i64,
 }
 

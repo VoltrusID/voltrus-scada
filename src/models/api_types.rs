@@ -171,6 +171,8 @@ pub struct DataQuery {
     pub to: Option<i64>,
     pub detail: Option<String>,
     pub agg: Option<String>,
+    /// `id` keys `/history`'s `data` by data source id; anything else, the tag key.
+    pub keyed_by: Option<String>,
 }
 
 /// Query parameters for the /api/v1/data/export endpoint.

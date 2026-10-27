@@ -452,19 +452,24 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   non-writable tag). The console still reports no answer after 10 seconds,
   for an answer lost with the connection, and corrects that if it comes
   later.
-- The server's `active` alarm list holds unacknowledged alarms only, so the
-  console also fetches the acknowledged and shelved lists and drops resolved
-  ones. Alarms resolve without a WebSocket message; the list is fetched again
-  every 10 seconds.
-- The alarm summary counts waiting alarms whose priority is exactly
-  `critical`, `warning` or `info`; the console's local count for other roles
-  ranks any priority (high and medium count as warning). Acknowledging takes
+- The server's `active` alarm list holds unacknowledged alarms only
+  (`acknowledged` also holds acknowledged ones that have since resolved), so
+  the console also fetches the acknowledged and shelved lists and drops
+  resolved ones. Raising an alarm, acknowledging, shelving, unshelving and
+  resolving are all pushed over the WebSocket (`Alarm`, `AlarmUpdate`); the
+  console fetches the lists again on each, and every 10 seconds in case a
+  message was lost with the connection.
+- The alarm summary counts waiting alarms by priority, case-insensitively:
+  `critical`; `high`, `major`, `warning` and `medium` as warning; any other
+  as info, like the console's local count for other roles. Acknowledging takes
   no comment (`POST /alarms/{id}/acknowledge` has no body); a shelve's reason
   is kept on the alarm and in the audit trail. Alarm sound needs an audio
   output device; without one the speaker's tooltip says why.
 - Tag keys are register names, so two devices may share one (solar-farm has
-  `frequency` twice). The console shows the first; keying by device is future
-  work.
+  `frequency` twice). `GET /history` answers keyed by key unless asked
+  `keyed_by=id`; the console always asks for the id form, so each tag gets its
+  own history. The WebSocket still names tags by key (the console tells them
+  apart by their order, see `console/store.rs`).
 - `POST` and `PUT /api/v1/data-sources` store a `source_config` string
   as-is and an object as its JSON text (the console sends an object, the web
   client a string). `POST` ignores the alarm delays, which follow in a
@@ -503,7 +508,8 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   configuration file) next to the numeric `device_id`, which is 0 for a
   Modbus device; the console shows `device_ref`.
 - Shift handover routes (all operator-only) list entries with the author's
-  user id only; the console shows `user #id`. The automatic report places
+  user id and `author_username` (`null` when the account is gone; the console
+  then shows `#id`). The automatic report places
   the shift in progress on the server's UTC clock (a night shift belongs to
   the date it started on, so between midnight and 06:00 UTC it is
   yesterday's) and sends its window as `period_start`/`period_end`
