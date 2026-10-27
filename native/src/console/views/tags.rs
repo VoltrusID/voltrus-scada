@@ -46,7 +46,9 @@ pub fn side_panel(console: &Console) -> Pixels {
 /// policies).
 pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Context<Console>) {
     match key.name {
-        "tags.write" | "tags.policy" => super::tag_write::on_reply(console, key, reply, cx),
+        "tags.write" | "tags.policy" | "tags.policy.load" => {
+            super::tag_write::on_reply(console, key, reply, cx)
+        }
         _ => super::tag_detail::on_reply(console, key, reply, cx),
     }
 }

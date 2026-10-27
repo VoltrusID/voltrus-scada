@@ -119,9 +119,7 @@ JetBrains Mono for values.
   Modbus Poll and BACnet Explorer device files from Import… (I) or dropped
   on the section, with a report of what was added. Modbus reads are open to
   every user and its changes to operators; the server's other protocol
-  handlers answer only admins, so only admins see those sections. OPC UA
-  says it is unavailable on the open-core server, whose router has no
-  `GET /api/v1/opcua/devices`.
+  handlers answer only admins, so only admins see those sections.
   **Admin** (as the web client's group): **Users** (admin only): every
   account with its role; N adds one (name, the password typed twice in
   masked fields, role), Enter changes the role and optionally the password,
@@ -487,13 +485,12 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - Single sign-on providers (`auth/providers`, from an add-on edition)
   finish in a browser; there is no loopback redirect or device code that
   would hand the session to a desktop client.
-- There is no route that reads a tag's write policy back (only `PATCH
-  /api/v1/data-sources/{id}/write-policy`), so the console checks limits and
-  the reason only for a policy it saved itself; otherwise the server's
-  answer to the write says why it refused. Saving the policy sends only what
-  changed: against a policy saved this session, each setting that differs;
-  with none known, the choices made and the limits typed, leaving the rest as
-  stored.
+- `GET /api/v1/data-sources/{id}/write-policy` reads a tag's write policy
+  (the same fields `PATCH` takes). The write dialog and the policy editor
+  read it each time they open, so the console checks limits and the reason
+  against what the server has, not only against a policy it saved itself.
+  When the read fails the editor says so and saving sends only what changed
+  (the choices made and the limits typed), leaving the rest as stored.
 - `GET /api/v1/history` answers every tag (only a `screen` filter), so the
   detail chart asks once per span, setting and set of charted tags, and keeps
   only the open tag's and its overlays' samples. `agg=minmax` answers the

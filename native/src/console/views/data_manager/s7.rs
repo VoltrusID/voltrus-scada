@@ -1,6 +1,5 @@
 //! Data Manager › Siemens S7, after the web client's `S7DeviceManager.tsx`
-//! but in the server's shapes (the web client sends `ip`, `port` and
-//! area/DB/offset tags the server does not take): PLCs at `host:port` with
+//! (both send the server's shapes): PLCs at `host:port` with
 //! rack and slot, their tags by S7 address (`DB1.DBD0`, `M0.0`), start and
 //! stop, and a browse that says whether the PLC answers and lists the
 //! address forms to pick from. Every S7 handler checks for the admin role.

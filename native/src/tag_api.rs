@@ -57,8 +57,8 @@ impl WriteMode {
     }
 }
 
-/// Mirrors `voltrus::models::WritePolicy`. The server has no route that
-/// reads it back, so the console only knows a policy it saved itself.
+/// Mirrors `voltrus::models::WritePolicy`, the answer of `GET
+/// /api/v1/data-sources/{id}/write-policy`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WritePolicy {

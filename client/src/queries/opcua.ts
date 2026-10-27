@@ -1,17 +1,20 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchJson, fetchOk } from './fetch'
+import { opcuaBrowseNodes, opcuaDeviceBody } from '../protocolPayloads'
+import type { OpcUaDeviceForm, OpcUaSecurityMode, OpcUaSecurityPolicy } from '../protocolPayloads'
 
+/** A row of `GET /api/v1/opcua/devices` (the password is never sent back). */
 export interface OpcUaDevice {
   id: number
   name: string
   url: string
-  security_policy: 'none' | 'basic256sha256'
-  security_mode: 'none' | 'sign' | 'signandencrypt'
+  security_policy: OpcUaSecurityPolicy
+  security_mode: OpcUaSecurityMode
   username: string | null
-  password: string | null
   interval_ms: number
   enabled: boolean
   created_at: number
+  node_count: number
 }
 
 export interface OpcUaNode {
@@ -49,11 +52,11 @@ export function useOpcUaNodes(deviceId: number | null) {
 export function useCreateOpcUaDevice() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (device: Partial<OpcUaDevice> & { name: string; url: string }) => {
+    mutationFn: async (device: OpcUaDeviceForm) => {
       const r = await fetchOk('/api/v1/opcua/devices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(device),
+        body: JSON.stringify(opcuaDeviceBody(device)),
       })
       return r.json()
     },
@@ -64,7 +67,7 @@ export function useCreateOpcUaDevice() {
 export function useUpdateOpcUaDevice() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ id, ...data }: Partial<OpcUaDevice> & { id: number }) => {
+    mutationFn: async ({ id, ...data }: { id: number } & Partial<Pick<OpcUaDevice, 'name' | 'url' | 'security_policy' | 'security_mode' | 'username' | 'interval_ms' | 'enabled'>>) => {
       const r = await fetchOk(`/api/v1/opcua/devices/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -90,7 +93,7 @@ export function useBrowseOpcUaDevice() {
   return useMutation({
     mutationFn: async (id: number) => {
       const r = await fetchOk(`/api/v1/opcua/devices/${id}/browse`, { method: 'POST' })
-      return r.json() as Promise<BrowseResult[]>
+      return opcuaBrowseNodes<BrowseResult>(await r.json())
     },
   })
 }

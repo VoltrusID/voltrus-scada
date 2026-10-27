@@ -2,9 +2,8 @@
 //! servers with their monitored nodes, start and stop, and a browse of
 //! the server's Objects folder to pick nodes from.
 //!
-//! The core router serves no `GET /api/v1/opcua/devices` (only POST), so on
-//! the open-core server the section says so instead of listing; an
-//! edition whose router adds the route gets the full section. Every OPC UA
+//! A server whose router does not serve `GET /api/v1/opcua/devices` (an
+//! older build) makes the section say so instead of listing. Every OPC UA
 //! handler checks for the admin role itself, so the section is admin's.
 
 use std::time::Duration;
@@ -195,7 +194,7 @@ pub(crate) static PROTOCOL: Protocol = Protocol {
     duplicate: false,
     about: "An OPC UA server the console polls for the nodes you pick. Add one with N.",
     unrouted: Some(
-        "Its router cannot list OPC UA devices (it serves no GET for them; the open core leaves that to an edition). An edition that routes the list gets this section in full.",
+        "This server's router cannot list OPC UA devices (it serves no GET for them; newer builds do).",
     ),
 };
 
@@ -225,7 +224,7 @@ mod tests {
             Value::Object(sent),
             json!({"name": "Plant", "url": "opc.tcp://10.0.0.5:4840", "security_policy": "None",
                 "security_mode": "None", "interval_ms": 1000, "enabled": true}),
-            "\"None\", not the web client's \"none\"; no blank user or password"
+            "the server's \"None\" spelling; no blank user or password"
         );
     }
 

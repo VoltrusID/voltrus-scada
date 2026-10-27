@@ -7,7 +7,8 @@ import { useDetailData, useSensorCurrentValue, useDashboardSelector } from './st
 import { WriteDialog } from './components/WriteDialog';
 import { WritePolicyEditor } from './components/WritePolicyEditor';
 import { useAnnotations, useCreateAnnotation, useDeleteAnnotation } from './queries/annotations';
-import type { WritePolicy } from './api/commands';
+import { useQuery } from '@tanstack/react-query';
+import { getWritePolicy } from './api/commands';
 
 export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, historyDetail, onDetailChange, historyAutoAgg, shortcuts, mode, onModeChange, allSensors, isAdmin }: {
   sensor: SensorConfig; onBack: () => void; historyRange: string; onRangeChange: (r: string) => void;
@@ -31,7 +32,13 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
   const [showPicker, setShowPicker] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const [showWriteDialog, setShowWriteDialog] = useState(false);
-  const [writePolicy, setWritePolicy] = useState<WritePolicy | null>(null);
+  // The stored policy (admin only: the write controls are); the dialogs open with it, not with defaults.
+  const { data: writePolicy, refetch: refetchWritePolicy } = useQuery({
+    queryKey: ['write-policy', sensor.id],
+    queryFn: () => getWritePolicy(sensor.id),
+    enabled: !!isAdmin,
+    staleTime: 0,
+  });
   const [showPolicyEditor, setShowPolicyEditor] = useState(false);
 
   // ── Annotation state ──
@@ -130,6 +137,7 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
           {isAdmin && (
             <button
               onClick={() => setShowWriteDialog(true)}
+              disabled={!writePolicy}
               style={{ ...btnStyle, padding: '3px 8px', fontSize: 11, borderColor: 'var(--cyan)', color: 'var(--cyan)' }}
               aria-label="Write value to tag"
             >
@@ -140,6 +148,7 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
           {isAdmin && (
             <button
               onClick={() => setShowPolicyEditor(true)}
+              disabled={!writePolicy}
               style={{ ...btnStyle, padding: '3px 8px', fontSize: 11, borderColor: 'var(--border)', color: 'var(--muted)' }}
               aria-label="Toggle write policy editor"
             >
@@ -351,23 +360,24 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
       </div>
 
       {/* Write Policy dialog */}
-      {showPolicyEditor && isAdmin && (
+      {showPolicyEditor && isAdmin && writePolicy && (
         <WritePolicyEditor
           tagId={sensor.id}
           tagName={sensor.name}
-          currentPolicy={writePolicy ?? undefined}
+          currentPolicy={writePolicy}
           isAdmin={!!isAdmin}
+          onSave={() => { refetchWritePolicy() }}
           onClose={() => setShowPolicyEditor(false)}
         />
       )}
 
       {/* Write dialog */}
-      {showWriteDialog && (
+      {showWriteDialog && writePolicy && (
         <WriteDialog
           tagId={sensor.id}
           tagName={sensor.name}
           currentValue={curV}
-          policy={writePolicy || { writable: true, write_min: null, write_max: null, write_max_rate: null, write_requires_reason: false, write_deadband: null }}
+          policy={writePolicy}
           onClose={() => setShowWriteDialog(false)}
         />
       )}

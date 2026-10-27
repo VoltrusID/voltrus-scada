@@ -89,6 +89,24 @@ pub async fn delete_sim_profile(
 
 // ── Device Simulation ──
 
+/// GET /api/v1/devices/{id}/simulate — the device's current simulation state.
+pub async fn get_simulation(
+    state: State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, StatusCode> {
+    let (simulation_mode, sim_profile_id, sim_config) = state
+        .storage
+        .get_device_simulation(&id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .ok_or(StatusCode::NOT_FOUND)?;
+    Ok(Json(serde_json::json!({
+        "simulation_mode": simulation_mode,
+        "sim_profile_id": sim_profile_id,
+        "sim_config": sim_config,
+    })))
+}
+
 pub async fn toggle_simulation(
     state: State<AppState>,
     Path(id): Path<String>,

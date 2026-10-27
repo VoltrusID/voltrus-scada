@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from './keys'
 import { fetchJson, fetchOk } from './fetch'
+import { bareList } from '../protocolPayloads'
 
 export interface BacnetDevice {
   id: number
@@ -55,7 +56,7 @@ export function useBacnetDevices(enabled = true) {
 export function useBacnetDevice(id: string, enabled = true) {
   return useQuery({
     queryKey: queryKeys.bacnetDevice(id),
-    queryFn: () => fetchJson<{ objects: BacnetObject[] }>(`/api/v1/bacnet/devices/${id}/objects`),
+    queryFn: async () => bareList<BacnetObject>(await fetchJson<unknown>(`/api/v1/bacnet/devices/${id}/objects`)),
     enabled: enabled && !!id,
   })
 }

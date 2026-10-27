@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react'
 import { registerWidget, WIDGET_MANIFESTS } from './registry'
 import type { WidgetProps } from './types'
+import { dialArcPath } from '../../gaugeMath'
 
 const GaugeWidget: React.FC<WidgetProps> = (props) => {
   const { instance, sensor, data } = props
@@ -26,18 +27,7 @@ const GaugeWidget: React.FC<WidgetProps> = (props) => {
   const startAngle = 225
   const endAngle = -45
 
-  const polarToCartesian = (angleDeg: number, radius = r) => {
-    const rad = (angleDeg * Math.PI) / 180
-    return { x: cx + radius * Math.cos(rad), y: cy - radius * Math.sin(rad) }
-  }
-
-  const arcPath = (startA: number, endA: number, radius = r) => {
-    const s = polarToCartesian(startA, radius)
-    const e = polarToCartesian(endA, radius)
-    const sweep = startA - endA
-    const largeArc = sweep > 180 ? 1 : 0
-    return `M ${s.x} ${s.y} A ${radius} ${radius} 0 ${largeArc} 0 ${e.x} ${e.y}`
-  }
+  const arcPath = (startA: number, endA: number, radius = r) => dialArcPath(cx, cy, radius, startA, endA)
 
   // Zone boundaries
   const warnPct = Math.max(0, Math.min(1, (warn - min) / range))
