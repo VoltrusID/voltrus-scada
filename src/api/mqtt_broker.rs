@@ -167,14 +167,18 @@ pub async fn update_config(
                     "none".to_string()
                 };
             }
+            // Users cannot be read back, so a client cannot resend the full list:
+            // merge by username (add new users, change passwords) and keep the rest.
             if let Some(users) = auth_update.users {
-                cfg.auth.users = users
-                    .into_iter()
-                    .map(|u| crate::models::MqttUser {
-                        username: u.username,
-                        password: u.password,
-                    })
-                    .collect();
+                for u in users {
+                    match cfg.auth.users.iter_mut().find(|e| e.username == u.username) {
+                        Some(existing) => existing.password = u.password,
+                        None => cfg.auth.users.push(crate::models::MqttUser {
+                            username: u.username,
+                            password: u.password,
+                        }),
+                    }
+                }
             }
         }
 

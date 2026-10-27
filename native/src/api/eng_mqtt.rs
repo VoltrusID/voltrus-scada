@@ -222,8 +222,8 @@ impl ConfigDraft {
 
     /// `PUT /api/v1/mqtt-broker/config`'s body: port and max connections
     /// always, auth `enabled`, and `users` (named ones only) only when auth
-    /// is on and at least one user is named — the server replaces its user
-    /// list with whatever is sent, so an empty list would wipe the users.
+    /// is on and at least one user is named. The server merges the list by
+    /// username (adds users, changes passwords) and keeps the others.
     /// A named user without a password is rejected.
     pub fn body(&self) -> Result<Value, String> {
         let port: u16 = self

@@ -100,8 +100,8 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
         }
     };
 
-    // 3. Validate the JWT token.
-    let claims = match crate::api::auth::verify_token(&token, &state.auth_secret) {
+    // 3. Validate the token and re-read the user's current role.
+    let claims = match crate::api::auth_middleware::verify_session(&state, &token).await {
         Some(c) => c,
         None => {
             let _ = send_msg(

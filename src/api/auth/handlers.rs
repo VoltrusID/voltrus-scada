@@ -291,7 +291,7 @@ pub async fn auth_me(State(state): State<AppState>, jar: CookieJar) -> impl Into
     if token.is_empty() {
         return Json(json!({"authenticated": false}));
     }
-    match verify_token(token, &state.auth_secret) {
+    match crate::api::auth_middleware::verify_session(&state, token).await {
         Some(claims) => {
             Json(json!({"authenticated": true, "username": claims.username, "role": claims.role}))
         }

@@ -108,6 +108,22 @@ pub async fn rollback(
     }
 }
 
+pub async fn delete_snapshot(
+    state: State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, StatusCode> {
+    let deleted = state
+        .storage
+        .delete_config_snapshot(id)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if deleted {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
+}
+
 pub fn compute_diff_public(from: &serde_json::Value, to: &serde_json::Value) -> serde_json::Value {
     compute_diff(from, to)
 }
