@@ -158,7 +158,7 @@ async fn csv(api: &VoltrusApi) {
             .expect("POST /import/csv (replace)"),
         "replace mode",
     );
-    assert_eq!(refusal.status, 501);
+    assert_eq!(refusal.status, 400);
     println!("imports: replace refused: {}", refusal.error);
 
     let refusal = refused(

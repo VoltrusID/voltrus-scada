@@ -24,7 +24,7 @@ pub(crate) fn listen() -> Option<Receiver<Gesture>> {
     if LISTENING.swap(true, Ordering::SeqCst) {
         return None;
     }
-    let (sender, receiver) = async_channel::bounded(64);
+    let (sender, receiver) = async_channel::bounded::<Gesture>(64);
     #[cfg(target_os = "macos")]
     {
         mac::install(sender).then_some(receiver)

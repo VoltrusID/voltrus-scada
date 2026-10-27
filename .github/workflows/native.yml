@@ -91,8 +91,8 @@ jobs:
       - name: Start the solar-farm plant
         run: native/scripts/ci-server.sh "$RUNNER_TEMP/plant"
 
-      # One test at a time: each signs in, and a sign-in revokes the user's
-      # older refresh tokens, which the sign-out check relies on.
+      # One test at a time: each signs in to the same plant, and the
+      # sign-out check counts the user's live sessions.
       - name: End-to-end against the live server
         env:
           VOLTRUS_E2E_EXPECT_UPDATES: "1"
