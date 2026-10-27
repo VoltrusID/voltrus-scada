@@ -243,6 +243,9 @@ use utoipa::{Modify, OpenApi};
         crate::api::compression::get_compression_stats,
         crate::api::compression::get_compression_config,
         crate::api::compression::get_system_memory,
+        // Project (declarative YAML configuration)
+        crate::api::project::export_project,
+        crate::api::project::import_project,
     ),
     components(schemas(
         crate::models::HealthResponse,
@@ -440,6 +443,7 @@ use utoipa::{Modify, OpenApi};
         (name = "BACnet", description = "BACnet/IP device management"),
         (name = "MQTT Broker", description = "Embedded MQTT broker control and inspection"),
         (name = "Tags", description = "Tag tree and UNS path management"),
+        (name = "Project", description = "Declarative YAML project export and import"),
     )
 )]
 pub struct ApiDoc;
