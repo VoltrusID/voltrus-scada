@@ -16,6 +16,8 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
 
 * **Protocols:** Modbus TCP, OPC UA, Siemens S7, EtherNet/IP (CIP), DNP3,
   BACnet/IP, and an embedded MQTT broker. SNMP network scan for asset discovery.
+  Device templates for Modbus and BACnet: built-in, saved from your own
+  devices, or imported from a public catalog.
   Each protocol is a Cargo feature, all on by default.
 * **Dashboards:** responsive grid, free-form canvas, 3D digital twin and a 2D
   SCADA diagram editor, with per-screen layouts.
@@ -110,6 +112,10 @@ devices:
 
 [`config.yaml`](config.yaml) lists more options (retention tiers, SMTP, MQTT
 broker, networks). Devices can also be managed from the web UI.
+
+Modbus and BACnet devices can also be created from shared device templates,
+built in or from a public catalog; see
+[docs/device-templates.md](docs/device-templates.md).
 
 ### Simulators and scenarios
 

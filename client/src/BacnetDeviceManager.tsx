@@ -4,6 +4,7 @@ import { btnStyle, inputStyle } from './styles'
 import type { BacnetDevice, BacnetObject } from './queries'
 import { FileDropZone, ImportFileButton, ImportNotice } from './components/FileDropZone'
 import { deviceFileKind, parseBacnetDeviceFile } from './deviceFileImport'
+import { DeviceTemplatesPanel, SaveAsTemplateDialog } from './components/DeviceTemplatesPanel'
 
 const BACNET_OBJECT_TYPES = [
   'analogInput', 'analogOutput', 'analogValue',
@@ -11,7 +12,7 @@ const BACNET_OBJECT_TYPES = [
   'multiStateInput', 'multiStateOutput', 'multiStateValue',
 ] as const
 
-export function BacnetDeviceManager({ onClose, embedded }: { onClose: () => void; embedded?: boolean }) {
+export function BacnetDeviceManager({ onClose, embedded, isStrictAdmin }: { onClose: () => void; embedded?: boolean; isStrictAdmin?: boolean }) {
   const { data: devices = [], isLoading } = useBacnetDevices()
   const createMut = useCreateBacnetDevice()
   const updateMut = useUpdateBacnetDevice()
@@ -24,6 +25,8 @@ export function BacnetDeviceManager({ onClose, embedded }: { onClose: () => void
   const [editDevice, setEditDevice] = useState<BacnetDevice | null>(null)
   const [expandedId, setExpandedId] = useState<number | null>(null)
   const [showDiscover, setShowDiscover] = useState(false)
+  const [showTemplates, setShowTemplates] = useState(false)
+  const [templateDevice, setTemplateDevice] = useState<BacnetDevice | null>(null)
 
   const filtered = devices.filter(d =>
     (d.name || String(d.id)).toLowerCase().includes(filter.toLowerCase()) ||
@@ -104,6 +107,13 @@ export function BacnetDeviceManager({ onClose, embedded }: { onClose: () => void
             Discover
           </button>
           <button
+            style={{ ...btnStyle, borderColor: 'var(--cyan)', color: 'var(--cyan)' }}
+            onClick={() => setShowTemplates(true)}
+            aria-label="Device templates"
+          >
+            Templates
+          </button>
+          <button
             style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)' }}
             onClick={() => { setShowForm(true); setEditDevice(null) }}
             aria-label="Add BACnet device"
@@ -117,6 +127,20 @@ export function BacnetDeviceManager({ onClose, embedded }: { onClose: () => void
 
       {showDiscover && (
         <BacnetDiscoverPanel onClose={() => setShowDiscover(false)} />
+      )}
+
+      {showTemplates && (
+        <DeviceTemplatesPanel protocol="bacnet" isAdmin={isStrictAdmin} onClose={() => setShowTemplates(false)} />
+      )}
+
+      {templateDevice && (
+        <SaveAsTemplateDialog
+          protocol="bacnet"
+          deviceId={templateDevice.id}
+          deviceName={templateDevice.name || String(templateDevice.id)}
+          onClose={() => setTemplateDevice(null)}
+          onSaved={line => setImportLines([line])}
+        />
       )}
 
       {(showForm || editDevice) && (
@@ -193,6 +217,13 @@ export function BacnetDeviceManager({ onClose, embedded }: { onClose: () => void
                           style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}
                         >
                           Edit
+                        </button>
+                        <button
+                          onClick={() => setTemplateDevice(d)}
+                          aria-label={`Save ${d.name || d.id} as template`}
+                          style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}
+                        >
+                          Tpl
                         </button>
                         <button
                           onClick={() => handleDelete(d.id)}

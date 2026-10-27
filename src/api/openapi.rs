@@ -243,6 +243,16 @@ use utoipa::{Modify, OpenApi};
         crate::api::compression::get_compression_stats,
         crate::api::compression::get_compression_config,
         crate::api::compression::get_system_memory,
+        // Device templates
+        crate::api::device_templates::list_templates,
+        crate::api::device_templates::get_template,
+        crate::api::device_templates::export_template,
+        crate::api::device_templates::create_template,
+        crate::api::device_templates::delete_template,
+        crate::api::device_templates::template_from_device,
+        crate::api::device_templates::instantiate_template,
+        crate::api::device_templates::get_catalog,
+        crate::api::device_templates::import_from_catalog,
     ),
     components(schemas(
         crate::models::HealthResponse,
@@ -412,6 +422,17 @@ use utoipa::{Modify, OpenApi};
         crate::models::CreateBacnetObjectRequest,
         // API key schemas
         crate::api::api_keys::ApiKeyCreatedResponse,
+        // Device template schemas
+        crate::device_templates::DeviceTemplate,
+        crate::device_templates::TemplateRegister,
+        crate::device_templates::TemplateObject,
+        crate::device_templates::TemplateSummary,
+        crate::device_templates::Protocol,
+        crate::device_templates::catalog::CatalogEntry,
+        crate::device_templates::catalog::CatalogIndex,
+        crate::api::device_templates::FromDeviceRequest,
+        crate::api::device_templates::InstantiateRequest,
+        crate::api::device_templates::CatalogImportRequest,
     )),
     tags(
         (name = "Auth", description = "Authentication and user management"),
@@ -440,6 +461,7 @@ use utoipa::{Modify, OpenApi};
         (name = "BACnet", description = "BACnet/IP device management"),
         (name = "MQTT Broker", description = "Embedded MQTT broker control and inspection"),
         (name = "Tags", description = "Tag tree and UNS path management"),
+        (name = "Device Templates", description = "Shared Modbus and BACnet device template library and public catalog"),
     )
 )]
 pub struct ApiDoc;

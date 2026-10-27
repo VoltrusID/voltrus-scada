@@ -331,3 +331,14 @@ export {
 } from './smtp'
 
 export type { SmtpConfigResponse, SmtpConfigUpdate } from './smtp'
+
+export {
+  useDeviceTemplates,
+  useDeviceTemplate,
+  useDeviceCatalog,
+  useInstantiateDeviceTemplate,
+  useSaveDeviceAsTemplate,
+  useImportTemplateFile,
+  useDeleteDeviceTemplate,
+  useImportFromCatalog,
+} from './deviceTemplates'

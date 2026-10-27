@@ -1,0 +1,142 @@
+{
+  "format": "voltrus-device-template/1",
+  "template_id": "trane-tracer-sc",
+  "manufacturer": "Trane",
+  "model": "Tracer SC+",
+  "protocol": "bacnet",
+  "description": "Air Handling Unit for Data Center Hall A",
+  "version": "1.0.0",
+  "verified": false,
+  "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
+  "quirks": [
+    "Present values only; the object list is the simulator's, a real controller's list depends on its application."
+  ],
+  "license": "CC-BY-4.0",
+  "port": 47808,
+  "interval_ms": 1000,
+  "cov_enabled": false,
+  "cov_lifetime": 3600,
+  "objects": [
+    {
+      "object_type": "analogInput",
+      "object_instance": 1,
+      "property": "presentValue",
+      "name": "SupplyAirTemp",
+      "description": "Supply air temperature (SA)"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 2,
+      "property": "presentValue",
+      "name": "ReturnAirTemp",
+      "description": "Return air temperature (RA)"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 3,
+      "property": "presentValue",
+      "name": "MixedAirTemp",
+      "description": "Mixed air temperature"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 4,
+      "property": "presentValue",
+      "name": "OutsideAirTemp",
+      "description": "Outside air temperature"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 5,
+      "property": "presentValue",
+      "name": "SupplyAirHumidity",
+      "description": "Supply air RH"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 6,
+      "property": "presentValue",
+      "name": "ReturnAirHumidity",
+      "description": "Return air RH"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 7,
+      "property": "presentValue",
+      "name": "SupplyAirPressure",
+      "description": "Supply duct static pressure"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 8,
+      "property": "presentValue",
+      "name": "CoolingCoilTemp",
+      "description": "Cooling coil leaving temp"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 9,
+      "property": "presentValue",
+      "name": "Fan_Speed",
+      "description": "VFD fan speed"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 10,
+      "property": "presentValue",
+      "name": "Economizer_Pos",
+      "description": "Economizer damper position"
+    },
+    {
+      "object_type": "analogInput",
+      "object_instance": 11,
+      "property": "presentValue",
+      "name": "Filter_DP",
+      "description": "Filter differential pressure"
+    },
+    {
+      "object_type": "analogOutput",
+      "object_instance": 1,
+      "property": "presentValue",
+      "name": "SupplyTemp_SP",
+      "description": "Supply air temp setpoint",
+      "writable": true
+    },
+    {
+      "object_type": "analogOutput",
+      "object_instance": 2,
+      "property": "presentValue",
+      "name": "DuctPressure_SP",
+      "description": "Duct pressure setpoint",
+      "writable": true
+    },
+    {
+      "object_type": "binaryInput",
+      "object_instance": 1,
+      "property": "presentValue",
+      "name": "Fan_Running",
+      "description": "Supply fan status"
+    },
+    {
+      "object_type": "binaryInput",
+      "object_instance": 2,
+      "property": "presentValue",
+      "name": "Filter_Alarm",
+      "description": "Filter replacement needed"
+    },
+    {
+      "object_type": "binaryInput",
+      "object_instance": 3,
+      "property": "presentValue",
+      "name": "FreeCooling_Active",
+      "description": "Economizer mode active"
+    },
+    {
+      "object_type": "multiStateValue",
+      "object_instance": 1,
+      "property": "presentValue",
+      "name": "AHU_Mode",
+      "description": "AHU mode (1=Off 2=Cool 3=Heat 4=Auto 5=Night)"
+    }
+  ]
+}

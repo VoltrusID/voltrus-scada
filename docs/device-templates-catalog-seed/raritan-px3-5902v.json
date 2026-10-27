@@ -1,0 +1,120 @@
+{
+  "format": "voltrus-device-template/1",
+  "template_id": "raritan-px3-5902v",
+  "manufacturer": "Raritan",
+  "model": "PX3-5902V",
+  "protocol": "modbus",
+  "description": "Intelligent Rack PDU, 3-phase 32A, 24 outlets",
+  "version": "1.0.0",
+  "verified": false,
+  "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
+  "quirks": [
+    "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0.",
+    "Not mapped: unsigned 64-bit counters (Energy_Total (offset 16, kWh)) because the poller has no uint64 type; their 4 registers each are still counted in the offsets."
+  ],
+  "license": "CC-BY-4.0",
+  "port": 502,
+  "interval_ms": 1000,
+  "unit_id": 1,
+  "endianness": "big",
+  "registers": [
+    {
+      "name": "Voltage_L1",
+      "offset": 0,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "L1-N voltage at PDU inlet"
+    },
+    {
+      "name": "Voltage_L2",
+      "offset": 2,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "L2-N voltage at PDU inlet"
+    },
+    {
+      "name": "Voltage_L3",
+      "offset": 4,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "V",
+      "description": "L3-N voltage at PDU inlet"
+    },
+    {
+      "name": "Current_L1",
+      "offset": 6,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "L1 branch circuit current"
+    },
+    {
+      "name": "Current_L2",
+      "offset": 8,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "L2 branch circuit current"
+    },
+    {
+      "name": "Current_L3",
+      "offset": 10,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "A",
+      "description": "L3 branch circuit current"
+    },
+    {
+      "name": "Active_Power",
+      "offset": 12,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "W",
+      "description": "Total PDU active power"
+    },
+    {
+      "name": "Power_Factor",
+      "offset": 14,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "description": "PDU overall power factor"
+    },
+    {
+      "name": "Temperature_Inlet",
+      "offset": 20,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "°C",
+      "description": "PDU inlet air temperature"
+    },
+    {
+      "name": "Temperature_Outlet",
+      "offset": 22,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "°C",
+      "description": "PDU outlet air temperature"
+    },
+    {
+      "name": "Humidity",
+      "offset": 24,
+      "register_type": "float32",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "%",
+      "description": "Rack relative humidity"
+    }
+  ]
+}

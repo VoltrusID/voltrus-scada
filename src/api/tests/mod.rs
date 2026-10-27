@@ -8,6 +8,7 @@ mod command_device;
 mod config_snapshots;
 mod csv_import;
 mod data_sources;
+mod device_templates;
 mod flows;
 mod helpers;
 mod history;
