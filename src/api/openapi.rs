@@ -253,6 +253,9 @@ use utoipa::{Modify, OpenApi};
         crate::api::device_templates::instantiate_template,
         crate::api::device_templates::get_catalog,
         crate::api::device_templates::import_from_catalog,
+        // Project (declarative YAML configuration)
+        crate::api::project::export_project,
+        crate::api::project::import_project,
     ),
     components(schemas(
         crate::models::HealthResponse,
@@ -462,6 +465,7 @@ use utoipa::{Modify, OpenApi};
         (name = "MQTT Broker", description = "Embedded MQTT broker control and inspection"),
         (name = "Tags", description = "Tag tree and UNS path management"),
         (name = "Device Templates", description = "Shared Modbus and BACnet device template library and public catalog"),
+        (name = "Project", description = "Declarative YAML project export and import"),
     )
 )]
 pub struct ApiDoc;

@@ -44,6 +44,7 @@ mod oee;
 mod opcua_devices;
 #[cfg(feature = "openapi")]
 pub(crate) mod openapi;
+pub(crate) mod project;
 mod rbac;
 mod recipes;
 #[cfg(feature = "s7")]
@@ -1264,6 +1265,7 @@ pub fn create_router(state: AppState) -> Router {
     // Demo users CANNOT access these.
     let admin_protected = Router::new()
         .route("/api/v1/seed", post(auth::seed))
+        .route("/api/v1/project/export", get(project::export_project))
         .route(
             "/api/v1/telemetry",
             delete(telemetry_delete::delete_telemetry),
@@ -1316,6 +1318,7 @@ pub fn create_router(state: AppState) -> Router {
     // CSV/Excel import router with increased body limit (admin-only)
     let import_router = Router::new()
         .route("/api/v1/import/csv", post(csv_import::import_csv))
+        .route("/api/v1/project/import", post(project::import_project))
         .route("/api/v1/import/excel", post(excel_import::import_excel))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024)) // 50MB for file upload
         .layer(middleware::from_fn(admin_only_middleware))

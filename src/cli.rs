@@ -27,9 +27,13 @@ USAGE:
     voltrus hw edge-deploy             Show edge deployment guide
     voltrus hw compat-matrix           Show hardware compatibility matrix
     voltrus hw rpi-quickstart          Show Raspberry Pi quick-start guide
-    voltrus config export [DIR]        Export config to YAML files
-    voltrus config import [DIR]        Import config from YAML files
-    voltrus config validate [DIR]      Validate YAML config files
+    voltrus project export <PATH>      Export the whole configuration as a YAML project
+                                            (directory, or one file when PATH ends in .yaml)
+    voltrus project import <PATH> [--mode merge|replace] [--dry-run]
+                                            Import a YAML project (one transaction)
+    voltrus project validate <PATH>    Check a YAML project without touching a database
+    voltrus config export|import|validate [PATH]
+                                            Older spelling of the project commands
     voltrus discover --range <CIDR>    Scan subnet for Modbus TCP devices
     voltrus egress list [CONFIG]         List scheduled data egress jobs
     voltrus egress run <ID> [CONFIG]     Manually trigger a data egress job
@@ -74,9 +78,11 @@ EXAMPLES:
     voltrus restore backup.tar.gz        # Restore from archive
     voltrus restore backup.tar.gz --force  # Restore without confirmation
     voltrus restore backup.tar.gz --config /etc/voltrus/prod.yaml
-    voltrus config export ./my-config    # Export config to directory
-    voltrus config import ./my-config    # Import config from directory
-    voltrus config validate ./my-config  # Validate config files
+    voltrus project export ./site        # Export configuration to a directory
+    voltrus project export site.yaml     # ... or to a single file
+    voltrus project import ./site --dry-run   # Print what an import would change
+    voltrus project import site.yaml --mode replace
+    voltrus project validate ./site      # Validate project files
     voltrus discover --range 192.168.1.0/24 --port 502
     voltrus export                           # Export project to archive
     voltrus export --output /tmp/project.voltrus-scada
@@ -102,7 +108,8 @@ pub async fn handle_cli(args: &[String], ext: &dyn crate::edition::Extension) ->
             std::process::exit(0);
         }
         "--reset-admin-password" => handle_reset_admin_password(args).await,
-        "config" => handle_config(args),
+        "config" => handle_project(args, true).await,
+        "project" => handle_project(args, false).await,
         "edr" => handle_edr(args),
         "hw" => handle_hw(args),
         "discover" => handle_discover(args).await,
@@ -569,80 +576,179 @@ fn handle_edr_exclusions_ps1(args: &[String]) -> bool {
     true
 }
 
-fn handle_config(args: &[String]) -> bool {
-    let subcommand = args.get(2).map(|s| s.as_str()).unwrap_or("");
-    let path = args.get(3).map(|s| s.as_str()).unwrap_or("config");
-    match subcommand {
-        "export" => {
-            let config_path = args.get(4).map(|s| s.as_str()).unwrap_or("config.yaml");
-            let app_config = config::load_config(config_path).unwrap_or_else(|e| {
-                eprintln!("Config error: {e}");
-                std::process::exit(1);
-            });
-            let storage =
-                Storage::new_with_key(&app_config.db_path, app_config.db_encryption_key.as_deref())
-                    .unwrap_or_else(|e| {
-                        eprintln!("DB error: {e}");
-                        std::process::exit(1);
-                    });
-            let _rt = tokio::runtime::Runtime::new().unwrap();
-            match crate::config_export::export_config(&storage, path) {
-                Ok(_) => {
-                    println!("Config exported to {path}/");
-                    true
-                }
-                Err(e) => {
-                    eprintln!("Export failed: {e}");
+/// `voltrus project export|import|validate`, and the older
+/// `voltrus config export|import|validate` spelling of the same commands.
+async fn handle_project(args: &[String], legacy_config: bool) -> bool {
+    let cmd = if legacy_config { "config" } else { "project" };
+    let usage = |code: i32| -> ! {
+        eprintln!(
+            "Usage: {0} {cmd} export <PATH> [--config <PATH>]\n       \
+             {0} {cmd} import <PATH> [--mode merge|replace] [--dry-run] [--config <PATH>]\n       \
+             {0} {cmd} validate <PATH>\n\n\
+             PATH is a directory (one file per entity) or a single .yaml file.\n\
+             Secrets are written as ${{ENV_NAME}} references and resolved from the\n\
+             environment on import. See docs/project-format.md.",
+            args[0]
+        );
+        std::process::exit(code);
+    };
+    let sub = args.get(2).map(String::as_str).unwrap_or("");
+    if !matches!(sub, "export" | "import" | "validate") {
+        usage(1);
+    }
+
+    let mut path: Option<String> = None;
+    let mut config_path = "config.yaml".to_string();
+    let mut mode = crate::project_yaml::Mode::Merge;
+    let mut dry_run = false;
+    let mut i = 3;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--config" if i + 1 < args.len() => {
+                config_path = args[i + 1].clone();
+                i += 2;
+            }
+            "--mode" if i + 1 < args.len() => {
+                mode = args[i + 1].parse().unwrap_or_else(|e| {
+                    eprintln!("Error: {e}");
                     std::process::exit(1);
-                }
+                });
+                i += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            "--help" | "-h" => usage(0),
+            flag if flag.starts_with('-') => {
+                eprintln!("Unknown {cmd} option: {flag}");
+                usage(1);
+            }
+            arg if path.is_none() => {
+                path = Some(arg.to_string());
+                i += 1;
+            }
+            // `config export DIR CONFIG` took the config file positionally.
+            arg if legacy_config => {
+                config_path = arg.to_string();
+                i += 1;
+            }
+            arg => {
+                eprintln!("Unexpected argument: {arg}");
+                usage(1);
             }
         }
-        "import" => {
-            let config_path = args.get(4).map(|s| s.as_str()).unwrap_or("config.yaml");
-            let app_config = config::load_config(config_path).unwrap_or_else(|e| {
-                eprintln!("Config error: {e}");
-                std::process::exit(1);
-            });
-            let storage =
-                Storage::new_with_key(&app_config.db_path, app_config.db_encryption_key.as_deref())
-                    .unwrap_or_else(|e| {
-                        eprintln!("DB error: {e}");
-                        std::process::exit(1);
-                    });
-            let _rt = tokio::runtime::Runtime::new().unwrap();
-            match crate::config_export::import_config(&storage, path) {
-                Ok(_) => {
-                    println!("Config imported from {path}/");
-                    true
-                }
-                Err(e) => {
-                    eprintln!("Import failed: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        "validate" => match crate::config_export::validate_config(path) {
-            Ok(messages) => {
-                for msg in &messages {
-                    println!("{}", msg);
-                }
-                let has_errors = messages.iter().any(|m| m.starts_with("ERROR"));
-                std::process::exit(if has_errors { 1 } else { 0 });
-            }
+    }
+    let path = match path {
+        Some(p) => p,
+        None if legacy_config => "config".to_string(),
+        None => usage(1),
+    };
+    let target = std::path::Path::new(&path);
+
+    if sub == "validate" {
+        let doc = match crate::project_yaml::read_project(target) {
+            Ok(d) => d,
             Err(e) => {
-                eprintln!("Validation failed: {e}");
+                print_project_error(&e);
                 std::process::exit(1);
             }
-        },
-        _ => {
-            eprintln!("Usage: {} config [export|import|validate] [PATH]", args[0]);
-            eprintln!();
-            eprintln!("Commands:");
-            eprintln!("  export [DIR]   Export config to YAML files (default: config/)");
-            eprintln!("  import [DIR]   Import config from YAML files (default: config/)");
-            eprintln!("  validate [DIR] Validate YAML config files (default: config/)");
+        };
+        for w in &doc.warnings {
+            println!("WARN: {w}");
+        }
+        let issues = crate::project_yaml::validate_doc(&doc, None, true);
+        for issue in &issues {
+            println!("{issue}");
+        }
+        let errors = issues
+            .iter()
+            .filter(|i| i.severity == crate::project_yaml::Severity::Error)
+            .count();
+        let entities: usize = doc.sections.values().map(Vec::len).sum();
+        if errors == 0 {
+            println!(
+                "OK: {path} is a valid {} project ({entities} entities)",
+                crate::project_yaml::FORMAT
+            );
+        } else {
+            println!("{errors} error(s) in {path}");
+        }
+        std::process::exit(if errors == 0 { 0 } else { 1 });
+    }
+
+    let app_config = config::load_config(&config_path).unwrap_or_else(|e| {
+        eprintln!("Config error: {e}");
+        std::process::exit(1);
+    });
+    let storage =
+        Storage::new_with_key(&app_config.db_path, app_config.db_encryption_key.as_deref())
+            .unwrap_or_else(|e| {
+                eprintln!("DB error: {e}");
+                std::process::exit(1);
+            });
+
+    if sub == "export" {
+        let doc = match crate::project_yaml::export_project_yaml(&storage).await {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("Export failed: {e:#}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = crate::project_yaml::write_project(&doc, target) {
+            eprintln!("Export failed: {e:#}");
             std::process::exit(1);
         }
+        for w in &doc.warnings {
+            eprintln!("warning: {w}");
+        }
+        let entities: usize = doc.sections.values().map(Vec::len).sum();
+        println!("Project exported to {path} ({entities} entities)");
+        return true;
+    }
+
+    let doc = match crate::project_yaml::read_project(target) {
+        Ok(d) => d,
+        Err(e) => {
+            print_project_error(&e);
+            std::process::exit(1);
+        }
+    };
+    let result = if dry_run {
+        crate::project_yaml::plan_import(&storage, &doc, mode).await
+    } else {
+        crate::project_yaml::apply_import(&storage, &doc, mode).await
+    };
+    match result {
+        Ok(plan) => {
+            print!("{}", plan.render());
+            if dry_run {
+                println!("Dry run: nothing was written.");
+            } else {
+                println!("Project imported from {path}");
+            }
+            true
+        }
+        Err(e) => {
+            print_project_error(&e);
+            eprintln!("Nothing was written.");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_project_error(e: &anyhow::Error) {
+    match e
+        .chain()
+        .find_map(|c| c.downcast_ref::<crate::project_yaml::InvalidProject>())
+    {
+        Some(invalid) => {
+            for issue in &invalid.0 {
+                eprintln!("{issue}");
+            }
+        }
+        None => eprintln!("Error: {e:#}"),
     }
 }
 

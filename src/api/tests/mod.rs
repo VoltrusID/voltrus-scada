@@ -19,6 +19,7 @@ mod mcp;
 mod mqtt_broker;
 mod naming_convention;
 mod notifications;
+mod project;
 mod protocol_routes;
 mod scripts;
 mod shift_report;

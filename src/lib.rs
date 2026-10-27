@@ -24,7 +24,6 @@ pub mod command_queue;
 pub mod compliance;
 pub mod compression;
 pub mod config;
-pub mod config_export;
 pub mod deadband;
 pub mod device_templates;
 #[cfg(any(
@@ -63,6 +62,7 @@ pub mod oee;
 pub mod opcua;
 pub mod poller_manager;
 pub mod project_export;
+pub mod project_yaml;
 pub mod recipe;
 pub mod retention;
 #[cfg(feature = "s7")]

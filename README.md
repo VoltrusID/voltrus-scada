@@ -34,7 +34,8 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   `/mcp`, so Claude and other MCP clients can read values, manage devices and
   tags, and acknowledge alarms with an API key. See [docs/mcp.md](docs/mcp.md).
 * **Operations:** OEE and downtime, shift handover, asset inventory with NIS2
-  export, config snapshots, backup and restore.
+  export, config snapshots, backup and restore, whole-configuration YAML
+  projects (`voltrus project export|import|validate`).
 * **Security:** local accounts with Argon2, role-based access control, API
   keys, rate limiting, CSRF protection, intrusion detection, audit log.
 * **No limits and no licence key:** unlimited devices, tags and retention.
@@ -119,6 +120,17 @@ broker, networks). Devices can also be managed from the web UI.
 Modbus and BACnet devices can also be created from shared device templates,
 built in or from a public catalog; see
 [docs/device-templates.md](docs/device-templates.md).
+
+### Configuration as code
+
+`voltrus project export ./site` writes the whole configuration (devices of every
+protocol, tags with alarm and write policies, screens and layouts, flows,
+scripts, recipes, notification rules, ...) as YAML files keyed by names, never
+by database ids. `voltrus project import ./site --dry-run` prints what an
+import would create, update or delete; without `--dry-run` it applies it in one
+transaction (`--mode replace` also deletes what the project does not list).
+Secrets are written as `${ENV_NAME}` references. Format and examples:
+[`docs/project-format.md`](docs/project-format.md).
 
 ### Simulators and scenarios
 
