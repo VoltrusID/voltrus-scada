@@ -46,6 +46,7 @@ export {
 export {
   useActiveAlarmCount,
   useAlarms,
+  ALARM_LIST_LIMIT,
   useAcknowledgeAlarm,
   useAcknowledgeAllAlarms,
   useAlarmCooldown,

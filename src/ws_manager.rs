@@ -165,6 +165,15 @@ impl WsManager {
         self.broadcast_preencoded(&msg);
     }
 
+    /// Send a message to one connection only. Returns `false` when the
+    /// connection is gone or its queue is full.
+    pub fn send_to(&self, conn_id: &str, msg: ServerMessage) -> bool {
+        let Some(conn) = self.connections.get(conn_id) else {
+            return false;
+        };
+        conn.tx.try_send(WsFrame::Message(msg)).is_ok()
+    }
+
     /// Broadcast a device-status change to all connections.
     pub fn broadcast_device_status(&self, msg: ServerMessage) {
         self.broadcast_preencoded(&msg);
@@ -372,6 +381,28 @@ mod tests {
             }
             other => panic!("expected Binary frame, got {:?}", other),
         }
+    }
+
+    #[tokio::test]
+    async fn test_send_to_reaches_only_the_named_connection() {
+        let mgr = WsManager::new();
+        let mut rx1 = mgr.connect("c1".to_string(), "user1".to_string(), vec![]);
+        let mut rx2 = mgr.connect("c2".to_string(), "user2".to_string(), vec![]);
+
+        let ack = ServerMessage::CommandAck {
+            command_id: "cmd-001".to_string(),
+            status: "acked".to_string(),
+            device_response: None,
+            latency_ms: None,
+        };
+        assert!(mgr.send_to("c1", ack.clone()));
+        assert!(!mgr.send_to("gone", ack));
+
+        assert!(matches!(
+            rx1.try_recv(),
+            Ok(WsFrame::Message(ServerMessage::CommandAck { .. }))
+        ));
+        assert!(rx2.try_recv().is_err());
     }
 
     #[tokio::test]

@@ -427,11 +427,9 @@ fn drill_out(console: &mut Console, cx: &mut Context<Console>) -> bool {
     true
 }
 
-/// The comparison of the span's halves, once its buckets are in: the span
-/// starts at the first stored value, since the server cannot compare a
-/// half that has none (it answers 500).
+/// The comparison of the span's halves, once its buckets are in (a half
+/// without values compares as zeros).
 fn fetch_compare(console: &mut Console) {
-    let buckets = buckets_of(console);
     let state = console.state::<State>();
     state.compare_seq += 1;
     if let Some(Err(error)) = &state.buckets {
@@ -443,17 +441,9 @@ fn fetch_compare(console: &mut Console) {
     else {
         return;
     };
-    let Some((from, to)) = insights::compare_span(span.from, span.to, &buckets) else {
-        // Nothing stored: both halves are empty.
-        state.compare = Some(Ok(ComparisonResult {
-            metric,
-            ..ComparisonResult::default()
-        }));
-        return;
-    };
     state.compare = None;
     let seq = state.compare_seq;
-    let (current, previous) = halves(from, to);
+    let (current, previous) = halves(span.from, span.to);
     console.call(
         CallKey::new("data.analytics.compare").with(seq),
         Call::get::<ComparisonResult>(insights::compare_path(&device, &metric, current, previous)),
