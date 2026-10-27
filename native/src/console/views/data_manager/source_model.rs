@@ -898,9 +898,9 @@ pub fn display_combo(combo: &str) -> String {
     }
 }
 
-/// `PUT /api/v1/shortcuts` replaces the user's whole map, and stores a
-/// `null` as an empty combo instead of removing it; so the body is the
-/// current map with `id` set to `combo` (or left out), empty ones dropped.
+/// `PUT /api/v1/shortcuts` replaces the user's whole map (a tag left out or
+/// sent as `null` has no shortcut), so the body is the current map with `id`
+/// set to `combo` (or left out), empty ones dropped.
 pub fn shortcuts_body(current: &HashMap<i64, String>, id: i64, combo: Option<&str>) -> Value {
     let mut map = Map::new();
     let mut ids: Vec<&i64> = current.keys().collect();

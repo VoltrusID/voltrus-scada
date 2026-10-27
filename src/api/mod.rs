@@ -61,6 +61,7 @@ pub(crate) mod stream;
 mod system;
 mod system_docs;
 mod tag_tree;
+mod telemetry_delete;
 mod user_notifications;
 mod vertical_templates;
 mod voltrus_plc_devices;
@@ -136,10 +137,39 @@ impl std::fmt::Display for Forbidden {
 
 impl std::error::Error for Forbidden {}
 
+/// Marker error for a request answered with a client-error status other than
+/// 403 (see [`AppError::bad_request`], [`AppError::not_found`]).
+#[derive(Debug)]
+pub struct Rejected(pub StatusCode, pub String);
+
+impl std::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.1)
+    }
+}
+
+impl std::error::Error for Rejected {}
+
 impl AppError {
     /// An error answered with 403 and `{"error": message}`.
     pub fn forbidden(message: impl Into<String>) -> Self {
         AppError(anyhow::Error::new(Forbidden(message.into())))
+    }
+
+    /// An error answered with 400 and `{"error": message}`.
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        AppError(anyhow::Error::new(Rejected(
+            StatusCode::BAD_REQUEST,
+            message.into(),
+        )))
+    }
+
+    /// An error answered with 404 and `{"error": message}`.
+    pub fn not_found(message: impl Into<String>) -> Self {
+        AppError(anyhow::Error::new(Rejected(
+            StatusCode::NOT_FOUND,
+            message.into(),
+        )))
     }
 }
 
@@ -147,6 +177,8 @@ impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let status = if self.0.downcast_ref::<Forbidden>().is_some() {
             StatusCode::FORBIDDEN
+        } else if let Some(Rejected(status, _)) = self.0.downcast_ref::<Rejected>() {
+            *status
         } else {
             StatusCode::INTERNAL_SERVER_ERROR
         };
@@ -480,7 +512,7 @@ fn mqtt_broker_admin_routes() -> Router<AppState> {
     Router::new()
         .route(
             "/api/v1/mqtt-broker/config",
-            put(mqtt_broker::update_config),
+            put(mqtt_broker::update_config).delete(mqtt_broker::clear_config),
         )
         .route("/api/v1/mqtt-broker/start", post(mqtt_broker::start_broker))
         .route("/api/v1/mqtt-broker/stop", post(mqtt_broker::stop_broker))
@@ -1199,6 +1231,10 @@ pub fn create_router(state: AppState) -> Router {
     // Demo users CANNOT access these.
     let admin_protected = Router::new()
         .route("/api/v1/seed", post(auth::seed))
+        .route(
+            "/api/v1/telemetry",
+            delete(telemetry_delete::delete_telemetry),
+        )
         .route(
             "/api/v1/users",
             get(auth::list_users).post(auth::create_user_handler),

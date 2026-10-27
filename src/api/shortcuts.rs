@@ -31,8 +31,8 @@ pub async fn get_shortcuts(
     Ok(Json(serde_json::Value::Object(map)))
 }
 
-/// PUT /api/v1/shortcuts — save shortcuts, accept map of {data_source_id: shortcut}
-/// If value is null or empty string, delete the entry
+/// PUT /api/v1/shortcuts — replace the user's shortcuts with the map {data_source_id: shortcut}.
+/// A tag that is missing from the body, null or an empty string has no shortcut.
 #[utoipa::path(
     put,
     path = "/api/v1/shortcuts",
@@ -134,7 +134,9 @@ pub async fn get_nav_shortcuts(
     Ok(Json(serde_json::Value::Object(map)))
 }
 
-/// PUT /api/v1/nav-shortcuts — save navigation shortcuts, accept map of {target: shortcut}
+/// PUT /api/v1/nav-shortcuts — replace the user's navigation overrides with the map {target: shortcut}.
+/// A target missing from the body keeps its default; null or an empty string
+/// overrides the default with "none" (the target leaves `GET /nav-shortcuts`).
 #[utoipa::path(
     put,
     path = "/api/v1/nav-shortcuts",

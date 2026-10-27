@@ -18,7 +18,6 @@ export function DataImportWizard({ onClose, embedded }: { onClose: () => void; e
   const [step, setStep] = useState<WizardStep>('upload');
   const [file, setFile] = useState<File | null>(null);
   const [fileType, setFileType] = useState<FileType | null>(null);
-  const [mode, setMode] = useState<'merge' | 'replace'>('merge');
   const [delimiter, setDelimiter] = useState(',');
   const [sheet, setSheet] = useState('');
   const [dragOver, setDragOver] = useState(false);
@@ -64,7 +63,7 @@ export function DataImportWizard({ onClose, embedded }: { onClose: () => void; e
     if (!file || !fileType) return;
     const mappingParam = mappingOverride ? JSON.stringify(mappingOverride) : undefined;
     if (fileType === 'excel') {
-      importExcelMut.mutate({ file, dryRun: true, mode, sheet: sheet || undefined, column_mapping: mappingParam }, {
+      importExcelMut.mutate({ file, dryRun: true, sheet: sheet || undefined, column_mapping: mappingParam }, {
         onSuccess: (res) => {
           setPreviewResult(res);
           const hdrs = Object.entries(res.column_mapping)
@@ -75,7 +74,7 @@ export function DataImportWizard({ onClose, embedded }: { onClose: () => void; e
         },
       });
     } else {
-      importCsvMut.mutate({ file, dryRun: true, mode, delimiter: delimiter || ',', column_mapping: mappingParam }, {
+      importCsvMut.mutate({ file, dryRun: true, delimiter: delimiter || ',', column_mapping: mappingParam }, {
         onSuccess: (res) => {
           setPreviewResult(res);
           const hdrs = Object.entries(res.column_mapping)
@@ -93,14 +92,14 @@ export function DataImportWizard({ onClose, embedded }: { onClose: () => void; e
     setStep('import');
     const mappingParam = columnMapping ? JSON.stringify(columnMapping) : undefined;
     if (fileType === 'excel') {
-      importExcelMut.mutate({ file, dryRun: false, mode, sheet: sheet || undefined, column_mapping: mappingParam }, {
+      importExcelMut.mutate({ file, dryRun: false, sheet: sheet || undefined, column_mapping: mappingParam }, {
         onSuccess: (res) => {
           setReportResult(res);
           setStep('report');
         },
       });
     } else {
-      importCsvMut.mutate({ file, dryRun: false, mode, delimiter: delimiter || ',', column_mapping: mappingParam }, {
+      importCsvMut.mutate({ file, dryRun: false, delimiter: delimiter || ',', column_mapping: mappingParam }, {
         onSuccess: (res) => {
           setReportResult(res);
           setStep('report');
@@ -116,7 +115,6 @@ export function DataImportWizard({ onClose, embedded }: { onClose: () => void; e
     setPreviewResult(null);
     setReportResult(null);
     setFileHeaders([]);
-    setMode('merge');
     setDelimiter(',');
     setSheet('');
   };
@@ -184,13 +182,6 @@ export function DataImportWizard({ onClose, embedded }: { onClose: () => void; e
             </div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Mode</label>
-              <select value={mode} onChange={e => setMode(e.target.value as 'merge' | 'replace')} style={{ ...inputStyle, cursor: 'pointer' }}>
-                <option value="merge">Merge (update existing, add new)</option>
-                <option value="replace">Replace (clear existing first)</option>
-              </select>
-            </div>
             {fileType === 'csv' ? (
               <div style={{ flex: 1 }}>
                 <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Delimiter</label>

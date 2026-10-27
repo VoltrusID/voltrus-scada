@@ -462,7 +462,9 @@ pub fn parse_targets(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// The targets checked as `create_notification_setting` checks them.
+/// The targets checked as the server checks them on `POST` and `PUT
+/// /notifications/settings` (it answers 400 with the reason; checking here
+/// says it before the round trip).
 pub fn check_targets(channel: &str, targets: &[String]) -> Result<(), String> {
     if targets.is_empty() {
         return Err("Add at least one target".to_owned());

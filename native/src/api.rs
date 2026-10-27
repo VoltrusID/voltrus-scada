@@ -269,10 +269,11 @@ pub struct AlarmJournalEntry {
     pub actor: Option<String>,
 }
 
-/// Percent-decode a cookie value: the server's `Set-Cookie` percent-encodes
-/// the base64 `=` padding of the JWT payload as `%3D`, but the WebSocket
-/// auth path expects the raw token. Browsers' cookie jars decode this
-/// transparently; we must do the same.
+/// Percent-decode a cookie value. Since SCADA-17 the server's access token is
+/// base64url without padding, so its `Set-Cookie` value has nothing to
+/// decode; servers before that percent-encoded the JWT payload's base64 `=`
+/// padding as `%3D`, which the WebSocket auth path refuses. Browsers' cookie
+/// jars decode this transparently; we do the same so both work.
 pub fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -557,7 +558,8 @@ pub struct Created {
 
 /// `GET /api/v1/shortcuts`: the signed-in user's per-tag shortcuts,
 /// `{"<data source id>": "Mod+Shift+K"}` in the web client's combo format.
-/// The server stores a cleared shortcut as an empty combo.
+/// A cleared shortcut has no entry (servers before SCADA-17 returned it as
+/// an empty combo, which [`TagShortcuts::by_id`] still skips).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(transparent)]
 pub struct TagShortcuts(pub std::collections::HashMap<String, Option<String>>);

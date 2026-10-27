@@ -83,6 +83,55 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Delete the readings of `device_id` (only `metric`'s when given) with
+    /// `from <= timestamp <= to`, in seconds. The hourly and daily tiers lose
+    /// the buckets that lie wholly inside the range. Returns the rows deleted
+    /// from the raw, hourly and daily tiers.
+    pub async fn delete_telemetry_range(
+        &self,
+        device_id: &str,
+        metric: Option<&str>,
+        from: i64,
+        to: i64,
+    ) -> Result<(u64, u64, u64)> {
+        let conn = self.conn.clone();
+        let device_id = device_id.to_string();
+        let metric = metric.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().context("Begin tx failed")?;
+            // `?2 IS NULL` leaves the metric unrestricted.
+            let raw = tx
+                .execute(
+                    "DELETE FROM telemetry
+                     WHERE device_id = ?1 AND (?2 IS NULL OR metric = ?2)
+                       AND timestamp >= ?3 AND timestamp <= ?4",
+                    rusqlite::params![device_id, metric, from, to],
+                )
+                .context("Delete raw telemetry failed")?;
+            let hourly = tx
+                .execute(
+                    "DELETE FROM telemetry_hourly
+                     WHERE device_id = ?1 AND (?2 IS NULL OR metric = ?2)
+                       AND bucket_start >= ?3 AND bucket_start + 3600 <= ?4 + 1",
+                    rusqlite::params![device_id, metric, from, to],
+                )
+                .context("Delete hourly telemetry failed")?;
+            let daily = tx
+                .execute(
+                    "DELETE FROM telemetry_daily
+                     WHERE device_id = ?1 AND (?2 IS NULL OR metric = ?2)
+                       AND bucket_start >= ?3 AND bucket_start + 86400 <= ?4 + 1",
+                    rusqlite::params![device_id, metric, from, to],
+                )
+                .context("Delete daily telemetry failed")?;
+            tx.commit().context("Commit failed")?;
+            Ok((raw as u64, hourly as u64, daily as u64))
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     pub async fn query_raw_for_archive(
         &self,
         cutoff: i64,

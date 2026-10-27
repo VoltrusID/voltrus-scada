@@ -67,17 +67,12 @@ pub async fn import_excel(
     let dry_run = params.dry_run.as_deref() == Some("true");
     let mode = params.mode.as_deref().unwrap_or("merge");
 
-    if mode != "merge" && mode != "replace" {
+    if mode != "merge" {
         return Ok((
             StatusCode::BAD_REQUEST,
-            Json(json!({"error": "mode must be 'merge' or 'replace'"})),
-        )
-            .into_response());
-    }
-    if mode == "replace" {
-        return Ok((
-            StatusCode::NOT_IMPLEMENTED,
-            Json(json!({"error": "replace mode is not yet supported; use merge"})),
+            Json(json!({
+                "error": "mode must be 'merge'; to replace readings, delete the range first with DELETE /api/v1/telemetry"
+            })),
         )
             .into_response());
     }

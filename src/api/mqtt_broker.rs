@@ -84,15 +84,22 @@ pub async fn get_status(
         },
         "connected_clients": clients.len(),
         "clients": clients.as_slice(),
-        "config": match broker.config.read().await.as_ref() {
-            Some(c) => json!({
-                "port": c.port,
-                "max_connections": c.max_connections,
-                "auth_enabled": c.auth.mode != "none" && !c.auth.users.is_empty(),
-            }),
-            None => serde_json::Value::Null,
-        },
+        "config": config_summary(broker.config.read().await.as_ref()),
     })))
+}
+
+/// The configuration as the status and config answers show it. Authentication
+/// reads as on when the mode asks for it, whether or not a user exists yet, so
+/// a form that just turned it on does not read it back as off.
+fn config_summary(cfg: Option<&crate::models::MqttBrokerConfig>) -> serde_json::Value {
+    match cfg {
+        Some(c) => json!({
+            "port": c.port,
+            "max_connections": c.max_connections,
+            "auth_enabled": c.auth.mode != "none",
+        }),
+        None => serde_json::Value::Null,
+    }
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -189,14 +196,42 @@ pub async fn update_config(
     let cfg = broker.config.read().await;
     Ok(Json(json!({
         "message": "Configuration updated. Start the broker to apply changes.",
-        "config": match cfg.as_ref() {
-            Some(c) => json!({
-                "port": c.port,
-                "max_connections": c.max_connections,
-                "auth_enabled": c.auth.mode != "none" && !c.auth.users.is_empty(),
-            }),
-            None => serde_json::Value::Null,
-        },
+        "config": config_summary(cfg.as_ref()),
+    })))
+}
+
+/// DELETE /api/v1/mqtt-broker/config — forget the stored configuration, so
+/// the broker has none (status answers `config: null`) until a new PUT.
+#[utoipa::path(
+    delete,
+    path = "/api/v1/mqtt-broker/config",
+    responses(
+        (status = 200, body = MqttConfigUpdateResponse),
+        (status = 400),
+        (status = 403),
+    ),
+    tag = "MQTT Broker",
+    security(("api_key" = []), ("cookie_auth" = []))
+)]
+pub async fn clear_config(
+    State(state): State<AppState>,
+    Extension(_user): Extension<AuthUser>,
+) -> Result<impl IntoResponse, AppError> {
+    let broker = state
+        .mqtt_broker_state
+        .as_ref()
+        .ok_or_else(|| AppError(anyhow::anyhow!("MQTT broker module not initialized")))?;
+
+    if broker.current_status().await == BrokerStatus::Running {
+        return Err(AppError::bad_request(
+            "Stop the broker before clearing its configuration",
+        ));
+    }
+
+    *broker.config.write().await = None;
+    Ok(Json(json!({
+        "message": "Configuration cleared.",
+        "config": serde_json::Value::Null,
     })))
 }
 

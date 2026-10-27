@@ -440,9 +440,11 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   the alarm list (`triggered_at`), in the web client and in the console
   alike. The analytics' `trigger_count` is a 24-hour figure per source and
   is not a 5-minute count.
-- The login token comes only in the `Set-Cookie` header, with the JWT's
-  base64 padding percent-encoded (`%3D`). The console decodes it
-  (`api.rs:percent_decode`); the WebSocket refuses the encoded form.
+- The login token comes only in the `Set-Cookie` header. It is base64url
+  without padding, so the value needs no decoding and the WebSocket `Auth`
+  message accepts it as is. The console still percent-decodes it
+  (`api.rs:percent_decode`) so it also works against a server from before
+  that change, which encoded the padding as `%3D`.
 - Writes address the data source's numeric id. The server answers every
   write on the connection that sent it: `acked` or `failed` for a write it
   tried (the cache takes the value only on `acked`), `rejected` with the
@@ -467,16 +469,18 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   as-is and an object as its JSON text (the console sends an object, the web
   client a string). `POST` ignores the alarm delays, which follow in a
   `PUT`.
-- `PUT /api/v1/shortcuts` replaces the user's whole map and stores a `null`
-  as an empty shortcut instead of removing it: the console sends the full
-  map without the cleared entry. The default "permissive" name rule refuses
-  parentheses, so a duplicate is named `<name> copy` (the web names its
-  duplicates the same way).
+- `PUT /api/v1/shortcuts` replaces the user's whole map; a `null` or empty
+  shortcut stores no entry (the cleared tag leaves `GET /shortcuts`), so the
+  console still sends the full map without the cleared entry. The default
+  "permissive" name rule refuses parentheses, so a duplicate is named
+  `<name> copy` (the web names its duplicates the same way).
 - `settings/ui-theme` accepts only `light`, `dark` or `system`, so the
   bundled theme chosen for each brightness is kept on the workstation.
-- `PUT /nav-shortcuts` and `PUT /shortcuts` replace the user's whole map,
-  and `GET /nav-shortcuts` answers the defaults merged with the user's
-  choices; the editor sends every entry each time, as the web client does.
+- `PUT /nav-shortcuts` replaces the user's whole map too, and
+  `GET /nav-shortcuts` answers the defaults merged with the user's choices;
+  a `null` or empty entry there is kept as "none" (the target leaves the
+  answer instead of falling back to its default). The editor sends every
+  entry each time, as the web client does.
 - Single sign-on providers (`auth/providers`, from an add-on edition)
   finish in a browser; there is no loopback redirect or device code that
   would hand the session to a desktop client.
@@ -506,20 +510,26 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   (Unix seconds); the console shows that window and the alarms raised in it.
 - The audit log's `created_at`, `from` and `to` are Unix seconds (the web
   client sends and reads seconds too). An unknown command
-  answers 500 "Command not found", not 404; cancelling a command already
+  answers 404 "Command not found"; cancelling a command already
   sent answers 400.
 - Engineering routes: a config snapshot covers devices, tags, flows,
   screens and recipes (not alarms, which a rollback leaves alone) and can be
-  deleted; the MQTT broker's configuration cannot
-  be cleared once set, and a message published through
-  `POST /mqtt-broker/publish` does not reach the broker's own message log
-  on the CI plant. Flows store no wires or positions (process steps run in
+  deleted; the MQTT broker's configuration is cleared with
+  `DELETE /mqtt-broker/config` (400 while the broker runs; the console has no
+  button for it yet), and a message published through
+  `POST /mqtt-broker/publish` shows in the broker's message log like any
+  other. The broker's status reports `auth_enabled` from the mode alone, so
+  a form that turned authentication on before any user exists reads back
+  as on. Flows store no wires or positions (process steps run in
   stored order, then the outputs), so the editor's wires reorder steps and
   positions last while it is open; `start`/`stop` store `enabled` as well
   as changing the running engine (an unknown flow id answers 404). Saving a
   script with new source re-checks it and clears an old `syntax_error` once
-  it parses. CSV/Excel imports write readings only (no route removes
-  them) and replace mode answers 501; the Node-RED import only converts and
+  it parses. CSV/Excel imports write readings only and take no `replace`
+  mode (400; the web wizard no longer offers it): to replace readings,
+  `DELETE /api/v1/telemetry?device_id=&metric=&from=&to=` (admin; Unix
+  seconds; `metric` optional) removes the range first, which the console
+  does not call yet. The Node-RED import only converts and
   reports.
 - Users, roles and API keys are admin-only routes. A user's role is one of
   `admin`, `demo`, `operator`, `viewer` or `user`; only admin and demo pass
@@ -547,6 +557,9 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   keys read, `integration` keys also pass operator routes.
 - `POST /notifications/test` answers 200 with a per-target status (sent or
   the error) for webhooks and email; email needs SMTP configured (else
-  500), push is not testable. `PUT /notifications/settings/{id}` checks the
-  config but not email or URL shapes, so the console checks them as
-  `POST` does.
+  400 "SMTP is not configured"), push is not testable. `POST` and
+  `PUT /notifications/settings` run the same checks (target list, email and
+  URL shapes, SMS phone and carrier) and answer 400 with the reason; a `PUT`
+  that changes the channel or the config checks the result against the
+  stored values. The console's own checks (`check_targets`) say the same
+  earlier.

@@ -36,7 +36,7 @@ pub async fn list_devices(
     Extension(user): Extension<AuthUser>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let devices = state.storage.list_dnp3_devices().await?;
@@ -82,7 +82,7 @@ pub async fn create_device(
     Json(req): Json<CreateDnp3DeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
     if req.name.is_empty() {
         return Err(AppError(anyhow::anyhow!("Device name is required")));
@@ -147,7 +147,7 @@ pub async fn get_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device = state.storage.get_dnp3_device(id).await?;
@@ -179,7 +179,7 @@ pub async fn update_device(
     Json(req): Json<UpdateDnp3DeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let updated = state
@@ -225,7 +225,7 @@ pub async fn delete_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let deleted = state.storage.delete_dnp3_device(id).await?;
@@ -269,7 +269,7 @@ pub async fn add_point(
     Json(req): Json<CreateDnp3PointRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
     if req.name.is_empty() {
         return Err(AppError(anyhow::anyhow!("Point name is required")));
@@ -321,7 +321,7 @@ pub async fn remove_point(
     Path((_id, point_id)): Path<(i64, i64)>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let deleted = state.storage.delete_dnp3_point(point_id).await?;
@@ -355,7 +355,7 @@ pub async fn start_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Load device from DB
@@ -434,7 +434,7 @@ pub async fn stop_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device_key = format!("dnp3_{}", id);
@@ -482,7 +482,7 @@ pub async fn scan_network(
     Json(req): Json<ScanRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let devices = crate::dnp3::discovery::scan_network(&req.range, req.port, 2000).await?;
@@ -511,7 +511,7 @@ pub async fn trigger_integrity(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Verify device exists
@@ -543,7 +543,7 @@ pub async fn trigger_freeze(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Verify device exists
@@ -569,7 +569,7 @@ pub async fn list_group_variations(
     Extension(user): Extension<AuthUser>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let gv = common_group_variations()

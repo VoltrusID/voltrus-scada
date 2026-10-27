@@ -18,7 +18,7 @@ pub async fn list_devices(
     Extension(user): Extension<AuthUser>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let devices = state.storage.list_voltrus_plc_devices().await?;
@@ -46,7 +46,7 @@ pub async fn create_device(
     Json(req): Json<CreateVoltrusPlcDeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     if req.name.is_empty() {
@@ -100,7 +100,7 @@ pub async fn get_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device = state
@@ -124,7 +124,7 @@ pub async fn update_device(
     Json(req): Json<UpdateVoltrusPlcDeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     state
@@ -176,7 +176,7 @@ pub async fn delete_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device_id = id.to_string();
@@ -207,7 +207,7 @@ pub async fn list_tags(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let tags = state.storage.list_voltrus_plc_tags(id).await?;
@@ -222,7 +222,7 @@ pub async fn create_tag(
     Json(req): Json<CreateVoltrusPlcTagRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     if req.variable_name.is_empty() {
@@ -277,7 +277,7 @@ pub async fn delete_tag(
     Path((_device_id, tag_id)): Path<(i64, i64)>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     state.storage.delete_voltrus_plc_tag(tag_id).await?;
@@ -293,7 +293,7 @@ pub async fn start_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device = state
@@ -334,7 +334,7 @@ pub async fn stop_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device_id = id.to_string();
@@ -357,7 +357,7 @@ pub async fn restart_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device_id = id.to_string();
@@ -402,7 +402,7 @@ pub async fn write_variable(
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device = state

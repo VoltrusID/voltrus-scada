@@ -31,7 +31,7 @@ pub async fn discover_network(
     Json(body): Json<Option<DiscoverRequest>>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let timeout_secs = body.map(|b| b.timeout_secs).unwrap_or(5);
