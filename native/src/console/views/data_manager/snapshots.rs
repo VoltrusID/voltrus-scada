@@ -629,7 +629,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 "No snapshot matches"
             },
             if total == 0 {
-                "A snapshot saves the devices, sources, flows, alarms, screens and recipes. Make one with N."
+                "A snapshot saves the devices, sources, flows, screens and recipes. Make one with N."
             } else {
                 "Nothing has this text in its label, trigger, author or #id."
             },
@@ -1337,9 +1337,11 @@ fn create_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
                         .child("New config snapshot"),
                 ),
         )
-        .child(div().text_color(theme.fg_muted).child(
-            "Saves the devices, data sources, flows, alarms, screens and recipes as they are now.",
-        ))
+        .child(
+            div().text_color(theme.fg_muted).child(
+                "Saves the devices, data sources, flows, screens and recipes as they are now.",
+            ),
+        )
         .children(field.map(|field| ops_kit::labelled("Label (optional)", field, &theme)))
         .child(
             div()

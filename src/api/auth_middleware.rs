@@ -129,7 +129,7 @@ pub async fn cookie_auth_middleware(
         )
             .into_response();
     }
-    match super::auth::verify_token(token, &state.auth_secret) {
+    match verify_session(&state, token).await {
         Some(claims) => {
             req.extensions_mut().insert(AuthUser {
                 username: claims.username,
@@ -149,6 +149,24 @@ pub async fn cookie_auth_middleware(
                 .into_response()
         }
     }
+}
+
+/// Verify an access token and re-read the user from the database: a deleted
+/// user is refused, and the role is the stored one, not the one signed into
+/// the token when it was issued (a demoted admin loses admin at once).
+/// Fails closed on a storage error.
+pub(crate) async fn verify_session(
+    state: &AppState,
+    token: &str,
+) -> Option<crate::models::TokenClaims> {
+    let mut claims = super::auth::verify_token(token, &state.auth_secret)?;
+    let user = state
+        .storage
+        .get_user_by_username(&claims.username)
+        .await
+        .ok()??;
+    claims.role = user.role;
+    Some(claims)
 }
 
 /// API key authentication info, inserted for requests authenticated via

@@ -126,6 +126,11 @@ pub fn seeded_admin_state() -> (Storage, DeviceCache, PollerManager) {
 
 /// Build an AppState with a seeded admin user (call from async context).
 pub async fn test_app_with_seeded_admin() -> Router {
+    create_router(seeded_admin_app_state().await)
+}
+
+/// AppState over an in-memory store with an `admin`/`admin` user.
+pub async fn seeded_admin_app_state() -> AppState {
     let storage = Storage::new_in_memory().unwrap();
     let password_hash = crate::api::auth::hash_password("admin");
     storage
@@ -139,7 +144,7 @@ pub async fn test_app_with_seeded_admin() -> Router {
         storage.clone(),
         crate::network::NetworkManager::new(vec![]),
     );
-    let state = AppState {
+    AppState {
         cache,
         storage,
         poller_manager,
@@ -169,8 +174,61 @@ pub async fn test_app_with_seeded_admin() -> Router {
             "voltrus/widgets",
         )),
         modbus_pool: std::sync::Arc::new(crate::modbus::ModbusPool::new()),
+    }
+}
+
+pub async fn send_request(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    api_key: Option<&str>,
+    cookie: Option<&str>,
+    body: Option<serde_json::Value>,
+) -> (http::StatusCode, serde_json::Value) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if let Some(key) = api_key {
+        builder = builder.header("X-API-Key", key);
+    }
+    if let Some(cookie) = cookie {
+        builder = builder.header("cookie", cookie);
+    }
+    let req = builder
+        .header("content-type", "application/json")
+        .body(Body::from(body.map(|v| v.to_string()).unwrap_or_default()))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
     };
-    create_router(state)
+    (status, json)
+}
+
+/// Log in with `username`/`password` and return the access-token cookie value.
+pub async fn login_cookie(app: &Router, username: &str, password: &str) -> String {
+    let login_body = serde_json::json!({"username": username, "password": password});
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&login_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    extract_cookie_value(resp.headers(), "voltrus_token").expect("voltrus_token cookie not found")
+}
+
+pub async fn admin_cookie(app: &Router) -> String {
+    login_cookie(app, "admin", "admin").await
 }
 
 pub fn test_app_with_license_status(license_status: crate::license::LicenseStatus) -> Router {

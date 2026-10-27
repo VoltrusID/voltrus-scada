@@ -47,9 +47,6 @@ const WIDTH: f32 = 640.0;
 const HEIGHT: f32 = 540.0;
 const PICK_ROW: f32 = 28.0;
 
-/// What a save tells the operator.
-const SETTINGS_DROPPED: &str = "Saved, but the server kept the old source settings and low limits: its PUT /api/v1/data-sources/{id} ignores source_config and device_id";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     General,
@@ -447,16 +444,6 @@ fn build_save(form: &Form) -> Result<Call, String> {
     Ok(Call::new(move |api| async move {
         api.send_json::<_, IgnoredAny>(Method::PUT, &format!("/api/v1/data-sources/{id}"), &body)
             .await?;
-        // The server answers ok without storing the settings; check the row.
-        let mut warning = None;
-        if body.get("source_config").is_some() || body.get("device_id").is_some() {
-            let stored: Vec<DataSource> = api.get_json("/api/v1/data-sources").await?;
-            if let Some(row) = stored.iter().find(|row| row.id == id)
-                && !model::settings_kept(&body, row)
-            {
-                warning = Some(SETTINGS_DROPPED.to_owned());
-            }
-        }
         // The server replaces the whole map: start from what it has now.
         if let Some(combo) = &shortcut {
             let current: TagShortcuts = api.get_json("/api/v1/shortcuts").await?;
@@ -467,7 +454,7 @@ fn build_save(form: &Form) -> Result<Call, String> {
         anyhow::Ok(Saved {
             id,
             key,
-            warning,
+            warning: None,
             shortcut_changed: shortcut.is_some(),
         })
     }))

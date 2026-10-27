@@ -4,6 +4,12 @@ use anyhow::{Context, Result};
 
 use crate::models::ConfigSnapshot;
 
+/// Configuration tables a snapshot captures and a rollback rewrites.
+/// `alarms` is runtime history (with audit/journal rows cascading from it),
+/// not configuration, so it is never captured or rewritten; older snapshots
+/// that still carry an `alarms` key have it ignored on rollback.
+const VERSIONED_TABLES: [&str; 5] = ["devices", "data_sources", "flows", "screens", "recipes"];
+
 impl Storage {
     // ── Config Snapshot CRUD ──
 
@@ -85,13 +91,9 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
 
-            let versioned_tables = [
-                "devices", "data_sources", "flows", "alarms", "screens", "recipes",
-            ];
-
             let mut snapshot_map = serde_json::Map::new();
 
-            for table in &versioned_tables {
+            for table in &VERSIONED_TABLES {
                 let mut stmt = match conn.prepare(&format!("SELECT * FROM {}", table)) {
                     Ok(s) => s,
                     Err(_) => continue, // table may not exist in older DBs
@@ -154,20 +156,11 @@ impl Storage {
             let snapshot: serde_json::Map<String, serde_json::Value> =
                 serde_json::from_str(&snapshot_data).context("Parse snapshot JSON failed")?;
 
-            let versioned_tables = [
-                "devices",
-                "data_sources",
-                "flows",
-                "alarms",
-                "screens",
-                "recipes",
-            ];
-
             let tx = conn
                 .unchecked_transaction()
                 .context("Begin rollback tx failed")?;
 
-            for table in &versioned_tables {
+            for table in &VERSIONED_TABLES {
                 if let Some(table_data) = snapshot.get(*table) {
                     let arr = match table_data.as_array() {
                         Some(a) => a,
@@ -219,6 +212,23 @@ impl Storage {
 
             tx.commit().context("Commit rollback tx failed")?;
             Ok(true)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Delete one snapshot. Returns false when no snapshot has that id.
+    pub async fn delete_config_snapshot(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let n = conn
+                .execute(
+                    "DELETE FROM config_snapshots WHERE id = ?1",
+                    rusqlite::params![id],
+                )
+                .context("Delete config_snapshot failed")?;
+            Ok(n > 0)
         })
         .await
         .context("Task join failed")?

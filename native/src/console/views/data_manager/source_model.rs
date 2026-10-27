@@ -740,21 +740,6 @@ pub fn duplicate_delays(source: &DataSource) -> Option<Value> {
     })
 }
 
-/// Whether the server kept what an edit sent for the source settings; it
-/// does not today (`PUT /data-sources/{id}` skips `source_config` and
-/// `device_id`), and the console says so instead of pretending.
-pub fn settings_kept(sent: &Value, stored: &DataSource) -> bool {
-    let config_kept = sent
-        .get("source_config")
-        .and_then(Value::as_str)
-        .is_none_or(|text| parse_config(text) == parse_config(&stored.source_config));
-    let device_kept = sent
-        .get("device_id")
-        .and_then(Value::as_str)
-        .is_none_or(|device| device == stored.device_id);
-    config_kept && device_kept
-}
-
 // ── Order, sorting, search ───────────────────────────────────────────────
 
 /// What the table sorts by. `Order` is the server's `sort_order`, the order
@@ -1082,11 +1067,6 @@ mod tests {
         assert_eq!(config["modbus_mode"], "single");
         assert_eq!(config["modbus_register_name"], "ac_current_l1");
         assert_eq!(config["expression"], "");
-        assert!(
-            !settings_kept(&body, &stored),
-            "the server's row still has the old settings"
-        );
-        assert!(settings_kept(&untouched, &stored));
     }
 
     #[test]
@@ -1146,16 +1126,6 @@ mod tests {
             duplicate_delays(&original),
             Some(json!({ "on_delay_secs": 0, "off_delay_secs": 4 }))
         );
-    }
-
-    #[test]
-    fn the_server_dropping_an_edit_is_noticed() {
-        let mut stored = source(1, "a", "A");
-        stored.source_config = r#"{"amplitude":1}"#.into();
-        let sent = json!({ "source_config": r#"{"amplitude":2}"#, "device_id": "" });
-        assert!(!settings_kept(&sent, &stored));
-        let same = json!({ "source_config": r#"{ "amplitude": 1 }"# });
-        assert!(settings_kept(&same, &stored));
     }
 
     #[test]

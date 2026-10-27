@@ -468,13 +468,11 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - Tag keys are register names, so two devices may share one (solar-farm has
   `frequency` twice). The console shows the first; keying by device is future
   work.
-- `PUT /api/v1/data-sources/{id}` answers ok but does not store
-  `source_config` or `device_id`, so source settings, low limits and the
-  Modbus device cannot be changed on an existing source (the web client's
-  edits are lost the same way). The console checks the stored row after an
-  edit and says so. `POST` stores `source_config` as the text of whatever
-  JSON it gets, so the console sends an object (the web client's string is
-  stored quoted), and ignores the alarm delays, which follow in a `PUT`.
+- `POST /api/v1/data-sources` stores `source_config` as the text of
+  whatever JSON it gets, so the console sends an object (the web client's
+  string is stored quoted), and ignores the alarm delays, which follow in a
+  `PUT`. `PUT /api/v1/data-sources/{id}` stores a `source_config` string
+  as-is and an object as its JSON text.
 - `PUT /api/v1/shortcuts` replaces the user's whole map and stores a `null`
   as an empty shortcut instead of removing it: the console sends the full
   map without the cleared entry. The default "permissive" name rule refuses
@@ -514,8 +512,9 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   client sends milliseconds and reads them as such). An unknown command
   answers 500 "Command not found", not 404; cancelling a command already
   sent answers 400.
-- Engineering routes: config snapshots have no DELETE, and a rollback
-  also rewrites the `alarms` table; the MQTT broker's configuration cannot
+- Engineering routes: a config snapshot covers devices, tags, flows,
+  screens and recipes (not alarms, which a rollback leaves alone) and can be
+  deleted; the MQTT broker's configuration cannot
   be cleared once set, and a message published through
   `POST /mqtt-broker/publish` does not reach the broker's own message log
   on the CI plant. Flows store no wires or positions (process steps run in
@@ -527,15 +526,17 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   reports.
 - Users, roles and API keys are admin-only routes. A user's role is one of
   `admin`, `demo`, `operator`, `viewer` or `user`; only admin and demo pass
-  the operator routes. A role change or a deletion does not end the user's
-  open sessions: the token keeps its role until it expires. There is no way
+  the operator routes. The server reads the role from the user's row on
+  every request, so a role change applies at once and a deleted user is
+  signed out; a role or password change or a deletion also revokes the
+  user's refresh tokens. There is no way
   to disable an account (only delete it), and deleting a user whose
   handovers or mentions remain fails on a foreign key.
 - RBAC roles (`/api/v1/roles`) store a JSON list of permissions, refused
   unless every one is in `models::ALL_PERMISSIONS` (the web's own list
   offers names the server refuses); nothing checks them yet, and
   `PUT /users/{id}/role` assigns one without any route to read it back.
-- API keys expire in Unix seconds and are shown once; the list keeps only
+- API keys expire in Unix seconds (the web client sends seconds too) and are shown once; the list keeps only
   the first eight characters. Their stored permissions are not checked;
   `api` keys read, `integration` keys also pass operator routes.
 - `POST /notifications/test` answers 200 with a per-target status (sent or

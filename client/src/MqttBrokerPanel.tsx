@@ -590,12 +590,14 @@ function ConfigPanel({ show, onClose }: { show: boolean; onClose: () => void }) 
 
   const handleSave = (e: React.FormEvent) => {
     e.preventDefault()
+    // The server keeps users not in the list, so send only users typed here.
+    const named = users.filter(u => u.username.trim() !== '')
     updateMut.mutate({
       port,
       max_connections: maxConnections,
       auth: {
         enabled: authEnabled,
-        users: authEnabled ? users.filter(u => u.username.trim() !== '') : undefined,
+        users: authEnabled && named.length > 0 ? named : undefined,
       },
     }, { onSuccess: onClose })
   }
@@ -643,7 +645,7 @@ function ConfigPanel({ show, onClose }: { show: boolean; onClose: () => void }) 
           </div>
           {users.length === 0 ? (
             <div style={{ padding: 16, textAlign: 'center', color: 'var(--muted)', fontSize: 12, background: 'var(--bg)', borderRadius: 8 }}>
-              No users configured
+              Existing users are kept. Add a user to create it or change its password.
             </div>
           ) : (
             users.map((u, i) => (

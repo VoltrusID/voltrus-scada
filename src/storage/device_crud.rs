@@ -316,6 +316,8 @@ impl Storage {
                 "path",
                 "on_delay_secs",
                 "off_delay_secs",
+                "source_config",
+                "device_id",
             ];
             let mut parts = Vec::new();
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -323,6 +325,14 @@ impl Storage {
                 if let Some(val) = obj.get(col) {
                     parts.push(format!("{col} = ?"));
                     match val {
+                        // Both columns are TEXT NOT NULL: store numeric device ids as
+                        // their text and objects as their JSON text.
+                        serde_json::Value::Number(n) if col == "device_id" => {
+                            params.push(Box::new(n.to_string()));
+                        }
+                        serde_json::Value::Null if col == "source_config" => {
+                            params.push(Box::new("{}".to_string()));
+                        }
                         serde_json::Value::Number(n) => {
                             if let Some(f) = n.as_f64() {
                                 params.push(Box::new(f));

@@ -149,6 +149,15 @@ pub async fn update_user_handler(
         state.storage.update_user_password(id, &hash).await?;
         details.push("password_changed".to_string());
     }
+    if !details.is_empty() {
+        // End the user's sessions: the middleware already reads the role from
+        // the database, and revoking refresh tokens stops a changed password
+        // from being bypassed with an old session.
+        state
+            .storage
+            .revoke_all_user_refresh_tokens(&user.username)
+            .await?;
+    }
 
     state.audit_logger.log(crate::security::AuditEvent {
         action: "update_user".to_string(),
@@ -191,6 +200,10 @@ pub async fn delete_user_handler(
             .into_response());
     }
     state.storage.delete_user(id).await?;
+    state
+        .storage
+        .revoke_all_user_refresh_tokens(&user.username)
+        .await?;
 
     state.audit_logger.log(crate::security::AuditEvent {
         action: "delete_user".to_string(),

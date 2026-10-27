@@ -185,55 +185,6 @@ async fn test_api_key_crud() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-async fn send_request(
-    app: &Router,
-    method: &str,
-    uri: &str,
-    api_key: Option<&str>,
-    cookie: Option<&str>,
-    body: Option<serde_json::Value>,
-) -> (StatusCode, serde_json::Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
-    if let Some(key) = api_key {
-        builder = builder.header("X-API-Key", key);
-    }
-    if let Some(cookie) = cookie {
-        builder = builder.header("cookie", cookie);
-    }
-    let req = builder
-        .header("content-type", "application/json")
-        .body(Body::from(body.map(|v| v.to_string()).unwrap_or_default()))
-        .unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
-    let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let json = if bytes.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
-    };
-    (status, json)
-}
-
-async fn admin_cookie(app: &Router) -> String {
-    let login_body = serde_json::json!({"username": "admin", "password": "admin"});
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/v1/auth/login")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_string(&login_body).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    extract_cookie_value(resp.headers(), "voltrus_token").expect("voltrus_token cookie not found")
-}
-
 async fn create_key(
     app: &Router,
     cookie: &str,

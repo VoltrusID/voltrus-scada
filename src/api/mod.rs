@@ -1104,7 +1104,7 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/config/snapshots/{id}",
-            get(config_snapshots::get_snapshot),
+            get(config_snapshots::get_snapshot).delete(config_snapshots::delete_snapshot),
         )
         .route(
             "/api/v1/config/snapshots/{from_id}/diff/{to_id}",

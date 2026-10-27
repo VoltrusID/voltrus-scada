@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from './queries'
 import { inputStyle, btnStyle } from './styles'
-import { fmtTs } from './styles'
+import { fmtUnixSecs, isPastUnixSecs, unixSecsFromInput } from './unixTime'
 
 interface ApiKeyItem {
   id: number
@@ -119,10 +119,10 @@ export function ApiKeyManager({ onClose, embedded }: { onClose: () => void; embe
                 <td style={{ ...tdStyle, fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--muted)' }}>
                   {k.key_prefix}...
                 </td>
-                <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12 }}>{fmtTs(k.created_at)}</td>
-                <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12 }}>{k.last_used_at ? fmtTs(k.last_used_at) : '-'}</td>
-                <td style={{ ...tdStyle, color: k.expires_at && k.expires_at < Date.now() ? 'var(--crit)' : 'var(--muted)', fontSize: 12 }}>
-                  {k.expires_at ? fmtTs(k.expires_at) : 'Never'}
+                <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12 }}>{fmtUnixSecs(k.created_at)}</td>
+                <td style={{ ...tdStyle, color: 'var(--muted)', fontSize: 12 }}>{k.last_used_at ? fmtUnixSecs(k.last_used_at) : '-'}</td>
+                <td style={{ ...tdStyle, color: k.expires_at && isPastUnixSecs(k.expires_at) ? 'var(--crit)' : 'var(--muted)', fontSize: 12 }}>
+                  {k.expires_at ? fmtUnixSecs(k.expires_at) : 'Never'}
                 </td>
                 <td style={tdStyle}>
                   <button
@@ -194,8 +194,8 @@ function CreateApiKeyDialog({ onSave, onClose, loading, error }: {
   const handleSubmit = () => {
     const data: { name: string; expires_at?: number; permissions?: string } = { name }
     if (expires) {
-      const ts = new Date(expires).getTime()
-      if (!isNaN(ts)) data.expires_at = ts
+      const secs = unixSecsFromInput(expires)
+      if (secs !== undefined) data.expires_at = secs
     }
     data.permissions = permissions
     onSave(data)
