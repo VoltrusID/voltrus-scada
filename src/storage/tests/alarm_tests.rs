@@ -364,3 +364,38 @@ async fn test_isa_delay_migration_up_and_down() {
         assert_eq!(table_count, 0);
     }
 }
+
+/// SCADA-16 S4: the shift report read the newest 500 alarms and filtered them,
+/// so a busy shift lost its oldest alarms.
+#[tokio::test]
+async fn test_list_alarms_between_is_half_open_and_uncapped() {
+    let storage = Storage::new_in_memory().unwrap();
+    for i in 0..600 {
+        storage
+            .create_alarm(&format!("tag{i}"), "warning", 1.0, 0.0, "m", 0.0)
+            .await
+            .unwrap();
+    }
+    // Alarms 1..=600 get one second each from 1000: ids 1..=600 -> 1000..1599.
+    {
+        let conn = storage.conn.lock().unwrap();
+        conn.execute("UPDATE alarms SET triggered_at = 999 + id", [])
+            .unwrap();
+    }
+
+    let alarms = storage.list_alarms_between(1000, 1600).await.unwrap();
+    assert_eq!(alarms.len(), 600, "no row cap");
+    assert_eq!(alarms[0].triggered_at, 1599, "newest first");
+
+    let alarms = storage.list_alarms_between(1000, 1001).await.unwrap();
+    assert_eq!(alarms.len(), 1, "the end is exclusive");
+    assert_eq!(alarms[0].triggered_at, 1000, "the start is inclusive");
+
+    assert!(
+        storage
+            .list_alarms_between(2000, 3000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

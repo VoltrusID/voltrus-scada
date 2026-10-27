@@ -119,3 +119,38 @@ async fn test_deleted_user_session_ends() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(refresh_status(&app, &ops).await, StatusCode::UNAUTHORIZED);
 }
+
+/// SCADA-16 S6: signing in on a second browser or device used to revoke every
+/// refresh token of the user, ending the first session at its next renewal.
+#[tokio::test]
+async fn test_second_login_keeps_other_session_refreshable() {
+    let app = test_app_with_seeded_admin().await;
+    let first = login(&app, "admin", "admin").await;
+    let second = login(&app, "admin", "admin").await;
+
+    assert_eq!(refresh_status(&app, &first).await, StatusCode::OK);
+    assert_eq!(refresh_status(&app, &second).await, StatusCode::OK);
+}
+
+/// Signing in again from a client that still holds a refresh token replaces
+/// that token (it must not stay usable next to the new one).
+#[tokio::test]
+async fn test_login_with_presented_refresh_token_revokes_it() {
+    let app = test_app_with_seeded_admin().await;
+    let first = login(&app, "admin", "admin").await;
+    let other = login(&app, "admin", "admin").await;
+
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        Some(&first),
+        Some(serde_json::json!({"username": "admin", "password": "admin"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(refresh_status(&app, &first).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(refresh_status(&app, &other).await, StatusCode::OK);
+}

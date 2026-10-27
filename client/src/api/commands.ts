@@ -5,7 +5,9 @@ import { fetchJson, fetchOk } from '../queries/fetch'
 export interface Command {
   id: string
   data_source_id: number
+  /** Numeric device id; 0 for a Modbus device, whose text id is `device_ref`. */
   device_id: number
+  device_ref?: string
   protocol: string
   value: string
   status: 'pending' | 'queued' | 'sent' | 'acked' | 'failed' | 'expired' | 'cancelled'

@@ -93,7 +93,12 @@ pub const ACTIVE_STATUSES: [&str; 3] = ["pending", "queued", "sent"];
 pub struct QueuedCommand {
     pub id: String,
     pub data_source_id: i64,
+    /// The numeric device id; `0` for a Modbus device (its id is text, see
+    /// `device_ref`).
     pub device_id: i64,
+    /// The device's id as its tag names it: a Modbus device's text id, or the
+    /// numeric id as text. Empty on commands older than the field.
+    pub device_ref: String,
     pub protocol: String,
     /// The value as the server stored it, e.g. `"42.5"`.
     pub value: String,
@@ -114,6 +119,17 @@ pub struct QueuedCommand {
 }
 
 impl QueuedCommand {
+    /// The device as the console shows it: a Modbus device's text id, or `#`
+    /// and the numeric id of the other protocols (and of commands older than
+    /// `device_ref`).
+    pub fn device_label(&self) -> String {
+        if self.device_ref.is_empty() || self.device_ref == self.device_id.to_string() {
+            format!("#{}", self.device_id)
+        } else {
+            self.device_ref.clone()
+        }
+    }
+
     /// Still on its way: pending, queued or sent.
     pub fn is_active(&self) -> bool {
         ACTIVE_STATUSES.contains(&self.status.as_str())
@@ -301,13 +317,17 @@ pub struct SecurityEvent {
     pub created_at: i64,
 }
 
-/// `GET /api/v1/shift-handover/auto-report`: the current shift (as the
-/// server's UTC clock places it) and what happened in it.
+/// `GET /api/v1/shift-handover/auto-report`: the shift in progress (as the
+/// server's UTC clock places it, a night shift on the date it started) and
+/// what happened in it.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ShiftReport {
     pub shift_date: String,
     pub shift_period: String,
+    /// The shift's `[start, end)` in Unix seconds.
+    pub period_start: Option<i64>,
+    pub period_end: Option<i64>,
     pub alarms: Vec<Alarm>,
     pub annotations: Vec<Annotation>,
     pub handovers: Vec<Handover>,
@@ -332,22 +352,6 @@ pub fn shift_hours(period: &str) -> Option<(u8, u8)> {
         "night" => Some((22, 6)),
         _ => None,
     }
-}
-
-/// `[start, end)` in Unix seconds of the shift `period` that starts on
-/// `date`, with the shift hours read on `offset`'s clock (the server reads
-/// them in UTC).
-pub fn shift_window(date: Date, period: &str, offset: UtcOffset) -> Option<(i64, i64)> {
-    let (start, end) = shift_hours(period)?;
-    let end_date = if end < start { date.next_day()? } else { date };
-    let at = |date: Date, hour: u8| {
-        Some(
-            PrimitiveDateTime::new(date, Time::from_hms(hour, 0, 0).ok()?)
-                .assume_offset(offset)
-                .unix_timestamp(),
-        )
-    };
-    Some((at(date, start)?, at(end_date, end)?))
 }
 
 /// The ranges of `text` that are @mentions, by the server's rule
@@ -770,6 +774,18 @@ mod tests {
     }
 
     #[test]
+    fn commands_name_their_device_by_text_id_or_number() {
+        let command = |device_id: i64, device_ref: &str| QueuedCommand {
+            device_id,
+            device_ref: device_ref.into(),
+            ..QueuedCommand::default()
+        };
+        assert_eq!(command(0, "inverter-1").device_label(), "inverter-1");
+        assert_eq!(command(3, "3").device_label(), "#3");
+        assert_eq!(command(3, "").device_label(), "#3");
+    }
+
+    #[test]
     fn only_operators_cancel_and_only_unsent_commands() {
         let command = |status: &str| QueuedCommand {
             status: status.into(),
@@ -924,13 +940,25 @@ mod tests {
         assert_eq!(shift_of_hour(6), "morning");
         assert_eq!(shift_of_hour(14), "afternoon");
         assert_eq!(shift_of_hour(22), "night");
-        let date = parse_date("2026-05-03").unwrap();
-        let (start, end) = shift_window(date, "night", UtcOffset::UTC).unwrap();
-        assert_eq!(end - start, 8 * 3600);
-        assert_eq!(start, 1_777_845_600, "22:00 UTC on 3 May 2026");
-        let (morning, _) = shift_window(date, "morning", UtcOffset::UTC).unwrap();
-        assert_eq!(morning, 1_777_788_000);
-        assert_eq!(shift_window(date, "evening", UtcOffset::UTC), None);
+    }
+
+    #[test]
+    fn shift_reports_carry_the_servers_window() {
+        let report: ShiftReport = serde_json::from_str(
+            r#"{"shift_date": "2026-05-03", "shift_period": "night",
+                "period_start": 1777845600, "period_end": 1777874400,
+                "alarms": [], "annotations": [], "handovers": [], "security_events": []}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            report.period_end.unwrap() - report.period_start.unwrap(),
+            8 * 3600
+        );
+        assert_eq!(
+            report.period_start,
+            Some(1_777_845_600),
+            "22:00 UTC on 3 May 2026"
+        );
     }
 
     #[test]

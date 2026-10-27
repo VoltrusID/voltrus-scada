@@ -15,6 +15,8 @@ import {
 } from 'lightweight-charts'
 import { DataPoint } from './types'
 import { toHexColor } from './styles'
+import { bandPoints } from './historyQuery'
+import { MinMaxBand } from './minMaxBand'
 
 export interface OverlaySeries {
   data: DataPoint[]
@@ -68,6 +70,7 @@ export function TvDetailChart({
   const containerRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const bandRef = useRef<MinMaxBand | null>(null)
   const overlayRefs = useRef<ISeriesApi<'Line'>[]>([])
   const warnLineRef = useRef<ReturnType<ISeriesApi<'Line'>['createPriceLine']> | null>(null)
   const critLineRef = useRef<ReturnType<ISeriesApi<'Line'>['createPriceLine']> | null>(null)
@@ -126,6 +129,11 @@ export function TvDetailChart({
     } as LineStyleOptions & SeriesOptionsCommon)
     seriesRef.current = series
 
+    // Min/max band of aggregated history, drawn behind the line
+    const band = new MinMaxBand(color + '2e')
+    series.attachPrimitive(band)
+    bandRef.current = band
+
     // Create markers plugin on the series
     markersPluginRef.current = createSeriesMarkers(series, [], {
       zOrder: 'top',
@@ -182,6 +190,7 @@ export function TvDetailChart({
       chart.remove()
       chartRef.current = null
       seriesRef.current = null
+      bandRef.current = null
       overlayRefs.current = []
       markersPluginRef.current = null
     }
@@ -229,6 +238,11 @@ export function TvDetailChart({
       }
     }
   }, [rawData, userScrolled])
+
+  // Min/max band: only history answered with `agg=minmax` carries one
+  useEffect(() => {
+    bandRef.current?.setData(bandPoints(rawData))
+  }, [rawData])
 
   // Reset handler
   const handleReset = useCallback(() => {

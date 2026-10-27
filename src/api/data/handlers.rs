@@ -23,9 +23,12 @@ pub async fn get_data(
     Ok(Json(result))
 }
 
-/// GET /api/history?range=30m&screen=X&agg=sampling
+/// GET /api/history?range=30m&screen=X&sensor=key1,key2&agg=sampling
 /// For modbus sources: reads real telemetry data from DB
 /// For non-modbus sources: generates synthetic data via generators
+/// `sensor` (comma-separated tag keys) and `device` narrow the answer to those tags.
+/// `agg` is `sampling` (default), `avg` or `minmax`: the last two bucket the series into
+/// `interval` and `minmax` adds `min` and `max` arrays next to `values`.
 /// Returns compact format: each sensor has {values: [f64], start: unix_ms, interval: ms, count: usize}
 #[utoipa::path(
     get,
@@ -44,7 +47,11 @@ pub async fn get_history(
     let detail = params.detail.as_deref();
     let agg = params.agg.as_deref().unwrap_or("sampling");
     let screen_id = params.screen.as_deref();
-    let data_sources = state.storage.list_data_sources(screen_id).await?;
+    let data_sources = history::filter_sources(
+        state.storage.list_data_sources(screen_id).await?,
+        params.sensor.as_deref(),
+        params.device.as_deref().or(params.device_id.as_deref()),
+    );
 
     let (start, end) = generators::parse_range(range_str);
     let interval_ms = generators::interval_for_range(range_str, detail);
@@ -119,7 +126,7 @@ pub async fn get_history(
             source_type: data_source.source_type.clone(),
         });
 
-        let points = if data_source.source_type == "modbus" {
+        let (points, band) = if data_source.source_type == "modbus" {
             // Real data from telemetry DB
             let raw_points = device_data
                 .get(&data_source.device_id)
@@ -137,7 +144,7 @@ pub async fn get_history(
                             .map(|s| s.to_string())
                     });
 
-            if let Some(ref expr_str) = expr {
+            let samples: Vec<DataPoint> = if let Some(ref expr_str) = expr {
                 // Expression-based: evaluate at each timestamp
                 raw_points
                     .iter()
@@ -164,17 +171,35 @@ pub async fn get_history(
                             })
                     })
                     .collect::<Vec<_>>()
+            };
+
+            match agg {
+                "avg" | "minmax" => {
+                    let pairs: Vec<(i64, f64)> =
+                        samples.iter().map(|p| (p.timestamp, p.value)).collect();
+                    history::series_from_buckets(
+                        history::bucket_samples(&pairs, min_interval_secs),
+                        agg == "minmax",
+                    )
+                }
+                _ => (samples, None),
             }
         } else {
             // Synthetic data from generators
             let duration_secs = end - start;
             let num_points = ((duration_secs * 1000) / interval_ms as i64) as usize;
             let mut pts = Vec::with_capacity(num_points);
+            let mut band = (agg == "minmax").then(|| {
+                (
+                    Vec::with_capacity(num_points),
+                    Vec::with_capacity(num_points),
+                )
+            });
             for i in 0..num_points {
                 let bucket_start = start + ((end - start) * i as i64 / num_points.max(1) as i64);
                 match agg {
                     "avg" | "minmax" => {
-                        let (avg, _mn, _mx) = generators::aggregate_bucket(
+                        let (avg, mn, mx) = generators::aggregate_bucket(
                             data_source,
                             bucket_start as f64,
                             sub_samples,
@@ -183,6 +208,10 @@ pub async fn get_history(
                             timestamp: bucket_start,
                             value: avg,
                         });
+                        if let Some((lo, hi)) = band.as_mut() {
+                            lo.push(mn);
+                            hi.push(mx);
+                        }
                     }
                     _ => {
                         let value = generators::generate_value(data_source, bucket_start as f64);
@@ -193,13 +222,17 @@ pub async fn get_history(
                     }
                 }
             }
-            pts
+            (pts, band)
         };
 
         // Convert points to compact format
         if points.is_empty() {
             let mut sensor_data = serde_json::Map::new();
             sensor_data.insert("values".into(), json!(Vec::<f64>::new()));
+            if agg == "minmax" {
+                sensor_data.insert("min".into(), json!(Vec::<f64>::new()));
+                sensor_data.insert("max".into(), json!(Vec::<f64>::new()));
+            }
             sensor_data.insert("start".into(), json!(start * 1000));
             sensor_data.insert("interval".into(), json!(interval_ms));
             sensor_data.insert("count".into(), json!(0));
@@ -215,6 +248,10 @@ pub async fn get_history(
             };
             let mut sensor_data = serde_json::Map::new();
             sensor_data.insert("values".into(), json!(values));
+            if let Some((lo, hi)) = &band {
+                sensor_data.insert("min".into(), json!(lo));
+                sensor_data.insert("max".into(), json!(hi));
+            }
             sensor_data.insert("start".into(), json!(first_ts * 1000));
             sensor_data.insert("interval".into(), json!(calc_interval));
             sensor_data.insert("count".into(), json!(points.len()));
