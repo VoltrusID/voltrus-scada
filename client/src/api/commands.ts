@@ -1,4 +1,5 @@
 import { fetchJson, fetchOk } from '../queries/fetch'
+import { parseWritePolicy } from '../writePolicy'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -91,6 +92,10 @@ export async function cancelCommand(commandId: string): Promise<void> {
 
 export async function getCommandAudit(commandId: string): Promise<CommandAuditEntry[]> {
   return fetchJson<CommandAuditEntry[]>(`/api/v1/commands/${commandId}/audit`)
+}
+
+export async function getWritePolicy(tagId: number): Promise<WritePolicy> {
+  return parseWritePolicy(await fetchJson<unknown>(`/api/v1/data-sources/${tagId}/write-policy`))
 }
 
 export async function updateWritePolicy(

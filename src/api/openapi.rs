@@ -45,6 +45,7 @@ use utoipa::{Modify, OpenApi};
         crate::api::commands::list_commands,
         crate::api::commands::cancel_command,
         crate::api::commands::get_command_audit,
+        crate::api::commands::get_write_policy,
         crate::api::commands::update_write_policy,
         // Data
         crate::api::data::get_data,
@@ -261,6 +262,7 @@ use utoipa::{Modify, OpenApi};
         crate::models::CommandAuditEntry,
         crate::models::WriteRequest,
         crate::models::CommandQuery,
+        crate::models::WritePolicy,
         crate::models::WritePolicyUpdate,
         // Data schemas
         crate::models::DataSourceData,

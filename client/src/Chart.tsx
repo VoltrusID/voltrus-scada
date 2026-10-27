@@ -3,6 +3,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import { safeMinMax, toHexColor } from './styles';
 import { useCanvasSize } from './hooks/useCanvasSize';
+import { gaugeBands } from './gaugeMath';
 
 // ── Sparkline ──
 
@@ -109,36 +110,38 @@ function GaugeChart({ value, min, max, warn, crit, color: rawColor, decimals, un
     ctx.lineCap = 'round';
     ctx.stroke();
 
-    // Colored arc segments
-    const warnPct = Math.max(0, Math.min(1, (warn - min) / range));
-    const critPct = Math.max(0, Math.min(1, (crit - min) / range));
+    // Colored arc segments; a tag without limits (warn=crit=0) keeps only the neutral track.
+    const bands = gaugeBands(min, max, warn, crit);
+    if (bands) {
+      const { warnPct, critPct } = bands;
 
-    // Green arc
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, startAngle, startAngle + warnPct * Math.PI);
-    ctx.strokeStyle = '#22c55e';
-    ctx.lineWidth = 12;
-    ctx.lineCap = 'round';
-    ctx.stroke();
-
-    // Yellow arc
-    if (warnPct < critPct) {
+      // Green arc
       ctx.beginPath();
-      ctx.arc(cx, cy, r, startAngle + warnPct * Math.PI, startAngle + critPct * Math.PI);
-      ctx.strokeStyle = '#eab308';
-      ctx.lineWidth = 12;
-      ctx.lineCap = 'butt';
-      ctx.stroke();
-    }
-
-    // Red arc
-    if (critPct < 1) {
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, startAngle + critPct * Math.PI, endAngle);
-      ctx.strokeStyle = '#ef4444';
+      ctx.arc(cx, cy, r, startAngle, startAngle + warnPct * Math.PI);
+      ctx.strokeStyle = '#22c55e';
       ctx.lineWidth = 12;
       ctx.lineCap = 'round';
       ctx.stroke();
+
+      // Yellow arc
+      if (warnPct < critPct) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, startAngle + warnPct * Math.PI, startAngle + critPct * Math.PI);
+        ctx.strokeStyle = '#eab308';
+        ctx.lineWidth = 12;
+        ctx.lineCap = 'butt';
+        ctx.stroke();
+      }
+
+      // Red arc
+      if (critPct < 1) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, startAngle + critPct * Math.PI, endAngle);
+        ctx.strokeStyle = '#ef4444';
+        ctx.lineWidth = 12;
+        ctx.lineCap = 'round';
+        ctx.stroke();
+      }
     }
 
     // Needle

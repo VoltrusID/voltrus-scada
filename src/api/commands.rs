@@ -299,7 +299,35 @@ pub async fn get_command_audit(
     Ok(Json(entries))
 }
 
-// ── Update Write Policy ──
+// ── Write Policy ──
+
+/// GET /api/v1/data-sources/{id}/write-policy
+#[utoipa::path(
+    get,
+    path = "/api/v1/data-sources/{id}/write-policy",
+    params(
+        ("id" = i64, Path, description = "Data Source ID")
+    ),
+    responses(
+        (status = 200, body = WritePolicy),
+        (status = 404),
+    ),
+    tag = "Commands",
+    security(("api_key" = []), ("cookie_auth" = []))
+)]
+pub async fn get_write_policy(
+    State(state): State<AppState>,
+    Path(data_source_id): Path<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match state.storage.get_write_policy(data_source_id).await? {
+        Some(policy) => Ok(Json(policy).into_response()),
+        None => Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Data source not found"})),
+        )
+            .into_response()),
+    }
+}
 
 /// PATCH /api/v1/data-sources/{id}/write-policy
 #[utoipa::path(

@@ -2,9 +2,10 @@
 //! integration) write through `POST /api/v1/tags/{id}/write`, immediate or
 //! queued, with a reason, checked against the policy and answered with the
 //! command's id; an admin can also write directly over the WebSocket. The
-//! policy editor sends `PATCH /api/v1/data-sources/{id}/write-policy`. The
-//! server has no route that reads a policy back, so the console checks
-//! limits only for a policy it saved itself this session.
+//! policy editor reads a tag's policy with `GET
+//! /api/v1/data-sources/{id}/write-policy` each time the write dialog or the
+//! editor opens (the console checks limits against what it read or saved)
+//! and sends changes with `PATCH` on the same path.
 
 use std::collections::HashMap;
 
@@ -28,7 +29,7 @@ use crate::console::overlay::Overlay;
 pub(crate) struct WriteState {
     mode: Option<WriteMode>,
     reason: Option<Entity<TextInput>>,
-    /// Policies saved this session, by tag id.
+    /// Policies read from the server or saved this session, by tag id.
     policies: HashMap<i64, WritePolicy>,
     /// The tag whose REST write awaits the server.
     sending: Option<i64>,
@@ -52,9 +53,19 @@ pub(crate) struct WriteState {
     subscriptions: Vec<Subscription>,
 }
 
-/// The tag's policy when this session saved one.
+/// The tag's policy when it was read from the server or saved this session.
 fn known_policy(console: &mut Console, id: i64) -> Option<WritePolicy> {
     console.state::<WriteState>().policies.get(&id).cloned()
+}
+
+/// Read the tag's policy from the server; the answer lands in
+/// `WriteState::policies` (`tags.policy.load`).
+fn load_policy(console: &mut Console, id: i64) {
+    let path = format!("/api/v1/data-sources/{id}/write-policy");
+    console.call(
+        CallKey::new("tags.policy.load").with(id),
+        Call::new(move |api| async move { api.get_json::<WritePolicy>(&path).await }),
+    );
 }
 
 /// ⇧⌘W: the write dialog for the open tag.
@@ -100,6 +111,9 @@ pub(crate) fn open_write(console: &mut Console, window: &mut Window, cx: &mut Co
     let state = console.state::<WriteState>();
     if state.result.as_ref().is_some_and(|(at, _)| Some(*at) != id) {
         state.result = None;
+    }
+    if let Some(id) = id {
+        load_policy(console, id);
     }
     console
         .inputs
@@ -195,13 +209,30 @@ pub(crate) fn open_policy(console: &mut Console, window: &mut Window, cx: &mut C
         state.rate = Some(rate);
         state.deadband = Some(deadband);
     }
+    load_policy(console, id);
     let known = known_policy(console, id);
-    let policy = known.clone().unwrap_or_default();
     let state = console.state::<WriteState>();
-    state.writable = known.as_ref().map(|policy| policy.writable);
-    state.requires_reason = known.as_ref().map(|policy| policy.write_requires_reason);
     state.policy_error = None;
     state.saved = None;
+    let Some(min) = state.min.clone() else {
+        return;
+    };
+    fill_policy_fields(console, known.as_ref(), cx);
+    let overlay = Overlay::modal("tag-policy", px(480.0), policy_dialog, cx);
+    console.open_overlay(overlay, window, cx);
+    min.update(cx, |field, _| field.focus(window));
+}
+
+/// Set the editor's choices and limits to `policy` (a policy not known
+/// leaves the choices unmade and the limits empty).
+fn fill_policy_fields(
+    console: &mut Console,
+    policy: Option<&WritePolicy>,
+    cx: &mut Context<Console>,
+) {
+    let state = console.state::<WriteState>();
+    state.writable = policy.map(|policy| policy.writable);
+    state.requires_reason = policy.map(|policy| policy.write_requires_reason);
     let (Some(min), Some(max), Some(rate), Some(deadband)) = (
         state.min.clone(),
         state.max.clone(),
@@ -210,6 +241,7 @@ pub(crate) fn open_policy(console: &mut Console, window: &mut Window, cx: &mut C
     ) else {
         return;
     };
+    let policy = policy.cloned().unwrap_or_default();
     let number = |value: Option<f64>| value.map(|value| value.to_string()).unwrap_or_default();
     let fields = [
         (&min, number(policy.write_min)),
@@ -226,9 +258,6 @@ pub(crate) fn open_policy(console: &mut Console, window: &mut Window, cx: &mut C
     for (field, text) in fields {
         field.update(cx, |field, cx| field.set_text(text, cx));
     }
-    let overlay = Overlay::modal("tag-policy", px(480.0), policy_dialog, cx);
-    console.open_overlay(overlay, window, cx);
-    min.update(cx, |field, _| field.focus(window));
 }
 
 fn save_policy(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
@@ -315,6 +344,29 @@ pub(crate) fn on_reply(
                         cx,
                     ),
                     Err(error) => console.show_toast(format!("Write failed: {error}"), true, cx),
+                }
+            }
+        }
+        "tags.policy.load" => {
+            // A failed read leaves the policy unknown: the server still
+            // checks every write, and the editor sends only what changed.
+            if let Ok(policy) = reply.take::<WritePolicy>() {
+                let id = key.arg;
+                // The editor opened before the answer came, and nothing
+                // was chosen in it yet: show what the server has.
+                let untouched = {
+                    let state = console.state::<WriteState>();
+                    state.writable.is_none() && state.requires_reason.is_none()
+                };
+                let editing = console.overlay_is("tag-policy")
+                    && open_index(console)
+                        .is_some_and(|index| console.store.tags[index].info.id == id);
+                console
+                    .state::<WriteState>()
+                    .policies
+                    .insert(id, policy.clone());
+                if editing && untouched {
+                    fill_policy_fields(console, Some(&policy), cx);
                 }
             }
         }
@@ -747,7 +799,7 @@ fn policy_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console
             if known {
                 "Saving sends the settings changed here; an emptied field clears its limit."
             } else {
-                "The server cannot be asked for the current policy: saving sends only the choices made and the limits typed, and leaves the rest as stored."
+                "The current policy could not be read: saving sends only the choices made and the limits typed, and leaves the rest as stored."
             }
             .to_owned(),
             theme.fg_dim,
@@ -815,6 +867,8 @@ mod tests {
     fn enter_after_a_successful_write_sends_nothing(cx: &mut TestAppContext) {
         let mut h = writing(cx, "demo");
         h.update(open_write);
+        // Opening the dialog reads the tag's policy.
+        assert_eq!(h.calls(), vec![CallKey::new("tags.policy.load").with(7)]);
         type_value(&mut h, "42");
         h.draw();
         h.keys("enter");
@@ -839,6 +893,8 @@ mod tests {
             open_write(console, window, cx);
             console.state::<WriteState>().mode = Some(WriteMode::Direct);
         });
+        // The policy read the dialog starts.
+        h.commands();
         type_value(&mut h, "5");
         h.draw();
         h.keys("enter");

@@ -1,6 +1,5 @@
 //! Data Manager › EtherNet/IP, after the web client's
-//! `EnipDeviceManager.tsx` but in the server's shapes (the web client sends
-//! `ip` and `port`, and tags without the `tag_name` the server needs):
+//! `EnipDeviceManager.tsx` (both send the server's shapes):
 //! PLCs at `host:port`, their tags by CIP symbol, start and stop, and a
 //! browse of the PLC's symbols to pick from. Every EtherNet/IP handler
 //! checks for the admin role.

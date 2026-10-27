@@ -3,8 +3,21 @@ import { useEnipDevices, useEnipDevice, useCreateEnipDevice, useUpdateEnipDevice
 import { fetchJson } from './queries'
 import { btnStyle, inputStyle } from './styles'
 import type { EnipDevice, EnipTag } from './queries'
+import { ENIP_DEFAULT_PORT, enipDeviceBody, splitHostPort } from './protocolPayloads'
+import type { EnipDeviceForm as EnipDeviceValues, EnipTagForm } from './protocolPayloads'
 
 const ENIP_DATA_TYPES = ['bool', 'sint8', 'int16', 'dint32', 'lint64', 'real32', 'string'] as const
+
+/** What the device form submits; tags are only collected when creating (the update route takes none). */
+interface EnipFormValues {
+  device: EnipDeviceValues
+  tags: EnipTagForm[]
+}
+
+/** A create form opened with the values of an existing device (Dup). */
+interface EnipPrefill extends EnipDeviceValues {
+  tags: EnipTagForm[]
+}
 
 export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; embedded?: boolean }) {
   const { data: devices = [], isLoading } = useEnipDevices()
@@ -16,12 +29,13 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
 
   const [filter, setFilter] = useState('')
   const [showForm, setShowForm] = useState(false)
+  const [prefill, setPrefill] = useState<EnipPrefill | undefined>(undefined)
   const [editDevice, setEditDevice] = useState<EnipDevice | null>(null)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [expandedId, setExpandedId] = useState<number | null>(null)
 
   const filtered = devices.filter(d =>
-    (d.name || d.id).toLowerCase().includes(filter.toLowerCase()) ||
-    d.ip.toLowerCase().includes(filter.toLowerCase()),
+    d.name.toLowerCase().includes(filter.toLowerCase()) ||
+    d.url.toLowerCase().includes(filter.toLowerCase()),
   )
 
   useEffect(() => {
@@ -31,46 +45,22 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose, embedded])
 
-  const handleCreate = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const fd = new FormData(e.currentTarget)
-    const tags = collectFormTags(fd)
+  const handleCreate = (v: EnipFormValues) => {
     createMut.mutate(
-      {
-        id: fd.get('id') as string,
-        name: (fd.get('name') as string) || (fd.get('id') as string),
-        ip: fd.get('ip') as string,
-        port: Number(fd.get('port')) || 44818,
-        slot: Number(fd.get('slot')) || 0,
-        assembly_instance: Number(fd.get('assembly_instance')) || 0,
-        enabled: fd.get('enabled') === 'on',
-        tags,
-      },
-      { onSuccess: () => setShowForm(false) },
+      { device: v.device, tags: v.tags },
+      { onSuccess: () => { setShowForm(false); setPrefill(undefined) } },
     )
   }
 
-  const handleUpdate = (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
+  const handleUpdate = (v: EnipFormValues) => {
     if (!editDevice) return
-    const fd = new FormData(e.currentTarget)
-    const tags = collectFormTags(fd)
     updateMut.mutate(
-      {
-        id: editDevice.id,
-        name: fd.get('name') as string,
-        ip: fd.get('ip') as string,
-        port: Number(fd.get('port')) || 44818,
-        slot: Number(fd.get('slot')) || 0,
-        assembly_instance: Number(fd.get('assembly_instance')) || 0,
-        enabled: fd.get('enabled') === 'on',
-        tags,
-      },
+      { id: editDevice.id, ...enipDeviceBody(v.device) },
       { onSuccess: () => setEditDevice(null) },
     )
   }
 
-  const handleDelete = (id: string) => {
+  const handleDelete = (id: number) => {
     if (!confirm('Delete this EtherNet/IP device and stop its connection?')) return
     deleteMut.mutate(id)
   }
@@ -78,8 +68,16 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
   const handleDup = async (d: EnipDevice) => {
     try {
       const tags = await fetchJson<EnipTag[]>(`/api/v1/enip/devices/${d.id}/tags`)
-      setEditDevice({ ...d, tags } as EnipDevice & { tags: EnipTag[] })
-      setShowForm(false)
+      const { host, port } = splitHostPort(d.url, ENIP_DEFAULT_PORT)
+      setPrefill({
+        name: `${d.name} copy`, host, port, slot: d.slot, assembly_instance: d.assembly_instance, enabled: d.enabled,
+        tags: tags.map(t => ({
+          name: t.name, tag_name: t.tag_name, data_type: t.data_type, display_name: t.display_name,
+          assembly_offset: t.assembly_offset, assembly_length: t.assembly_length,
+        })),
+      })
+      setEditDevice(null)
+      setShowForm(true)
     } catch { /* ignore */ }
   }
 
@@ -100,7 +98,7 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
           <input placeholder="Search..." value={filter} onChange={e => setFilter(e.target.value)} style={{ ...inputStyle, width: 200 }} />
           <button
             style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)' }}
-            onClick={() => { setShowForm(true); setEditDevice(null) }}
+            onClick={() => { setShowForm(true); setEditDevice(null); setPrefill(undefined) }}
             aria-label="Add EtherNet/IP device"
           >
             + Add Device
@@ -110,9 +108,11 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
 
       {(showForm || editDevice) && (
         <EnipDeviceForm
-          device={editDevice ? { ...editDevice } as any : undefined}
+          key={editDevice ? `edit-${editDevice.id}` : prefill ? 'dup' : 'new'}
+          device={editDevice ?? undefined}
+          prefill={prefill}
           onSubmit={editDevice ? handleUpdate : handleCreate}
-          onClose={() => { setShowForm(false); setEditDevice(null) }}
+          onClose={() => { setShowForm(false); setEditDevice(null); setPrefill(undefined) }}
           isPending={editDevice ? updateMut.isPending : createMut.isPending}
         />
       )}
@@ -127,8 +127,7 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
             <thead>
               <tr>
                 <th style={thStyle}>Name</th>
-                <th style={thStyle}>IP</th>
-                <th style={thStyle}>Port</th>
+                <th style={thStyle}>Address</th>
                 <th style={thStyle}>Slot</th>
                 <th style={thStyle}>Tags</th>
                 <th style={thStyle}>Enabled</th>
@@ -149,13 +148,12 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
                           {expandedId === d.id ? '\u25BC' : '\u25B6'}
                         </button>
                         <div style={{ width: 8, height: 8, borderRadius: '50%', background: d.enabled ? 'var(--ok)' : 'var(--crit)' }} />
-                        {d.name || d.id}
+                        {d.name}
                       </div>
                     </td>
-                    <td style={{ ...tdStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}>{d.ip}</td>
-                    <td style={{ ...tdStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}>{d.port}</td>
+                    <td style={{ ...tdStyle, fontFamily: "var(--font-mono)", fontSize: 12 }}>{d.url}</td>
                     <td style={tdStyle}>{d.slot}</td>
-                    <td style={tdStyle}>{d.tag_count ?? 0}</td>
+                    <td style={tdStyle}>{d.tag_count}</td>
                     <td style={tdStyle}>
                       <input
                         type="checkbox"
@@ -170,7 +168,7 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
                           <button
                             onClick={() => stopMut.mutate(d.id)}
                             style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)', cursor: 'pointer', fontSize: 11 }}
-                            aria-label={`Stop ${d.name || d.id}`}
+                            aria-label={`Stop ${d.name}`}
                           >
                             Stop
                           </button>
@@ -178,28 +176,28 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
                           <button
                             onClick={() => startMut.mutate(d.id)}
                             style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--green)', background: 'transparent', color: 'var(--green)', cursor: 'pointer', fontSize: 11 }}
-                            aria-label={`Start ${d.name || d.id}`}
+                            aria-label={`Start ${d.name}`}
                           >
                             Start
                           </button>
                         )}
                         <button
-                          onClick={() => { setEditDevice(d); setShowForm(false) }}
-                          aria-label={`Edit ${d.name || d.id}`}
+                          onClick={() => { setEditDevice(d); setShowForm(false); setPrefill(undefined) }}
+                          aria-label={`Edit ${d.name}`}
                           style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}
                         >
                           Edit
                         </button>
                         <button
                           onClick={() => handleDup(d)}
-                          aria-label={`Duplicate ${d.name || d.id}`}
+                          aria-label={`Duplicate ${d.name}`}
                           style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}
                         >
                           Dup
                         </button>
                         <button
                           onClick={() => handleDelete(d.id)}
-                          aria-label={`Delete ${d.name || d.id}`}
+                          aria-label={`Delete ${d.name}`}
                           style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)', cursor: 'pointer', fontSize: 11 }}
                         >
                           Del
@@ -209,7 +207,7 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
                   </tr>
                   {expandedId === d.id && (
                     <tr>
-                      <td colSpan={7} style={{ padding: 0, borderBottom: '1px solid var(--border)' }}>
+                      <td colSpan={6} style={{ padding: 0, borderBottom: '1px solid var(--border)' }}>
                         <ExpandedEnipTags deviceId={d.id} />
                       </td>
                     </tr>
@@ -253,23 +251,26 @@ export function EnipDeviceManager({ onClose, embedded }: { onClose: () => void; 
 
 // ── Inline Tag Expansion ──
 
-function ExpandedEnipTags({ deviceId }: { deviceId: string }) {
+function ExpandedEnipTags({ deviceId }: { deviceId: number }) {
   const { data, isLoading } = useEnipDevice(deviceId)
   const addTagMut = useAddEnipTag()
   const removeTagMut = useRemoveEnipTag()
 
   const [newName, setNewName] = useState('')
+  const [newSymbol, setNewSymbol] = useState('')
   const [newType, setNewType] = useState<string>('dint32')
 
   const tags = data ?? []
+  const canAdd = !!newName.trim() && !!newSymbol.trim()
 
   const handleAdd = () => {
-    if (!newName.trim()) return
+    if (!canAdd) return
     addTagMut.mutate(
-      { deviceId, tag: { name: newName.trim(), data_type: newType } },
+      { deviceId, tag: { name: newName, tag_name: newSymbol, data_type: newType } },
       {
         onSuccess: () => {
           setNewName('')
+          setNewSymbol('')
         },
       },
     )
@@ -303,21 +304,23 @@ function ExpandedEnipTags({ deviceId }: { deviceId: string }) {
         <thead>
           <tr>
             <th style={nodeThStyle}>Name</th>
+            <th style={nodeThStyle}>Tag (CIP symbol)</th>
             <th style={nodeThStyle}>Data Type</th>
             <th style={{ ...nodeThStyle, width: 80 }}>Action</th>
           </tr>
         </thead>
         <tbody>
           {isLoading ? (
-            <tr><td colSpan={3} style={{ ...nodeTdStyle, color: 'var(--muted)' }}>Loading tags...</td></tr>
+            <tr><td colSpan={4} style={{ ...nodeTdStyle, color: 'var(--muted)' }}>Loading tags...</td></tr>
           ) : tags.length === 0 ? (
-            <tr><td colSpan={3} style={{ ...nodeTdStyle, color: 'var(--muted)' }}>No tags configured. Add tags below.</td></tr>
+            <tr><td colSpan={4} style={{ ...nodeTdStyle, color: 'var(--muted)' }}>No tags configured. Add tags below.</td></tr>
           ) : (
             tags.map(t => {
               const typeColor = TYPE_COLORS[t.data_type] ?? TYPE_COLORS.dint32
               return (
                 <tr key={t.id}>
                   <td style={{ ...nodeTdStyle, fontFamily: "var(--font-mono)", fontSize: 11 }}>{t.name}</td>
+                  <td style={{ ...nodeTdStyle, fontFamily: "var(--font-mono)", fontSize: 11 }}>{t.tag_name}</td>
                   <td style={nodeTdStyle}>
                     <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: typeColor.bg, color: typeColor.fg }}>
                       {t.data_type}
@@ -343,6 +346,14 @@ function ExpandedEnipTags({ deviceId }: { deviceId: string }) {
               <input
                 value={newName}
                 onChange={e => setNewName(e.target.value)}
+                placeholder="tag_name"
+                style={{ ...inputStyle, fontSize: 11, fontFamily: "var(--font-mono)" }}
+              />
+            </td>
+            <td style={{ padding: '6px 12px' }}>
+              <input
+                value={newSymbol}
+                onChange={e => setNewSymbol(e.target.value)}
                 placeholder="Program:Tag.Name"
                 style={{ ...inputStyle, fontSize: 11, fontFamily: "var(--font-mono)" }}
               />
@@ -355,8 +366,8 @@ function ExpandedEnipTags({ deviceId }: { deviceId: string }) {
             <td style={{ padding: '6px 12px' }}>
               <button
                 onClick={handleAdd}
-                disabled={!newName.trim() || addTagMut.isPending}
-                style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--green)', background: 'transparent', color: 'var(--green)', cursor: newName.trim() ? 'pointer' : 'not-allowed', fontSize: 11, opacity: newName.trim() ? 1 : 0.5 }}
+                disabled={!canAdd || addTagMut.isPending}
+                style={{ padding: '4px 10px', borderRadius: 4, border: '1px solid var(--green)', background: 'transparent', color: 'var(--green)', cursor: canAdd ? 'pointer' : 'not-allowed', fontSize: 11, opacity: canAdd ? 1 : 0.5 }}
               >
                 {addTagMut.isPending ? '...' : '+ Add'}
               </button>
@@ -364,142 +375,129 @@ function ExpandedEnipTags({ deviceId }: { deviceId: string }) {
           </tr>
         </tfoot>
       </table>
+      {addTagMut.isError && (
+        <div style={{ padding: '6px 12px', fontSize: 11, color: 'var(--crit)' }}>{addTagMut.error?.message || 'Failed to add the tag'}</div>
+      )}
     </div>
   )
 }
 
 // ── Inline Create / Edit Form ──
 
-interface TagFormRow {
-  name: string
-  data_type: string
-  assembly_offset: number
-  assembly_length: number
-}
-
 function EnipDeviceForm({
   device,
+  prefill,
   onSubmit,
   onClose,
   isPending,
 }: {
-  device?: EnipDevice & { tags?: EnipTag[] }
-  onSubmit: (e: React.FormEvent<HTMLFormElement>) => void
+  device?: EnipDevice
+  prefill?: EnipPrefill
+  onSubmit: (v: EnipFormValues) => void
   onClose: () => void
   isPending: boolean
 }) {
   const isEdit = !!device
-  const src = device
-  const [name, setName] = useState(src?.name ?? '')
-  const [ip, setIp] = useState(src?.ip ?? '')
-  const [port, setPort] = useState(src?.port ?? 44818)
-  const [slot, setSlot] = useState(src?.slot ?? 0)
-  const [assemblyInstance, setAssemblyInstance] = useState(src?.assembly_instance ?? 0)
-  const [enabled, setEnabled] = useState(src?.enabled ?? true)
-  const [tags, setTags] = useState<TagFormRow[]>(
-    (src as any)?.tags?.map((t: any) => ({
-      name: t.name,
-      data_type: t.data_type,
-      assembly_offset: t.assembly_offset ?? 0,
-      assembly_length: t.assembly_length ?? 0,
-    })) ?? [],
-  )
-  const [deviceId, setDeviceId] = useState(src?.id ?? '')
+  const initial = device
+    ? { ...splitHostPort(device.url, ENIP_DEFAULT_PORT), name: device.name, slot: device.slot, assembly_instance: device.assembly_instance, enabled: device.enabled }
+    : prefill
+  const [name, setName] = useState(initial?.name ?? '')
+  const [host, setHost] = useState(initial?.host ?? '')
+  const [port, setPort] = useState(initial?.port ?? ENIP_DEFAULT_PORT)
+  const [slot, setSlot] = useState(initial?.slot ?? 0)
+  const [assemblyInstance, setAssemblyInstance] = useState(initial?.assembly_instance ?? 0)
+  const [enabled, setEnabled] = useState(initial?.enabled ?? true)
+  const [tags, setTags] = useState<EnipTagForm[]>(prefill?.tags ?? [])
 
-  const addTag = () => setTags([...tags, { name: '', data_type: 'dint32', assembly_offset: 0, assembly_length: 0 }])
+  const addTag = () => setTags([...tags, { name: '', tag_name: '', data_type: 'dint32', assembly_offset: 0, assembly_length: 0 }])
   const removeTag = (i: number) => setTags(tags.filter((_, j) => j !== i))
-  const updateTag = (i: number, field: keyof TagFormRow, value: any) => {
+  const updateTag = (i: number, field: keyof EnipTagForm, value: string | number) => {
     const next = [...tags]
     next[i] = { ...next[i], [field]: value }
     setTags(next)
   }
 
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    onSubmit({
+      device: { name, host, port, slot, assembly_instance: assemblyInstance, enabled },
+      tags: tags.filter(t => t.name.trim() && t.tag_name.trim()),
+    })
+  }
+
   return (
     <form
-      onSubmit={onSubmit}
+      onSubmit={handleSubmit}
       style={{
         marginBottom: 16, padding: 16, background: 'var(--card)', border: '1px solid var(--border)',
         borderRadius: 10, display: 'flex', flexDirection: 'column', gap: 12,
       }}
     >
       <div style={{ fontSize: 13, fontWeight: 600, paddingBottom: 4, borderBottom: '1px solid var(--border)' }}>
-        {isEdit ? `Edit: ${device!.name || device!.id}` : 'Add EtherNet/IP Device'}
+        {isEdit ? `Edit: ${device!.name}` : 'Add EtherNet/IP Device'}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: isEdit ? '1fr 1fr' : '1fr 1fr 1fr', gap: 8 }}>
-        {!isEdit && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>Device ID *</label>
-            <input name="id" value={deviceId} onChange={e => setDeviceId(e.target.value)} placeholder="plc_enip_1" required style={inputStyle} />
-          </div>
-        )}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>Name</label>
-          <input name="name" value={name} onChange={e => setName(e.target.value)} placeholder="ControlLogix L85E" style={inputStyle} />
+          <input value={name} onChange={e => setName(e.target.value)} placeholder="ControlLogix L85E" style={inputStyle} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>IP Address *</label>
-          <input name="ip" value={ip} onChange={e => setIp(e.target.value)} placeholder="192.168.1.10" required style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+          <input value={host} onChange={e => setHost(e.target.value)} placeholder="192.168.1.10" required style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr auto', gap: 8, alignItems: 'end' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 8, alignItems: 'end' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>Port</label>
-          <input name="port" type="number" value={port} onChange={e => setPort(parseInt(e.target.value) || 44818)} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+          <input type="number" value={port} onChange={e => setPort(parseInt(e.target.value) || ENIP_DEFAULT_PORT)} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>Slot</label>
-          <input name="slot" type="number" value={slot} onChange={e => setSlot(parseInt(e.target.value) || 0)} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+          <input type="number" value={slot} onChange={e => setSlot(parseInt(e.target.value) || 0)} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>Assembly (0=poll)</label>
-          <input name="assembly_instance" type="number" value={assemblyInstance} onChange={e => setAssemblyInstance(parseInt(e.target.value) || 0)} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
+          <input type="number" value={assemblyInstance} onChange={e => setAssemblyInstance(parseInt(e.target.value) || 0)} style={{ ...inputStyle, fontFamily: "var(--font-mono)" }} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>Enabled</label>
           <div style={{ display: 'flex', alignItems: 'center', height: 32 }}>
-            <input name="enabled" type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} style={{ cursor: 'pointer' }} />
+            <input type="checkbox" checked={enabled} onChange={e => setEnabled(e.target.checked)} style={{ cursor: 'pointer' }} />
           </div>
         </div>
       </div>
 
-      {/* Tags section */}
-      <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)' }}>Tags</span>
-          <button type="button" onClick={addTag} style={{ padding: '3px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--cyan)' }}>
-            + Add Tag
-          </button>
+      {/* Tags are added with the device; an existing device's tags are edited in its expanded row. */}
+      {!isEdit && (
+        <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)' }}>Tags</span>
+            <button type="button" onClick={addTag} style={{ padding: '3px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--cyan)' }}>
+              + Add Tag
+            </button>
+          </div>
+          {tags.length === 0 && <div style={{ color: 'var(--muted)', fontSize: 12, padding: 8 }}>No tags configured. You can also add tags after creation.</div>}
+          {tags.length > 0 && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px 64px 64px 28px', gap: 4, marginBottom: 2, fontSize: 10, color: 'var(--muted)', paddingLeft: 2 }}>
+              <span>name</span><span>CIP symbol</span><span>type</span><span>off</span><span>len</span><span></span>
+            </div>
+          )}
+          {tags.map((tag, i) => (
+            <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 100px 64px 64px 28px', gap: 4, marginBottom: 4, alignItems: 'end' }}>
+              <input value={tag.name} onChange={e => updateTag(i, 'name', e.target.value)} placeholder="temperature" style={{ ...inputStyle, fontSize: 12, fontFamily: "var(--font-mono)" }} />
+              <input value={tag.tag_name} onChange={e => updateTag(i, 'tag_name', e.target.value)} placeholder="Program:Tag.Name" style={{ ...inputStyle, fontSize: 12, fontFamily: "var(--font-mono)" }} />
+              <select value={tag.data_type} onChange={e => updateTag(i, 'data_type', e.target.value)} style={{ ...inputStyle, fontSize: 11 }}>
+                {ENIP_DATA_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <input type="number" value={tag.assembly_offset ?? 0} onChange={e => updateTag(i, 'assembly_offset', parseInt(e.target.value) || 0)} style={{ ...inputStyle, fontSize: 12, fontFamily: "var(--font-mono)" }} />
+              <input type="number" value={tag.assembly_length ?? 0} onChange={e => updateTag(i, 'assembly_length', parseInt(e.target.value) || 0)} style={{ ...inputStyle, fontSize: 12, fontFamily: "var(--font-mono)" }} />
+              <button type="button" onClick={() => removeTag(i)} style={{ background: 'none', border: 'none', color: 'var(--crit)', cursor: 'pointer', fontSize: 14 }}>&times;</button>
+            </div>
+          ))}
         </div>
-        {tags.length === 0 && <div style={{ color: 'var(--muted)', fontSize: 12, padding: 8 }}>No tags configured. You can also add tags after creation.</div>}
-        {tags.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 100px 64px 64px 28px', gap: 4, marginBottom: 2, fontSize: 10, color: 'var(--muted)', paddingLeft: 2 }}>
-            <span>name</span><span>type</span><span>off</span><span>len</span><span></span>
-          </div>
-        )}
-        {tags.map((tag, i) => (
-          <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 100px 64px 64px 28px', gap: 4, marginBottom: 4, alignItems: 'end' }}>
-            <input value={tag.name} onChange={e => updateTag(i, 'name', e.target.value)} placeholder="Program:Tag.Name" style={{ ...inputStyle, fontSize: 12, fontFamily: "var(--font-mono)" }} />
-            <select value={tag.data_type} onChange={e => updateTag(i, 'data_type', e.target.value)} style={{ ...inputStyle, fontSize: 11 }}>
-              {ENIP_DATA_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
-            <input type="number" value={tag.assembly_offset} onChange={e => updateTag(i, 'assembly_offset', parseInt(e.target.value) || 0)} style={{ ...inputStyle, fontSize: 12, fontFamily: "var(--font-mono)" }} />
-            <input type="number" value={tag.assembly_length} onChange={e => updateTag(i, 'assembly_length', parseInt(e.target.value) || 0)} style={{ ...inputStyle, fontSize: 12, fontFamily: "var(--font-mono)" }} />
-            <button type="button" onClick={() => removeTag(i)} style={{ background: 'none', border: 'none', color: 'var(--crit)', cursor: 'pointer', fontSize: 14 }}>&times;</button>
-          </div>
-        ))}
-      </div>
-
-      {/* Hidden fields for tag data */}
-      {tags.map((t, i) => (
-        <span key={`hidden-${i}`} style={{ display: 'none' }}>
-          <input type="hidden" name={`tag_${i}_name`} value={t.name} />
-          <input type="hidden" name={`tag_${i}_data_type`} value={t.data_type} />
-          <input type="hidden" name={`tag_${i}_assembly_offset`} value={t.assembly_offset} />
-          <input type="hidden" name={`tag_${i}_assembly_length`} value={t.assembly_length} />
-        </span>
-      ))}
+      )}
 
       <div style={{ display: 'flex', gap: 8 }}>
         <button type="submit" style={{ padding: '6px 16px', borderRadius: 6, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 13 }} disabled={isPending}>
@@ -511,23 +509,4 @@ function EnipDeviceForm({
       </div>
     </form>
   )
-}
-
-// ── Helper to collect tags from FormData ──
-
-function collectFormTags(fd: FormData): Partial<EnipTag>[] {
-  const tags: Partial<EnipTag>[] = []
-  let i = 0
-  while (true) {
-    const name = fd.get(`tag_${i}_name`) as string | null
-    if (!name) break
-    tags.push({
-      name,
-      data_type: (fd.get(`tag_${i}_data_type`) as string) || 'dint32',
-      assembly_offset: Number(fd.get(`tag_${i}_assembly_offset`)) || 0,
-      assembly_length: Number(fd.get(`tag_${i}_assembly_length`)) || 0,
-    })
-    i++
-  }
-  return tags
 }

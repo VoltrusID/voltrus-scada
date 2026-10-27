@@ -87,7 +87,7 @@ pub struct CommandAuditEntry {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default, utoipa::ToSchema)]
 pub struct WritePolicy {
     pub writable: bool,
     pub write_min: Option<f64>,

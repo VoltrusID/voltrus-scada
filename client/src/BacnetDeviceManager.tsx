@@ -348,7 +348,7 @@ function ExpandedBacnetObjects({ deviceId }: { deviceId: number }) {
   const [newProperty, setNewProperty] = useState('presentValue')
   const [newCovIncrement, setNewCovIncrement] = useState(0)
 
-  const objects: BacnetObject[] = objectData?.objects ?? []
+  const objects: BacnetObject[] = objectData ?? []
 
   const handleAdd = () => {
     if (!newName.trim()) return

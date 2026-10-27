@@ -12,6 +12,7 @@ import {
   useStopOpcUaDevice,
 } from './queries/opcua'
 import { inputStyle, btnStyle } from './styles'
+import { OPCUA_MODES, OPCUA_POLICIES } from './protocolPayloads'
 import type { OpcUaDevice, OpcUaNode, BrowseResult } from './queries/opcua'
 
 export function OpcUaDeviceManager({ onClose, embedded }: { onClose: () => void; embedded?: boolean }) {
@@ -53,11 +54,11 @@ export function OpcUaDeviceManager({ onClose, embedded }: { onClose: () => void;
       {
         name: fd.get('name') as string,
         url: fd.get('url') as string,
-        security_policy: (fd.get('security_policy') as OpcUaDevice['security_policy']) || 'none',
-        security_mode: (fd.get('security_mode') as OpcUaDevice['security_mode']) || 'none',
-        username: (fd.get('username') as string) || null,
-        password: (fd.get('password') as string) || null,
-        interval_ms: Number(fd.get('interval_ms')) || 1000,
+        security_policy: fd.get('security_policy') as string,
+        security_mode: fd.get('security_mode') as string,
+        username: (fd.get('username') as string) ?? '',
+        password: (fd.get('password') as string) ?? '',
+        interval_ms: Number(fd.get('interval_ms')),
       },
       { onSuccess: () => setShowForm(false) },
     )
@@ -147,16 +148,13 @@ export function OpcUaDeviceManager({ onClose, embedded }: { onClose: () => void;
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>Security Policy</label>
             <select name="security_policy" style={formSelectStyle}>
-              <option value="none">None</option>
-              <option value="basic256sha256">Basic256Sha256</option>
+              {OPCUA_POLICIES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             <label style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase' }}>Security Mode</label>
             <select name="security_mode" style={formSelectStyle}>
-              <option value="none">None</option>
-              <option value="sign">Sign</option>
-              <option value="signandencrypt">Sign &amp; Encrypt</option>
+              {OPCUA_MODES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
