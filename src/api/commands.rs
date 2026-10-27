@@ -126,7 +126,7 @@ pub async fn write_tag(
     }
 
     // 8. Get device info
-    let (device_id, protocol) = state
+    let target = state
         .storage
         .get_data_source_device_id(tag_id)
         .await?
@@ -143,8 +143,8 @@ pub async fn write_tag(
     let cmd = Command {
         id: command_id.clone(),
         data_source_id: tag_id,
-        device_id,
-        protocol,
+        device_id: target.device_id,
+        protocol: target.protocol,
         value: value_f64.to_string(),
         status: CommandStatus::Pending.as_str().to_string(),
         policy: body.policy.clone(),
@@ -157,6 +157,7 @@ pub async fn write_tag(
         acked_at: None,
         resolved_at: None,
         created_by: user.username.clone(),
+        device_ref: target.device_ref,
         readback_status: None,
         readback_value: None,
         readback_attempts: 0,

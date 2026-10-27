@@ -192,12 +192,14 @@ async fn check_password_and_login(
         );
     }
 
-    // Successful login — reset failed attempts and revoke old refresh tokens
+    // Successful login — reset failed attempts. Other sessions of the same
+    // user (another browser or device) keep their refresh tokens; only the
+    // refresh token this client presents is replaced by the new one.
     let _ = state.storage.reset_failed_attempts(&body.username).await;
-    let _ = state
-        .storage
-        .revoke_all_user_refresh_tokens(&body.username)
-        .await;
+    if let Some(old) = jar.get("voltrus_refresh") {
+        let old_hash = hash_refresh_token(old.value());
+        let _ = state.storage.revoke_refresh_token(&old_hash).await;
+    }
     state.login_rate_limiter.cleanup();
 
     let secret = &state.auth_secret;

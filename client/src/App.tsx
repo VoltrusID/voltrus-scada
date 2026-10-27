@@ -178,7 +178,8 @@ export function AppInner() {
   const removeSensorFromScreenMut = useRemoveSensorFromScreen()
 
   // ── Dashboard data hook (now store-backed) ───────────────────────
-  const { systemInfo } = useDashboardData(authed, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo)
+  const detailSensor = selectedSensor != null ? sensors.find(x => x.id === selectedSensor) : undefined
+  const { systemInfo } = useDashboardData(authed, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo, detailSensor)
   const storeSystemInfo = useDashboardSystemInfo()
   const storeActions = useDashboardStoreActions()
   const effectiveSystemInfo = systemInfo ?? storeSystemInfo

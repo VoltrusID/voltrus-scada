@@ -586,7 +586,8 @@ pub enum Aggregation {
     #[default]
     Sampling,
     Average,
-    /// The web's min/max; the server answers it with the average.
+    /// The web's min/max: the server adds min and max arrays to the mean;
+    /// the console draws the mean.
     MinMax,
 }
 
@@ -629,7 +630,16 @@ impl HistoryQuery {
     }
 }
 
-/// The detail chart's history answer: every tag's series by key.
+/// `GET /api/v1/history` for `query`, limited to the tags with these keys.
+pub fn history_path(query: &HistoryQuery, keys: &[String]) -> String {
+    let mut path = query.path();
+    if !keys.is_empty() {
+        let _ = write!(path, "&sensor={}", query_value(&keys.join(",")));
+    }
+    path
+}
+
+/// The detail chart's history answer: the series of the tags asked for, by key.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct HistoryAnswer {
@@ -1115,6 +1125,16 @@ mod tests {
         assert_eq!(
             annotations_path("PLC 1/temp"),
             "/api/v1/annotations?tag_id=PLC%201%2Ftemp"
+        );
+    }
+
+    #[test]
+    fn history_asks_only_for_the_charted_tags() {
+        let query = HistoryQuery::default();
+        assert_eq!(history_path(&query, &[]), query.path());
+        assert_eq!(
+            history_path(&query, &["inv.p".to_owned(), "PLC 1/t".to_owned()]),
+            "/api/v1/history?range=1h&agg=sampling&sensor=inv.p%2CPLC%201%2Ft"
         );
     }
 

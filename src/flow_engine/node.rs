@@ -302,7 +302,7 @@ impl NodeConfig {
                 // 2. Look up the target device and enqueue the command.
                 let ds_id = *data_source_id;
                 match storage.get_data_source_device_id(ds_id).await {
-                    Ok(Some((device_id, protocol))) => {
+                    Ok(Some(target)) => {
                         let command_id: String = rand::rng()
                             .sample_iter(&rand::distr::Alphanumeric)
                             .take(21)
@@ -313,8 +313,8 @@ impl NodeConfig {
                         let cmd = Command {
                             id: format!("cmd_{}", command_id),
                             data_source_id: ds_id,
-                            device_id,
-                            protocol,
+                            device_id: target.device_id,
+                            protocol: target.protocol,
                             value: value_str,
                             status: "pending".to_string(),
                             policy: policy.clone(),
@@ -327,6 +327,7 @@ impl NodeConfig {
                             acked_at: None,
                             resolved_at: None,
                             created_by: reason.clone(),
+                            device_ref: target.device_ref,
                             readback_status: None,
                             readback_value: None,
                             readback_attempts: 0,

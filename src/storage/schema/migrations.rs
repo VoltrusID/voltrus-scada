@@ -234,6 +234,19 @@ pub(super) fn run_migrations(conn: &Connection) {
         CREATE INDEX IF NOT EXISTS idx_dnp3_points_device ON dnp3_points(device_id);",
     );
 
+    // Migration: carry the text device id of a command. Modbus ids are text,
+    // `device_id` holds only the numeric id of the other protocols.
+    if conn
+        .execute_batch("ALTER TABLE commands ADD COLUMN device_ref TEXT NOT NULL DEFAULT ''")
+        .is_ok()
+    {
+        let _ = conn.execute_batch(
+            "UPDATE commands SET device_ref = COALESCE(
+                 (SELECT ds.device_id FROM data_sources ds WHERE ds.id = commands.data_source_id),
+                 CAST(device_id AS TEXT))",
+        );
+    }
+
     // Migration: v0.31.0 -- BACnet/IP device and object tables
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS bacnet_devices (

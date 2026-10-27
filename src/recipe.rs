@@ -57,8 +57,8 @@ pub async fn load_recipe_to_plc(recipe: &Recipe, storage: &Storage) -> Result<Ve
             }
         };
 
-        // Get device info (device_id integer, protocol) for the command
-        let (device_id_int, protocol) = match storage.get_data_source_device_id(ds.id).await {
+        // Get the device the command is for (numeric id, text id, protocol)
+        let target = match storage.get_data_source_device_id(ds.id).await {
             Ok(Some(info)) => info,
             Ok(None) => {
                 tracing::warn!(
@@ -82,8 +82,8 @@ pub async fn load_recipe_to_plc(recipe: &Recipe, storage: &Storage) -> Result<Ve
         let cmd = Command {
             id: cmd_id.clone(),
             data_source_id: ds.id,
-            device_id: device_id_int,
-            protocol,
+            device_id: target.device_id,
+            protocol: target.protocol,
             value: value.to_string(),
             status: "pending".to_string(),
             policy: "immediate".to_string(),
@@ -96,6 +96,7 @@ pub async fn load_recipe_to_plc(recipe: &Recipe, storage: &Storage) -> Result<Ve
             acked_at: None,
             resolved_at: None,
             created_by: format!("recipe:{}", recipe.name),
+            device_ref: target.device_ref,
             readback_status: None,
             readback_value: None,
             readback_attempts: 0,

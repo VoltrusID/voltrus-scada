@@ -1058,17 +1058,19 @@ fn report_view(
         Some(Ok(report)) => report,
     };
     let text = |text: String| div().child(text).into_any_element();
-    // The server reads shift hours on its UTC clock; show them on the
-    // operator's too.
-    let hours = ops::parse_date(&report.shift_date)
-        .and_then(|date| ops::shift_window(date, &report.shift_period, time::UtcOffset::UTC));
-    let span = hours.map_or_else(String::new, |(start, end)| {
-        format!(
-            "{} – {} (server hours, UTC)",
-            ops::format_local(start, offset),
-            ops::format_local(end, offset)
-        )
-    });
+    // The server reads shift hours on its UTC clock and sends the window;
+    // show it on the operator's too.
+    let span =
+        report
+            .period_start
+            .zip(report.period_end)
+            .map_or_else(String::new, |(start, end)| {
+                format!(
+                    "{} – {} (server hours, UTC)",
+                    ops::format_local(start, offset),
+                    ops::format_local(end, offset)
+                )
+            });
 
     let alarms = report
         .alarms

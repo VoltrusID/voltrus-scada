@@ -17,31 +17,39 @@ pub struct ListShiftHandoversQuery {
 
 // ── Helpers ──
 
-/// Determine the current shift period and date based on the local hour.
-/// Morning: 06:00-14:00, Afternoon: 14:00-22:00, Night: 22:00-06:00
-fn current_shift_period() -> (String, String) {
-    use time::OffsetDateTime;
-    let now = OffsetDateTime::now_utc();
+/// The shift in progress at `now` (UTC) as (shift date, period).
+/// Morning: 06:00-14:00, Afternoon: 14:00-22:00, Night: 22:00-06:00 the next
+/// day. The night shift belongs to the date it started on, so between 00:00
+/// and 06:00 it is yesterday's night shift that is in progress.
+fn shift_at(now: time::OffsetDateTime) -> (String, String) {
     let hour = now.hour();
-    let date = format!(
-        "{:04}-{:02}-{:02}",
-        now.year(),
-        now.month() as u8,
-        now.day()
-    );
-
-    let period = if (6..14).contains(&hour) {
-        "morning"
-    } else if (14..22).contains(&hour) {
-        "afternoon"
+    let today = now.date();
+    let (date, period) = if hour < 6 {
+        (today.previous_day().unwrap_or(today), "night")
+    } else if hour < 14 {
+        (today, "morning")
+    } else if hour < 22 {
+        (today, "afternoon")
     } else {
-        "night"
+        (today, "night")
     };
-
-    (date, period.to_string())
+    (
+        format!(
+            "{:04}-{:02}-{:02}",
+            date.year(),
+            date.month() as u8,
+            date.day()
+        ),
+        period.to_string(),
+    )
 }
 
-/// Convert a shift period name to approximate unix timestamp range for today.
+/// The current shift period and date on the server's UTC clock.
+fn current_shift_period() -> (String, String) {
+    shift_at(time::OffsetDateTime::now_utc())
+}
+
+/// Convert a shift date and period to its [start, end) range in unix seconds (UTC).
 fn shift_time_range(shift_date: &str, shift_period: &str) -> (Option<i64>, Option<i64>) {
     use time::OffsetDateTime;
 
@@ -227,18 +235,11 @@ pub async fn auto_shift_report(
     let (shift_date, shift_period) = current_shift_period();
     let (from_ts, to_ts) = shift_time_range(&shift_date, &shift_period);
 
-    // Fetch alarms (no time filter available on storage method, so fetch recent and filter)
-    let all_alarms = state.storage.list_alarms(None, 500).await?;
-    let alarms: Vec<&Alarm> = all_alarms
-        .iter()
-        .filter(|a| {
-            if let (Some(from), Some(to)) = (from_ts, to_ts) {
-                a.triggered_at >= from && a.triggered_at < to
-            } else {
-                true // no range filter, return all
-            }
-        })
-        .collect();
+    // Alarms raised during the shift
+    let alarms = match (from_ts, to_ts) {
+        (Some(from), Some(to)) => state.storage.list_alarms_between(from, to).await?,
+        _ => Vec::new(),
+    };
 
     // Fetch annotations for this shift period
     let annotations = state.storage.list_annotations(None, from_ts, to_ts).await?;
@@ -258,6 +259,8 @@ pub async fn auto_shift_report(
     Ok(Json(json!({
         "shift_date": shift_date,
         "shift_period": shift_period,
+        "period_start": from_ts,
+        "period_end": to_ts,
         "alarms": alarms,
         "alarm_count": alarms.len(),
         "annotations": annotations,
@@ -287,6 +290,67 @@ mod tests {
             "Unexpected period: {}",
             period
         );
+    }
+
+    fn at(date: &str, hour: u8, min: u8) -> time::OffsetDateTime {
+        let parts: Vec<u32> = date.split('-').map(|p| p.parse().unwrap()).collect();
+        time::Date::from_calendar_date(
+            parts[0] as i32,
+            time::Month::try_from(parts[1] as u8).unwrap(),
+            parts[2] as u8,
+        )
+        .unwrap()
+        .with_hms(hour, min, 0)
+        .unwrap()
+        .assume_utc()
+    }
+
+    /// SCADA-16 S4: between 00:00 and 06:00 the report named today's night
+    /// shift (22:00 tonight to 06:00 tomorrow), a window in the future.
+    #[test]
+    fn test_shift_at_after_midnight_is_yesterdays_night() {
+        assert_eq!(
+            shift_at(at("2026-05-04", 0, 0)),
+            ("2026-05-03".to_string(), "night".to_string())
+        );
+        assert_eq!(
+            shift_at(at("2026-05-04", 5, 59)),
+            ("2026-05-03".to_string(), "night".to_string())
+        );
+        assert_eq!(
+            shift_at(at("2026-05-04", 6, 0)),
+            ("2026-05-04".to_string(), "morning".to_string())
+        );
+        assert_eq!(
+            shift_at(at("2026-05-04", 14, 0)),
+            ("2026-05-04".to_string(), "afternoon".to_string())
+        );
+        assert_eq!(
+            shift_at(at("2026-05-04", 22, 0)),
+            ("2026-05-04".to_string(), "night".to_string())
+        );
+        // A month boundary: 2026-06-01 03:00 belongs to May 31st's night.
+        assert_eq!(
+            shift_at(at("2026-06-01", 3, 0)),
+            ("2026-05-31".to_string(), "night".to_string())
+        );
+    }
+
+    /// The window of the shift in progress always contains the moment itself.
+    #[test]
+    fn test_shift_window_contains_now_at_every_hour() {
+        for hour in 0..24 {
+            for min in [0, 30, 59] {
+                let now = at("2026-05-04", hour, min);
+                let (date, period) = shift_at(now);
+                let (from, to) = shift_time_range(&date, &period);
+                let ts = now.unix_timestamp();
+                assert!(
+                    from.unwrap() <= ts && ts < to.unwrap(),
+                    "{hour}:{min:02} in {date} {period}"
+                );
+            }
+        }
     }
 
     #[test]

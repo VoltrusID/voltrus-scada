@@ -1,7 +1,7 @@
 use super::Storage;
 use anyhow::{Context, Result};
 
-use crate::models::{DataSource, WritePolicy, WritePolicyUpdate};
+use crate::models::{CommandTarget, DataSource, WritePolicy, WritePolicyUpdate};
 
 impl Storage {
     pub async fn get_write_policy(&self, data_source_id: i64) -> Result<Option<WritePolicy>> {
@@ -124,49 +124,39 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// The device a data source writes to. `device_id` is the numeric id of an
+    /// S7/OPC UA/EtherNet-IP/DNP3/BACnet device (`0` for a Modbus device whose
+    /// id is text); `device_ref` always carries the id as the data source
+    /// names it, so a command can say which Modbus device it is for even when
+    /// the device is only defined in the configuration file.
     pub async fn get_data_source_device_id(
         &self,
         data_source_id: i64,
-    ) -> Result<Option<(i64, String)>> {
+    ) -> Result<Option<CommandTarget>> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
-            // data_sources has device_id TEXT and source_type TEXT.
-            // For modbus, device_id is a string id. For opcua/s7/enip, it's a stringified integer.
-            // We parse device_id as i64 and return source_type as protocol.
             let result = conn.query_row(
                 "SELECT device_id, source_type FROM data_sources WHERE id = ?1",
                 rusqlite::params![data_source_id],
-                |row| {
-                    let device_id_str: String = row.get(0)?;
-                    let protocol: String = row.get(1)?;
-                    Ok((device_id_str, protocol))
-                },
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             );
             match result {
-                Ok((device_id_str, protocol)) => {
-                    match device_id_str.parse::<i64>() {
-                        Ok(id) => Ok(Some((id, protocol))),
-                        Err(_) => {
-                            // device_id is non-numeric (e.g., modbus text id).
-                            // Try to look up integer id from modbus_devices table.
-                            let modbus_id: i64 = conn
-                                .query_row(
-                                    "SELECT COUNT(*) FROM modbus_devices WHERE id = ?1",
-                                    rusqlite::params![device_id_str],
-                                    |row| row.get::<_, i64>(0),
-                                )
-                                .unwrap_or(0);
-                            if modbus_id > 0 {
-                                // Modbus device exists but has text id; return 0 as device_id marker
-                                // The caller will need to handle modbus text IDs separately
-                                Ok(Some((0i64, protocol)))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                    }
-                }
+                Ok((device_ref, protocol)) => Ok(match device_ref.parse::<i64>() {
+                    Ok(device_id) => Some(CommandTarget {
+                        device_id,
+                        device_ref,
+                        protocol,
+                    }),
+                    // A text id is a Modbus id; every other protocol's command
+                    // needs the numeric id to find its device.
+                    Err(_) if protocol == "modbus" => Some(CommandTarget {
+                        device_id: 0,
+                        device_ref,
+                        protocol,
+                    }),
+                    Err(_) => None,
+                }),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
                 Err(e) => Err(e).context("Get data source device id failed"),
             }

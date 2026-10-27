@@ -32,18 +32,14 @@ async fn refresh_status(base: &str, refresh: &str) -> reqwest::StatusCode {
         .status()
 }
 
-/// Sign-out revokes the refresh token. A fresh session's token refreshes
-/// (the control); a fresh session that signs out cannot. Each sign-in
-/// revokes the user's older refresh tokens, so the two run one after the
-/// other and nothing signs in between the sign-out and its check.
+/// Sign-out revokes the refresh token. A session's token refreshes (the
+/// control) and one that signed out cannot. The control signed in first and
+/// is checked last: the same user signing in and out afterwards leaves it
+/// alone.
 async fn logout_revokes_the_refresh_token(url: &str, user: &str, pass: &str) {
     let mut kept = VoltrusApi::new(url);
     kept.login(user, pass).await.expect("sign in");
     let kept_refresh = kept.refresh.clone().expect("a refresh cookie");
-    assert!(
-        refresh_status(url, &kept_refresh).await.is_success(),
-        "a live session's refresh token works"
-    );
     let mut left = VoltrusApi::new(url);
     left.login(user, pass).await.expect("sign in");
     let left_refresh = left.refresh.clone().expect("a refresh cookie");
@@ -52,6 +48,10 @@ async fn logout_revokes_the_refresh_token(url: &str, user: &str, pass: &str) {
         refresh_status(url, &left_refresh).await,
         reqwest::StatusCode::UNAUTHORIZED,
         "a signed-out session's refresh token is revoked"
+    );
+    assert!(
+        refresh_status(url, &kept_refresh).await.is_success(),
+        "another session's refresh token survives a sign-in and a sign-out"
     );
     println!("sign-out revoked the refresh token");
 }
@@ -1075,6 +1075,11 @@ async fn operations_pages(url: &str, user: &str, pass: &str) {
         .expect("the automatic shift report");
     assert!(ops::SHIFT_PERIODS.contains(&report.shift_period.as_str()));
     assert!(ops::parse_date(&report.shift_date).is_some());
+    let (start, end) = report
+        .period_start
+        .zip(report.period_end)
+        .expect("the report names its window");
+    assert_eq!(end - start, 8 * 3600, "a shift is eight hours");
     println!(
         "shift report {} {}: {} alarms, {} security events",
         report.shift_date,

@@ -12,13 +12,13 @@ impl Storage {
             conn.execute(
                 "INSERT INTO commands (id, data_source_id, device_id, protocol, value, status, policy,
                      scheduled_at, retry_count, max_retries, error_message, created_at, sent_at, acked_at,
-                     resolved_at, created_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                     resolved_at, created_by, device_ref)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 rusqlite::params![
                     cmd.id, cmd.data_source_id, cmd.device_id, cmd.protocol, cmd.value,
                     cmd.status, cmd.policy, cmd.scheduled_at, cmd.retry_count, cmd.max_retries,
                     cmd.error_message, cmd.created_at, cmd.sent_at, cmd.acked_at, cmd.resolved_at,
-                    cmd.created_by,
+                    cmd.created_by, cmd.device_ref,
                 ],
             )
             .context("Insert command failed")?;
@@ -119,7 +119,7 @@ impl Storage {
             let result = conn.query_row(
                 "SELECT id, data_source_id, device_id, protocol, value, status, policy,
                         scheduled_at, retry_count, max_retries, error_message, created_at,
-                        sent_at, acked_at, resolved_at, created_by
+                        sent_at, acked_at, resolved_at, created_by, device_ref
                  FROM commands WHERE id = ?1",
                 rusqlite::params![command_id],
                 |row| {
@@ -140,6 +140,7 @@ impl Storage {
                         acked_at: row.get(13)?,
                         resolved_at: row.get(14)?,
                         created_by: row.get(15)?,
+                        device_ref: row.get(16)?,
                         readback_status: None,
                         readback_value: None,
                         readback_attempts: 0,
@@ -172,7 +173,7 @@ impl Storage {
             let mut sql = String::from(
                 "SELECT id, data_source_id, device_id, protocol, value, status, policy,
                         scheduled_at, retry_count, max_retries, error_message, created_at,
-                        sent_at, acked_at, resolved_at, created_by
+                        sent_at, acked_at, resolved_at, created_by, device_ref
                  FROM commands WHERE 1=1",
             );
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -181,15 +182,16 @@ impl Storage {
                 sql.push_str(" AND status = ?");
                 params.push(Box::new(s.clone()));
             }
-            if let Some(ref d) = device {
-                // device_id is INTEGER in commands; the query param is a device identifier string
+            if let Some(d) = &device {
+                // `device` is the device identifier as text: the numeric
+                // id of an S7/OPC UA/... device, or a Modbus device's text id.
                 if let Ok(id) = d.parse::<i64>() {
-                    sql.push_str(" AND device_id = ?");
+                    sql.push_str(" AND (device_id = ? OR device_ref = ?)");
                     params.push(Box::new(id));
                 } else {
-                    // Non-numeric device id; no match possible
-                    sql.push_str(" AND 0=1");
+                    sql.push_str(" AND device_ref = ?");
                 }
+                params.push(Box::new(d.clone()));
             }
             if let Some(f) = from {
                 sql.push_str(" AND created_at >= ?");
@@ -231,6 +233,7 @@ impl Storage {
                         acked_at: row.get(13)?,
                         resolved_at: row.get(14)?,
                         created_by: row.get(15)?,
+                        device_ref: row.get(16)?,
                         readback_status: None,
                         readback_value: None,
                         readback_attempts: 0,
@@ -253,7 +256,7 @@ impl Storage {
                 .prepare(
                     "SELECT id, data_source_id, device_id, protocol, value, status, policy,
                         scheduled_at, retry_count, max_retries, error_message, created_at,
-                        sent_at, acked_at, resolved_at, created_by
+                        sent_at, acked_at, resolved_at, created_by, device_ref
                  FROM commands
                  WHERE status IN ('queued', 'pending')
                  ORDER BY created_at ASC",
@@ -278,6 +281,7 @@ impl Storage {
                         acked_at: row.get(13)?,
                         resolved_at: row.get(14)?,
                         created_by: row.get(15)?,
+                        device_ref: row.get(16)?,
                         readback_status: None,
                         readback_value: None,
                         readback_attempts: 0,

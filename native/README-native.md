@@ -263,13 +263,13 @@ renews the 15-minute session token with the session's refresh token
 (`POST /auth/refresh`) every 10 minutes and before each reconnect (30
 seconds after a renewal the server did not answer), so REST calls keep
 working. It does not keep the password (only while the server wants it
-changed), and a renewal leaves the user's other sessions alone, where a
-new sign-in would revoke their refresh tokens. Only the operator's own
+changed), and a renewal or a sign-in elsewhere leaves the user's other
+sessions alone (a sign-in replaces only the refresh token it presents). Only the operator's own
 sign-in waits for the server; every other REST call (tags, alarms,
 history, alarm actions, password changes, renewals) runs on its own and
 never holds up the tag stream. Answers that arrive after the session ended
 are dropped. When the server refuses a renewal (the refresh token revoked
-or expired, for instance by the same user signing in elsewhere) the session
+or expired, for instance after a password or role change, or a deletion) the session
 ends with "Not authorised". Signing out, quitting and starting a stress
 test all sign the session out of the server, which revokes its refresh
 token. When a session ends (sign-out, a refused renewal, or before the next
@@ -383,8 +383,8 @@ cargo test -p voltrus-scada-native --test e2e_live -- --nocapture --test-threads
 ```
 
 Set `VOLTRUS_E2E_EXPECT_UPDATES=1` to fail when no live values arrive. Run
-the end-to-end tests one at a time: each signs in, and a sign-in revokes the
-user's older refresh tokens, which the sign-out check relies on. The Tags
+the end-to-end tests one at a time: they share the server and its admin
+account, and the first changes the admin password and back. The Tags
 test moves a tag in the tree and back, saves the naming convention it
 found, sets a write policy and writes through the command queue (refused
 without the reason, then accepted), adds and deletes a note, and reads a
@@ -440,10 +440,6 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   the alarm list (`triggered_at`), in the web client and in the console
   alike. The analytics' `trigger_count` is a 24-hour figure per source and
   is not a 5-minute count.
-- A sign-in revokes every refresh token of the user, so the same user
-  signing in elsewhere (web or another console) ends this console's session
-  at its next renewal; renewing with the refresh token never does that to
-  the others.
 - The login token comes only in the `Set-Cookie` header, with the JWT's
   base64 padding percent-encoded (`%3D`). The console decodes it
   (`api.rs:percent_decode`); the WebSocket refuses the encoded form.
@@ -491,21 +487,24 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   against what the server has, not only against a policy it saved itself.
   When the read fails the editor says so and saving sends only what changed
   (the choices made and the limits typed), leaving the rest as stored.
-- `GET /api/v1/history` answers every tag (only a `screen` filter), so the
-  detail chart asks once per span, setting and set of charted tags, and keeps
-  only the open tag's and its overlays' samples. `agg=minmax` answers the
-  bucket average (no low/high band), and for Modbus tags the aggregation
-  does not change the answer.
+- `GET /api/v1/history` takes a `sensor` filter (a tag key or a
+  comma-separated list; `device` too), and the detail chart asks only for
+  the open tag and its overlays. `agg=avg` and `agg=minmax` bucket the
+  series for Modbus tags as for the others, on multiples of the bucket
+  length; `agg=minmax` adds `min` and `max` arrays next to `values`, which
+  the web client draws as a band and the console, drawing the mean line
+  only, ignores.
 - A REST write records a command for the device (`pending`); the command
-  queue sends it. A Modbus device defined in the configuration file gets
-  device id 0 in the command.
+  queue sends it. The command carries the device's id as `device_ref`
+  (a Modbus device's text id, also when the device exists only in the
+  configuration file) next to the numeric `device_id`, which is 0 for a
+  Modbus device; the console shows `device_ref`.
 - Shift handover routes (all operator-only) list entries with the author's
   user id only; the console shows `user #id`. The automatic report places
-  the current shift on the server's UTC clock and does not send its
-  `period_start`/`period_end` (the web client reads them anyway); the
-  console derives the window from the date and shift. Between midnight and
-  06:00 UTC it reports today's night shift (22:00 tonight to 06:00
-  tomorrow), not the one in progress.
+  the shift in progress on the server's UTC clock (a night shift belongs to
+  the date it started on, so between midnight and 06:00 UTC it is
+  yesterday's) and sends its window as `period_start`/`period_end`
+  (Unix seconds); the console shows that window and the alarms raised in it.
 - The audit log's `created_at`, `from` and `to` are Unix seconds (the web
   client sends and reads seconds too). An unknown command
   answers 500 "Command not found", not 404; cancelling a command already
