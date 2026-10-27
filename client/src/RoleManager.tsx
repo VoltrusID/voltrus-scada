@@ -2,17 +2,7 @@ import { useState, useEffect } from 'react'
 import { useRoles, useCreateRole, useUpdateRole, useDeleteRole } from './queries'
 import type { Role } from './queries'
 import { btnStyle, inputStyle } from './styles'
-
-const AVAILABLE_PERMISSIONS = [
-  'screens:read', 'screens:write',
-  'devices:read', 'devices:write',
-  'alarms:read', 'alarms:ack',
-  'flows:read', 'flows:execute',
-  'reports:read', 'reports:generate',
-  'users:read', 'users:write',
-  'api_keys:read', 'api_keys:write',
-  'settings:read',
-] as const
+import { ALL_PERMISSIONS } from './permissions'
 
 function parsePermissions(raw: string): string[] {
   try {
@@ -202,7 +192,7 @@ export function RoleManager({ onClose, embedded }: { onClose: () => void; embedd
               Available Permissions
             </h4>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, paddingLeft: 12 }}>
-              {AVAILABLE_PERMISSIONS.map(p => (
+              {ALL_PERMISSIONS.map(p => (
                 <span
                   key={p}
                   style={{

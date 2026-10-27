@@ -16,15 +16,19 @@ export function useActiveAlarmCount(enabled: boolean) {
   })
 }
 
+/** Rows requested per alarm list. */
+export const ALARM_LIST_LIMIT = 50
+
 export function useAlarms(
   status: string = 'all',
   enabled: boolean = true,
   filters?: { priority?: string; state?: string; shelved?: boolean },
+  refetchInterval?: number,
 ) {
   return useQuery({
     queryKey: queryKeys.alarms(status),
     queryFn: () => {
-      const params = new URLSearchParams({ status, limit: '50' })
+      const params = new URLSearchParams({ status, limit: String(ALARM_LIST_LIMIT) })
       if (filters?.priority) params.set('priority', filters.priority)
       if (filters?.state) params.set('state', filters.state)
       if (filters?.shelved !== undefined) params.set('shelved', String(filters.shelved))
@@ -32,6 +36,7 @@ export function useAlarms(
     },
     enabled,
     staleTime: 5_000,
+    refetchInterval,
   })
 }
 

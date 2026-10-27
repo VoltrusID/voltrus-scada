@@ -1,27 +1,31 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from './keys'
+import { createdId, s7DeviceBody, s7TagBody } from '../protocolPayloads'
+import type { S7DeviceForm, S7TagForm } from '../protocolPayloads'
 import { fetchJson, fetchOk } from './fetch'
 
+/** A row of `GET /api/v1/s7/devices`; `url` is `host:port`. */
 export interface S7Device {
-  id: string
-  name: string
-  ip: string
-  port: number
-  rack: number
-  slot: number
-  enabled: boolean
-  tag_count?: number
-  created_at: number
-  updated_at: number
-}
-
-export interface S7Tag {
   id: number
   name: string
+  url: string
+  rack: number
+  slot: number
+  interval_ms: number
+  enabled: boolean
+  created_at: number
+  tag_count: number
+}
+
+/** A row of `GET /api/v1/s7/devices/{id}/tags`; `tag_address` is e.g. `DB1.DBD0`. */
+export interface S7Tag {
+  id: number
+  device_id: number
+  tag_address: string
+  name: string
+  display_name: string
   data_type: string
-  db_number: number
-  offset: number
-  area: string
+  created_at: number
 }
 
 export function useS7Devices(enabled = true) {
@@ -32,7 +36,7 @@ export function useS7Devices(enabled = true) {
   })
 }
 
-export function useS7Device(id: string, enabled = true) {
+export function useS7Device(id: number, enabled = true) {
   return useQuery({
     queryKey: queryKeys.s7Device(id),
     queryFn: () => fetchJson<S7Tag[]>(`/api/v1/s7/devices/${id}/tags`),
@@ -40,18 +44,27 @@ export function useS7Device(id: string, enabled = true) {
   })
 }
 
+/** Creates the device, then its tags (the create route takes no tags). */
 export function useCreateS7Device() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (device: Partial<S7Device> & { tags?: Partial<S7Tag>[] }) => {
+    mutationFn: async ({ device, tags = [] }: { device: S7DeviceForm; tags?: S7TagForm[] }) => {
       const res = await fetchOk('/api/v1/s7/devices', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(device),
+        body: JSON.stringify(s7DeviceBody(device)),
       })
-      return res.json()
+      const id = createdId(await res.json())
+      for (const tag of tags) {
+        await fetchOk(`/api/v1/s7/devices/${id}/tags`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(s7TagBody(tag)),
+        })
+      }
+      return id
     },
-    onSuccess: () => {
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: queryKeys.s7Devices })
     },
   })
@@ -60,7 +73,7 @@ export function useCreateS7Device() {
 export function useUpdateS7Device() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ id, ...fields }: { id: string } & Record<string, any>) => {
+    mutationFn: async ({ id, ...fields }: { id: number } & Record<string, any>) => {
       await fetchOk(`/api/v1/s7/devices/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -76,7 +89,7 @@ export function useUpdateS7Device() {
 export function useDeleteS7Device() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async (id: number) => {
       await fetchOk(`/api/v1/s7/devices/${id}`, { method: 'DELETE' })
     },
     onSuccess: () => {
@@ -87,7 +100,7 @@ export function useDeleteS7Device() {
 
 export function useBrowseS7Device() {
   return useMutation({
-    mutationFn: async ({ id, params }: { id: string; params?: Record<string, any> }) => {
+    mutationFn: async ({ id, params }: { id: number; params?: Record<string, any> }) => {
       const res = await fetchOk(`/api/v1/s7/devices/${id}/browse`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -101,7 +114,7 @@ export function useBrowseS7Device() {
 export function useStartS7Device() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async (id: number) => {
       await fetchOk(`/api/v1/s7/devices/${id}/start`, { method: 'POST' })
     },
     onSuccess: () => {
@@ -113,7 +126,7 @@ export function useStartS7Device() {
 export function useStopS7Device() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (id: string) => {
+    mutationFn: async (id: number) => {
       await fetchOk(`/api/v1/s7/devices/${id}/stop`, { method: 'POST' })
     },
     onSuccess: () => {
@@ -125,11 +138,11 @@ export function useStopS7Device() {
 export function useAddS7Tag() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ deviceId, tag }: { deviceId: string; tag: Partial<S7Tag> }) => {
+    mutationFn: async ({ deviceId, tag }: { deviceId: number; tag: S7TagForm }) => {
       const res = await fetchOk(`/api/v1/s7/devices/${deviceId}/tags`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(tag),
+        body: JSON.stringify(s7TagBody(tag)),
       })
       return res.json()
     },
@@ -142,7 +155,7 @@ export function useAddS7Tag() {
 export function useRemoveS7Tag() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async ({ deviceId, tagId }: { deviceId: string; tagId: number }) => {
+    mutationFn: async ({ deviceId, tagId }: { deviceId: number; tagId: number }) => {
       await fetchOk(`/api/v1/s7/devices/${deviceId}/tags/${tagId}`, { method: 'DELETE' })
     },
     onSuccess: (_, { deviceId }) => {

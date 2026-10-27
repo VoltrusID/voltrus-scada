@@ -83,8 +83,8 @@ impl TagDialog {
 #[derive(Default)]
 pub(crate) struct DetailState {
     query: tag_api::HistoryQuery,
-    /// The answer to `fetched_for`, by tag id: only the lines it was asked
-    /// for (the open tag and its overlays), not every tag of the answer.
+    /// The answer to `fetched_for`, by tag id: the lines it was asked for
+    /// (the open tag and its overlays; the server answers only those).
     fetched: HashMap<i64, Samples>,
     /// The query `fetched` answers, and the lines it was asked for.
     fetched_for: Option<(tag_api::HistoryQuery, Vec<i64>)>,
@@ -197,6 +197,11 @@ fn ensure_history(console: &mut Console) {
     };
     let open = console.store.tags[index].info.id;
     let ids = line_ids(console, open);
+    let keys: Vec<String> = ids
+        .iter()
+        .filter_map(|id| console.store.position(*id))
+        .map(|index| console.store.tags[index].info.key.clone())
+        .collect();
     let state = console.state::<DetailState>();
     let query = state.query;
     let covers = |asked: &Option<(tag_api::HistoryQuery, Vec<i64>)>| {
@@ -210,7 +215,7 @@ fn ensure_history(console: &mut Console) {
     state.asked = Some((query, ids));
     state.seq += 1;
     let seq = state.seq;
-    let path = query.path();
+    let path = tag_api::history_path(&query, &keys);
     console.call(
         CallKey::new("tags.history").with(seq),
         Call::new(move |api| async move {
@@ -226,8 +231,7 @@ fn ensure_history(console: &mut Console) {
 }
 
 /// The samples of the lines `wanted` (tag id, key) out of a history answer
-/// by key; the answer's other tags are dropped. Tags sharing a key share
-/// its samples.
+/// by key. Tags sharing a key share its samples.
 fn wanted_lines(
     mut series: HashMap<String, Vec<(f64, f64)>>,
     wanted: &[(i64, &str)],

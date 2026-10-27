@@ -26,6 +26,7 @@ import { OverlayScreen } from './components/OverlayScreen'
 import { VoltrusWebSocket, setWsInstance } from './api/websocket'
 import { ThemeProvider } from './ThemeContext'
 import { useTranslation } from 'react-i18next'
+import { duplicateName } from './duplicateName'
 
 // Lazy-loaded heavy components — only fetched when opened
 const DashboardSettings = lazy(() => import('./DashboardSettings').then(m => ({ default: m.DashboardSettings })))
@@ -178,7 +179,8 @@ export function AppInner() {
   const removeSensorFromScreenMut = useRemoveSensorFromScreen()
 
   // ── Dashboard data hook (now store-backed) ───────────────────────
-  const { systemInfo } = useDashboardData(authed, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo)
+  const detailSensor = selectedSensor != null ? sensors.find(x => x.id === selectedSensor) : undefined
+  const { systemInfo } = useDashboardData(authed, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo, detailSensor)
   const storeSystemInfo = useDashboardSystemInfo()
   const storeActions = useDashboardStoreActions()
   const effectiveSystemInfo = systemInfo ?? storeSystemInfo
@@ -315,7 +317,7 @@ export function AppInner() {
 
   const handleDuplicateSensor = async (s: SensorConfig) => {
     const dup = {
-      key: s.key + '_copy', name: s.name + ' (Copy)', unit: s.unit,
+      key: s.key + '_copy', name: duplicateName(s.name), unit: s.unit,
       min_val: s.min_val, max_val: s.max_val, warn_val: s.warn_val, crit_val: s.crit_val,
       base_val: s.base_val, decimals: s.decimals, source_type: s.source_type,
       color: s.color, chart_type: s.chart_type, source_config: s.source_config,

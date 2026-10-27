@@ -52,6 +52,8 @@ impl CommandStatus {
 pub struct Command {
     pub id: String,
     pub data_source_id: i64,
+    /// Numeric id of an S7/OPC UA/EtherNet-IP/DNP3/BACnet device; `0` for a
+    /// Modbus device, whose id is text (see `device_ref`).
     pub device_id: i64,
     pub protocol: String,
     pub value: String,
@@ -66,6 +68,11 @@ pub struct Command {
     pub acked_at: Option<i64>,
     pub resolved_at: Option<i64>,
     pub created_by: String,
+    /// The device's id as the data source names it: a Modbus device's text id,
+    /// or the stringified numeric id of the other protocols. Empty on
+    /// commands written before this field existed and not yet backfilled.
+    #[serde(default)]
+    pub device_ref: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readback_status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,6 +81,17 @@ pub struct Command {
     pub readback_attempts: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readback_ts: Option<String>,
+}
+
+/// The device a data source writes to, as a queued command records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandTarget {
+    /// Numeric device id; `0` for a Modbus device with a text id.
+    pub device_id: i64,
+    /// The data source's device id as stored (the Modbus text id, or the
+    /// stringified numeric id).
+    pub device_ref: String,
+    pub protocol: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
@@ -87,7 +105,7 @@ pub struct CommandAuditEntry {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default, utoipa::ToSchema)]
 pub struct WritePolicy {
     pub writable: bool,
     pub write_min: Option<f64>,

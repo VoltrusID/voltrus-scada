@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
@@ -11,13 +11,17 @@ import {
   useShelfAlarm,
   useUnshelfAlarm,
   useAlarmJournal,
+  ALARM_LIST_LIMIT,
 } from './queries'
+import { detectFlood } from './alarmFlood'
 import { fmtTs } from './styles'
 import type { Alarm } from './types'
 
 const FILTER_TABS = ['all', 'active', 'acknowledged', 'shelved'] as const
 const PANEL_TABS = ['alarms', 'analytics', 'audit'] as const
 type PanelTab = typeof PANEL_TABS[number]
+/** The flood banner re-reads the alarm list and moves its 5-minute window this often. */
+const FLOOD_REFETCH_MS = 10_000
 
 const PRIORITY_COLORS: Record<string, { bg: string; fg: string }> = {
   critical: { bg: 'rgba(239,68,68,.15)', fg: '#ef4444' },
@@ -241,7 +245,11 @@ function PriorityBadge({ priority, isMobile }: { priority: string; isMobile: boo
 /* ── Analytics tab ─────────────────────────────────────────────── */
 
 function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
-  const now = useMemo(() => Date.now(), [])
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), FLOOD_REFETCH_MS)
+    return () => clearInterval(id)
+  }, [])
   const { data: analytics = [], isLoading } = useAlarmAnalytics({
     from: Math.floor((now - 24 * 3600 * 1000) / 1000),
     to: Math.floor(now / 1000),
@@ -251,11 +259,9 @@ function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
   const top10 = analytics.slice(0, 10)
   const maxCount = top10.length > 0 ? Math.max(...top10.map(a => a.trigger_count), 1) : 1
 
-  // Alarm flood detection: >10 alarms in 5 min
-  const fiveMinAgo = Math.floor(now / 1000) - 300
-  const recentAlarms = top10.filter(a => a.last_triggered_at > fiveMinAgo)
-  const recentTotal = recentAlarms.reduce((s, a) => s + a.trigger_count, 0)
-  const floodDetected = recentTotal > 10
+  // Alarm flood detection: >10 alarms raised in the last 5 min, counted from the alarm list
+  const { data: recent = [] } = useAlarms('all', true, undefined, FLOOD_REFETCH_MS)
+  const flood = detectFlood(recent, Math.floor(now / 1000), ALARM_LIST_LIMIT)
 
   if (isLoading) {
     return <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading analytics...</div>
@@ -264,7 +270,7 @@ function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
   return (
     <div style={{ padding: isMobile ? 12 : 8, overflow: 'auto', flex: 1 }}>
       {/* Flood warning */}
-      {floodDetected && (
+      {flood && (
         <div style={{
           padding: '10px 12px', borderRadius: 6, marginBottom: 12,
           background: 'rgba(239,68,68,.12)', border: '1px solid #ef4444',
@@ -272,7 +278,7 @@ function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
           display: 'flex', alignItems: 'center', gap: 8,
         }}>
           <span style={{ fontSize: 16 }}>&#9888;</span>
-          Alarm flood detected — {recentTotal} triggers in the last 5 minutes
+          Alarm flood detected — {flood.count}{flood.capped ? '+' : ''} alarms in the last 5 minutes
         </div>
       )}
 

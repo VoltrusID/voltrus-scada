@@ -126,7 +126,7 @@ pub async fn write_tag(
     }
 
     // 8. Get device info
-    let (device_id, protocol) = state
+    let target = state
         .storage
         .get_data_source_device_id(tag_id)
         .await?
@@ -143,8 +143,8 @@ pub async fn write_tag(
     let cmd = Command {
         id: command_id.clone(),
         data_source_id: tag_id,
-        device_id,
-        protocol,
+        device_id: target.device_id,
+        protocol: target.protocol,
         value: value_f64.to_string(),
         status: CommandStatus::Pending.as_str().to_string(),
         policy: body.policy.clone(),
@@ -157,6 +157,7 @@ pub async fn write_tag(
         acked_at: None,
         resolved_at: None,
         created_by: user.username.clone(),
+        device_ref: target.device_ref,
         readback_status: None,
         readback_value: None,
         readback_attempts: 0,
@@ -299,7 +300,35 @@ pub async fn get_command_audit(
     Ok(Json(entries))
 }
 
-// ── Update Write Policy ──
+// ── Write Policy ──
+
+/// GET /api/v1/data-sources/{id}/write-policy
+#[utoipa::path(
+    get,
+    path = "/api/v1/data-sources/{id}/write-policy",
+    params(
+        ("id" = i64, Path, description = "Data Source ID")
+    ),
+    responses(
+        (status = 200, body = WritePolicy),
+        (status = 404),
+    ),
+    tag = "Commands",
+    security(("api_key" = []), ("cookie_auth" = []))
+)]
+pub async fn get_write_policy(
+    State(state): State<AppState>,
+    Path(data_source_id): Path<i64>,
+) -> Result<impl IntoResponse, AppError> {
+    match state.storage.get_write_policy(data_source_id).await? {
+        Some(policy) => Ok(Json(policy).into_response()),
+        None => Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "Data source not found"})),
+        )
+            .into_response()),
+    }
+}
 
 /// PATCH /api/v1/data-sources/{id}/write-policy
 #[utoipa::path(

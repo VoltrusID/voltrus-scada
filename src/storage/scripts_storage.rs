@@ -279,12 +279,14 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// `syntax_error`: `None` leaves the stored value, `Some(None)` clears it,
+    /// `Some(Some(msg))` sets it.
     pub async fn update_script(
         &self,
         id: i64,
         name: Option<&str>,
         source: Option<&str>,
-        syntax_error: Option<&str>,
+        syntax_error: Option<Option<&str>>,
         cpu_limit_ms: Option<i64>,
         memory_limit_bytes: Option<i64>,
         enabled: Option<bool>,
@@ -292,7 +294,7 @@ impl Storage {
         let conn = self.conn.clone();
         let name = name.map(|s| s.to_string());
         let source = source.map(|s| s.to_string());
-        let syntax_error = syntax_error.map(|s| s.to_string());
+        let syntax_error = syntax_error.map(|s| s.map(|s| s.to_string()));
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
 

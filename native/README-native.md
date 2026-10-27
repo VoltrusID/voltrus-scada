@@ -119,9 +119,7 @@ JetBrains Mono for values.
   Modbus Poll and BACnet Explorer device files from Import… (I) or dropped
   on the section, with a report of what was added. Modbus reads are open to
   every user and its changes to operators; the server's other protocol
-  handlers answer only admins, so only admins see those sections. OPC UA
-  says it is unavailable on the open-core server, whose router has no
-  `GET /api/v1/opcua/devices`.
+  handlers answer only admins, so only admins see those sections.
   **Admin** (as the web client's group): **Users** (admin only): every
   account with its role; N adds one (name, the password typed twice in
   masked fields, role), Enter changes the role and optionally the password,
@@ -265,13 +263,13 @@ renews the 15-minute session token with the session's refresh token
 (`POST /auth/refresh`) every 10 minutes and before each reconnect (30
 seconds after a renewal the server did not answer), so REST calls keep
 working. It does not keep the password (only while the server wants it
-changed), and a renewal leaves the user's other sessions alone, where a
-new sign-in would revoke their refresh tokens. Only the operator's own
+changed), and a renewal or a sign-in elsewhere leaves the user's other
+sessions alone (a sign-in replaces only the refresh token it presents). Only the operator's own
 sign-in waits for the server; every other REST call (tags, alarms,
 history, alarm actions, password changes, renewals) runs on its own and
 never holds up the tag stream. Answers that arrive after the session ended
 are dropped. When the server refuses a renewal (the refresh token revoked
-or expired, for instance by the same user signing in elsewhere) the session
+or expired, for instance after a password or role change, or a deletion) the session
 ends with "Not authorised". Signing out, quitting and starting a stress
 test all sign the session out of the server, which revokes its refresh
 token. When a session ends (sign-out, a refused renewal, or before the next
@@ -385,8 +383,8 @@ cargo test -p voltrus-scada-native --test e2e_live -- --nocapture --test-threads
 ```
 
 Set `VOLTRUS_E2E_EXPECT_UPDATES=1` to fail when no live values arrive. Run
-the end-to-end tests one at a time: each signs in, and a sign-in revokes the
-user's older refresh tokens, which the sign-out check relies on. The Tags
+the end-to-end tests one at a time: they share the server and its admin
+account, and the first changes the admin password and back. The Tags
 test moves a tag in the tree and back, saves the naming convention it
 found, sets a write policy and writes through the command queue (refused
 without the reason, then accepted), adds and deletes a note, and reads a
@@ -438,23 +436,20 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 
 ## Server behaviour to know
 
-- The web client's alarm-flood banner (`client/src/AlarmPanel.tsx`,
-  `recentTotal`) sums the analytics' 24-hour `trigger_count` while it says
-  "in the last 5 minutes", so it overstates the count. The console counts
-  the history rows raised in the last 5 minutes instead; the web client
-  should do the same.
-- A sign-in revokes every refresh token of the user, so the same user
-  signing in elsewhere (web or another console) ends this console's session
-  at its next renewal; renewing with the refresh token never does that to
-  the others.
+- The alarm-flood banner counts the alarms raised in the last 5 minutes from
+  the alarm list (`triggered_at`), in the web client and in the console
+  alike. The analytics' `trigger_count` is a 24-hour figure per source and
+  is not a 5-minute count.
 - The login token comes only in the `Set-Cookie` header, with the JWT's
   base64 padding percent-encoded (`%3D`). The console decodes it
   (`api.rs:percent_decode`); the WebSocket refuses the encoded form.
-- Writes address the data source's numeric id. The server answers only
-  writes it accepts (admin role, a writable tag); otherwise it stays silent,
-  so the console reports no answer after 10 seconds, and corrects that if
-  the answer comes later. The server sends every answer to every client, so
-  write ids carry a random per-session nonce.
+- Writes address the data source's numeric id. The server answers every
+  write on the connection that sent it: `acked` or `failed` for a write it
+  tried (the cache takes the value only on `acked`), `rejected` with the
+  reason for a refusal (not the admin role, a non-numeric id, an unknown or
+  non-writable tag). The console still reports no answer after 10 seconds,
+  for an answer lost with the connection, and corrects that if it comes
+  later.
 - The server's `active` alarm list holds unacknowledged alarms only, so the
   console also fetches the acknowledged and shelved lists and drops resolved
   ones. Alarms resolve without a WebSocket message; the list is fetched again
@@ -468,16 +463,15 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - Tag keys are register names, so two devices may share one (solar-farm has
   `frequency` twice). The console shows the first; keying by device is future
   work.
-- `POST /api/v1/data-sources` stores `source_config` as the text of
-  whatever JSON it gets, so the console sends an object (the web client's
-  string is stored quoted), and ignores the alarm delays, which follow in a
-  `PUT`. `PUT /api/v1/data-sources/{id}` stores a `source_config` string
-  as-is and an object as its JSON text.
+- `POST` and `PUT /api/v1/data-sources` store a `source_config` string
+  as-is and an object as its JSON text (the console sends an object, the web
+  client a string). `POST` ignores the alarm delays, which follow in a
+  `PUT`.
 - `PUT /api/v1/shortcuts` replaces the user's whole map and stores a `null`
   as an empty shortcut instead of removing it: the console sends the full
   map without the cleared entry. The default "permissive" name rule refuses
-  parentheses, so a duplicate is named `<name> copy` (the web's
-  `<name> (Copy)` is refused).
+  parentheses, so a duplicate is named `<name> copy` (the web names its
+  duplicates the same way).
 - `settings/ui-theme` accepts only `light`, `dark` or `system`, so the
   bundled theme chosen for each brightness is kept on the workstation.
 - `PUT /nav-shortcuts` and `PUT /shortcuts` replace the user's whole map,
@@ -486,30 +480,32 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - Single sign-on providers (`auth/providers`, from an add-on edition)
   finish in a browser; there is no loopback redirect or device code that
   would hand the session to a desktop client.
-- There is no route that reads a tag's write policy back (only `PATCH
-  /api/v1/data-sources/{id}/write-policy`), so the console checks limits and
-  the reason only for a policy it saved itself; otherwise the server's
-  answer to the write says why it refused. Saving the policy sends only what
-  changed: against a policy saved this session, each setting that differs;
-  with none known, the choices made and the limits typed, leaving the rest as
-  stored.
-- `GET /api/v1/history` answers every tag (only a `screen` filter), so the
-  detail chart asks once per span, setting and set of charted tags, and keeps
-  only the open tag's and its overlays' samples. `agg=minmax` answers the
-  bucket average (no low/high band), and for Modbus tags the aggregation
-  does not change the answer.
+- `GET /api/v1/data-sources/{id}/write-policy` reads a tag's write policy
+  (the same fields `PATCH` takes). The write dialog and the policy editor
+  read it each time they open, so the console checks limits and the reason
+  against what the server has, not only against a policy it saved itself.
+  When the read fails the editor says so and saving sends only what changed
+  (the choices made and the limits typed), leaving the rest as stored.
+- `GET /api/v1/history` takes a `sensor` filter (a tag key or a
+  comma-separated list; `device` too), and the detail chart asks only for
+  the open tag and its overlays. `agg=avg` and `agg=minmax` bucket the
+  series for Modbus tags as for the others, on multiples of the bucket
+  length; `agg=minmax` adds `min` and `max` arrays next to `values`, which
+  the web client draws as a band and the console, drawing the mean line
+  only, ignores.
 - A REST write records a command for the device (`pending`); the command
-  queue sends it. A Modbus device defined in the configuration file gets
-  device id 0 in the command.
+  queue sends it. The command carries the device's id as `device_ref`
+  (a Modbus device's text id, also when the device exists only in the
+  configuration file) next to the numeric `device_id`, which is 0 for a
+  Modbus device; the console shows `device_ref`.
 - Shift handover routes (all operator-only) list entries with the author's
   user id only; the console shows `user #id`. The automatic report places
-  the current shift on the server's UTC clock and does not send its
-  `period_start`/`period_end` (the web client reads them anyway); the
-  console derives the window from the date and shift. Between midnight and
-  06:00 UTC it reports today's night shift (22:00 tonight to 06:00
-  tomorrow), not the one in progress.
+  the shift in progress on the server's UTC clock (a night shift belongs to
+  the date it started on, so between midnight and 06:00 UTC it is
+  yesterday's) and sends its window as `period_start`/`period_end`
+  (Unix seconds); the console shows that window and the alarms raised in it.
 - The audit log's `created_at`, `from` and `to` are Unix seconds (the web
-  client sends milliseconds and reads them as such). An unknown command
+  client sends and reads seconds too). An unknown command
   answers 500 "Command not found", not 404; cancelling a command already
   sent answers 400.
 - Engineering routes: a config snapshot covers devices, tags, flows,
@@ -519,9 +515,10 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   `POST /mqtt-broker/publish` does not reach the broker's own message log
   on the CI plant. Flows store no wires or positions (process steps run in
   stored order, then the outputs), so the editor's wires reorder steps and
-  positions last while it is open; `start`/`stop` change only the running
-  engine, not `enabled`. Saving a script with fixed source keeps its old
-  `syntax_error`. CSV/Excel imports write readings only (no route removes
+  positions last while it is open; `start`/`stop` store `enabled` as well
+  as changing the running engine (an unknown flow id answers 404). Saving a
+  script with new source re-checks it and clears an old `syntax_error` once
+  it parses. CSV/Excel imports write readings only (no route removes
   them) and replace mode answers 501; the Node-RED import only converts and
   reports.
 - Users, roles and API keys are admin-only routes. A user's role is one of
@@ -529,16 +526,25 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   the operator routes. The server reads the role from the user's row on
   every request, so a role change applies at once and a deleted user is
   signed out; a role or password change or a deletion also revokes the
-  user's refresh tokens. There is no way
-  to disable an account (only delete it), and deleting a user whose
-  handovers or mentions remain fails on a foreign key.
+  user's refresh tokens. `PUT /users/{id}` with `disabled: true` disables an
+  account: its sessions end at once, login answers 403 "Account disabled"
+  (after a correct password), and `disabled: false` re-enables it; the
+  `GET /users` rows carry `disabled`. Deleting a user also deletes their
+  notifications and keeps the annotations and shift handovers they wrote under
+  a hidden `[deleted user]` account. The server refuses demoting, disabling
+  or deleting the last enabled admin, and disabling yourself, with 400
+  (the console's own checks say the same earlier).
 - RBAC roles (`/api/v1/roles`) store a JSON list of permissions, refused
-  unless every one is in `models::ALL_PERMISSIONS` (the web's own list
-  offers names the server refuses); nothing checks them yet, and
-  `PUT /users/{id}/role` assigns one without any route to read it back.
+  unless every one is in `models::ALL_PERMISSIONS` (the web's role editor
+  lists the same 24 names). By design a custom role is an assignable
+  catalogue entry: nothing checks its permissions, and what a user may reach
+  is set by the built-in `role` on the user (see above). `PUT
+  /users/{id}/role` assigns one and `GET /users/{id}/role` reads it back as
+  `{user_id, role_id, role}` (`null` when none is assigned).
 - API keys expire in Unix seconds (the web client sends seconds too) and are shown once; the list keeps only
-  the first eight characters. Their stored permissions are not checked;
-  `api` keys read, `integration` keys also pass operator routes.
+  the first eight characters. Their stored `permissions` text is by design not
+  checked (the create response says so): the key `role` alone decides, `api`
+  keys read, `integration` keys also pass operator routes.
 - `POST /notifications/test` answers 200 with a per-target status (sent or
   the error) for webhooks and email; email needs SMTP configured (else
   500), push is not testable. `PUT /notifications/settings/{id}` checks the

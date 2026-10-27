@@ -25,6 +25,7 @@ async fn test_command_crud_lifecycle() {
         readback_status: None,
         readback_value: None,
         readback_attempts: 0,
+        device_ref: String::new(),
         readback_ts: None,
     };
     storage.insert_command(&cmd).await.unwrap();
@@ -70,6 +71,7 @@ async fn test_command_audit_trail() {
         readback_status: None,
         readback_value: None,
         readback_attempts: 0,
+        device_ref: String::new(),
         readback_ts: None,
     };
     storage.insert_command(&cmd).await.unwrap();
@@ -123,6 +125,7 @@ async fn test_count_recent_writes() {
             readback_status: None,
             readback_value: None,
             readback_attempts: 0,
+            device_ref: String::new(),
             readback_ts: None,
         };
         storage.insert_command(&cmd).await.unwrap();
@@ -163,6 +166,7 @@ async fn test_list_commands_with_filters() {
             readback_status: None,
             readback_value: None,
             readback_attempts: 0,
+            device_ref: String::new(),
             readback_ts: None,
         };
         storage.insert_command(&cmd).await.unwrap();
@@ -188,6 +192,7 @@ async fn test_list_commands_with_filters() {
         readback_status: None,
         readback_value: None,
         readback_attempts: 0,
+        device_ref: String::new(),
         readback_ts: None,
     };
     storage.insert_command(&failed_cmd).await.unwrap();
@@ -235,6 +240,7 @@ async fn test_get_queued_commands() {
         readback_status: None,
         readback_value: None,
         readback_attempts: 0,
+        device_ref: String::new(),
         readback_ts: None,
     };
     storage.insert_command(&cmd).await.unwrap();
@@ -260,6 +266,7 @@ async fn test_get_queued_commands() {
         readback_status: None,
         readback_value: None,
         readback_attempts: 0,
+        device_ref: String::new(),
         readback_ts: None,
     };
     storage.insert_command(&cmd2).await.unwrap();

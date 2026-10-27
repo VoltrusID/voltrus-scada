@@ -848,7 +848,7 @@ fn detail(
         ("Value", command.value.clone()),
         ("Policy", command.policy.clone()),
         ("Protocol", command.protocol.clone()),
-        ("Device", format!("#{}", command.device_id)),
+        ("Device", command.device_label()),
         (
             "Retries",
             format!("{} of {}", command.retry_count, command.max_retries),

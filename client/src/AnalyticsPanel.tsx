@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useAnalyticsAggregate, useAnalyticsCompare } from './queries/analytics';
 import { useModbusDevices } from './queries/modbus';
 import { btnStyle } from './styles';
+import { comparePeriods } from './analyticsCompare';
 
 const RANGES: { label: string; seconds: number }[] = [
   { label: '1h', seconds: 3600 },
@@ -55,8 +56,8 @@ export function AnalyticsPanel() {
   const to = now;
   const interval = INTERVALS[range.label] || 3600;
 
-  // Comparison: split the range in half
-  const mid = Math.floor((from + to) / 2);
+  // Comparison: the recent half is "current", the older half "previous"
+  const { current, previous } = comparePeriods(from, to);
 
   const { data: aggData, isLoading: aggLoading } = useAnalyticsAggregate(
     deviceId || undefined,
@@ -69,10 +70,10 @@ export function AnalyticsPanel() {
   const { data: compData, isLoading: compLoading } = useAnalyticsCompare(
     deviceId || undefined,
     metric || undefined,
-    from,
-    mid,
-    mid,
-    to,
+    current[0],
+    current[1],
+    previous[0],
+    previous[1],
   );
 
   const metrics = useMemo(() => {

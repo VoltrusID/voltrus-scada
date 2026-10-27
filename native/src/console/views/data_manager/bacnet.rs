@@ -3,9 +3,8 @@
 //! a Who-Is discovery that adds what answers, a browse of a device's
 //! object list, start and stop, and BACnet Explorer device files imported
 //! from the Import… prompt or dropped on the section. Objects are read as
-//! the bare list the server answers (the web client expects
-//! `{objects: [...]}` and shows none). Every BACnet handler checks for the
-//! admin role.
+//! the bare list the server answers (as the web client does). Every BACnet
+//! handler checks for the admin role.
 
 use std::time::Duration;
 

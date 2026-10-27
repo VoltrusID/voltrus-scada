@@ -153,7 +153,8 @@ pub fn user_update_body(role: Option<&str>, password: Option<&str>) -> Option<Va
 }
 
 /// Why `me` may not delete `user`, if they may not (the server refuses
-/// "cannot delete yourself"; the last admin is the console's own rule).
+/// "cannot delete yourself" and the last enabled admin; the console checks
+/// both before the request).
 pub fn delete_refused(me: &str, user: &User, users: &[User]) -> Option<String> {
     if user.username == me {
         return Some("You cannot delete yourself".to_owned());
@@ -647,7 +648,7 @@ mod tests {
         assert!(role_body(" ", &[]).is_err());
         assert!(
             role_body("x", &["flows:read".into()]).is_err(),
-            "the web offers it; the server refuses it"
+            "not in ALL_PERMISSIONS; the server refuses it"
         );
         let groups = permission_groups();
         assert_eq!(

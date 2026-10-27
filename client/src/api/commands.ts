@@ -1,11 +1,14 @@
 import { fetchJson, fetchOk } from '../queries/fetch'
+import { parseWritePolicy } from '../writePolicy'
 
 // ── Types ──────────────────────────────────────────────────────────
 
 export interface Command {
   id: string
   data_source_id: number
+  /** Numeric device id; 0 for a Modbus device, whose text id is `device_ref`. */
   device_id: number
+  device_ref?: string
   protocol: string
   value: string
   status: 'pending' | 'queued' | 'sent' | 'acked' | 'failed' | 'expired' | 'cancelled'
@@ -91,6 +94,10 @@ export async function cancelCommand(commandId: string): Promise<void> {
 
 export async function getCommandAudit(commandId: string): Promise<CommandAuditEntry[]> {
   return fetchJson<CommandAuditEntry[]>(`/api/v1/commands/${commandId}/audit`)
+}
+
+export async function getWritePolicy(tagId: number): Promise<WritePolicy> {
+  return parseWritePolicy(await fetchJson<unknown>(`/api/v1/data-sources/${tagId}/write-policy`))
 }
 
 export async function updateWritePolicy(

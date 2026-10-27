@@ -245,7 +245,10 @@ fn modbus_admin_routes() -> Router<AppState> {
 #[cfg(feature = "opcua")]
 fn opcua_admin_routes() -> Router<AppState> {
     Router::new()
-        .route("/api/v1/opcua/devices", post(opcua_devices::create_device))
+        .route(
+            "/api/v1/opcua/devices",
+            get(opcua_devices::list_devices).post(opcua_devices::create_device),
+        )
         .route(
             "/api/v1/opcua/devices/{id}",
             put(opcua_devices::update_device).delete(opcua_devices::delete_device),
@@ -1076,7 +1079,7 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/data-sources/{id}/write-policy",
-            patch(commands::update_write_policy),
+            get(commands::get_write_policy).patch(commands::update_write_policy),
         )
         // Simulation routes
         .route(
@@ -1089,7 +1092,7 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/devices/{id}/simulate",
-            post(simulation::toggle_simulation),
+            get(simulation::get_simulation).post(simulation::toggle_simulation),
         )
         .route("/api/v1/devices/{id}/go-live", post(simulation::go_live))
         // Node-RED import
@@ -1213,7 +1216,10 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/roles/{id}",
             put(rbac::update_role).delete(rbac::delete_role),
         )
-        .route("/api/v1/users/{id}/role", put(rbac::assign_user_role))
+        .route(
+            "/api/v1/users/{id}/role",
+            get(rbac::get_user_role).put(rbac::assign_user_role),
+        )
         // API keys (admin-only)
         .route(
             "/api/v1/api-keys",

@@ -160,3 +160,87 @@ async fn test_flow_crud() {
 
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 }
+
+/// SCADA-16 S13: start/stop changed only the running engine, so the stored
+/// `enabled` (and `GET /flows`) went stale and a restart undid them.
+#[tokio::test]
+async fn test_flow_start_stop_persist_enabled() {
+    let app = test_app_with_seeded_admin().await;
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+    let flow = serde_json::json!({
+        "id": "f1",
+        "name": "F1",
+        "enabled": false,
+        "trigger_config": serde_json::json!({"type": "modbus", "device_id": "*"}).to_string(),
+        "nodes": "[]",
+        "created_at": 0,
+        "updated_at": 0,
+    });
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/flows",
+        None,
+        Some(&cookie),
+        Some(flow),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let enabled = |app: Router, cookie: String| async move {
+        let (status, body) =
+            send_request(&app, "GET", "/api/v1/flows/f1", None, Some(&cookie), None).await;
+        assert_eq!(status, StatusCode::OK);
+        body["enabled"].as_bool().unwrap()
+    };
+
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/flows/f1/start",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(
+        enabled(app.clone(), cookie.clone()).await,
+        "start persists enabled"
+    );
+    let (_, list) = send_request(&app, "GET", "/api/v1/flows", None, Some(&cookie), None).await;
+    assert_eq!(
+        list["flows"][0]["enabled"], true,
+        "GET /flows shows the started flow"
+    );
+
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/flows/f1/stop",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(
+        !enabled(app.clone(), cookie.clone()).await,
+        "stop persists enabled"
+    );
+
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/flows/missing/start",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unknown flow is not a silent 204"
+    );
+}

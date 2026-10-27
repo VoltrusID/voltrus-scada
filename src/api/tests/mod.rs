@@ -3,18 +3,24 @@ mod api_keys;
 mod audit_log;
 mod auth;
 mod auth_sessions;
+mod command_device;
 mod config_snapshots;
 mod csv_import;
 mod data_sources;
 mod flows;
 mod helpers;
+mod history;
 mod import_nodered;
 mod license_status;
 mod mqtt_broker;
 mod naming_convention;
+mod protocol_routes;
+mod scripts;
+mod shift_report;
 mod system;
 mod tag_tree;
 mod ui_preferences;
+mod users;
 
 pub use helpers::*;
 

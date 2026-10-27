@@ -413,26 +413,12 @@ pub fn compare_path(
 }
 
 /// The range split in two for a comparison: the recent half is current,
-/// the older half previous. (The web client sends the older half as
-/// period 1, so its "current" is the older one.)
+/// the older half previous. The server's periods include both ends, so the
+/// older half stops one second before the recent one starts and no sample
+/// counts twice.
 pub fn halves(from: i64, to: i64) -> ((i64, i64), (i64, i64)) {
     let mid = from + (to - from) / 2;
-    ((mid, to), (from, mid))
-}
-
-/// The part of `[from, to]` to compare: from the first stored value on.
-/// The server answers 500 for a period without values
-/// (`aggregate_single_period` reads a NULL `MIN`), so the halves must both
-/// hold some; `None` when nothing is stored.
-pub fn compare_span(from: i64, to: i64, buckets: &[Bucket]) -> Option<(i64, i64)> {
-    let (start, first) = buckets.first()?;
-    let first = if first.first_ts > 0 {
-        first.first_ts
-    } else {
-        *start
-    };
-    let from = from.max(first);
-    (to - from >= 2).then_some((from, to))
+    ((mid, to), (from, mid - 1))
 }
 
 /// The whole range's figures from its buckets (the web's stat cards): the
@@ -847,12 +833,12 @@ mod tests {
         let (current, previous) = halves(0, 100);
         assert_eq!(
             (current, previous),
-            ((50, 100), (0, 50)),
+            ((50, 100), (0, 49)),
             "recent half first"
         );
         assert_eq!(
             compare_path("d", "m", current, previous),
-            "/api/v1/analytics/compare?device_id=d&metric=m&period1_from=50&period1_to=100&period2_from=0&period2_to=50"
+            "/api/v1/analytics/compare?device_id=d&metric=m&period1_from=50&period1_to=100&period2_from=0&period2_to=49"
         );
         assert_eq!(interval_for(86_400), 3600);
         assert_eq!(interval_for(3600), 300);
@@ -861,25 +847,6 @@ mod tests {
         assert_eq!(drill(0, 300), Some((0, 300, 60)));
         assert_eq!(drill(0, 60), None, "a minute is the finest bucket");
         assert_eq!(drill(0, 86_400), Some((0, 86_400, 3600)));
-        // The comparison starts at the first stored value.
-        let stored = |first_ts| {
-            vec![(
-                3000,
-                AggregatedMetric {
-                    first_ts,
-                    ..AggregatedMetric::default()
-                },
-            )]
-        };
-        assert_eq!(compare_span(0, 3600, &stored(3010)), Some((3010, 3600)));
-        assert_eq!(compare_span(3050, 3600, &stored(3010)), Some((3050, 3600)));
-        assert_eq!(compare_span(0, 3600, &stored(0)), Some((3000, 3600)));
-        assert_eq!(
-            compare_span(0, 3600, &stored(3599)),
-            None,
-            "too short to halve"
-        );
-        assert_eq!(compare_span(0, 3600, &[]), None);
     }
 
     #[test]

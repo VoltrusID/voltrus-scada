@@ -560,9 +560,9 @@ impl Refresh {
 /// Writes reported as unanswered whose late answer still counts.
 const LATE_WRITES: usize = 32;
 
-/// Writes awaiting the server's acknowledgement. The server sends every
-/// acknowledgement to every client, so ids carry a random per-session nonce
-/// that no other console shares.
+/// Writes awaiting the server's acknowledgement. The server answers a write
+/// on the connection that sent it; ids still carry a random per-session
+/// nonce, so they stay unique across sessions.
 #[derive(Debug)]
 struct Writes {
     nonce: String,
@@ -1114,7 +1114,8 @@ impl Actor {
                 late: false,
             });
         } else {
-            // The server stays silent when it refuses a write.
+            // The server answers every write, a refusal included; the timeout covers a
+            // connection that dropped the answer.
             schedule(
                 &self.inputs,
                 WRITE_TIMEOUT,
@@ -1130,9 +1131,7 @@ impl Actor {
         if let Some(tag) = s.writes.time_out(id) {
             self.out.send(Event::Written {
                 tag,
-                result: Err(
-                    "No answer from the server. Writing needs the admin role and a tag the server lets you write.".into(),
-                ),
+                result: Err("No answer from the server for the write.".into()),
                 late: false,
             });
         }

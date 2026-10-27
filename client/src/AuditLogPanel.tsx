@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useAuditLogs, useExportAuditCsv, type AuditQueryParams } from './queries';
 import { inputStyle, btnStyle } from './styles';
 import { OverlayScreen } from './components/OverlayScreen';
+import { auditRangeParams } from './unixTime';
 
 const LIMIT = 25;
 
@@ -18,8 +19,7 @@ export function AuditLogPanel({ onClose }: { onClose?: () => void } = {}) {
     if (search) p.search = search;
     if (action) p.action = action;
     if (username) p.username = username;
-    if (from) p.from = new Date(from).getTime();
-    if (to) p.to = new Date(to).getTime();
+    Object.assign(p, auditRangeParams(from, to));
     return p;
   }, [search, action, username, from, to, page]);
 
@@ -34,8 +34,7 @@ export function AuditLogPanel({ onClose }: { onClose?: () => void } = {}) {
     if (search) exportParams.search = search;
     if (action) exportParams.action = action;
     if (username) exportParams.username = username;
-    if (from) exportParams.from = new Date(from).getTime();
-    if (to) exportParams.to = new Date(to).getTime();
+    Object.assign(exportParams, auditRangeParams(from, to));
     exportMut.mutate(exportParams, {
       onSuccess: (csv) => {
         const blob = new Blob([csv], { type: 'text/csv' });
@@ -108,7 +107,7 @@ export function AuditLogPanel({ onClose }: { onClose?: () => void } = {}) {
             ) : (
               entries.map(entry => (
                 <tr key={entry.id} style={{ transition: 'background .15s' }} onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(139,92,246,.04)'; }} onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ''; }}>
-                  <td style={tdStyle}>{new Date(entry.created_at).toLocaleString()}</td>
+                  <td style={tdStyle}>{new Date(entry.created_at * 1000).toLocaleString()}</td>
                   <td style={tdStyle}><span style={{ fontSize: 10, padding: '2px 8px', borderRadius: 4, background: 'var(--bg)', fontWeight: 600 }}>{entry.action}</span></td>
                   <td style={tdStyle}>{entry.username}</td>
                   <td style={tdStyle}>{entry.resource}</td>

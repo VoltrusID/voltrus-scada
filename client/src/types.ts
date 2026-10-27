@@ -36,7 +36,8 @@ export interface SystemInfo {
   }
 }
 
-export interface DataPoint { value: number; ts: number; simulated?: boolean }
+/** `lo`/`hi` are the bucket's min and max when the server answered `agg=minmax`. */
+export interface DataPoint { value: number; ts: number; simulated?: boolean; lo?: number; hi?: number }
 
 export interface Screen { id: string; name: string; type: string; sort_order: number }
 

@@ -1,6 +1,7 @@
 import { useRef, useEffect, useCallback } from 'react'
 import { SensorConfig, SensorData, DataPoint, LIVE_PTS } from '../types'
 import { expandCompactData, alarmStatus } from '../utils'
+import { historyUrl } from '../historyQuery'
 import { useWSData } from './useWSData'
 import { useSystemInfo, fetchJson } from '../queries'
 import { useDashboardStoreActions, useHistoryReady } from '../store/dashboardStore'
@@ -15,6 +16,8 @@ export function useDashboardData(
   historyDetail: 'auto' | 'full',
   historyAutoAgg: string,
   turbo: boolean,
+  /** The tag whose detail view is open: history then asks for that tag only. */
+  detailSensor?: SensorConfig,
 ) {
   const initialLoadDone = useRef(false)
   const prevAuthed = useRef(authed)
@@ -72,20 +75,26 @@ export function useDashboardData(
   // ── History fetch ────────────────────────────────────────────────
   useEffect(() => {
     if (mode !== 'history') { actions.setHistoryMap(null); return }
-    const dp = activeScreen === 'all' ? '' : `&screen=${activeScreen}`
-    const detailParam = historyDetail === 'full' ? '&detail=full' : ''
-    const aggParam = historyDetail === 'auto' ? `&agg=${historyAutoAgg}` : ''
-    fetchJson<{ data: Record<string, any> }>(`/api/v1/history?range=${historyRange}${dp}${detailParam}${aggParam}`).then(result => {
+    // The detail chart needs one tag; the dashboard, the tags of its screen.
+    const url = historyUrl({
+      range: historyRange,
+      screen: detailSensor ? undefined : activeScreen,
+      sensor: detailSensor?.key,
+      detail: historyDetail,
+      agg: historyAutoAgg,
+    })
+    const wanted = detailSensor ? [detailSensor] : screenSensors
+    fetchJson<{ data: Record<string, any> }>(url).then(result => {
       if (!result.data) return
       const expanded = expandCompactData(result.data)
       const remapped: Record<string, DataPoint[]> = {}
-      for (const s of screenSensors) {
+      for (const s of wanted) {
         const pts = expanded[s.key]
         if (pts) remapped[String(s.id)] = pts
       }
       actions.setHistoryMap(remapped)
     })
-  }, [mode, historyRange, historyDetail, activeScreen, screenSensors, historyAutoAgg, actions])
+  }, [mode, historyRange, historyDetail, activeScreen, screenSensors, historyAutoAgg, detailSensor, actions])
 
   return {
     historyReady,

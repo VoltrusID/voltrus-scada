@@ -1,8 +1,7 @@
 //! Mirrors of the protocol device managers' REST answers (`src/api/
 //! modbus_devices.rs`, `opcua_devices.rs`, `s7_devices.rs`,
 //! `enip_devices.rs`, `dnp3_devices.rs`, `bacnet_devices/`,
-//! `simulation.rs`), in the server's shapes, not the web client's (its S7,
-//! EtherNet/IP and OPC UA types have drifted from the server).
+//! `simulation.rs`), in the server's shapes.
 //!
 //! The console's device tables are generic over JSON rows: [`rows`] decodes
 //! an answer through its typed mirror (so a wrong shape is an error and the
@@ -13,8 +12,9 @@
 //!   admin role itself; demo and integration users pass the router and get
 //!   `500 {"error":"Admin access required"}`.
 //! - Handler failures are `500 {"error": …}`, validation included.
-//! - The core router has no `GET /api/v1/opcua/devices` (405) and no
-//!   `GET /api/v1/devices/{id}/simulate`.
+//! - `GET /api/v1/devices/{id}/simulate` answers `{simulation_mode,
+//!   sim_profile_id, sim_config}` for a row of the `devices` table and 404
+//!   for any other id (a Modbus device has none).
 use std::time::Duration;
 
 use anyhow::Result;
@@ -226,16 +226,15 @@ pub struct SimProfile {
 
 // ── OPC UA ───────────────────────────────────────────────────────────────
 
-/// What `list_devices` would answer if the router served it (an edition's
-/// router may).
+/// One row of `GET /api/v1/opcua/devices` (no password; `node_count` is the
+/// monitored nodes).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct OpcUaDeviceRow {
     pub id: i64,
     pub name: String,
     pub url: String,
-    /// `"None"` or `"basic256sha256"`: the server's enum names, which the
-    /// web client's lowercase `"none"` does not match.
+    /// `"None"` or `"basic256sha256"`: the server's enum names.
     pub security_policy: String,
     /// `"None"`, `"Sign"` or `"signandencrypt"`.
     pub security_mode: String,

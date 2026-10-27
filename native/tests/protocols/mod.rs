@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use voltrus_scada_native::api::protocols::{
     ActionAnswer, BacnetDeviceRow, BacnetDiscovery, BacnetObjectRow, CreatedId,
     DNP3_GROUP_VARIATIONS, DiscoveredDnp3, Dnp3DeviceRow, Dnp3PointRow, EnipDeviceRow, EnipTagRow,
-    GroupVariation, ModbusDeviceRow, ModbusNetworkScan, ModbusRegisterRow, OpcUaNodeRow,
-    PollerStatus, S7Browse, S7DeviceRow, S7TagRow, SimProfile, not_routed, rows, rows_at,
+    GroupVariation, ModbusDeviceRow, ModbusNetworkScan, ModbusRegisterRow, OpcUaDeviceRow,
+    OpcUaNodeRow, PollerStatus, S7Browse, S7DeviceRow, S7TagRow, SimProfile, rows, rows_at,
 };
 use voltrus_scada_native::api::{DataSource, Method, VoltrusApi};
 use voltrus_scada_native::device_file::{
@@ -266,12 +266,7 @@ async fn modbus(api: &VoltrusApi, tag: u32) {
 
 async fn opcua(api: &VoltrusApi, tag: u32) {
     let base = "/api/v1/opcua/devices";
-    // The core router has no list route: the section says it is unavailable.
-    let listed = api.get_json::<Value>(base).await;
-    match &listed {
-        Err(error) => assert!(not_routed(error), "GET {base}: {error}"),
-        Ok(list) => println!("opcua: this server lists devices: {list}"),
-    }
+    let before = rows::<OpcUaDeviceRow>(get(api, base).await).expect("the OPC UA list's shape");
     let name = format!("e2e_native_opcua_{tag}");
     let id = created(
         api,
@@ -281,6 +276,13 @@ async fn opcua(api: &VoltrusApi, tag: u32) {
     )
     .await;
     let path = format!("{base}/{id}");
+    let listed = rows::<OpcUaDeviceRow>(get(api, base).await).unwrap();
+    let row = listed
+        .iter()
+        .find(|row| row["id"].to_string() == id.to_string())
+        .expect("listed");
+    assert_eq!(row["security_policy"], "None");
+    assert_eq!(row["node_count"], 0);
     send(
         api,
         Method::PUT,
@@ -331,6 +333,8 @@ async fn opcua(api: &VoltrusApi, tag: u32) {
             .is_empty()
     );
     delete(api, &path).await;
+    let after = rows::<OpcUaDeviceRow>(get(api, base).await).unwrap();
+    assert_eq!(after.len(), before.len(), "the device is gone");
     println!("opcua: created, edited, monitored a node and deleted {name}");
 }
 

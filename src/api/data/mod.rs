@@ -1,6 +1,7 @@
 mod evaluate;
 mod handlers;
 mod helpers;
+mod history;
 
 #[cfg(test)]
 mod tests;

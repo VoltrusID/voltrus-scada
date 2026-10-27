@@ -166,6 +166,7 @@ pub async fn delete_flow(
     responses(
         (status = 204),
         (status = 403),
+        (status = 404),
     ),
     security(("api_key" = []), ("cookie_auth" = []))
 )]
@@ -174,19 +175,7 @@ pub async fn start_flow(
     Extension(auth): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    if let Some(engine) = &state.flow_engine
-        && let Some(mut flow) = engine.get_flow(&id).await
-    {
-        flow.enabled = true;
-        engine.update_flow(flow).await;
-    }
-    state.audit_logger.log(crate::security::AuditEvent {
-        action: "start_flow".to_string(),
-        username: auth.username.clone(),
-        resource: format!("flow:{}", id),
-        details: None,
-    });
-    Ok(StatusCode::NO_CONTENT)
+    set_flow_enabled(&state, &auth, &id, true).await
 }
 
 #[utoipa::path(
@@ -199,20 +188,45 @@ pub async fn start_flow(
     responses(
         (status = 204),
         (status = 403),
+        (status = 404),
     ),
     security(("api_key" = []), ("cookie_auth" = []))
 )]
 pub async fn stop_flow(
     State(state): State<AppState>,
-    Extension(_auth): Extension<AuthUser>,
+    Extension(auth): Extension<AuthUser>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    set_flow_enabled(&state, &auth, &id, false).await
+}
+
+/// Persist `enabled` on the stored flow, then mirror it into the running
+/// engine, so a restart or reload keeps what start/stop did.
+async fn set_flow_enabled(
+    state: &AppState,
+    auth: &AuthUser,
+    id: &str,
+    enabled: bool,
+) -> Result<StatusCode, AppError> {
+    let Some(flow) = state.storage.get_flow(id).await? else {
+        return Ok(StatusCode::NOT_FOUND);
+    };
+    state
+        .storage
+        .update_flow(id, &flow.name, enabled, &flow.trigger_config, &flow.nodes)
+        .await?;
     if let Some(engine) = &state.flow_engine
-        && let Some(mut flow) = engine.get_flow(&id).await
+        && let Some(mut running) = engine.get_flow(id).await
     {
-        flow.enabled = false;
-        engine.update_flow(flow).await;
+        running.enabled = enabled;
+        engine.update_flow(running).await;
     }
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: if enabled { "start_flow" } else { "stop_flow" }.to_string(),
+        username: auth.username.clone(),
+        resource: format!("flow:{}", id),
+        details: None,
+    });
     Ok(StatusCode::NO_CONTENT)
 }
 

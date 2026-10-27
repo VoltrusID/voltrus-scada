@@ -54,18 +54,16 @@ pub async fn update_script(
     Path(id): Path<i64>,
     Json(req): Json<UpdateScriptRequest>,
 ) -> Result<Json<Script>, StatusCode> {
-    let syntax_error = req
-        .source
-        .as_ref()
-        .map(|s| script_engine::validate_syntax(s));
-    let se = syntax_error.unwrap_or(None);
+    // New source: re-validate and store the result, clearing the old error
+    // when it now parses. No source: leave the stored error alone.
+    let syntax_error = req.source.as_deref().map(script_engine::validate_syntax);
     state
         .storage
         .update_script(
             id,
             req.name.as_deref(),
             req.source.as_deref(),
-            se.as_deref(),
+            syntax_error.as_ref().map(Option::as_deref),
             req.cpu_limit_ms,
             req.memory_limit_bytes,
             req.enabled,

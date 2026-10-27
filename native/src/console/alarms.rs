@@ -336,10 +336,7 @@ pub fn readable_details(details: &str) -> Option<String> {
 
 /// Alarms raised in the last five minutes when they make a flood (more
 /// than ten, the web console's rule), counted over the history's rows
-/// (`status=all`, [`HISTORY_LIMIT`] newest). The web client, the parity
-/// source, instead sums the 24-hour trigger counts of the ranked sources
-/// last raised in that window, which overstates the figure; this counts the
-/// raises themselves.
+/// (`status=all`, [`HISTORY_LIMIT`] newest).
 pub fn flood(history: &[Alarm], now: i64) -> Option<usize> {
     let since = now - 300;
     let raised = history
