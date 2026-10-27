@@ -495,24 +495,12 @@ impl Storage {
                 )
                 .context("Prepare aggregate_single_period failed")?;
 
-            let row = stmt.query_row(rusqlite::params![device_id, metric, from, to], |row| {
-                Ok(crate::analytics::AggregatedMetric {
-                    metric: metric.clone(),
-                    min: row.get(0)?,
-                    max: row.get(1)?,
-                    avg: row.get(2)?,
-                    stddev: 0.0,
-                    count: row.get::<_, i64>(3)? as u64,
-                    first_ts: row.get(4)?,
-                    last_ts: row.get(5)?,
-                })
-            });
-
-            match row {
-                Ok(m) => Ok(m),
-                Err(rusqlite::Error::QueryReturnedNoRows) => {
-                    Ok(crate::analytics::AggregatedMetric {
-                        metric,
+            // An aggregate over no rows is still one row, with NULL MIN/MAX/AVG/timestamps.
+            stmt.query_row(rusqlite::params![device_id, metric, from, to], |row| {
+                let count = row.get::<_, i64>(3)? as u64;
+                if count == 0 {
+                    return Ok(crate::analytics::AggregatedMetric {
+                        metric: metric.clone(),
                         min: 0.0,
                         max: 0.0,
                         avg: 0.0,
@@ -520,10 +508,20 @@ impl Storage {
                         count: 0,
                         first_ts: from,
                         last_ts: to,
-                    })
+                    });
                 }
-                Err(e) => Err(e).context("Query aggregate_single_period failed"),
-            }
+                Ok(crate::analytics::AggregatedMetric {
+                    metric: metric.clone(),
+                    min: row.get(0)?,
+                    max: row.get(1)?,
+                    avg: row.get(2)?,
+                    stddev: 0.0,
+                    count,
+                    first_ts: row.get(4)?,
+                    last_ts: row.get(5)?,
+                })
+            })
+            .context("Query aggregate_single_period failed")
         })
         .await
         .context("Task join failed")?

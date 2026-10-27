@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { listExecutions } from '../api/scripts'
 import type { ScriptExecution } from '../api/scripts'
-import { fmtTs } from '../styles'
+import { fmtUnixSecsClock } from '../unixTime'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -147,7 +147,7 @@ export function ScriptExecutionHistory({ scriptId }: ScriptExecutionHistoryProps
                 }}
               >
                 <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>
-                  {fmtTs(exec.created_at)}
+                  {fmtUnixSecsClock(exec.created_at)}
                 </span>
                 <span>
                   <StatusBadge status={exec.status} />

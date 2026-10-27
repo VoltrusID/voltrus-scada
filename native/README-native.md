@@ -438,11 +438,10 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 
 ## Server behaviour to know
 
-- The web client's alarm-flood banner (`client/src/AlarmPanel.tsx`,
-  `recentTotal`) sums the analytics' 24-hour `trigger_count` while it says
-  "in the last 5 minutes", so it overstates the count. The console counts
-  the history rows raised in the last 5 minutes instead; the web client
-  should do the same.
+- The alarm-flood banner counts the alarms raised in the last 5 minutes from
+  the alarm list (`triggered_at`), in the web client and in the console
+  alike. The analytics' `trigger_count` is a 24-hour figure per source and
+  is not a 5-minute count.
 - A sign-in revokes every refresh token of the user, so the same user
   signing in elsewhere (web or another console) ends this console's session
   at its next renewal; renewing with the refresh token never does that to
@@ -450,11 +449,13 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
 - The login token comes only in the `Set-Cookie` header, with the JWT's
   base64 padding percent-encoded (`%3D`). The console decodes it
   (`api.rs:percent_decode`); the WebSocket refuses the encoded form.
-- Writes address the data source's numeric id. The server answers only
-  writes it accepts (admin role, a writable tag); otherwise it stays silent,
-  so the console reports no answer after 10 seconds, and corrects that if
-  the answer comes later. The server sends every answer to every client, so
-  write ids carry a random per-session nonce.
+- Writes address the data source's numeric id. The server answers every
+  write on the connection that sent it: `acked` or `failed` for a write it
+  tried (the cache takes the value only on `acked`), `rejected` with the
+  reason for a refusal (not the admin role, a non-numeric id, an unknown or
+  non-writable tag). The console still reports no answer after 10 seconds,
+  for an answer lost with the connection, and corrects that if it comes
+  later.
 - The server's `active` alarm list holds unacknowledged alarms only, so the
   console also fetches the acknowledged and shelved lists and drops resolved
   ones. Alarms resolve without a WebSocket message; the list is fetched again
@@ -509,7 +510,7 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   06:00 UTC it reports today's night shift (22:00 tonight to 06:00
   tomorrow), not the one in progress.
 - The audit log's `created_at`, `from` and `to` are Unix seconds (the web
-  client sends milliseconds and reads them as such). An unknown command
+  client sends and reads seconds too). An unknown command
   answers 500 "Command not found", not 404; cancelling a command already
   sent answers 400.
 - Engineering routes: a config snapshot covers devices, tags, flows,

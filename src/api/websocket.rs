@@ -261,6 +261,10 @@ async fn handle_client_message(
             value,
             command_id,
         } => {
+            let cmd_id = command_id
+                .clone()
+                .unwrap_or_else(|| format!("direct-{}", crate::timeutil::now_secs()));
+
             // Permission check: only admins can write via WebSocket
             if role != "admin" {
                 tracing::warn!(
@@ -269,10 +273,11 @@ async fn handle_client_message(
                     role,
                     tag_id
                 );
+                reject_write(ws_manager, conn_id, cmd_id, "Only admins can write tags");
                 return;
             }
 
-            handle_tag_write(state, username, tag_id, *value, command_id).await;
+            handle_tag_write(state, conn_id, username, tag_id, *value, cmd_id).await;
         }
 
         ClientMessage::Ping => {
@@ -287,21 +292,42 @@ async fn handle_client_message(
 
 // -- Tag write handling: direct write, no queue ----------------------------
 
+/// Answer a refused write to the connection that asked for it.
+fn reject_write(
+    ws_manager: &crate::ws_manager::WsManager,
+    conn_id: &str,
+    command_id: String,
+    reason: &str,
+) {
+    ws_manager.send_to(
+        conn_id,
+        ServerMessage::CommandAck {
+            command_id,
+            status: "rejected".to_string(),
+            device_response: Some(reason.to_string()),
+            latency_ms: None,
+        },
+    );
+}
+
 async fn handle_tag_write(
     state: &AppState,
+    conn_id: &str,
     username: &str,
     tag_id: &str,
     value: f64,
-    command_id: &Option<String>,
+    cmd_id: String,
 ) {
-    let cmd_id = command_id
-        .clone()
-        .unwrap_or_else(|| format!("direct-{}", crate::timeutil::now_secs()));
-
     let data_source_id: i64 = match tag_id.parse() {
         Ok(id) => id,
         Err(_) => {
             tracing::warn!("WS: tag_id '{}' is not numeric, skipping write", tag_id);
+            reject_write(
+                &state.ws_manager,
+                conn_id,
+                cmd_id,
+                "Tag id must be the numeric data source id",
+            );
             return;
         }
     };
@@ -311,6 +337,7 @@ async fn handle_tag_write(
         Ok(Some(ds)) => ds,
         _ => {
             tracing::warn!("WS: data source {} not found", data_source_id);
+            reject_write(&state.ws_manager, conn_id, cmd_id, "Data source not found");
             return;
         }
     };
@@ -327,6 +354,7 @@ async fn handle_tag_write(
 
     if !writable {
         tracing::warn!("WS: data source {} is not writable", data_source_id);
+        reject_write(&state.ws_manager, conn_id, cmd_id, "Tag is not writable");
         return;
     }
 
@@ -345,25 +373,30 @@ async fn handle_tag_write(
         result.latency_ms,
     );
 
-    // Update cache with the written value so all connected clients see it
-    // via the data broadcaster pipeline, regardless of protocol success.
-    state
-        .cache
-        .set_metric_value(&cache_device_id, &metric_key, value)
-        .await;
+    // Only a written value reaches the cache, and through it every client via
+    // the data broadcaster pipeline; after a failed write the device still
+    // holds the old value.
+    if result.success {
+        state
+            .cache
+            .set_metric_value(&cache_device_id, &metric_key, value)
+            .await;
+    }
 
-    // Send ack/nack back to all connected clients
-    let ack = crate::ws_types::ServerMessage::CommandAck {
-        command_id: cmd_id,
-        status: if result.success {
-            "acked".to_string()
-        } else {
-            "failed".to_string()
+    // The result goes to the requesting connection only.
+    state.ws_manager.send_to(
+        conn_id,
+        crate::ws_types::ServerMessage::CommandAck {
+            command_id: cmd_id,
+            status: if result.success {
+                "acked".to_string()
+            } else {
+                "failed".to_string()
+            },
+            device_response: result.device_response.or(result.error),
+            latency_ms: Some(result.latency_ms),
         },
-        device_response: result.device_response.or(result.error),
-        latency_ms: Some(result.latency_ms),
-    };
-    state.ws_manager.broadcast_command_ack(ack);
+    );
 }
 
 /// Execute a write directly to the device, bypassing the command queue.
@@ -467,4 +500,148 @@ async fn send_msg(
     let bytes = rmp_serde::to_vec_named(msg)
         .map_err(|e| axum::Error::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
     sink.send(Message::Binary(bytes.into())).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::tests::seeded_admin_app_state;
+    use crate::ws_manager::WsFrame;
+    use std::collections::HashMap;
+    use tokio::sync::mpsc::Receiver;
+
+    fn write_msg(tag_id: &str, command_id: &str) -> ClientMessage {
+        ClientMessage::TagWrite {
+            tag_id: tag_id.to_string(),
+            value: 42.0,
+            command_id: Some(command_id.to_string()),
+        }
+    }
+
+    /// The only message in the queue: (command id, status, device response).
+    fn only_ack(rx: &mut Receiver<WsFrame>) -> (String, String, Option<String>) {
+        let ack = match rx.try_recv() {
+            Ok(WsFrame::Message(ServerMessage::CommandAck {
+                command_id,
+                status,
+                device_response,
+                ..
+            })) => (command_id, status, device_response),
+            other => panic!("expected a CommandAck, got {other:?}"),
+        };
+        assert!(rx.try_recv().is_err(), "exactly one answer");
+        ack
+    }
+
+    /// Two connected clients and a Modbus tag on a device the store does not know, so a
+    /// permitted write fails. The tag's cache value starts at 1.0.
+    async fn setup(writable: bool) -> (AppState, Receiver<WsFrame>, Receiver<WsFrame>, i64) {
+        let state = seeded_admin_app_state().await;
+        let requester = state
+            .ws_manager
+            .connect("me".into(), "admin".into(), vec![]);
+        let other = state
+            .ws_manager
+            .connect("other".into(), "admin".into(), vec![]);
+        let id = state
+            .storage
+            .create_data_source(
+                "dev1.temp",
+                "Temp",
+                "",
+                "#fff",
+                0.0,
+                100.0,
+                0.0,
+                0.0,
+                0.0,
+                0,
+                1,
+                "modbus",
+                r#"{"address":40001}"#,
+                "dev1",
+                None,
+                "line",
+            )
+            .await
+            .unwrap();
+        if writable {
+            state
+                .storage
+                .update_write_policy(
+                    id,
+                    &crate::models::WritePolicyUpdate {
+                        writable: Some(true),
+                        write_min: None,
+                        write_max: None,
+                        write_max_rate: None,
+                        write_requires_reason: None,
+                        write_deadband: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        state
+            .cache
+            .update("dev1", HashMap::from([("temp".to_string(), 1.0)]), false)
+            .await;
+        (state, requester, other, id)
+    }
+
+    async fn dispatch(state: &AppState, role: &str, msg: ClientMessage) {
+        handle_client_message(&msg, "me", &state.ws_manager, state, "admin", role).await;
+    }
+
+    #[tokio::test]
+    async fn non_admin_write_is_rejected_to_the_requester_only() {
+        let (state, mut me, mut other, id) = setup(true).await;
+        dispatch(&state, "operator", write_msg(&id.to_string(), "c1")).await;
+
+        let (command_id, status, reason) = only_ack(&mut me);
+        assert_eq!((command_id.as_str(), status.as_str()), ("c1", "rejected"));
+        assert!(reason.unwrap().contains("admin"));
+        assert!(other.try_recv().is_err(), "nobody else is told");
+        assert_eq!(state.cache.get_metric_value("temp").await, Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn refused_writes_answer_the_requester() {
+        let (state, mut me, mut other, id) = setup(false).await;
+
+        // Non-numeric id.
+        dispatch(&state, "admin", write_msg("not-a-number", "c1")).await;
+        let (command_id, status, _) = only_ack(&mut me);
+        assert_eq!((command_id.as_str(), status.as_str()), ("c1", "rejected"));
+
+        // Unknown data source.
+        dispatch(&state, "admin", write_msg("9999", "c2")).await;
+        let (command_id, status, _) = only_ack(&mut me);
+        assert_eq!((command_id.as_str(), status.as_str()), ("c2", "rejected"));
+
+        // Not writable.
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c3")).await;
+        let (command_id, status, reason) = only_ack(&mut me);
+        assert_eq!((command_id.as_str(), status.as_str()), ("c3", "rejected"));
+        assert!(reason.unwrap().contains("not writable"));
+
+        assert!(other.try_recv().is_err(), "nobody else is told");
+        assert_eq!(state.cache.get_metric_value("temp").await, Some(1.0));
+    }
+
+    #[tokio::test]
+    async fn failed_device_write_answers_the_requester_and_leaves_the_cache() {
+        let (state, mut me, mut other, id) = setup(true).await;
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
+
+        let (command_id, status, reason) = only_ack(&mut me);
+        assert_eq!((command_id.as_str(), status.as_str()), ("c1", "failed"));
+        assert_eq!(reason.as_deref(), Some("Modbus device not found"));
+        assert!(other.try_recv().is_err(), "the result is not broadcast");
+        assert_eq!(
+            state.cache.get_metric_value("temp").await,
+            Some(1.0),
+            "the value that was not written is not shown"
+        );
+    }
 }
