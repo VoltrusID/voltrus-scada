@@ -56,6 +56,9 @@ pub(super) fn run_migrations(conn: &Connection) {
         .execute_batch("ALTER TABLE users ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0");
     let _ = conn.execute_batch("ALTER TABLE users ADD COLUMN locked_until INTEGER");
 
+    // Migration: account disable flag (a disabled user cannot sign in)
+    let _ = conn.execute_batch("ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0");
+
     // Migration: add refresh_tokens table
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS refresh_tokens (

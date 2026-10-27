@@ -15,10 +15,12 @@ mod license_status;
 mod mqtt_broker;
 mod naming_convention;
 mod protocol_routes;
+mod scripts;
 mod shift_report;
 mod system;
 mod tag_tree;
 mod ui_preferences;
+mod users;
 
 pub use helpers::*;
 

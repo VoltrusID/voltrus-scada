@@ -69,6 +69,10 @@ pub struct User {
     pub role: String,
     #[serde(default)]
     pub must_change_password: bool,
+    /// A disabled account keeps its row and history but cannot sign in, and
+    /// its sessions stop working at once.
+    #[serde(default)]
+    pub disabled: bool,
     #[serde(skip_serializing)]
     pub failed_attempts: i64,
     #[serde(skip_serializing)]

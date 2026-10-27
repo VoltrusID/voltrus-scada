@@ -192,6 +192,25 @@ async fn check_password_and_login(
         );
     }
 
+    if user.disabled {
+        let _ = state
+            .storage
+            .insert_security_event(&crate::models::CreateSecurityEvent {
+                event_type: "login_disabled".into(),
+                severity: "warning".into(),
+                source_ip,
+                user_agent,
+                username: Some(body.username.clone()),
+                details: Some("Login on a disabled account".into()),
+            })
+            .await;
+        return (
+            StatusCode::FORBIDDEN,
+            json!({"error": "Account disabled"}),
+            jar,
+        );
+    }
+
     // Successful login — reset failed attempts. Other sessions of the same
     // user (another browser or device) keep their refresh tokens; only the
     // refresh token this client presents is replaced by the new one.

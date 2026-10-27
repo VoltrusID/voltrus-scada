@@ -620,9 +620,8 @@ impl Draft {
         Ok(())
     }
 
-    /// `POST /api/v1/data-sources`. The server stores `source_config` as
-    /// the text of whatever JSON it gets, so it goes as an object (a string
-    /// would be stored quoted, as the web client's are). The server ignores
+    /// `POST /api/v1/data-sources`. The server stores an object
+    /// `source_config` as its JSON text (a string as-is). The server ignores
     /// the delays here: they follow with [`Draft::delays_body`].
     pub fn create_body(&self) -> Result<Value, String> {
         let mut body = self.common()?;
@@ -704,9 +703,9 @@ pub fn parse_hex(text: &str) -> Option<u32> {
 }
 
 /// The web client's duplicate (`App.tsx::handleDuplicateSensor`): the same
-/// source under `<key>_copy`, named `<name> copy` (the web's `<name> (Copy)`
-/// fails the server's default "permissive" name rule, which allows only
-/// letters, digits, space, `_`, `.` and `-`). The config goes as an object
+/// source under `<key>_copy`, named `<name> copy` (the server's default
+/// "permissive" name rule allows only letters, digits, space, `_`, `.` and
+/// `-`, so no parentheses; the web names its duplicates the same way). The config goes as an object
 /// (see [`Draft::create_body`]); the delays follow separately.
 pub fn duplicate_body(source: &DataSource) -> Value {
     let mut body = json!({

@@ -90,6 +90,9 @@ pub fn default_user_role() -> String {
 pub struct UpdateUserRequest {
     pub role: Option<String>,
     pub password: Option<String>,
+    /// Disable (`true`) or re-enable (`false`) the account.
+    #[serde(default)]
+    pub disabled: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::ToSchema)]

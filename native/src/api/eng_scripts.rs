@@ -39,8 +39,9 @@ pub struct Script {
     pub name: String,
     #[serde(default)]
     pub source: String,
-    /// The engine's complaint when the source was last saved (the server
-    /// refuses to run the script while it is set).
+    /// The engine's complaint when the source was last saved, cleared by a
+    /// save that parses (the server refuses to run the script while it is
+    /// set).
     #[serde(default)]
     pub syntax_error: Option<String>,
     pub cpu_limit_ms: i64,

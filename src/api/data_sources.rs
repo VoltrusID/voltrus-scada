@@ -53,10 +53,13 @@ pub async fn create_data_source(
         .as_str()
         .unwrap_or("random_walk")
         .to_string();
-    let source_config = body
-        .get("source_config")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "{}".to_string());
+    // A string is the config text already (what the web client sends); any
+    // other JSON value is stored as its own JSON text, as PUT does.
+    let source_config = match body.get("source_config") {
+        Some(serde_json::Value::String(text)) => text.clone(),
+        Some(value) => value.to_string(),
+        None => "{}".to_string(),
+    };
     let device_id = body["device_id"].as_str().unwrap_or("default").to_string();
     let equipment_id = body["equipment_id"].as_str();
     let chart_type = body["chart_type"]

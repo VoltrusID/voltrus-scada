@@ -130,6 +130,22 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// The RBAC role assigned to a user (`PUT /users/{id}/role`), if any.
+    pub async fn get_user_role_id(&self, user_id: i64) -> Result<Option<i64>> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.query_row(
+                "SELECT role_id FROM users WHERE id = ?1",
+                rusqlite::params![user_id],
+                |row| row.get(0),
+            )
+            .context("Read user role failed")
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     pub async fn get_user_role_permissions(&self, user_id: i64) -> Result<Vec<String>> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {

@@ -11,6 +11,12 @@ use crate::models::*;
 
 /// Check if an auth user has a specific permission.
 /// Admin users always pass.
+///
+/// Custom roles (`/api/v1/roles`) are an assignable catalogue: access to the
+/// API is decided by the built-in role string on the user (`admin`, `demo`,
+/// ...) and by the key role for API keys, through the auth middlewares. No
+/// handler consults a custom role's permission list yet, so this helper is
+/// for code that wants to ask the question, not a gate on the routes.
 pub fn has_permission(permissions: &[String], role: &str, perm: &str) -> bool {
     if role == "admin" {
         return true;
@@ -260,6 +266,41 @@ pub async fn assign_user_role(
     });
 
     Ok(Json(json!({"ok": true})).into_response())
+}
+
+// ── Read a user's assigned role ──
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/users/{id}/role",
+    params(
+        ("id" = i64, Path, description = "User ID")
+    ),
+    responses(
+        (status = 200, body = serde_json::Value),
+        (status = 404),
+        (status = 403),
+    ),
+    tag = "RBAC",
+    security(("api_key" = []), ("cookie_auth" = []))
+)]
+pub async fn get_user_role(
+    State(state): State<AppState>,
+    Path(user_id): Path<i64>,
+) -> Result<Response, AppError> {
+    if state.storage.get_user_by_id(user_id).await?.is_none() {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": "user not found"})),
+        )
+            .into_response());
+    }
+    let role_id = state.storage.get_user_role_id(user_id).await?;
+    let role = match role_id {
+        Some(id) => state.storage.get_role_by_id(id).await?,
+        None => None,
+    };
+    Ok(Json(json!({"user_id": user_id, "role_id": role_id, "role": role})).into_response())
 }
 
 // ── Tests ──
