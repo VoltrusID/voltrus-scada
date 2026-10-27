@@ -89,6 +89,24 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Whether an alarm with this id exists.
+    pub async fn alarm_exists(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM alarms WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .context("Alarm lookup failed")?;
+            Ok(count > 0)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     /// Check if there is any unresolved alarm for this source_key, regardless
     /// of severity. Used by the off-delay logic, which must not start its
     /// clear pending unless an alarm is actually raised.

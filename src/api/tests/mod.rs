@@ -13,6 +13,8 @@ mod helpers;
 mod history;
 mod import_nodered;
 mod license_status;
+#[cfg(feature = "mcp")]
+mod mcp;
 mod mqtt_broker;
 mod naming_convention;
 mod notifications;

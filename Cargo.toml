@@ -56,8 +56,9 @@ path = "src/bin/bacnet-sim.rs"
 required-features = ["bacnet"]
 
 [features]
-default = ["snmp_scan", "modbus", "opcua", "mqtt-broker", "bacnet", "dnp3", "ethernet-ip", "s7", "scripts"]
+default = ["snmp_scan", "modbus", "opcua", "mqtt-broker", "bacnet", "dnp3", "ethernet-ip", "s7", "scripts", "mcp"]
 openapi = []
+mcp = []
 snmp_scan = []
 modbus = ["dep:tokio-modbus"]
 opcua = ["dep:async-opcua"]

@@ -23,6 +23,13 @@ pub async fn admin_only_middleware(
     next.run(req).await
 }
 
+/// Roles that may use the operational write routes: admin, demo, and the
+/// write-capable "integration" API key role. Plain "api" keys stay read-only.
+/// The MCP endpoint applies the same rule to its write tools.
+pub fn role_allows_operational_writes(role: &str) -> bool {
+    matches!(role, "admin" | "demo" | "integration")
+}
+
 /// Allows admin, demo, and integration roles. Used for routes that demo users
 /// can access (device config, screens, layouts, commands, flows, etc.) but not
 /// truly admin-only routes (user management, roles, API keys, security,
@@ -33,7 +40,7 @@ pub async fn demo_allowed_middleware(
     req: Request,
     next: Next,
 ) -> impl IntoResponse {
-    if auth.role != "admin" && auth.role != "demo" && auth.role != "integration" {
+    if !role_allows_operational_writes(&auth.role) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({"error": "admin access required"})),

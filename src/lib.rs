@@ -48,6 +48,8 @@ pub mod health;
 pub mod import_nodered;
 pub mod integration;
 pub mod license;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 #[cfg(feature = "modbus")]
 pub mod modbus;
 pub mod models;
