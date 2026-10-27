@@ -308,12 +308,14 @@ pub async fn start_broker(state: MqttBrokerState, config: MqttBrokerConfig) -> R
         }
 
         let tracker_clone = tracker.clone();
+        // Taken here, in the blocking task: the tracker thread has no runtime
+        // context of its own, and `Handle::current()` there panics.
+        let rt = tokio::runtime::Handle::current();
 
         // Spawn notification processor thread
         let _notif_handle = std::thread::Builder::new()
             .name("mqtt-tracker".into())
             .spawn(move || {
-                let rt = tokio::runtime::Handle::current();
                 loop {
                     match link_rx.recv() {
                         Ok(Some(rumqttd::Notification::Forward(forward))) => {

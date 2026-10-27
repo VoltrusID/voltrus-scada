@@ -27,7 +27,7 @@ pub async fn list_devices(
     Extension(user): Extension<AuthUser>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let devices = state.storage.list_s7_devices().await?;
@@ -69,7 +69,7 @@ pub async fn create_device(
     Json(req): Json<CreateS7DeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     if req.name.is_empty() {
@@ -142,7 +142,7 @@ pub async fn update_device(
     Json(req): Json<UpdateS7DeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     state
@@ -216,7 +216,7 @@ pub async fn delete_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Stop poller if running
@@ -262,7 +262,7 @@ pub async fn list_tags(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let tags = state.storage.list_s7_tags(id).await?;
@@ -294,7 +294,7 @@ pub async fn add_tag(
     Json(req): Json<CreateS7TagRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     if req.tag_address.is_empty() {
@@ -370,7 +370,7 @@ pub async fn remove_tag(
     Path((_device_id, tag_id)): Path<(i64, i64)>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     state.storage.delete_s7_tag(tag_id).await?;
@@ -403,7 +403,7 @@ pub async fn start_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Load device from DB
@@ -489,7 +489,7 @@ pub async fn stop_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device_key = format!("s7_{}", id);
@@ -533,7 +533,7 @@ pub async fn browse_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Load device from DB

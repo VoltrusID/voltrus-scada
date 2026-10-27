@@ -190,6 +190,7 @@ pub async fn write_tag(
     ),
     responses(
         (status = 200, body = Command),
+        (status = 404),
     ),
     tag = "Commands",
     security(("api_key" = []), ("cookie_auth" = []))
@@ -202,7 +203,7 @@ pub async fn get_command_status(
         .storage
         .get_command(&command_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Command not found"))?;
+        .ok_or_else(|| AppError::not_found("Command not found"))?;
     Ok(Json(cmd))
 }
 
@@ -238,6 +239,7 @@ pub async fn list_commands(
     responses(
         (status = 200, body = serde_json::Value),
         (status = 400),
+        (status = 404),
     ),
     tag = "Commands",
     security(("api_key" = []), ("cookie_auth" = []))
@@ -251,7 +253,7 @@ pub async fn cancel_command(
         .storage
         .get_command(&command_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Command not found"))?;
+        .ok_or_else(|| AppError::not_found("Command not found"))?;
 
     // Only cancel if status is pending or queued
     if cmd.status != CommandStatus::Pending.as_str() && cmd.status != CommandStatus::Queued.as_str()

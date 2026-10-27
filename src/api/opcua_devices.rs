@@ -33,7 +33,7 @@ pub async fn list_devices(
     Extension(user): Extension<AuthUser>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let devices = state.storage.list_opcua_devices().await?;
@@ -76,7 +76,7 @@ pub async fn create_device(
     Json(req): Json<CreateOpcUaDeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     if req.name.is_empty() {
@@ -154,7 +154,7 @@ pub async fn update_device(
     Json(req): Json<UpdateOpcUaDeviceRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     if let Some(ref url) = req.url
@@ -211,7 +211,7 @@ pub async fn delete_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Stop poller if running
@@ -254,7 +254,7 @@ pub async fn list_nodes(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let nodes = state.storage.list_opcua_nodes(id).await?;
@@ -282,7 +282,7 @@ pub async fn add_node(
     Json(req): Json<CreateOpcUaNodeRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     if req.node_id.is_empty() {
@@ -349,7 +349,7 @@ pub async fn remove_node(
     Path((_device_id, node_id)): Path<(i64, i64)>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     state.storage.delete_opcua_node(node_id).await?;
@@ -383,7 +383,7 @@ pub async fn browse_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Load device from DB
@@ -547,7 +547,7 @@ pub async fn start_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     // Load device from DB
@@ -625,7 +625,7 @@ pub async fn stop_device(
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
-        return Err(AppError(anyhow::anyhow!("Admin access required")));
+        return Err(AppError::forbidden("Admin access required"));
     }
 
     let device_key = format!("opcua_{}", id);

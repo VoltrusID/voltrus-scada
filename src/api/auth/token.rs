@@ -17,6 +17,9 @@ pub(crate) fn hash_refresh_token(token: &str) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// The access token, `<base64url payload>.<hex HMAC>`. Every character is
+/// cookie-safe, so the `Set-Cookie` value needs no percent-encoding and is
+/// accepted as is where cookies are not decoded (the WebSocket `Auth` message).
 pub fn create_token(username: &str, role: &str, secret: &str) -> String {
     let exp = crate::timeutil::now_millis() as u64 + ACCESS_TOKEN_EXPIRY_MS;
     let payload = serde_json::to_string(&TokenClaims {
@@ -28,7 +31,7 @@ pub fn create_token(username: &str, role: &str, secret: &str) -> String {
     let sig = hmac_sign(&payload, secret);
     format!(
         "{}.{}",
-        base64::engine::general_purpose::STANDARD.encode(&payload),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&payload),
         sig
     )
 }
@@ -36,7 +39,7 @@ pub fn create_token(username: &str, role: &str, secret: &str) -> String {
 pub fn verify_token(token: &str, secret: &str) -> Option<TokenClaims> {
     let (payload_b64, sig) = token.split_once('.')?;
     let payload = String::from_utf8(
-        base64::engine::general_purpose::STANDARD
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(payload_b64)
             .ok()?,
     )

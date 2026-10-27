@@ -8,9 +8,9 @@
 //! server's defaults apply) and hands back each row as a JSON object.
 //!
 //! Server facts worth knowing (all read from the handlers):
-//! - Every OPC UA, S7, EtherNet/IP, DNP3 and BACnet handler checks for the
-//!   admin role itself; demo and integration users pass the router and get
-//!   `500 {"error":"Admin access required"}`.
+//! - Every OPC UA, S7, EtherNet/IP, DNP3, BACnet and Voltrus-PLC handler checks
+//!   for the admin role itself; demo and integration users pass the router and
+//!   get `403 {"error":"Admin access required"}`.
 //! - Handler failures are `500 {"error": …}`, validation included.
 //! - `GET /api/v1/devices/{id}/simulate` answers `{simulation_mode,
 //!   sim_profile_id, sim_config}` for a row of the `devices` table and 404
