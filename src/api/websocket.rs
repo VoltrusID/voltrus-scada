@@ -332,7 +332,10 @@ fn reject_write(
 /// the tag's write policy is checked and the command is queued with an audit
 /// entry naming the user. The queue processor delivers it and broadcasts the
 /// `sent`, `acked` or `failed` acknowledgements under the same command id; the
-/// requester is told right away that the command is `pending`.
+/// requester is told right away only when the write is refused (`rejected`, with the
+/// reason); otherwise its first `CommandAck` for the command id is the final outcome
+/// (`acked`, `failed` or `expired`), the intermediate `sent` and `queued` going to the
+/// other connections only.
 async fn handle_tag_write(
     state: &AppState,
     conn_id: &str,
@@ -373,25 +376,22 @@ async fn handle_tag_write(
         reason,
         command_id: Some(cmd_id.clone()),
     };
+    // Registered before the command exists: the queue may answer within milliseconds.
+    state.ws_manager.expect_final_ack(&cmd_id, conn_id);
     match super::commands::submit_tag_write(state, username, submission).await {
         Ok(cmd) => {
+            // No answer yet: the requester's first `CommandAck` for this id is the
+            // queue's final one (`acked`, `failed`, `expired`), as it was the device's
+            // answer when writes went straight to the device.
             tracing::info!(
                 "WS: user={} queued write {}={value} as command {}",
                 username,
                 data_source_id,
                 cmd.id
             );
-            state.ws_manager.send_to(
-                conn_id,
-                ServerMessage::CommandAck {
-                    command_id: cmd.id,
-                    status: cmd.status,
-                    device_response: None,
-                    latency_ms: None,
-                },
-            );
         }
         Err(refusal) => {
+            state.ws_manager.forget_command(&cmd_id);
             let message = refusal.message();
             tracing::warn!(
                 "WS: user={} write to data source {} refused: {}",
@@ -455,6 +455,14 @@ mod tests {
         };
         assert!(rx.try_recv().is_err(), "exactly one answer");
         ack
+    }
+
+    /// A write the server accepted sends the requester nothing yet.
+    fn assert_accepted(rx: &mut Receiver<WsFrame>) {
+        assert!(
+            rx.try_recv().is_err(),
+            "an accepted write is answered when the command is final"
+        );
     }
 
     /// Two connected clients and a Modbus tag on a device the store does not know, so a
@@ -602,7 +610,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn permitted_write_is_queued_audited_and_reported_pending() {
+    async fn permitted_write_is_queued_and_audited() {
         let (state, mut me, mut other, id) = setup(true).await;
         set_policy(
             &state,
@@ -619,8 +627,7 @@ mod tests {
         };
         dispatch(&state, "admin", msg).await;
 
-        let (command_id, status, _) = only_ack(&mut me);
-        assert_eq!((command_id.as_str(), status.as_str()), ("c1", "pending"));
+        assert_accepted(&mut me);
         assert!(other.try_recv().is_err(), "nobody else is told");
 
         let cmd = state.storage.get_command("c1").await.unwrap().unwrap();
@@ -656,16 +663,96 @@ mod tests {
             reason: None,
         };
         dispatch(&state, "admin", msg).await;
-        let (command_id, status, _) = only_ack(&mut me);
-        assert_eq!(status, "pending");
+        assert_accepted(&mut me);
+        let commands = state
+            .storage
+            .list_commands(&crate::models::CommandQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0].id.starts_with("ws-"), "{}", commands[0].id);
+        assert_eq!(commands[0].created_by, "admin");
+    }
+
+    /// What the queue publishes for a command, as a broadcast.
+    fn queue_says(state: &AppState, command_id: &str, status: &str, response: Option<&str>) {
+        state
+            .ws_manager
+            .broadcast_command_ack(ServerMessage::CommandAck {
+                command_id: command_id.to_string(),
+                status: status.to_string(),
+                device_response: response.map(str::to_string),
+                latency_ms: None,
+            });
+    }
+
+    fn ack_of(rx: &mut Receiver<WsFrame>) -> (String, String, Option<String>) {
+        match rx.try_recv() {
+            Ok(WsFrame::Binary(bytes)) => match rmp_serde::from_slice::<ServerMessage>(&bytes) {
+                Ok(ServerMessage::CommandAck {
+                    command_id,
+                    status,
+                    device_response,
+                    ..
+                }) => (command_id, status, device_response),
+                other => panic!("expected a CommandAck, got {other:?}"),
+            },
+            other => panic!("expected a frame, got {other:?}"),
+        }
+    }
+
+    /// The requester sees one acknowledgement of its command, the final one (clients of the
+    /// direct write took the first as the outcome); the others see every step.
+    #[tokio::test]
+    async fn requester_gets_only_the_final_acknowledgement_others_get_every_step() {
+        let (state, mut me, mut other, id) = setup(true).await;
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
+        assert_accepted(&mut me);
+
+        queue_says(&state, "c1", "sent", None);
         assert!(
-            state
-                .storage
-                .get_command(&command_id)
-                .await
-                .unwrap()
-                .is_some()
+            me.try_recv().is_err(),
+            "`sent` is not the requester's outcome"
         );
+        queue_says(&state, "c1", "queued", Some("device busy"));
+        assert!(me.try_recv().is_err(), "nor is a retry");
+        queue_says(&state, "c1", "acked", Some("OK"));
+        let (command_id, status, response) = ack_of(&mut me);
+        assert_eq!((command_id.as_str(), status.as_str()), ("c1", "acked"));
+        assert_eq!(response.as_deref(), Some("OK"));
+        assert!(me.try_recv().is_err(), "exactly one answer");
+
+        let steps: Vec<String> = (0..3).map(|_| ack_of(&mut other).1).collect();
+        assert_eq!(steps, ["sent", "queued", "acked"]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_command_is_the_requesters_final_answer() {
+        let (state, mut me, _other, id) = setup(true).await;
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
+        queue_says(&state, "c1", "sent", None);
+        queue_says(&state, "c1", "failed", Some("Modbus device not found"));
+        let (_, status, response) = ack_of(&mut me);
+        assert_eq!(status, "failed");
+        assert_eq!(response.as_deref(), Some("Modbus device not found"));
+        assert!(me.try_recv().is_err());
+    }
+
+    /// Commands from REST or another connection are not held back from anyone, and a
+    /// disconnected requester leaves nothing behind.
+    #[tokio::test]
+    async fn only_the_submitting_connection_is_filtered() {
+        let (state, mut me, mut other, id) = setup(true).await;
+        queue_says(&state, "rest-1", "sent", None);
+        assert_eq!(ack_of(&mut me).1, "sent");
+        assert_eq!(ack_of(&mut other).1, "sent");
+
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
+        assert!(state.ws_manager.disconnect("me"));
+        queue_says(&state, "c1", "sent", None);
+        assert_eq!(ack_of(&mut other).1, "sent");
+        queue_says(&state, "c1", "acked", None);
+        assert_eq!(ack_of(&mut other).1, "acked");
     }
 
     #[tokio::test]
@@ -682,7 +769,7 @@ mod tests {
         .await;
 
         dispatch(&state, "admin", write_msg(&id.to_string(), "low")).await; // 42 is inside
-        assert_eq!(only_ack(&mut me).1, "pending");
+        assert_accepted(&mut me);
 
         let too_high = ClientMessage::TagWrite {
             tag_id: id.to_string(),
@@ -768,7 +855,7 @@ mod tests {
         .await;
 
         dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
-        assert_eq!(only_ack(&mut me).1, "pending");
+        assert_accepted(&mut me);
 
         dispatch(&state, "admin", write_msg(&id.to_string(), "c2")).await;
         assert_rejected(&state, &mut me, id, "c2", "Rate limit").await;
@@ -778,7 +865,7 @@ mod tests {
     async fn reusing_a_command_id_is_refused() {
         let (state, mut me, _other, id) = setup(true).await;
         dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
-        assert_eq!(only_ack(&mut me).1, "pending");
+        assert_accepted(&mut me);
 
         dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
         let (_, status, reason) = only_ack(&mut me);

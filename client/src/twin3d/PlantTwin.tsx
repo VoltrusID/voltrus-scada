@@ -9,7 +9,7 @@ import { symbolLiveState, stateText, stateColor, type SymbolLiveState } from '..
 import { Faceplate } from '../scada2/hmi/Faceplate'
 import { AlarmBanner } from '../scada2/AlarmBanner'
 import { isRunning } from '../scada2/connections/ConnectionLayer'
-import { wsWriteTag } from '../api/websocket'
+import { wsWriteTagResult } from '../api/websocket'
 import { writeTag } from '../api/commands'
 import { toast } from '../components/Toast'
 import { placeLayout, bounds, type PlacedItem, type PlacedArea } from './placement'
@@ -224,8 +224,10 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
 
   const sendCommand = useCallback(async (sensorId: number, value: number) => {
     try {
-      if (!wsWriteTag(sensorId, value)) await writeTag(sensorId, value)
-      toast.success('Command sent')
+      const outcome = await wsWriteTagResult(sensorId, value)
+      if (outcome === null) await writeTag(sensorId, value)
+      if (outcome === 'queued') toast.info('Command queued, the device has not answered yet')
+      else toast.success('Command sent')
       return true
     } catch (err: any) {
       toast.error(err.message || 'Write failed')

@@ -32,9 +32,16 @@ A write sent over the WebSocket (`TagWrite`: `tag_id` as the numeric data source
 `value`, optional `command_id` and `reason`) takes the same road as
 `POST /api/v1/tags/{id}/write`: the tag's write policy is checked (writable, mandatory
 reason, range, deadband, rate limit), the command is queued, and the audit trail
-records the user and the reason. The requester gets a `CommandAck` with status
-`pending` at once, or `rejected` with the reason; the queue then broadcasts `sent`,
-`acked` or `failed` under the same `command_id`. Only admins may write over the
+records the user and the reason. A refused write is answered at once with a `CommandAck`
+of status `rejected` and the reason. An accepted one is answered when the command is
+final: the first `CommandAck` the requester receives for its `command_id` is `acked`
+(the device took it), `failed` (retries used up) or `expired` (the device stayed
+unreachable for 30 minutes), so a client may take that first acknowledgement as the
+outcome, as it could when writes went straight to the device. The intermediate `sent`
+and `queued` (a retry) acknowledgements are broadcast to every other connection but not
+to the requester. A device that is offline leaves the write queued, so a client should
+stop waiting after a timeout and show it as queued (the web client does after 15 s).
+Only admins may write over the
 WebSocket. Clients that are not on the WebSocket (including the event stream) write
 with the REST endpoint.
 
