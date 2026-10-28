@@ -6,8 +6,9 @@ import { ConfigSnapshotPanel } from './ConfigSnapshotPanel'
 import { ProjectWizard } from './ProjectWizard'
 import { HealthCheckPanel } from './HealthCheckPanel'
 import { SmtpSettingsPanel } from './SmtpSettingsPanel'
+import { StorageSettings } from './StorageSettings'
 
-type SystemTab = 'overview' | 'docs' | 'templates' | 'config' | 'wizard' | 'health' | 'smtp' | 'tools'
+type SystemTab = 'overview' | 'docs' | 'templates' | 'config' | 'wizard' | 'health' | 'storage' | 'smtp' | 'tools'
 
 interface Props {
   systemInfo: SystemInfo | null | undefined
@@ -30,6 +31,7 @@ export function SystemPanel({ systemInfo }: Props) {
         <div style={tabStyle(tab === 'templates')} onClick={() => setTab('templates')}>Templates</div>
         <div style={tabStyle(tab === 'wizard')} onClick={() => setTab('wizard')}>Wizard</div>
         <div style={tabStyle(tab === 'health')} onClick={() => setTab('health')}>Health</div>
+        <div style={tabStyle(tab === 'storage')} onClick={() => setTab('storage')}>Storage</div>
         <div style={tabStyle(tab === 'config')} onClick={() => setTab('config')}>Config</div>
         <div style={tabStyle(tab === 'smtp')} onClick={() => setTab('smtp')}>SMTP</div>
         <div style={tabStyle(tab === 'tools')} onClick={() => setTab('tools')}>Tools</div>
@@ -40,6 +42,7 @@ export function SystemPanel({ systemInfo }: Props) {
       {tab === 'templates' && <TemplatesPanel />}
       {tab === 'wizard' && <ProjectWizard onClose={() => setTab('overview')} />}
       {tab === 'health' && <HealthCheckPanel />}
+      {tab === 'storage' && <StorageSettings />}
       {tab === 'config' && <ConfigSnapshotPanel />}
       {tab === 'smtp' && <SmtpSettingsPanel />}
       {tab === 'tools' && <ToolsPanel />}

@@ -2,6 +2,9 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { SensorConfig, SOURCE_TYPES, CHART_TYPES, SOURCE_CATEGORY } from './types';
 import { inputStyle, monoInputStyle, btnStyle, parseConfig, normalizeKeyEvent, displayShortcut } from './styles';
 import { SourceConfigFields } from './SourceConfigFields';
+import { HistoryDeadbandFields } from './components/HistoryDeadbandFields';
+import { HistoryDeadbandBulk } from './components/HistoryDeadbandBulk';
+import { applyHistoryDeadband, describeHistoryDeadband, type HistoryDeadbandForm } from './historyDeadband';
 import { useUpdateSensor, useReorderSensors } from './queries';
 
 const CELL: React.CSSProperties = {
@@ -98,6 +101,9 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
   const updateMut = useUpdateSensor();
   const reorderMut = useReorderSensors();
   const configRef = useRef<HTMLDivElement>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [popoverHistErrors, setPopoverHistErrors] = useState<string[]>([]);
 
   const filtered = sensors.filter(s => s.name.toLowerCase().includes(filter) || s.key.toLowerCase().includes(filter));
 
@@ -132,6 +138,33 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
       config: { ...parseConfig(sensor.source_config), ...(sensor.source_type === 'modbus' && sensor.device_id ? { modbus_device_id: sensor.device_id } : {}) },
       rect,
     });
+  };
+
+  const toggleSelected = (id: number) => setSelected(prev => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const allShownSelected = filtered.length > 0 && filtered.every(s => selected.has(s.id));
+  const toggleAllShown = () => setSelected(prev => {
+    const next = new Set(prev);
+    if (filtered.every(s => next.has(s.id))) filtered.forEach(s => next.delete(s.id));
+    else filtered.forEach(s => next.add(s.id));
+    return next;
+  });
+
+  // Sequential on purpose: each save rewrites the whole tag, and the list is small.
+  const applyBulk = async (form: HistoryDeadbandForm | null) => {
+    setBulkBusy(true);
+    try {
+      for (const s of sensors.filter(t => selected.has(t.id))) {
+        const cfg = applyHistoryDeadband(parseConfig(s.source_config), form);
+        await onSave({ ...s, source_config: JSON.stringify(cfg) });
+      }
+      setSelected(new Set());
+    } finally {
+      setBulkBusy(false);
+    }
   };
 
   const saveConfig = () => {
@@ -231,6 +264,9 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
         }}
       >
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
+          <input type="checkbox" aria-label={`Select ${s.name}`} checked={selected.has(s.id)} onChange={() => toggleSelected(s.id)} />
+        </td>
+        <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
           <input type="color" value={s.color} onChange={e => updateField(s, 'color', e.target.value)} style={{ width: 28, height: 24, padding: 1, border: 'none', background: 'transparent', cursor: 'pointer' }} />
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
@@ -279,7 +315,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
           />
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
-          <button onClick={e => startConfigEdit(s, e.currentTarget)} style={{ padding: '2px 8px', borderRadius: 3, border: '1px solid var(--border)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 10 }}>cfg</button>
+          <button onClick={e => startConfigEdit(s, e.currentTarget)} title={describeHistoryDeadband(parseConfig(s.source_config)) ? `History deadband: ${describeHistoryDeadband(parseConfig(s.source_config))}` : 'Source config'} style={{ padding: '2px 8px', borderRadius: 3, border: '1px solid var(--border)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 10 }}>cfg{describeHistoryDeadband(parseConfig(s.source_config)) ? '*' : ''}</button>
         </td>
         <td style={{ ...tdStyle, whiteSpace: 'nowrap' }} onMouseDown={e => e.stopPropagation()}>
           <div style={{ display: 'flex', gap: 3 }}>
@@ -295,6 +331,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
     if (!newRow) return null;
     return (
       <tr style={{ background: 'rgba(139,92,246,.05)' }}>
+        <td style={tdStyle} />
         <td style={tdStyle}>
           <input type="color" value={newRow.color || '#8b5cf6'} onChange={e => updateNewField('color', e.target.value)} style={{ width: 28, height: 24, padding: 1, border: 'none', background: 'transparent', cursor: 'pointer' }} />
         </td>
@@ -341,9 +378,13 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
           <button style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)' }} onClick={handleAdd} aria-label="Create new data source">+ Create Source</button>
         </div>
       </div>
+      {selected.size > 0 && (
+        <HistoryDeadbandBulk count={selected.size} busy={bulkBusy} onApply={applyBulk} onClearSelection={() => setSelected(new Set())} />
+      )}
       <div style={{ flex: 1, overflow: 'auto', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10 }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1200 }}>
           <colgroup>
+            <col style={{ width: 28 }} />
             <col style={{ width: 40 }} />
             <col style={{ width: 140 }} />
             <col style={{ width: 120 }} />
@@ -363,6 +404,9 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
           </colgroup>
           <thead>
             <tr>
+              <th style={thStyle}>
+                <input type="checkbox" aria-label="Select all shown tags" checked={allShownSelected} onChange={toggleAllShown} />
+              </th>
               <th style={thStyle}></th>
               <th style={thStyle}>name</th>
               <th style={thStyle}>key</th>
@@ -402,7 +446,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
         borderRadius: 8,
         padding: 12,
         width: 340,
-        maxHeight: 280,
+        maxHeight: '70vh',
         overflow: 'auto',
         zIndex: 70,
         boxShadow: '0 8px 24px rgba(0,0,0,.4)',
@@ -411,13 +455,22 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 600 }}>Source Config</span>
-        <button onClick={saveConfig} aria-label="Save source config" style={{ padding: '3px 10px', borderRadius: 4, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 11 }}>Save</button>
+        <button onClick={saveConfig} disabled={popoverHistErrors.length > 0} title={popoverHistErrors[0]} aria-label="Save source config" style={{ padding: '3px 10px', borderRadius: 4, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: popoverHistErrors.length > 0 ? 'not-allowed' : 'pointer', opacity: popoverHistErrors.length > 0 ? 0.5 : 1, fontSize: 11 }}>Save</button>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
         <SourceConfigFields
           sourceType={configPopover.srcType}
           config={configPopover.config}
           onChange={c => setConfigPopover({ ...configPopover, config: c })}
+        />
+      </div>
+      <div style={{ borderTop: '1px solid var(--border)', marginTop: 10, paddingTop: 8 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>History storage (deadband, optional)</div>
+        <HistoryDeadbandFields
+          key={configPopover.id}
+          config={configPopover.config}
+          onChange={c => setConfigPopover(p => (p ? { ...p, config: c } : p))}
+          onValidityChange={setPopoverHistErrors}
         />
       </div>
     </div>

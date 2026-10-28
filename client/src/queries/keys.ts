@@ -70,6 +70,7 @@ export const queryKeys = {
   wizardHealthCheck: ['wizardHealthCheck'] as const,
   compressionStats: ['compressionStats'] as const,
   compressionDeadband: ['compressionDeadband'] as const,
+  compressionConfig: ['compressionConfig'] as const,
   version: ['version'] as const,
   smtpConfig: ['smtpConfig'] as const,
 }

@@ -318,9 +318,10 @@ export type {
 export {
   useCompressionStats,
   useCompressionDeadband,
+  useCompressionConfig,
 } from './compression'
 
-export type { CompressionStats, DeadbandEntry } from './compression'
+export type { CompressionStats, DeadbandEntry, CompressionConfig } from './compression'
 
 export { useVersion } from './version'
 
