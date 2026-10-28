@@ -31,6 +31,17 @@ struct WsConnection {
 /// provides broadcast helpers for pushing messages to the right set of peers.
 pub struct WsManager {
     connections: DashMap<String, WsConnection>,
+    /// Command id to the connection that submitted it over the WebSocket. Until the
+    /// command reaches a final state that connection is not sent the queue's
+    /// intermediate acknowledgements (`sent`, `queued`): clients of the original
+    /// direct write take the first acknowledgement of their command id as its
+    /// outcome, so the first one they see has to be the final one.
+    origins: DashMap<String, String>,
+}
+
+/// Whether a command status is final: nothing follows it.
+fn is_final_status(status: &str) -> bool {
+    matches!(status, "acked" | "failed" | "expired" | "cancelled")
 }
 
 impl std::fmt::Debug for WsManager {
@@ -45,7 +56,20 @@ impl WsManager {
     pub fn new() -> Self {
         Self {
             connections: DashMap::new(),
+            origins: DashMap::new(),
         }
+    }
+
+    /// Note that `conn_id` submitted command `command_id`, so its final acknowledgement is
+    /// the first one that connection receives for it (see `origins`).
+    pub fn expect_final_ack(&self, command_id: &str, conn_id: &str) {
+        self.origins
+            .insert(command_id.to_string(), conn_id.to_string());
+    }
+
+    /// Stop holding back intermediate acknowledgements of a command (it was refused after all).
+    pub fn forget_command(&self, command_id: &str) {
+        self.origins.remove(command_id);
     }
 
     /// Register a new connection. Returns the receiver half that the WS handler
@@ -72,6 +96,7 @@ impl WsManager {
 
     /// Remove a connection. Returns `true` if the connection existed.
     pub fn disconnect(&self, conn_id: &str) -> bool {
+        self.origins.retain(|_, origin| origin != conn_id);
         self.connections.remove(conn_id).is_some()
     }
 
@@ -183,7 +208,25 @@ impl WsManager {
     }
 
     /// Broadcast a command acknowledgement to all connections.
+    ///
+    /// The connection that submitted the command over the WebSocket gets only its final
+    /// acknowledgement (`acked`, `failed`, `expired`, `cancelled`); everyone else gets all.
     pub fn broadcast_command_ack(&self, msg: ServerMessage) {
+        if let ServerMessage::CommandAck {
+            command_id, status, ..
+        } = &msg
+        {
+            if is_final_status(status) {
+                self.origins.remove(command_id);
+            } else if let Some(origin) = self.origins.get(command_id).map(|o| o.clone()) {
+                let mut buf = Vec::new();
+                let mut se = rmp_serde::Serializer::new(&mut buf).with_struct_map();
+                if serde::Serialize::serialize(&msg, &mut se).is_ok() {
+                    self.send_frame_to_all_except(WsFrame::Binary(Bytes::from(buf)), &origin);
+                }
+                return;
+            }
+        }
         self.broadcast_preencoded(&msg);
     }
 
@@ -209,8 +252,15 @@ impl WsManager {
     // ── Internal ───────────────────────────────────────────────────────
 
     fn send_frame_to_all(&self, frame: WsFrame) {
+        self.send_frame_to_all_except(frame, "");
+    }
+
+    fn send_frame_to_all_except(&self, frame: WsFrame, except: &str) {
         let mut stale = Vec::new();
         for mut entry in self.connections.iter_mut() {
+            if entry.key() == except {
+                continue;
+            }
             match entry.value_mut().tx.try_send(frame.clone()) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Closed(_)) => {

@@ -5,6 +5,8 @@ import {
   VoltrusWebSocket,
   WS_FAILURES_BEFORE_FALLBACK,
   SSE_PROBE_INTERVAL_MS,
+  setWsInstance,
+  wsWriteTagResult,
   type TagUpdate,
 } from '../src/api/websocket.ts'
 
@@ -275,4 +277,50 @@ test('registering the same handler twice delivers each update once', () => {
   lastWs().open()
   lastWs().hear({ type: 'TagUpdateBatch', updates: [{ tag_id: '1', value: 1, quality: 'good', ts: 1, simulated: false }] })
   assert.equal(n, 1)
+})
+
+// ── WebSocket writes: the outcome the faceplate shows ──
+
+import { decode } from '@msgpack/msgpack'
+
+function connectedForWrites() {
+  const c = new VoltrusWebSocket()
+  c.connect(WS_URL, undefined, SSE_URL)
+  lastWs().open()
+  lastWs().hear({ type: 'AuthOk', user: 'admin', permissions: ['read', 'write', 'admin'] })
+  setWsInstance(c)
+  const sentId = () => (decode(lastWs().sent.at(-1) as Uint8Array) as { command_id: string }).command_id
+  return { c, sentId }
+}
+
+test('a write resolves when the device acknowledges it, ignoring the steps in between', async () => {
+  const { sentId } = connectedForWrites()
+  const result = wsWriteTagResult(7, 1.5, 1000)
+  const id = sentId()
+  lastWs().hear({ type: 'CommandAck', command_id: 'someone-else', status: 'failed' })
+  lastWs().hear({ type: 'CommandAck', command_id: id, status: 'sent' })
+  lastWs().hear({ type: 'CommandAck', command_id: id, status: 'acked', device_response: 'OK' })
+  assert.equal(await result, 'acked')
+  setWsInstance(null)
+})
+
+test('a refused or failed write rejects with the server reason', async () => {
+  const { sentId } = connectedForWrites()
+  const refused = wsWriteTagResult(7, 1.5, 1000)
+  lastWs().hear({ type: 'CommandAck', command_id: sentId(), status: 'rejected', device_response: 'Tag is not writable' })
+  await assert.rejects(refused, /Tag is not writable/)
+
+  const failed = wsWriteTagResult(7, 2, 1000)
+  lastWs().hear({ type: 'CommandAck', command_id: sentId(), status: 'failed', device_response: 'Modbus device not found' })
+  await assert.rejects(failed, /Modbus device not found/)
+  setWsInstance(null)
+})
+
+test('a device that does not answer in time leaves the write queued, and no socket means null', async () => {
+  connectedForWrites()
+  const queued = wsWriteTagResult(7, 1.5, 20)
+  advance(20)
+  assert.equal(await queued, 'queued')
+  setWsInstance(null)
+  assert.equal(await wsWriteTagResult(7, 1, 20), null)
 })

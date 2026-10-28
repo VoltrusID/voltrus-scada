@@ -396,6 +396,7 @@ export class VoltrusWebSocket {
   onTagBatch(cb: TagBatchCallback): void { addUnique(this.tagBatchCallbacks, cb); }
   offTagBatch(cb: TagBatchCallback): void { this.tagBatchCallbacks = this.tagBatchCallbacks.filter(c => c !== cb); }
   onCommandAck(cb: CommandAckCallback): void { addUnique(this.commandAckCallbacks, cb); }
+  offCommandAck(cb: CommandAckCallback): void { this.commandAckCallbacks = this.commandAckCallbacks.filter(c => c !== cb); }
   onAlarm(cb: AlarmCallback): void { addUnique(this.alarmCallbacks, cb); }
   onAlarmUpdate(cb: AlarmUpdateCallback): void { addUnique(this.alarmUpdateCallbacks, cb); }
   onDeviceStatus(cb: DeviceStatusCallback): void { addUnique(this.deviceStatusCallbacks, cb); }
@@ -453,12 +454,44 @@ export function getWsInstance(): VoltrusWebSocket | null {
   return _instance;
 }
 
-export function wsWriteTag(sensorId: number, value: number): boolean {
-  if (_instance && _instance.canWrite()) {
-    _instance.writeTag(String(sensorId), value);
-    return true;
-  }
-  return false;
+/** How long a WebSocket write waits for the device before it is reported as queued. */
+export const WS_WRITE_WAIT_MS = 15_000;
+
+/**
+ * Write a tag over the WebSocket and wait for the outcome. The server answers a refused
+ * write at once (`rejected`) and an accepted one when the command is final (`acked`,
+ * `failed`, `expired`); until then it is queued, so a device that does not answer within
+ * `waitMs` is reported as `queued`, not as a failure. Resolves `null` when there is no
+ * WebSocket that can write (the caller uses the REST endpoint); rejects with the server's
+ * reason when the write was refused or failed.
+ */
+export function wsWriteTagResult(
+  sensorId: number,
+  value: number,
+  waitMs: number = WS_WRITE_WAIT_MS,
+): Promise<'acked' | 'queued' | null> {
+  const ws = _instance;
+  if (!ws || !ws.canWrite()) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    let commandId = '';
+    const finish = (fn: () => void) => {
+      clearTimeout(timer);
+      ws.offCommandAck(onAck);
+      fn();
+    };
+    const onAck = (ack: CommandAck) => {
+      if (ack.command_id !== commandId) return;
+      if (ack.status === 'acked') finish(() => resolve('acked'));
+      else if (['rejected', 'failed', 'expired', 'cancelled'].includes(ack.status)) {
+        finish(() => reject(new Error(ack.device_response || `Write ${ack.status}`)));
+      }
+      // sent, queued: the command is on its way.
+    };
+    const timer = setTimeout(() => finish(() => resolve('queued')), waitMs);
+    // Listen before sending: a refusal can arrive as soon as the frame is out.
+    ws.onCommandAck(onAck);
+    commandId = ws.writeTag(String(sensorId), value);
+  });
 }
 
 export function isWsConnected(): boolean {

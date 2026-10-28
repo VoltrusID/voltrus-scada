@@ -13,7 +13,7 @@ import { Faceplate } from './hmi/Faceplate'
 import { AlarmBanner } from './AlarmBanner'
 import type { SensorConfig, SensorData, ScadaEquipmentItem, ScadaConnectionItem } from '../types'
 import { useDashboardSelector } from '../store/dashboardStore'
-import { wsWriteTag } from '../api/websocket'
+import { wsWriteTagResult } from '../api/websocket'
 import { writeTag } from '../api/commands'
 import { toast } from '../components/Toast'
 
@@ -267,8 +267,9 @@ export const ScadaView: React.FC<Props> = ({
 
   const handleWriteValue = useCallback(async (_widgetId: string, sensorId: number, value: number) => {
     try {
-      if (wsWriteTag(sensorId, value)) return
-      await writeTag(sensorId, value)
+      const outcome = await wsWriteTagResult(sensorId, value)
+      if (outcome === 'queued') toast.info('Command queued, the device has not answered yet')
+      if (outcome === null) await writeTag(sensorId, value)
     } catch (err: any) {
       toast.error(err.message || 'Write failed')
     }
@@ -277,8 +278,10 @@ export const ScadaView: React.FC<Props> = ({
   /** Operator command from a faceplate. Errors are toasted; resolves whether the write was accepted. */
   const sendCommand = useCallback(async (sensorId: number, value: number): Promise<boolean> => {
     try {
-      if (!wsWriteTag(sensorId, value)) await writeTag(sensorId, value)
-      toast.success('Command sent')
+      const outcome = await wsWriteTagResult(sensorId, value)
+      if (outcome === null) await writeTag(sensorId, value)
+      if (outcome === 'queued') toast.info('Command queued, the device has not answered yet')
+      else toast.success('Command sent')
       return true
     } catch (err: any) {
       toast.error(err.message || 'Write failed')
