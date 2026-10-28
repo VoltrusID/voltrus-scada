@@ -1,3 +1,4 @@
+mod batch;
 mod poller;
 pub mod pool;
 mod scanner;

@@ -7,6 +7,7 @@ use tokio_modbus::prelude::*;
 use crate::cache::DeviceCache;
 use crate::models::*;
 
+use super::batch::{ReadBatch, ReadKind, plan_batches, sort_registers};
 use super::pool::ModbusPool;
 use super::types::{Backoff, parse_register};
 
@@ -70,89 +71,59 @@ async fn try_poll(
 
         let mut metrics = HashMap::new();
 
-        // Sort registers by area then address for optimal grouping
+        // Sort registers by area then address, then read each group of neighbours
+        // in as few requests as the protocol limits allow.
         let mut sorted_regs: Vec<&RegisterConfig> = config.registers.iter().collect();
-        sorted_regs.sort_by_key(|r| (r.register_area.clone(), r.protocol_address()));
+        sort_registers(&mut sorted_regs);
 
-        let mut i = 0;
-        while i < sorted_regs.len() {
-            let first = &sorted_regs[i];
-            let area = &first.register_area;
-            let start_addr = first.protocol_address();
-            let mut end_addr = start_addr + first.register_count();
+        for batch in plan_batches(&sorted_regs) {
+            let group = &sorted_regs[batch.first..batch.end];
+            let words = read_batch(&mut ctx, &batch).await;
 
-            let mut group_end = i + 1;
-            while group_end < sorted_regs.len()
-                && sorted_regs[group_end].register_area == *area
-                && sorted_regs[group_end].protocol_address() <= end_addr
-            {
-                let t = &sorted_regs[group_end];
-                let t_end = t.protocol_address() + t.register_count();
-                if t_end > end_addr {
-                    end_addr = t_end;
-                }
-                group_end += 1;
-            }
-
-            let total = end_addr - start_addr;
-
-            let read_result = if area == "input" {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    ctx.read_input_registers(start_addr, total),
-                )
-                .await
-            } else {
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(5),
-                    ctx.read_holding_registers(start_addr, total),
-                )
-                .await
-            };
-
-            let response = match read_result {
+            let response = match words {
                 Ok(Ok(Ok(words))) => words,
                 Ok(Ok(Err(code))) => {
                     tracing::warn!(
                         "Device {} Modbus exception at addr {}: {:?}",
                         config.id,
-                        start_addr,
+                        batch.start,
                         code
                     );
-                    for reg in &sorted_regs[i..group_end] {
+                    for reg in group {
                         metrics.insert(reg.name.clone(), f64::NAN);
                     }
-                    i = group_end;
                     continue;
                 }
                 Ok(Err(e)) => {
                     anyhow::bail!(
                         "Modbus read failed for group starting at {}: {}",
-                        start_addr,
+                        batch.start,
                         e
                     );
                 }
                 Err(_) => {
-                    anyhow::bail!("Modbus read timeout for group starting at {}", start_addr);
+                    anyhow::bail!("Modbus read timeout for group starting at {}", batch.start);
                 }
             };
 
-            for reg in &sorted_regs[i..group_end] {
-                let offset = (reg.protocol_address() - start_addr) as usize;
-                let count = reg.register_count() as usize;
+            for reg in group {
+                let offset = (reg.protocol_address() - batch.start) as usize;
+                let count = batch.kind.width(reg) as usize;
                 if offset + count > response.len() {
                     metrics.insert(reg.name.clone(), f64::NAN);
                     continue;
                 }
-                let value = parse_register(
-                    &response[offset..offset + count],
-                    &reg.reg_type,
-                    &config.endianness,
-                ) * reg.scale;
-                metrics.insert(reg.name.clone(), value);
+                let raw = match batch.kind {
+                    // A bit is 0 or 1 whatever register type the tag declares.
+                    ReadKind::Coil | ReadKind::Discrete => f64::from(response[offset]),
+                    ReadKind::Holding | ReadKind::Input => parse_register(
+                        &response[offset..offset + count],
+                        &reg.reg_type,
+                        &config.endianness,
+                    ),
+                };
+                metrics.insert(reg.name.clone(), raw * reg.scale);
             }
-
-            i = group_end;
         }
 
         cache.update(&config.id, metrics, false).await;
@@ -161,4 +132,38 @@ async fn try_poll(
         pool.return_connection(&config.id, ctx).await;
         tokio::time::sleep(std::time::Duration::from_millis(config.interval_ms)).await;
     }
+}
+
+/// The result of one read request: `Ok(Ok(Ok(words)))` is data, `Ok(Ok(Err(_)))`
+/// a Modbus exception, `Ok(Err(_))` a transport error, `Err(_)` a timeout.
+type ReadOutcome = Result<tokio_modbus::Result<Vec<u16>>, tokio::time::error::Elapsed>;
+
+/// Issue one read. Coils and discrete inputs come back as bits; each becomes a
+/// word holding 0 or 1.
+async fn read_batch(ctx: &mut tokio_modbus::client::Context, batch: &ReadBatch) -> ReadOutcome {
+    let timeout = std::time::Duration::from_secs(5);
+    match batch.kind {
+        ReadKind::Input => {
+            tokio::time::timeout(timeout, ctx.read_input_registers(batch.start, batch.count)).await
+        }
+        ReadKind::Holding => {
+            tokio::time::timeout(
+                timeout,
+                ctx.read_holding_registers(batch.start, batch.count),
+            )
+            .await
+        }
+        ReadKind::Coil => tokio::time::timeout(timeout, ctx.read_coils(batch.start, batch.count))
+            .await
+            .map(|r| r.map(|r| r.map(bits_to_words))),
+        ReadKind::Discrete => {
+            tokio::time::timeout(timeout, ctx.read_discrete_inputs(batch.start, batch.count))
+                .await
+                .map(|r| r.map(|r| r.map(bits_to_words)))
+        }
+    }
+}
+
+fn bits_to_words(bits: Vec<bool>) -> Vec<u16> {
+    bits.into_iter().map(u16::from).collect()
 }
