@@ -575,10 +575,10 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   checked (the create response says so): the key `role` alone decides, `api`
   keys read, `integration` keys also pass operator routes.
 - `POST /notifications/test` answers 200 with a per-target status (sent or
-  the error) for webhooks and email; email needs SMTP configured (else
+  the error) for webhooks, email, Telegram and WhatsApp; email needs SMTP configured (else
   400 "SMTP is not configured"), push is not testable. `POST` and
   `PUT /notifications/settings` run the same checks (target list, email and
-  URL shapes, SMS phone and carrier) and answer 400 with the reason; a `PUT`
+  URL shapes, Telegram and WhatsApp config) and answer 400 with the reason; a `PUT`
   that changes the channel or the config checks the result against the
   stored values. The console's own checks (`check_targets`) say the same
   earlier.

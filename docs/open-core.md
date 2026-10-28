@@ -31,7 +31,7 @@ Unlocked by a licence key bound to one site. Two plans:
 | Feature | Integrator | Enterprise |
 |---|:-:|:-:|
 | White-label branding and theme editor | yes | yes |
-| Scheduled PDF reports and SMS alarm notifications | yes | yes |
+| Scheduled PDF reports and Telegram/WhatsApp alarm notifications | yes | yes |
 | Multi-site hub | yes | yes |
 | Single sign-on (Active Directory, Azure AD, Okta, SAML 2.0, OIDC, LDAP) | | yes |
 | 21 CFR Part 11 mode (electronic signatures, record checksums, policy) | | yes |
@@ -59,7 +59,7 @@ voltrus::run(std::sync::Arc::new(MyExtension)).await
 
 An [`Extension`](../src/edition.rs) can contribute HTTP routes (public, any user,
 operator, admin), start background tasks, handle CLI subcommands, validate bearer
-tokens from an identity provider, add sign-in providers, supply SMS delivery and
+tokens from an identity provider, add sign-in providers, supply Telegram and WhatsApp delivery (`ChatSender`) and
 resolve a licence into a `LicenseTier`. The `voltrus` binary in this repository
 runs with `edition::Community`: no add-on, no licence, nothing gated.
 
@@ -74,7 +74,7 @@ Things worth knowing:
   (handlers, rendering, signing, failover) lives in the add-on.
 * `GET /api/license/status` is served by Core and always reports a tier and
   11 boolean flags (`white_label`, `theme_full`, `pdf_reporting`,
-  `sms_notifications`, `multi_site`, `sso`, `sso_saml`, `cfr_part_11`,
+  `chat_notifications`, `multi_site`, `sso`, `sso_saml`, `cfr_part_11`,
   `iec_62443`, `ha`, `rtsp_video`). In Core all are `false`.
 * The web client has the same seam: `client/src/edition/` loads an optional
   enterprise module (Vite alias `@voltrus/enterprise-client`) and falls back to a

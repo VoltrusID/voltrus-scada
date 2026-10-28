@@ -9,6 +9,7 @@ import {
 import { inputStyle, btnStyle } from './styles'
 import { useLicense } from './LicenseContext'
 import { edition } from './edition'
+import { summarizeTestOutcome } from './notificationTest'
 import type { NotificationSetting } from './types'
 
 const CHANNELS = edition.notificationChannels ?? []
@@ -29,7 +30,7 @@ function formatConfigTargets(targets: string[]): string {
 }
 
 export function NotificationSettingsPanel({ onClose, embedded }: { onClose: () => void; embedded?: boolean }) {
-  const { data: settings = [], isLoading } = useNotificationSettings()
+  const { data: settings = [], isLoading, error: loadError, refetch } = useNotificationSettings()
   const createMut = useCreateNotificationSetting()
   const updateMut = useUpdateNotificationSetting()
   const deleteMut = useDeleteNotificationSetting()
@@ -63,14 +64,15 @@ export function NotificationSettingsPanel({ onClose, embedded }: { onClose: () =
   }
 
   const handleTest = (setting: NotificationSetting) => {
-    testMut.mutate({ channel_type: setting.channel_type, config: setting.config }, {
+    testMut.mutate({ channel_type: setting.channel_type, config: setting.config, source_key: setting.source_key || undefined, setting_id: setting.id }, {
       onSuccess: (res) => {
-        setTestResult({ id: setting.id, success: res.success, message: res.success ? 'Test notification sent successfully' : 'Test notification failed' })
-        setTimeout(() => setTestResult(null), 4000)
+        const summary = summarizeTestOutcome(res)
+        setTestResult({ id: setting.id, ...summary })
+        setTimeout(() => setTestResult(null), summary.success ? 4000 : 12000)
       },
       onError: (err) => {
         setTestResult({ id: setting.id, success: false, message: err.message })
-        setTimeout(() => setTestResult(null), 4000)
+        setTimeout(() => setTestResult(null), 12000)
       },
     })
   }
@@ -84,6 +86,11 @@ export function NotificationSettingsPanel({ onClose, embedded }: { onClose: () =
       <div style={{ flex: 1, overflow: 'auto', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10 }}>
         {isLoading ? (
           <div style={{ color: 'var(--muted)', textAlign: 'center', padding: 40 }}>Loading...</div>
+        ) : loadError ? (
+          <div style={{ textAlign: 'center', padding: 40 }}>
+            <p style={{ color: 'var(--crit)', fontSize: 13, marginBottom: 12 }}>Could not load notification rules: {loadError.message}</p>
+            <button style={btnStyle} onClick={() => refetch()}>Retry</button>
+          </div>
         ) : settings.length === 0 ? (
           <div style={{ color: 'var(--muted)', textAlign: 'center', padding: 40 }}>No notification settings found.</div>
         ) : (
@@ -220,12 +227,35 @@ function NotificationDialog({ setting, onSave, onClose, error }: {
     plugin ? (setting?.channel_type === plugin.type ? setting.config : plugin.emptyConfig) : ''
   )
   const [enabled, setEnabled] = useState(setting?.enabled ?? true)
+  const testMut = useTestNotification()
+  const [testSummary, setTestSummary] = useState<{ success: boolean; message: string } | null>(null)
 
   const selectChannel = (type: string) => {
     const next = CHANNELS.find(c => c.type === type)
     if (next) setPluginConfig(setting?.channel_type === type ? setting.config : next.emptyConfig)
     setChannelType(type)
+    setTestSummary(null)
   }
+
+  const handleDialogTest = () => {
+    if (!plugin) return
+    setTestSummary(null)
+    testMut.mutate(
+      {
+        channel_type: channelType,
+        config: plugin.serialize(pluginConfig),
+        source_key: sourceKey || undefined,
+        // Lets the server put back a token it masked in the list.
+        setting_id: setting?.channel_type === channelType ? setting.id : undefined,
+      },
+      {
+        onSuccess: res => setTestSummary(summarizeTestOutcome(res)),
+        onError: err => setTestSummary({ success: false, message: err.message }),
+      },
+    )
+  }
+
+  const configProblem = plugin && pluginAvailable ? (plugin.validate ? plugin.validate(pluginConfig) : null) : null
 
   const handleSave = () => {
     const targets = targetsText.split('\n').map(t => t.trim()).filter(Boolean)
@@ -245,7 +275,7 @@ function NotificationDialog({ setting, onSave, onClose, error }: {
 
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, maxWidth: 480, width: '90%' }}>
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, maxWidth: 480, width: '90%', maxHeight: '90vh', overflowY: 'auto' }}>
         <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 16 }}>{isEdit ? 'Edit' : 'Add'} Notification Rule</h3>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div>
@@ -282,7 +312,25 @@ function NotificationDialog({ setting, onSave, onClose, error }: {
               The "{channelType}" channel is provided by Voltrus Enterprise and cannot be edited in this build.
             </p>
           ) : plugin ? (
-            <plugin.Editor config={pluginConfig} onChange={setPluginConfig} locked={!pluginAvailable} />
+            <>
+              <plugin.Editor config={pluginConfig} onChange={c => { setPluginConfig(c); setTestSummary(null) }} locked={!pluginAvailable} />
+              {configProblem && <p style={{ fontSize: 11, color: 'var(--muted)' }}>{configProblem}</p>}
+              {pluginAvailable && (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <button
+                    type="button"
+                    style={{ ...btnStyle, fontSize: 11, padding: '4px 10px', borderColor: 'var(--cyan)', color: 'var(--cyan)', flexShrink: 0 }}
+                    onClick={handleDialogTest}
+                    disabled={!plugin.isValid(pluginConfig) || testMut.isPending}
+                  >{testMut.isPending ? 'Sending...' : 'Send test'}</button>
+                  {testSummary && (
+                    <span style={{ fontSize: 11, color: testSummary.success ? 'var(--ok)' : 'var(--crit)', wordBreak: 'break-word' }}>
+                      {testSummary.message}
+                    </span>
+                  )}
+                </div>
+              )}
+            </>
           ) : (
             <div>
               <label style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>

@@ -191,6 +191,8 @@ pub struct TestNotificationRequest {
     pub channel_type: String,
     pub config: String,
     pub source_key: Option<String>,
+    /// A stored rule whose masked secrets a chat channel's config refers to.
+    pub setting_id: Option<i64>,
 }
 
 // ── Push subscription (groundwork for Web Push) ──

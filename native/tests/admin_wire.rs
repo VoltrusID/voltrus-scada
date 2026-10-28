@@ -154,6 +154,7 @@ struct TestNotificationRequest {
     channel_type: String,
     config: String,
     source_key: Option<String>,
+    setting_id: Option<i64>,
 }
 
 // ── The server's value lists, read from its source ───────────────────────
@@ -487,6 +488,7 @@ fn rule_bodies_are_what_the_server_reads() {
             channel_type: "webhook".into(),
             config: created.config.clone(),
             source_key: Some("ac_power".into()),
+            setting_id: Some(rules[0].id),
         }
     );
     let every_tag: TestNotificationRequest = serde_json::from_value(test_body(&rules[1])).unwrap();
@@ -516,11 +518,11 @@ fn test_outcomes_decode_every_channel() {
     }))
     .unwrap();
     assert_eq!(email.results[0].target(), "ops@example.com");
-    let sms: TestOutcome = serde_json::from_value(json!({
-        "channel": "sms",
-        "results": [{"phone": "+15550100", "carrier": "att", "status": "error", "error": "missing phone or carrier"}]
+    let whatsapp: TestOutcome = serde_json::from_value(json!({
+        "channel": "whatsapp",
+        "results": [{"target": "+6281234567890", "status": "error", "error": "WhatsApp error 190"}]
     }))
     .unwrap();
-    assert_eq!(sms.results[0].target(), "+15550100 (att)");
-    assert_eq!(sms.sent(), 0);
+    assert_eq!(whatsapp.results[0].target(), "+6281234567890");
+    assert_eq!(whatsapp.sent(), 0);
 }

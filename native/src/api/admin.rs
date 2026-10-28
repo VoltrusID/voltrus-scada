@@ -359,8 +359,9 @@ pub fn api_key_body(
 // ── Notification rules ───────────────────────────────────────────────────
 
 /// A row of `GET /api/v1/notifications/settings` (`NotificationSetting`):
-/// `config` is a JSON array in a string (addresses, URLs or user names;
-/// objects for the edition's SMS). An empty `source_key` means every tag.
+/// `config` is a JSON array in a string (addresses, URLs or user names), or
+/// for the edition's Telegram and WhatsApp channels a JSON object whose
+/// secrets the server masks. An empty `source_key` means every tag.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct NotificationRule {
@@ -373,24 +374,24 @@ pub struct NotificationRule {
 }
 
 impl NotificationRule {
-    /// The targets, one per entry; an SMS target reads `phone (carrier)`.
+    /// The targets, one per entry; a Telegram rule lists its chat ids, a
+    /// WhatsApp rule its recipients.
     pub fn targets(&self) -> Vec<String> {
-        let Ok(Value::Array(entries)) = serde_json::from_str::<Value>(&self.config) else {
-            return Vec::new();
+        let entries = match serde_json::from_str::<Value>(&self.config) {
+            Ok(Value::Array(entries)) => entries,
+            Ok(Value::Object(map)) => match self.channel_type.as_str() {
+                "telegram" => map.get("chat_ids"),
+                "whatsapp" => map.get("recipients"),
+                _ => None,
+            }
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+            _ => return Vec::new(),
         };
         entries
             .iter()
-            .filter_map(|entry| match entry {
-                Value::String(text) => Some(text.clone()),
-                Value::Object(map) => {
-                    let phone = map.get("phone").and_then(Value::as_str).unwrap_or("?");
-                    Some(match map.get("carrier").and_then(Value::as_str) {
-                        Some(carrier) => format!("{phone} ({carrier})"),
-                        None => phone.to_owned(),
-                    })
-                }
-                _ => None,
-            })
+            .filter_map(|entry| entry.as_str().map(str::to_owned))
             .collect()
     }
 
@@ -423,8 +424,8 @@ pub struct Channel {
     pub testable: bool,
 }
 
-/// The core's channels, as the web client offers them; SMS and other
-/// edition channels are listed but edited in the web client.
+/// The core's channels, as the web client offers them; Telegram, WhatsApp and
+/// other edition channels are listed but edited in the web client.
 pub const CHANNELS: [Channel; 3] = [
     Channel {
         id: "email",
@@ -508,39 +509,36 @@ pub fn rule_body(
 }
 
 /// `POST /api/v1/notifications/test` (`TestNotificationRequest`) for a
-/// rule as stored.
+/// rule as stored. `setting_id` lets the server put back the secrets it masked.
 pub fn test_body(rule: &NotificationRule) -> Value {
     json!({
         "channel_type": rule.channel_type,
         "config": rule.config,
+        "setting_id": rule.id,
         "source_key": if rule.source_key.is_empty() { None } else { Some(&rule.source_key) },
     })
 }
 
 /// One target's outcome in `POST /api/v1/notifications/test`'s answer:
-/// `{"to"|"url"|"phone": …, "status": "sent"|"error", "error"?}`.
+/// `{"to"|"url"|"target": …, "status": "sent"|"error", "error"?}`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct TestResult {
     pub to: Option<String>,
     pub url: Option<String>,
-    pub phone: Option<String>,
-    pub carrier: Option<String>,
+    pub target: Option<String>,
     pub status: String,
     pub error: Option<String>,
 }
 
 impl TestResult {
     pub fn target(&self) -> String {
-        match (&self.to, &self.url, &self.phone) {
-            (Some(to), _, _) => to.clone(),
-            (_, Some(url), _) => url.clone(),
-            (_, _, Some(phone)) => match &self.carrier {
-                Some(carrier) => format!("{phone} ({carrier})"),
-                None => phone.clone(),
-            },
-            _ => "?".to_owned(),
-        }
+        self.to
+            .as_ref()
+            .or(self.url.as_ref())
+            .or(self.target.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "?".to_owned())
     }
 
     pub fn sent(&self) -> bool {
@@ -720,7 +718,7 @@ mod tests {
         assert!(rule_body("", "webhook", "https://hooks.example.com", false).is_ok());
         assert!(rule_body("", "push", "admin", true).is_ok());
         assert!(rule_body("", "push", "  \n ", true).is_err());
-        assert!(rule_body("", "sms", "+1555", true).is_err());
+        assert!(rule_body("", "telegram", "42", true).is_err());
     }
 
     #[test]
@@ -728,15 +726,16 @@ mod tests {
         let rule = NotificationRule {
             id: 4,
             source_key: String::new(),
-            channel_type: "sms".into(),
-            config: r#"[{"phone":"+15551234","carrier":"att"},{"phone":"+15559876"}]"#.into(),
+            channel_type: "telegram".into(),
+            config: r#"{"bot_token":"********","chat_ids":["42","-100777"]}"#.into(),
             enabled: true,
             created_at: 0,
         };
-        assert_eq!(rule.targets(), ["+15551234 (att)", "+15559876"]);
-        assert_eq!(rule.targets_summary(), "+15551234 (att) and 1 more");
+        assert_eq!(rule.targets(), ["42", "-100777"]);
+        assert_eq!(rule.targets_summary(), "42 and 1 more");
         assert!(!rule.editable());
         assert_eq!(test_body(&rule)["source_key"], Value::Null);
+        assert_eq!(test_body(&rule)["setting_id"], 4);
         let keyed = NotificationRule {
             source_key: "ac_power".into(),
             channel_type: "webhook".into(),

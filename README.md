@@ -49,7 +49,7 @@ licence key; a lapsed or missing key never limits Core.
 |---|:-:|:-:|:-:|
 | Everything listed above, all protocols, no limits | yes | yes | yes |
 | White-label branding and theme editor | | yes | yes |
-| Scheduled PDF reports and SMS alarms | | yes | yes |
+| Scheduled PDF reports and Telegram/WhatsApp alarms | | yes | yes |
 | Multi-site hub | | yes | yes |
 | Single sign-on (AD, Azure AD, Okta, SAML, OIDC, LDAP) | | | yes |
 | 21 CFR Part 11 mode (e-signatures, record checksums) | | | yes |

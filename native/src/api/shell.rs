@@ -414,7 +414,7 @@ mod tests {
         // The open core: `LicenseStatus::Community` plus tier and flags.
         let community: LicenseStatus = serde_json::from_str(
             r#"{"status":"Community","tier":"community","feature_flags":{"white_label":false,
-                "theme_full":false,"pdf_reporting":false,"sms_notifications":false,
+                "theme_full":false,"pdf_reporting":false,"chat_notifications":false,
                 "multi_site":false,"sso":false,"sso_saml":false,"cfr_part_11":false,
                 "iec_62443":false,"ha":false,"rtsp_video":false}}"#,
         )

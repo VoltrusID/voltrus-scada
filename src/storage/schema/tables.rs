@@ -223,7 +223,7 @@ pub(super) fn create_tables(conn: &Connection) -> Result<()> {
         CREATE TABLE IF NOT EXISTS notification_settings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_key TEXT NOT NULL,
-            channel_type TEXT NOT NULL CHECK(channel_type IN ('email', 'webhook', 'push')),
+            channel_type TEXT NOT NULL CHECK(channel_type IN ('email', 'webhook', 'push', 'telegram', 'whatsapp')),
             config TEXT NOT NULL DEFAULT '[]',
             enabled INTEGER NOT NULL DEFAULT 1,
             created_at INTEGER NOT NULL

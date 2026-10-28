@@ -4,7 +4,7 @@
 //! and state; new and edit (the tag key, the channel, the targets one per
 //! line, on or off); Space turns a rule on or off; T sends a test through
 //! the server and shows each target's outcome; delete after a
-//! confirmation. SMS and other edition channels are listed, tested and
+//! confirmation. Telegram, WhatsApp and other edition channels are listed, tested and
 //! deleted here but edited in the web client. Browser push subscriptions
 //! are a web-only feature.
 

@@ -234,6 +234,11 @@ as secret when
   or a credential query parameter (`token=`, `api_key=`, `key=`, `sig=`, ...);
 * the section forces it: the `url` of a webhook and every target of a `webhook`
   notification rule (Slack/Teams style URLs carry the secret in the path).
+  The `bot_token` of a Telegram rule and the `access_token` of a WhatsApp rule
+  are caught by their key name; chat ids, phone numbers and template settings
+  stay readable. The REST API hides the same two tokens as `********` in
+  `GET /notifications/settings`, and a `PUT` or test that sends the mask back
+  keeps the stored token.
 
 On import the references are resolved from the process environment. If a
 variable is unset, the value already stored for the *same entity* is kept, so a

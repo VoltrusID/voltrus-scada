@@ -191,7 +191,6 @@ pub fn describe_nodes(nodes_json: &serde_json::Value) -> Vec<String> {
                     let val = node["value"].as_f64().unwrap_or(0.0);
                     format!("Write {} to tag '{}'", val, tag)
                 }
-                "sms" => format!("Send SMS: {}", msg),
                 _ => format!("{}: {}", action, msg),
             }
         })

@@ -15,8 +15,8 @@ import community from '../src/edition/community.ts'
 
 test('the licence model has exactly the 11 contract flags', () => {
   assert.deepEqual([...FEATURE_FLAG_KEYS].sort(), [
-    'cfr_part_11', 'ha', 'iec_62443', 'multi_site', 'pdf_reporting', 'rtsp_video',
-    'sms_notifications', 'sso', 'sso_saml', 'theme_full', 'white_label',
+    'cfr_part_11', 'chat_notifications', 'ha', 'iec_62443', 'multi_site', 'pdf_reporting', 'rtsp_video',
+    'sso', 'sso_saml', 'theme_full', 'white_label',
   ])
 })
 

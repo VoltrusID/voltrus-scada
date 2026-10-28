@@ -476,4 +476,216 @@ pub(super) fn run_migrations(conn: &Connection) {
         CREATE INDEX IF NOT EXISTS idx_device_templates_manufacturer
             ON device_templates(manufacturer, model);",
     );
+
+    // Migration: let notification_settings hold the chat channels. SQLite
+    // cannot alter a CHECK constraint, so the table is rebuilt.
+    if let Err(e) = rebuild_notification_settings(conn) {
+        tracing::error!("Failed to migrate notification_settings: {e}");
+    }
+}
+
+const NOTIFICATION_CHANNELS: &str = "'email', 'webhook', 'push', 'telegram', 'whatsapp'";
+
+/// Rebuild `notification_settings` with the current `channel_type` CHECK when
+/// the stored table predates it. Rows of a channel type that is no longer
+/// supported cannot satisfy the CHECK: they move to
+/// `notification_settings_retired`, disabled, and one warning says so.
+/// Returns the number of rows retired.
+fn rebuild_notification_settings(conn: &Connection) -> rusqlite::Result<usize> {
+    let sql: String = conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'notification_settings'",
+        [],
+        |row| row.get(0),
+    )?;
+    if sql.contains("'telegram'") && sql.contains("'whatsapp'") {
+        return Ok(0);
+    }
+
+    let result = (|| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        conn.execute_batch(&format!(
+            "CREATE TABLE notification_settings_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_key TEXT NOT NULL,
+                channel_type TEXT NOT NULL CHECK(channel_type IN ({NOTIFICATION_CHANNELS})),
+                config TEXT NOT NULL DEFAULT '[]',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL
+            );
+            INSERT INTO notification_settings_new (id, source_key, channel_type, config, enabled, created_at)
+                SELECT id, source_key, channel_type, config, enabled, created_at
+                FROM notification_settings
+                WHERE channel_type IN ({NOTIFICATION_CHANNELS});"
+        ))?;
+        let retired: usize = conn.query_row(
+            &format!(
+                "SELECT COUNT(*) FROM notification_settings WHERE channel_type NOT IN ({NOTIFICATION_CHANNELS})"
+            ),
+            [],
+            |row| row.get(0),
+        )?;
+        if retired > 0 {
+            conn.execute_batch(&format!(
+                "CREATE TABLE IF NOT EXISTS notification_settings_retired (
+                    id INTEGER PRIMARY KEY,
+                    source_key TEXT NOT NULL,
+                    channel_type TEXT NOT NULL,
+                    config TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                );
+                INSERT OR REPLACE INTO notification_settings_retired
+                    (id, source_key, channel_type, config, enabled, created_at)
+                    SELECT id, source_key, channel_type, config, 0, created_at
+                    FROM notification_settings
+                    WHERE channel_type NOT IN ({NOTIFICATION_CHANNELS});"
+            ))?;
+        }
+        conn.execute_batch(
+            "DROP TABLE notification_settings;
+            ALTER TABLE notification_settings_new RENAME TO notification_settings;
+            CREATE INDEX IF NOT EXISTS idx_notification_settings_source
+                ON notification_settings(source_key);
+            COMMIT;",
+        )?;
+        Ok(retired)
+    })();
+
+    match result {
+        Ok(retired) => {
+            if retired > 0 {
+                tracing::warn!(
+                    "{retired} notification rule(s) used a channel that is no longer supported. They were disabled and moved to the notification_settings_retired table; set up Telegram or WhatsApp rules instead."
+                );
+            }
+            Ok(retired)
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LEGACY: &str = "CREATE TABLE notification_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_key TEXT NOT NULL,
+        channel_type TEXT NOT NULL CHECK(channel_type IN ('email', 'webhook', 'push')),
+        config TEXT NOT NULL DEFAULT '[]',
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at INTEGER NOT NULL
+    );
+    CREATE INDEX idx_notification_settings_source ON notification_settings(source_key);";
+
+    fn legacy_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(LEGACY).unwrap();
+        conn.execute_batch(
+            "INSERT INTO notification_settings (id, source_key, channel_type, config, enabled, created_at) VALUES
+                (1, 'a', 'email', '[\"x@y.z\"]', 1, 10),
+                (7, 'b', 'webhook', '[\"https://h\"]', 0, 11);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn rebuild_keeps_rows_and_ids_and_accepts_chat_channels() {
+        let conn = legacy_db();
+        assert_eq!(rebuild_notification_settings(&conn).unwrap(), 0);
+        let rows: Vec<(i64, String, bool)> = conn
+            .prepare("SELECT id, channel_type, enabled FROM notification_settings ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i32>(2)? != 0)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            rows,
+            [(1, "email".into(), true), (7, "webhook".into(), false)]
+        );
+        for channel in ["telegram", "whatsapp"] {
+            conn.execute(
+                "INSERT INTO notification_settings (source_key, channel_type, config, created_at) VALUES ('', ?1, '{}', 1)",
+                [channel],
+            )
+            .unwrap();
+        }
+        // Autoincrement continues after the highest migrated id.
+        let max: i64 = conn
+            .query_row("SELECT MAX(id) FROM notification_settings", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(max, 9);
+        assert!(
+            conn.execute(
+                "INSERT INTO notification_settings (source_key, channel_type, config, created_at) VALUES ('', 'pager', '[]', 1)",
+                [],
+            )
+            .is_err()
+        );
+        // The source index survived the rebuild.
+        let idx: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_notification_settings_source'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(idx, 1);
+    }
+
+    #[test]
+    fn rebuild_is_a_no_op_on_a_current_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::storage::schema::init_schema(&conn).unwrap();
+        assert_eq!(rebuild_notification_settings(&conn).unwrap(), 0);
+        conn.execute(
+            "INSERT INTO notification_settings (source_key, channel_type, config, created_at) VALUES ('', 'telegram', '{}', 1)",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn retired_channel_rows_are_disabled_and_kept_aside() {
+        // A database from before the CHECK existed can hold rows of a retired channel.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notification_settings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_key TEXT NOT NULL,
+                channel_type TEXT NOT NULL,
+                config TEXT NOT NULL DEFAULT '[]',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL
+            );
+            INSERT INTO notification_settings (id, source_key, channel_type, config, enabled, created_at) VALUES
+                (1, 'a', 'email', '[]', 1, 1),
+                (2, 'a', 'pager', '[{\"to\":\"1\"}]', 1, 2);",
+        )
+        .unwrap();
+        assert_eq!(rebuild_notification_settings(&conn).unwrap(), 1);
+        let live: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notification_settings", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(live, 1);
+        let (channel, enabled): (String, i32) = conn
+            .query_row(
+                "SELECT channel_type, enabled FROM notification_settings_retired WHERE id = 2",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((channel.as_str(), enabled), ("pager", 0));
+        // Running again changes nothing and logs nothing.
+        assert_eq!(rebuild_notification_settings(&conn).unwrap(), 0);
+    }
 }

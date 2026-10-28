@@ -6,6 +6,7 @@ use serde_json::json;
 
 use super::{AppError, AppState};
 use crate::models::*;
+use crate::notification::chat;
 
 /// GET /api/v1/notifications/settings
 #[utoipa::path(
@@ -20,24 +21,27 @@ use crate::models::*;
 pub async fn list_notification_settings(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, AppError> {
-    let settings = state.storage.get_all_notification_settings().await?;
+    let mut settings = state.storage.get_all_notification_settings().await?;
+    for s in &mut settings {
+        s.config = chat::mask_config(&s.channel_type, &s.config);
+    }
     Ok(Json(settings))
 }
 
 fn validate_channel_type(channel_type: &str) -> Result<(), AppError> {
     match channel_type {
-        "email" | "webhook" | "push" | "sms" => Ok(()),
+        "email" | "webhook" | "push" | "telegram" | "whatsapp" => Ok(()),
         _ => Err(AppError::bad_request(
-            "channel_type must be 'email', 'webhook', 'push', or 'sms'",
+            "channel_type must be 'email', 'webhook', 'push', 'telegram', or 'whatsapp'",
         )),
     }
 }
 
-/// SMS is an Enterprise add-on feature.
-fn ensure_sms_allowed(state: &AppState, channel_type: &str) -> Result<(), AppError> {
-    if channel_type == "sms" && !state.tier().sms_notifications() {
+/// Telegram and WhatsApp are Enterprise add-on features.
+fn ensure_chat_allowed(state: &AppState, channel_type: &str) -> Result<(), AppError> {
+    if chat::is_chat_channel(channel_type) && !state.tier().chat_notifications() {
         return Err(AppError::forbidden(
-            "SMS notifications require an Integrator or Enterprise licence",
+            "Telegram and WhatsApp notifications require an Integrator or Enterprise licence",
         ));
     }
     Ok(())
@@ -84,51 +88,11 @@ fn check_string_targets(channel_type: &str, targets: &[String]) -> Result<(), Ap
     Ok(())
 }
 
-/// The targets of an SMS setting: a non-empty JSON array of objects.
-fn sms_targets(config: &str) -> Result<Vec<serde_json::Value>, AppError> {
-    let targets: Vec<serde_json::Value> = serde_json::from_str(config).map_err(|_| {
-        AppError::bad_request(
-            "SMS config must be a JSON array of objects with 'phone' and 'carrier' fields",
-        )
-    })?;
-    if targets.is_empty() {
-        return Err(AppError::bad_request("config array must not be empty"));
-    }
-    Ok(targets)
-}
-
-/// Each SMS target has a phone and a carrier the edition's gateway knows.
-fn check_sms_targets(targets: &[serde_json::Value]) -> Result<(), AppError> {
-    for target in targets {
-        let phone = target["phone"].as_str().unwrap_or("");
-        let carrier = target["carrier"].as_str().unwrap_or("");
-        if phone.is_empty() {
-            return Err(AppError::bad_request(
-                "each SMS target must have a 'phone' field",
-            ));
-        }
-        if carrier.is_empty() {
-            return Err(AppError::bad_request(
-                "each SMS target must have a 'carrier' field",
-            ));
-        }
-        if crate::edition::sms_sender()
-            .and_then(|s| s.carrier_gateway(carrier))
-            .is_none()
-        {
-            return Err(AppError::bad_request(format!(
-                "unknown carrier '{carrier}'. Supported: att, verizon, tmobile, sprint, uscellular"
-            )));
-        }
-    }
-    Ok(())
-}
-
 /// The checks `POST` and `PUT /notifications/settings` share: `config` has the
 /// shape its channel needs.
 fn validate_config(channel_type: &str, config: &str) -> Result<(), AppError> {
-    if channel_type == "sms" {
-        check_sms_targets(&sms_targets(config)?)
+    if chat::is_chat_channel(channel_type) {
+        chat::validate(channel_type, config).map_err(AppError::bad_request)
     } else {
         check_string_targets(channel_type, &string_targets(config)?)
     }
@@ -152,7 +116,7 @@ pub async fn create_notification_setting(
     Json(req): Json<CreateNotificationSettingRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     validate_channel_type(&req.channel_type)?;
-    ensure_sms_allowed(&state, &req.channel_type)?;
+    ensure_chat_allowed(&state, &req.channel_type)?;
     validate_config(&req.channel_type, &req.config)?;
 
     let id = state
@@ -166,7 +130,7 @@ pub async fn create_notification_setting(
             "id": id,
             "source_key": req.source_key,
             "channel_type": req.channel_type,
-            "config": req.config,
+            "config": chat::mask_config(&req.channel_type, &req.config),
             "enabled": req.enabled,
         })),
     ))
@@ -194,11 +158,13 @@ pub async fn update_notification_setting(
 ) -> Result<impl IntoResponse, AppError> {
     if let Some(ct) = &req.channel_type {
         validate_channel_type(ct)?;
-        ensure_sms_allowed(&state, ct)?;
+        ensure_chat_allowed(&state, ct)?;
     }
 
     // The config has to suit the channel it ends up with: the new values
-    // where sent, the stored ones for the rest.
+    // where sent, the stored ones for the rest. A masked secret stands for the
+    // stored one.
+    let mut config = req.config.clone();
     if req.channel_type.is_some() || req.config.is_some() {
         let current = state
             .storage
@@ -207,10 +173,21 @@ pub async fn update_notification_setting(
             .into_iter()
             .find(|s| s.id == id)
             .ok_or_else(|| AppError::not_found("Notification setting not found"))?;
-        validate_config(
-            req.channel_type.as_deref().unwrap_or(&current.channel_type),
-            req.config.as_deref().unwrap_or(&current.config),
-        )?;
+        let channel = req.channel_type.as_deref().unwrap_or(&current.channel_type);
+        let same_channel = channel == current.channel_type;
+        let effective = match &req.config {
+            Some(new) => chat::restore_secret(
+                channel,
+                new,
+                same_channel.then_some(current.config.as_str()),
+            )
+            .map_err(AppError::bad_request)?,
+            None => current.config.clone(),
+        };
+        validate_config(channel, &effective)?;
+        if req.config.is_some() {
+            config = Some(effective);
+        }
     }
 
     state
@@ -219,7 +196,7 @@ pub async fn update_notification_setting(
             id,
             req.source_key.as_deref(),
             req.channel_type.as_deref(),
-            req.config.as_deref(),
+            config.as_deref(),
             req.enabled,
         )
         .await?;
@@ -267,13 +244,16 @@ pub async fn test_notification(
     State(state): State<AppState>,
     Json(req): Json<TestNotificationRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    if req.channel_type != "email" && req.channel_type != "webhook" && req.channel_type != "sms" {
+    if req.channel_type != "email"
+        && req.channel_type != "webhook"
+        && !chat::is_chat_channel(&req.channel_type)
+    {
         return Err(AppError::bad_request(
-            "channel_type must be 'email', 'webhook', or 'sms' (push is tested via browser subscription)",
+            "channel_type must be 'email', 'webhook', 'telegram', or 'whatsapp' (push is tested via browser subscription)",
         ));
     }
 
-    ensure_sms_allowed(&state, &req.channel_type)?;
+    ensure_chat_allowed(&state, &req.channel_type)?;
 
     let source_key = req.source_key.as_deref().unwrap_or("test_source");
     let source_name = format!("Test Notification ({})", source_key);
@@ -348,44 +328,54 @@ pub async fn test_notification(
                 "results": results,
             })))
         }
-        "sms" => {
-            let sms_targets = sms_targets(&req.config)?;
+        channel @ ("telegram" | "whatsapp") => {
+            // The editor sends the secret as the mask for a stored rule.
+            let stored = match req.setting_id {
+                Some(id) => state
+                    .storage
+                    .get_all_notification_settings()
+                    .await?
+                    .into_iter()
+                    .find(|s| s.id == id && s.channel_type == channel)
+                    .map(|s| s.config),
+                None => None,
+            };
+            let config = chat::restore_secret(channel, &req.config, stored.as_deref())
+                .map_err(AppError::bad_request)?;
+            chat::validate(channel, &config).map_err(AppError::bad_request)?;
 
-            let Some(sender) = crate::edition::sms_sender() else {
+            let Some(sender) = crate::edition::chat_sender() else {
                 return Err(AppError::bad_request(
-                    "SMS delivery is not available in this edition",
+                    "Telegram and WhatsApp delivery is not available in this edition",
                 ));
             };
-            let smtp_cfg = state.smtp_config.read().await;
-            match smtp_cfg.as_ref() {
-                Some(smtp_cfg) => {
-                    let mut results = Vec::new();
-                    for target in &sms_targets {
-                        let phone = target["phone"].as_str().unwrap_or("");
-                        let carrier = target["carrier"].as_str().unwrap_or("");
-                        if phone.is_empty() || carrier.is_empty() {
-                            results.push(json!({"phone": phone, "carrier": carrier, "status": "error", "error": "missing phone or carrier"}));
-                            continue;
-                        }
-                        match sender.send_alarm(
-                            smtp_cfg,
-                            phone,
-                            carrier,
-                            "This is a test alarm notification from Voltrus",
-                        ).await {
-                            Ok(_) => results.push(json!({"phone": phone, "carrier": carrier, "status": "sent"})),
-                            Err(e) => results.push(json!({"phone": phone, "carrier": carrier, "status": "error", "error": e.to_string()})),
-                        }
-                    }
-                    Ok(Json(json!({
-                        "channel": "sms",
-                        "results": results,
-                    })))
-                }
-                None => Err(AppError::bad_request(
-                    "SMTP is not configured (required for SMS gateway)",
-                )),
-            }
+            let alarm = crate::edition::ChatAlarm {
+                severity: "warning".to_string(),
+                source_key: source_key.to_string(),
+                source_name: source_name.clone(),
+                value: 42.0,
+                threshold: 40.0,
+                unit: "test".to_string(),
+                message: "This is a test alarm notification".to_string(),
+                triggered_at: crate::notification::webhook::format_triggered_at(
+                    crate::timeutil::now_secs(),
+                ),
+            };
+            let deliveries = sender
+                .send(channel, &config, &alarm)
+                .await
+                .map_err(|e| AppError::bad_request(e.to_string()))?;
+            let results: Vec<_> = deliveries
+                .into_iter()
+                .map(|d| match d.error {
+                    None => json!({"target": d.target, "status": "sent"}),
+                    Some(e) => json!({"target": d.target, "status": "error", "error": e}),
+                })
+                .collect();
+            Ok(Json(json!({
+                "channel": channel,
+                "results": results,
+            })))
         }
         _ => unreachable!(),
     }

@@ -6,7 +6,7 @@ body:
     attributes:
       value: |
         Core covers what one site needs. Single sign-on, 21 CFR Part 11, IEC 62443 audit mode, hot standby,
-        multi-site hub, RTSP video, white-label and scheduled PDF or SMS reports are part of the
+        multi-site hub, RTSP video, white-label, scheduled PDF reports and Telegram or WhatsApp alarms are part of the
         Enterprise add-on and are not accepted here (see docs/open-core.md).
   - type: textarea
     id: problem
