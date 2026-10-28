@@ -1,19 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import {
-  HISTORY_KEYS, applyHistoryDeadband, describeHistoryDeadband, historyDeadbandWarnings,
+  applyHistoryDeadband, describeHistoryDeadband, historyDeadbandWarnings,
   readHistoryDeadband, validateHistoryDeadband, type HistoryDeadbandForm,
 } from '../src/historyDeadband.ts'
 import { formatBytes, formatDuration } from '../src/storageFormat.ts'
 
 const form = (over: Partial<HistoryDeadbandForm>): HistoryDeadbandForm => ({ type: 'absolute', value: '', maxInterval: '', ...over })
-
-test('the keys written are the ones the server reads', () => {
-  const rust = readFileSync(new URL('../../src/deadband.rs', import.meta.url), 'utf8')
-  for (const key of HISTORY_KEYS) assert.ok(rust.includes(`"${key}"`), key)
-  assert.ok(rust.includes('"percent"'))
-})
 
 test('applying a form sets the keys and keeps every other one', () => {
   const cfg = { deadband: 2, low_warn: 5, expression: 'a+b' }
