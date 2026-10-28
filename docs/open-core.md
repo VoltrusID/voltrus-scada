@@ -60,7 +60,9 @@ voltrus::run(std::sync::Arc::new(MyExtension)).await
 An [`Extension`](../src/edition.rs) can contribute HTTP routes (public, any user,
 operator, admin), start background tasks, handle CLI subcommands, validate bearer
 tokens from an identity provider, add sign-in providers, supply SMS delivery and
-resolve a licence into a `LicenseTier`. The `voltrus` binary in this repository
+resolve a licence into a `LicenseTier`. A sign-in provider (SAML, OIDC, LDAP) opens
+the user's session with `api::auth::issue_session`, the function local login uses,
+so every session has the same cookies and lifetime. The `voltrus` binary in this repository
 runs with `edition::Community`: no add-on, no licence, nothing gated.
 
 The Enterprise add-on is a separate crate that depends on this one and calls

@@ -638,9 +638,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/auth/me", get(auth::auth_me))
         .route("/api/v1/auth/csrf-token", get(auth::get_csrf_token))
         .route("/api/v1/auth/providers", get(auth::list_auth_providers))
-        // SAML ACS and LDAP login removed from public router until signature
-        // validation is properly implemented. Re-enable on the protected router
-        // when SAML XML-DSIG verification is complete.
         .route(
             "/api/v1/settings/alarm-cooldown",
             get(settings::get_alarm_cooldown),
