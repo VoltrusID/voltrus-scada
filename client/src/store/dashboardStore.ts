@@ -1,5 +1,6 @@
 import { createContext, useContext, useRef, useCallback, useSyncExternalStore, useMemo } from 'react'
 import type { DataPoint, SensorData } from '../types'
+import type { Transport } from '../api/websocket'
 
 interface DashboardState {
   dataMap: Record<string, DataPoint[]>
@@ -7,6 +8,8 @@ interface DashboardState {
   historyMap: Record<string, DataPoint[]> | null
   historyReady: boolean
   wsConnected: boolean
+  /** What carries the live data: the WebSocket, or the SSE fallback. */
+  liveTransport: Transport
   systemInfo: { hostname: string; os: string; cpu_usage: number; memory_used_mb: number; memory_total_mb: number; memory_percent: number } | null
 }
 
@@ -16,6 +19,7 @@ const initialState: DashboardState = {
   historyMap: null,
   historyReady: false,
   wsConnected: false,
+  liveTransport: 'ws',
   systemInfo: null,
 }
 
@@ -85,6 +89,10 @@ function createDashboardStore() {
     setState(prev => prev.wsConnected === connected ? prev : { ...prev, wsConnected: connected })
   }
 
+  const setLiveTransport = (transport: Transport) => {
+    setState(prev => prev.liveTransport === transport ? prev : { ...prev, liveTransport: transport })
+  }
+
   const setSystemInfo = (info: DashboardState['systemInfo']) => {
     setState(prev => prev.systemInfo === info ? prev : { ...prev, systemInfo: info })
   }
@@ -104,6 +112,7 @@ function createDashboardStore() {
     setHistoryMap,
     setHistoryReady,
     setWsConnected,
+    setLiveTransport,
     setSystemInfo,
     clearData,
   }
@@ -158,6 +167,10 @@ export function useWsConnected(): boolean {
   return useDashboardSelector(s => s.wsConnected)
 }
 
+export function useLiveTransport(): Transport {
+  return useDashboardSelector(s => s.liveTransport)
+}
+
 export function useChartData(sensorId: number | string, mode: 'live' | 'history'): DataPoint[] {
   const k = String(sensorId)
   return useDashboardSelector(s => {
@@ -191,6 +204,7 @@ export function useDashboardStoreActions() {
     setHistoryMap: store.setHistoryMap,
     setHistoryReady: store.setHistoryReady,
     setWsConnected: store.setWsConnected,
+    setLiveTransport: store.setLiveTransport,
     setSystemInfo: store.setSystemInfo,
     clearData: store.clearData,
     getState: store.getState,

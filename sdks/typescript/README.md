@@ -148,7 +148,7 @@ The server ships a live, interactive reference of every endpoint (Scalar UI back
 http://<server>:3000/api/docs
 ```
 
-The raw spec is at `/api/v1/openapi.json`. The SDK's request and response types are modeled directly on it.
+Sign in to the web UI in the same browser first: the reference needs a session (or an API key in the `X-API-Key` header for the raw spec at `/api/v1/openapi.json`). The SDK's request and response types are modeled directly on it.
 
 ## Error handling
 

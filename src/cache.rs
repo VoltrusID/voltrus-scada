@@ -212,6 +212,15 @@ impl DeviceCache {
         None
     }
 
+    /// The cached value of `metric` on one device, `None` when the device or the metric is not there.
+    pub async fn get_device_metric(&self, device_id: &str, metric: &str) -> Option<f64> {
+        self.devices
+            .read()
+            .await
+            .get(device_id)
+            .and_then(|snapshot| snapshot.metrics.get(metric).copied())
+    }
+
     /// Update a single metric value within an existing device snapshot and broadcast the change.
     /// If the device or metric doesn't exist yet, this is a no-op.
     pub async fn set_metric_value(&self, device_id: &str, metric_key: &str, value: f64) {

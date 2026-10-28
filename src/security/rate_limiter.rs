@@ -213,6 +213,28 @@ pub fn client_ip_from_parts(peer: Option<SocketAddr>, headers: &axum::http::Head
     peer.ip().to_string()
 }
 
+/// Whether the request reached us over HTTPS: the server does not terminate TLS,
+/// so only a loopback peer (a local reverse proxy or tunnel) can say so, with
+/// `X-Forwarded-Proto: https` (first hop) or Cloudflare's `CF-Visitor`
+/// (`{"scheme":"https"}`). From any other peer the headers are ignored, as in
+/// [`client_ip`].
+pub fn request_is_https(peer: Option<&SocketAddr>, headers: &axum::http::HeaderMap) -> bool {
+    if !peer.is_some_and(|p| p.ip().is_loopback()) {
+        return false;
+    }
+    let forwarded_https = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .is_some_and(|s| s.trim().eq_ignore_ascii_case("https"));
+    forwarded_https
+        || headers
+            .get("cf-visitor")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+            .is_some_and(|v| v["scheme"].as_str() == Some("https"))
+}
+
 /// Middleware that applies a global per-IP rate limit to all requests.
 /// This protects public endpoints like /api/health and /api/settings/branding
 /// from being used as amplification or enumeration vectors.

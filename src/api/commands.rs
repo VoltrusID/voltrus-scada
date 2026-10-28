@@ -33,76 +33,176 @@ pub async fn write_tag(
     Path(tag_id): Path<i64>,
     Json(body): Json<WriteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let Some(value) = body.value.as_f64() else {
+        return Ok(WriteError::Invalid("Invalid numeric value".into()).into_response());
+    };
+    let submission = TagWriteSubmission {
+        tag_id,
+        value,
+        policy: body.policy,
+        scheduled_at: body.scheduled_at,
+        reason: body.reason,
+        command_id: None,
+    };
+    match submit_tag_write(&state, &user.username, submission).await {
+        Ok(cmd) => Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({
+                "command_id": cmd.id,
+                "status": "pending",
+                "data_source_id": tag_id,
+                "value": value,
+                "created_at": cmd.created_at,
+            })),
+        )
+            .into_response()),
+        Err(WriteError::Internal(e)) => Err(e.into()),
+        Err(refusal) => Ok(refusal.into_response()),
+    }
+}
+
+/// One tag write on its way into the command queue, from any front end (REST,
+/// WebSocket).
+pub struct TagWriteSubmission {
+    pub tag_id: i64,
+    pub value: f64,
+    pub policy: String,
+    pub scheduled_at: Option<i64>,
+    pub reason: Option<String>,
+    /// Caller-chosen command id (WebSocket clients correlate acknowledgements
+    /// by it). `None` generates one.
+    pub command_id: Option<String>,
+}
+
+/// Why a write was refused before it reached the queue.
+#[derive(Debug)]
+pub enum WriteError {
+    /// The data source does not exist.
+    NotFound(String),
+    /// The tag is not writable (403).
+    NotWritable(String),
+    /// The request or value violates the tag's write policy (400).
+    Invalid(String),
+    /// The tag's write rate limit is used up (429).
+    RateLimited(String),
+    Internal(anyhow::Error),
+}
+
+impl WriteError {
+    /// The text shown to the caller. Internal errors are logged, not exposed.
+    pub fn message(&self) -> String {
+        match self {
+            WriteError::NotFound(m)
+            | WriteError::NotWritable(m)
+            | WriteError::Invalid(m)
+            | WriteError::RateLimited(m) => m.clone(),
+            WriteError::Internal(e) => {
+                tracing::error!("Tag write failed: {e:#}");
+                "Internal error".to_string()
+            }
+        }
+    }
+}
+
+impl From<anyhow::Error> for WriteError {
+    fn from(e: anyhow::Error) -> Self {
+        WriteError::Internal(e)
+    }
+}
+
+impl IntoResponse for WriteError {
+    fn into_response(self) -> axum::response::Response {
+        let status = match &self {
+            WriteError::NotFound(_) => StatusCode::NOT_FOUND,
+            WriteError::NotWritable(_) => StatusCode::FORBIDDEN,
+            WriteError::Invalid(_) => StatusCode::BAD_REQUEST,
+            WriteError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
+            WriteError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, Json(json!({"error": self.message()}))).into_response()
+    }
+}
+
+/// Longest command id a client may choose.
+const MAX_CLIENT_COMMAND_ID_LEN: usize = 64;
+
+/// Check a write against the tag's policy (writable, mandatory reason, range,
+/// deadband, rate limit) and put it into the command queue, with an audit entry
+/// naming `username`. Every write entry point goes through here so none can skip
+/// the policy.
+pub async fn submit_tag_write(
+    state: &AppState,
+    username: &str,
+    req: TagWriteSubmission,
+) -> Result<Command, WriteError> {
+    let tag_id = req.tag_id;
+    let value = req.value;
+
     // 1. Get write policy — also validates that the data source exists
     let policy = state
         .storage
         .get_write_policy(tag_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Data source not found"))?;
+        .ok_or_else(|| WriteError::NotFound("Data source not found".into()))?;
 
     // 2. Check writable
     if !policy.writable {
-        return Ok((
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Tag is not writable"})),
-        )
-            .into_response());
+        return Err(WriteError::NotWritable("Tag is not writable".into()));
     }
 
     // 3. Check write_requires_reason
-    if policy.write_requires_reason && body.reason.is_none() {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "Reason is required for writes on this tag"})),
-        )
-            .into_response());
+    let reason = req
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty());
+    if policy.write_requires_reason && reason.is_none() {
+        return Err(WriteError::Invalid(
+            "Reason is required for writes on this tag".into(),
+        ));
     }
 
-    // 4. Parse numeric value from body.value
-    let value_f64 = body
-        .value
-        .as_f64()
-        .ok_or_else(|| anyhow::anyhow!("Invalid numeric value"))?;
+    // 4. A NaN or infinite value passes every comparison below
+    if !value.is_finite() {
+        return Err(WriteError::Invalid("Invalid numeric value".into()));
+    }
 
     // 5. Check value within write_min / write_max range
     if let Some(min) = policy.write_min
-        && value_f64 < min
+        && value < min
     {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("Value {} is below minimum {}", value_f64, min)})),
-        )
-            .into_response());
+        return Err(WriteError::Invalid(format!(
+            "Value {value} is below minimum {min}"
+        )));
     }
     if let Some(max) = policy.write_max
-        && value_f64 > max
+        && value > max
     {
-        return Ok((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("Value {} is above maximum {}", value_f64, max)})),
-        )
-            .into_response());
+        return Err(WriteError::Invalid(format!(
+            "Value {value} is above maximum {max}"
+        )));
     }
 
     // 6. Check deadband against current cached value
     if let Some(deadband) = policy.write_deadband
         && deadband > 0.0
     {
-        let key = state.storage.get_data_source_key(tag_id).await?;
-        if let Some(key) = key
-            && let Some(current) = state.cache.get_metric_value(&key).await
-            && (value_f64 - current).abs() <= deadband
+        // The cache holds a metric under the bare register name, scoped by device
+        // (the data source key may be device-qualified, `plts_1.voltage`).
+        let source = state.storage.get_data_source_by_id(tag_id).await?;
+        if let Some(source) = source
+            && let Some(current) = state
+                .cache
+                .get_device_metric(
+                    &source.device_id,
+                    super::data::metric_name(&source.key, &source.device_id),
+                )
+                .await
+            && (value - current).abs() <= deadband
         {
-            return Ok((
-                StatusCode::BAD_REQUEST,
-                Json(json!({
-                    "error": format!(
-                        "Value {} is within deadband {} of current value {}",
-                        value_f64, deadband, current
-                    )
-                })),
-            )
-                .into_response());
+            return Err(WriteError::Invalid(format!(
+                "Value {value} is within deadband {deadband} of current value {current}"
+            )));
         }
     }
 
@@ -112,16 +212,9 @@ pub async fn write_tag(
     {
         let recent = state.storage.count_recent_writes(tag_id, 60).await?;
         if recent >= max_rate {
-            return Ok((
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(json!({
-                    "error": format!(
-                        "Rate limit exceeded: {} writes in the last 60s (max {})",
-                        recent, max_rate
-                    )
-                })),
-            )
-                .into_response());
+            return Err(WriteError::RateLimited(format!(
+                "Rate limit exceeded: {recent} writes in the last 60s (max {max_rate})"
+            )));
         }
     }
 
@@ -133,22 +226,40 @@ pub async fn write_tag(
         .ok_or_else(|| anyhow::anyhow!("Device not found for data source"))?;
 
     // 9. Create and insert Command
+    let command_id = match req.command_id {
+        Some(id) => {
+            let valid = !id.is_empty()
+                && id.len() <= MAX_CLIENT_COMMAND_ID_LEN
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+            if !valid {
+                return Err(WriteError::Invalid(
+                    "Command id must be 1-64 characters of letters, digits, '-' or '_'".into(),
+                ));
+            }
+            if state.storage.get_command(&id).await?.is_some() {
+                return Err(WriteError::Invalid("Command id is already in use".into()));
+            }
+            id
+        }
+        None => rand::rng()
+            .sample_iter(&rand::distr::Alphanumeric)
+            .take(21)
+            .map(char::from)
+            .collect::<String>()
+            .to_lowercase(),
+    };
     let now = crate::timeutil::now_secs();
-    let command_id: String = rand::rng()
-        .sample_iter(&rand::distr::Alphanumeric)
-        .take(21)
-        .map(char::from)
-        .collect::<String>()
-        .to_lowercase();
     let cmd = Command {
-        id: command_id.clone(),
+        id: command_id,
         data_source_id: tag_id,
         device_id: target.device_id,
         protocol: target.protocol,
-        value: value_f64.to_string(),
+        value: value.to_string(),
         status: CommandStatus::Pending.as_str().to_string(),
-        policy: body.policy.clone(),
-        scheduled_at: body.scheduled_at,
+        policy: req.policy,
+        scheduled_at: req.scheduled_at,
         retry_count: 0,
         max_retries: 3,
         error_message: None,
@@ -156,7 +267,7 @@ pub async fn write_tag(
         sent_at: None,
         acked_at: None,
         resolved_at: None,
-        created_by: user.username.clone(),
+        created_by: username.to_string(),
         device_ref: target.device_ref,
         readback_status: None,
         readback_value: None,
@@ -164,19 +275,19 @@ pub async fn write_tag(
         readback_ts: None,
     };
 
-    state.storage.insert_command(&cmd).await?;
+    state.storage.insert_command_audited(&cmd, reason).await?;
 
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(json!({
-            "command_id": command_id,
-            "status": "pending",
-            "data_source_id": tag_id,
-            "value": value_f64,
-            "created_at": now,
-        })),
-    )
-        .into_response())
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: "tag_write".to_string(),
+        username: username.to_string(),
+        resource: format!("data_source:{tag_id}"),
+        details: Some(match reason {
+            Some(r) => format!("command={} value={value} reason={r}", cmd.id),
+            None => format!("command={} value={value}", cmd.id),
+        }),
+    });
+
+    Ok(cmd)
 }
 
 // ── Get Command Status ──

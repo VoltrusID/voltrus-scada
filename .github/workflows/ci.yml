@@ -66,6 +66,41 @@ jobs:
       - name: Build
         run: npm run build
 
+  # A release build embeds the web client, so it needs the client built first.
+  # This job checks that a binary built that way serves the UI with no static/ folder.
+  embedded-ui:
+    name: Single-file binary (embedded web UI)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Build the web client
+        run: |
+          cd client
+          npm ci
+          npm run build
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev clang
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the server
+        run: cargo build --release --bin voltrus
+
+      - name: Serve the embedded UI from an empty directory
+        run: scripts/smoke-embedded-ui.sh target/release/voltrus
+
   licenses:
     name: Dependency licences
     runs-on: ubuntu-latest

@@ -52,8 +52,40 @@ type AlarmUpdateCallback = (update: AlarmUpdateEvent) => void;
 type DeviceStatusCallback = (status: DeviceStatus) => void;
 type DisconnectCallback = () => void;
 
+/** How the live data reaches the browser: the WebSocket, or server-sent events when it cannot. */
+export type Transport = 'ws' | 'sse';
+
+type TransportCallback = (transport: Transport) => void;
+
+/** Consecutive WebSocket attempts that end before the server says anything, then the SSE fallback starts. */
+export const WS_FAILURES_BEFORE_FALLBACK = 3;
+/** While on SSE, how often a WebSocket is tried again. */
+export const SSE_PROBE_INTERVAL_MS = 60_000;
+
+/** Event names the server uses on the SSE stream: the `type` of each message. */
+const SSE_EVENTS = [
+  'AuthOk', 'AuthError', 'TagUpdate', 'TagUpdateBatch', 'CommandAck',
+  'DeviceStatus', 'Alarm', 'AlarmUpdate', 'HaStatus',
+] as const;
+
+function addUnique<T>(list: T[], item: T): void {
+  if (!list.includes(item)) list.push(item);
+}
+
+/**
+ * The live data connection. It uses the WebSocket (MessagePack). When the
+ * WebSocket cannot be established, as behind a proxy that blocks upgrades, it
+ * falls back to the server's `text/event-stream` endpoint (JSON, read-only) and
+ * tries the WebSocket again every minute, switching back as soon as one works.
+ */
 export class VoltrusWebSocket {
   private ws: WebSocket | null = null;
+  private es: EventSource | null = null;
+  private transport: Transport = 'ws';
+  private sseUp = false;
+  private wsFailures = 0;
+  private probe: WebSocket | null = null;
+  private probeTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
@@ -64,53 +96,199 @@ export class VoltrusWebSocket {
   private alarmUpdateCallbacks: AlarmUpdateCallback[] = [];
   private deviceStatusCallbacks: DeviceStatusCallback[] = [];
   private disconnectCallbacks: DisconnectCallback[] = [];
+  private transportCallbacks: TransportCallback[] = [];
   private url = '';
+  private sseUrl = '';
   private token = '';
   private batchBuffer: TagUpdate[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
   private connectCallbacks: (() => void)[] = [];
 
-  connect(url: string, token?: string): void {
+  /** `sseUrl` enables the fallback; without it only the WebSocket is used. */
+  connect(url: string, token?: string, sseUrl?: string): void {
     this.url = url;
+    this.sseUrl = sseUrl ?? '';
     this.token = token ?? '';
     this.reconnectDelay = 1000;
+    this.wsFailures = 0;
     this.doConnect();
+  }
+
+  getTransport(): Transport {
+    return this.transport;
+  }
+
+  private setTransport(transport: Transport): void {
+    if (this.transport === transport) return;
+    this.transport = transport;
+    this.transportCallbacks.forEach(cb => cb(transport));
   }
 
   private doConnect(): void {
     if (this.ws) {
-      this.ws.close();
+      const old = this.ws;
+      this.ws = null;
+      old.close();
     }
-    this.ws = new WebSocket(this.url);
-    this.ws.binaryType = 'arraybuffer';
+    this.ws = this.openWebSocket(false);
+  }
 
-    this.ws.onopen = () => {
-      this.reconnectDelay = 1000;
+  /**
+   * Open a WebSocket. The main one counts failures and drives reconnects; a probe
+   * (opened while on SSE) stays silent until the server speaks, then takes over.
+   */
+  private openWebSocket(isProbe: boolean): WebSocket {
+    const ws = new WebSocket(this.url);
+    ws.binaryType = 'arraybuffer';
+    // The server greets every connection; hearing anything means the upgrade really worked.
+    let heard = false;
+
+    ws.onopen = () => {
       if (this.token) {
-        const authMsg = encode({ type: 'auth', token: this.token });
-        this.ws?.send(authMsg);
+        ws.send(encode({ type: 'auth', token: this.token }));
       }
-      this.connectCallbacks.forEach(cb => cb());
+      if (!isProbe) this.connectCallbacks.forEach(cb => cb());
     };
 
-    this.ws.onmessage = (event) => {
-      const data = event.data as ArrayBuffer;
+    ws.onmessage = (event) => {
+      if (!heard) {
+        heard = true;
+        if (isProbe) {
+          if (this.probe !== ws) return;
+          this.promoteProbe(ws);
+        } else if (this.ws === ws) {
+          this.wsFailures = 0;
+          this.reconnectDelay = 1000;
+        }
+      }
+      if (this.ws !== ws) return;
       try {
-        const msg = decode(data) as Record<string, unknown>;
+        const msg = decode(event.data as ArrayBuffer) as Record<string, unknown>;
         this.handleMessage(msg);
       } catch (e) {
         console.warn('WS: failed to decode message', e);
       }
     };
 
-    this.ws.onclose = () => {
-      this.disconnectCallbacks.forEach(cb => cb());
-      this.scheduleReconnect();
+    ws.onclose = () => {
+      if (isProbe) {
+        if (this.probe === ws) {
+          this.probe = null;
+          this.scheduleProbe();
+        } else if (this.ws === ws) {
+          // The promoted probe is the main socket now.
+          this.onMainWebSocketClosed(ws, heard);
+        }
+        return;
+      }
+      this.onMainWebSocketClosed(ws, heard);
     };
 
-    this.ws.onerror = () => {
+    ws.onerror = () => {
       // onclose will fire after this
     };
+    return ws;
+  }
+
+  private onMainWebSocketClosed(ws: WebSocket, heard: boolean): void {
+    if (this.ws !== ws) return;
+    this.disconnectCallbacks.forEach(cb => cb());
+    if (heard) {
+      this.wsFailures = 0;
+    } else {
+      this.wsFailures += 1;
+      if (this.sseUrl && this.wsFailures >= WS_FAILURES_BEFORE_FALLBACK && typeof EventSource !== 'undefined') {
+        this.ws = null;
+        this.startSse();
+        return;
+      }
+    }
+    this.scheduleReconnect();
+  }
+
+  // ── SSE fallback ─────────────────────────────────────────────
+
+  private startSse(): void {
+    this.reconnectDelay = 1000;
+    this.setTransport('sse');
+    this.openEventSource();
+    this.scheduleProbe();
+  }
+
+  private openEventSource(): void {
+    this.es?.close();
+    const es = new EventSource(this.sseUrl, { withCredentials: true });
+    this.es = es;
+    this.sseUp = false;
+
+    for (const name of SSE_EVENTS) {
+      es.addEventListener(name, (event) => {
+        if (this.es !== es) return;
+        let msg: Record<string, unknown>;
+        try {
+          msg = JSON.parse((event as MessageEvent).data as string) as Record<string, unknown>;
+        } catch (e) {
+          console.warn('SSE: failed to decode message', e);
+          return;
+        }
+        if (name === 'AuthOk' && !this.sseUp) {
+          // The server's greeting: the stream is live (again).
+          this.sseUp = true;
+          this.reconnectDelay = 1000;
+          this.connectCallbacks.forEach(cb => cb());
+        }
+        this.handleMessage(msg);
+      });
+    }
+
+    es.onerror = () => {
+      if (this.es !== es) return;
+      if (this.sseUp) {
+        this.sseUp = false;
+        this.disconnectCallbacks.forEach(cb => cb());
+      }
+      // The browser retries a dropped stream on its own. A refused one (401, a
+      // proxy answering with something else) it gives up on: retry it here.
+      if (es.readyState === EventSource.CLOSED) {
+        es.close();
+        this.es = null;
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          if (this.sseUrl && this.transport === 'sse') this.openEventSource();
+        }, this.reconnectDelay);
+        this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+      }
+    };
+  }
+
+  private closeEventSource(): void {
+    this.es?.close();
+    this.es = null;
+    this.sseUp = false;
+  }
+
+  private scheduleProbe(): void {
+    if (this.probeTimer || this.transport !== 'sse' || !this.url) return;
+    this.probeTimer = setTimeout(() => {
+      this.probeTimer = null;
+      if (this.transport !== 'sse' || !this.url) return;
+      this.probe = this.openWebSocket(true);
+    }, SSE_PROBE_INTERVAL_MS);
+  }
+
+  /** A probe WebSocket heard the server: it carries the data from now on. */
+  private promoteProbe(ws: WebSocket): void {
+    this.probe = null;
+    this.closeEventSource();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.ws = ws;
+    this.wsFailures = 0;
+    this.reconnectDelay = 1000;
+    this.setTransport('ws');
+    this.connectCallbacks.forEach(cb => cb());
   }
 
   private handleMessage(msg: Record<string, unknown>): void {
@@ -162,9 +340,9 @@ export class VoltrusWebSocket {
     this.send({ type: 'Unsubscribe', tag_ids: tagIds });
   }
 
-  writeTag(tagId: string, value: number): string {
+  writeTag(tagId: string, value: number, reason?: string): string {
     const commandId = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    this.send({ type: 'TagWrite', tag_id: tagId, value, command_id: commandId });
+    this.send({ type: 'TagWrite', tag_id: tagId, value, command_id: commandId, reason });
     return commandId;
   }
 
@@ -173,11 +351,24 @@ export class VoltrusWebSocket {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    // Clear URL before closing to prevent race with onclose triggering reconnect
+    if (this.probeTimer) {
+      clearTimeout(this.probeTimer);
+      this.probeTimer = null;
+    }
+    if (this.batchTimer) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
+    // Clear URLs before closing to prevent race with onclose triggering reconnect
     this.url = '';
+    this.sseUrl = '';
     this.token = '';
+    this.closeEventSource();
+    this.probe?.close();
+    this.probe = null;
     this.ws?.close();
     this.ws = null;
+    this.transport = 'ws';
     // Clear all callback arrays to prevent accumulation across reconnect cycles
     this.tagUpdateCallbacks = [];
     this.tagBatchCallbacks = [];
@@ -186,23 +377,32 @@ export class VoltrusWebSocket {
     this.alarmUpdateCallbacks = [];
     this.deviceStatusCallbacks = [];
     this.disconnectCallbacks = [];
+    this.transportCallbacks = [];
     this.connectCallbacks = [];
   }
 
   isConnected(): boolean {
+    if (this.transport === 'sse') return this.sseUp;
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
-  onTagUpdate(cb: TagUpdateCallback): void { this.tagUpdateCallbacks.push(cb); }
+  /** Whether tag writes can go over this connection. The SSE stream is read-only. */
+  canWrite(): boolean {
+    return this.transport === 'ws' && this.ws?.readyState === WebSocket.OPEN;
+  }
+
+  onTagUpdate(cb: TagUpdateCallback): void { addUnique(this.tagUpdateCallbacks, cb); }
   offTagUpdate(cb: TagUpdateCallback): void { this.tagUpdateCallbacks = this.tagUpdateCallbacks.filter(c => c !== cb); }
-  onTagBatch(cb: TagBatchCallback): void { this.tagBatchCallbacks.push(cb); }
+  onTagBatch(cb: TagBatchCallback): void { addUnique(this.tagBatchCallbacks, cb); }
   offTagBatch(cb: TagBatchCallback): void { this.tagBatchCallbacks = this.tagBatchCallbacks.filter(c => c !== cb); }
-  onCommandAck(cb: CommandAckCallback): void { this.commandAckCallbacks.push(cb); }
-  onAlarm(cb: AlarmCallback): void { this.alarmCallbacks.push(cb); }
-  onAlarmUpdate(cb: AlarmUpdateCallback): void { this.alarmUpdateCallbacks.push(cb); }
-  onDeviceStatus(cb: DeviceStatusCallback): void { this.deviceStatusCallbacks.push(cb); }
-  onDisconnect(cb: DisconnectCallback): void { this.disconnectCallbacks.push(cb); }
-  onConnect(cb: () => void): void { this.connectCallbacks.push(cb); }
+  onCommandAck(cb: CommandAckCallback): void { addUnique(this.commandAckCallbacks, cb); }
+  onAlarm(cb: AlarmCallback): void { addUnique(this.alarmCallbacks, cb); }
+  onAlarmUpdate(cb: AlarmUpdateCallback): void { addUnique(this.alarmUpdateCallbacks, cb); }
+  onDeviceStatus(cb: DeviceStatusCallback): void { addUnique(this.deviceStatusCallbacks, cb); }
+  onDisconnect(cb: DisconnectCallback): void { addUnique(this.disconnectCallbacks, cb); }
+  onConnect(cb: () => void): void { addUnique(this.connectCallbacks, cb); }
+  /** Called when the live data switches between the WebSocket and the SSE fallback. */
+  onTransportChange(cb: TransportCallback): void { addUnique(this.transportCallbacks, cb); }
 
   private send(msg: Record<string, unknown>): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
@@ -211,11 +411,13 @@ export class VoltrusWebSocket {
   }
 
   private scheduleReconnect(): void {
-    if (!this.url) return;
+    if (!this.url || this.reconnectTimer) return;
+    const delay = this.reconnectDelay;
+    this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
     this.reconnectTimer = setTimeout(() => {
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
-      this.doConnect();
-    }, this.reconnectDelay);
+      this.reconnectTimer = null;
+      if (this.url) this.doConnect();
+    }, delay);
   }
 }
 
@@ -252,7 +454,7 @@ export function getWsInstance(): VoltrusWebSocket | null {
 }
 
 export function wsWriteTag(sensorId: number, value: number): boolean {
-  if (_instance && _instance.isConnected()) {
+  if (_instance && _instance.canWrite()) {
     _instance.writeTag(String(sensorId), value);
     return true;
   }

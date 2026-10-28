@@ -79,6 +79,8 @@ pub async fn create_device(
         return Err(AppError(anyhow::anyhow!("Device URL is required")));
     }
 
+    super::check_poll_interval(req.interval_ms)?;
+
     let id = state
         .storage
         .create_s7_device(
@@ -143,6 +145,10 @@ pub async fn update_device(
 ) -> Result<impl IntoResponse, AppError> {
     if user.role != "admin" {
         return Err(AppError::forbidden("Admin access required"));
+    }
+
+    if let Some(interval_ms) = req.interval_ms {
+        super::check_poll_interval(interval_ms)?;
     }
 
     state

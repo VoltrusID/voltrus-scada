@@ -23,6 +23,32 @@ pub async fn strip_forwarded_host_middleware(req: Request, next: Next) -> Respon
     next.run(req).await
 }
 
+/// Policy for the app and the API.
+const APP_CSP: &str = "default-src 'self'; \
+     script-src 'self' https://static.cloudflareinsights.com; \
+     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
+     img-src 'self' data: blob:; \
+     font-src 'self' https://fonts.gstatic.com; \
+     connect-src 'self'; \
+     media-src 'self'; \
+     object-src 'none'; \
+     frame-ancestors 'none'; \
+     base-uri 'self'; \
+     form-action 'self';";
+
+/// Policy for the API reference page (`/api/docs`): the app's, plus the jsDelivr
+/// CDN its Scalar script and styles come from.
+const API_DOCS_CSP: &str = "default-src 'self'; \
+     script-src 'self' https://cdn.jsdelivr.net; \
+     style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com; \
+     img-src 'self' data: blob: https:; \
+     font-src 'self' data: https://cdn.jsdelivr.net https://fonts.gstatic.com; \
+     connect-src 'self'; \
+     object-src 'none'; \
+     frame-ancestors 'none'; \
+     base-uri 'self'; \
+     form-action 'self';";
+
 pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
     let path = req.uri().path().to_owned();
     let is_api = path.starts_with("/api/");
@@ -53,21 +79,15 @@ pub async fn security_headers_middleware(req: Request, next: Next) -> Response {
     // Content Security Policy
     // Cloudflare injects beacon.min.js for analytics when tunneled, and the
     // frontend loads Google Fonts (Inter, JetBrains Mono) from CDN.
+    // The API reference page (Scalar) loads its script from jsDelivr.
+    let csp = if path == "/api/docs" {
+        API_DOCS_CSP
+    } else {
+        APP_CSP
+    };
     headers.insert(
         "Content-Security-Policy",
-        header::HeaderValue::from_static(
-            "default-src 'self'; \
-             script-src 'self' https://static.cloudflareinsights.com; \
-             style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
-             img-src 'self' data: blob:; \
-             font-src 'self' https://fonts.gstatic.com; \
-             connect-src 'self'; \
-             media-src 'self'; \
-             object-src 'none'; \
-             frame-ancestors 'none'; \
-             base-uri 'self'; \
-             form-action 'self';",
-        ),
+        header::HeaderValue::from_static(csp),
     );
 
     // Permissions Policy

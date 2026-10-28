@@ -128,7 +128,11 @@ export function AppInner() {
     const refreshAlarms = () => { queryClient.invalidateQueries({ queryKey: ['alarms'] }) }
     ws.onAlarm(refreshAlarms)
     ws.onAlarmUpdate(refreshAlarms)
-    ws.connect(`${protocol}//${window.location.host}/api/v1/ws`)
+    ws.connect(
+      `${protocol}//${window.location.host}/api/v1/ws`,
+      undefined,
+      `${window.location.protocol}//${window.location.host}/api/v1/stream`,
+    )
     wsRef.current = ws
     setWsInstance(ws)
   }, [queryClient])

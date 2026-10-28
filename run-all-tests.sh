@@ -40,7 +40,7 @@ fi
 echo ""
 
 echo "4/5  Release build..."
-if cargo build --release 2>&1; then
+if VOLTRUS_SKIP_UI_EMBED=1 cargo build --release 2>&1; then
   echo "     ✅ Pass"
 else
   echo "     ❌ FAIL — build error"

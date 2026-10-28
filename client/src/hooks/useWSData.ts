@@ -75,6 +75,8 @@ export function useWSData(authed: boolean, sensors: SensorConfig[]) {
 
     return onWsReady(ws => {
       ws.onTagBatch(handleBatch)
+      ws.onTransportChange(actions.setLiveTransport)
+      actions.setLiveTransport(ws.getTransport())
       actions.setWsConnected(true)
     })
 

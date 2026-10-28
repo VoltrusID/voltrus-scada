@@ -25,6 +25,9 @@ pub enum ClientMessage {
         tag_id: String,
         value: f64,
         command_id: Option<String>,
+        /// Why the write is made; required by tags with `write_requires_reason`.
+        #[serde(default)]
+        reason: Option<String>,
     },
     Ping,
 }
@@ -144,6 +147,7 @@ mod tests {
                 tag_id: "t1".to_string(),
                 value: 42.0,
                 command_id: None,
+                reason: None,
             },
             ClientMessage::Ping,
         ];

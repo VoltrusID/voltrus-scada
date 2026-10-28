@@ -8,6 +8,7 @@ import type { ModbusDevice, ModbusRegister } from './types'
 import { FileDropZone, ImportFileButton, ImportNotice } from './components/FileDropZone'
 import { deviceFileKind, parseModbusDeviceFile } from './deviceFileImport'
 import { DeviceTemplatesPanel, SaveAsTemplateDialog } from './components/DeviceTemplatesPanel'
+import { NetworkScanDialog } from './components/NetworkScanDialog'
 
 export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onClose: () => void; embedded?: boolean; isStrictAdmin?: boolean }) {
   const { data: devices = [], isLoading } = useModbusDevices()
@@ -24,6 +25,7 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
   const [simDevice, setSimDevice] = useState<ModbusDevice | undefined>(undefined)
   const [showSimProfiles, setShowSimProfiles] = useState(false)
   const [showTemplates, setShowTemplates] = useState(false)
+  const [showNetworkScan, setShowNetworkScan] = useState(false)
   const [templateDevice, setTemplateDevice] = useState<ModbusDevice | undefined>(undefined)
   const [importLines, setImportLines] = useState<string[]>([])
   const [simStates, setSimStates] = useState<Record<string, { simulation_mode: boolean; sim_profile_id: number | null; sim_config: string | null }>>({})
@@ -101,6 +103,7 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
             Sim Profiles
           </button>
           <button style={{ ...btnStyle, borderColor: 'var(--cyan)', color: 'var(--cyan)' }} onClick={() => setShowTemplates(true)} aria-label="Device templates">Templates</button>
+          <button style={btnStyle} onClick={() => setShowNetworkScan(true)} aria-label="Scan network for Modbus devices">Scan Network</button>
         </div>
       </div>
       <ImportNotice lines={importLines} onDismiss={() => setImportLines([])} />
@@ -202,6 +205,7 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
         />
       )
     })()}
+    {showNetworkScan && <NetworkScanDialog onClose={() => setShowNetworkScan(false)} />}
     {showTemplates && <DeviceTemplatesPanel protocol="modbus" isAdmin={isStrictAdmin} onClose={() => setShowTemplates(false)} />}
     {templateDevice && <SaveAsTemplateDialog protocol="modbus" deviceId={templateDevice.id} deviceName={templateDevice.name || templateDevice.id} onClose={() => setTemplateDevice(undefined)} onSaved={line => setImportLines([line])} />}
     {showSimProfiles && (

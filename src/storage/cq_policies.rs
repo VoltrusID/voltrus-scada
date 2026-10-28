@@ -213,24 +213,4 @@ impl Storage {
         .await
         .context("Task join failed")?
     }
-
-    /// Get the key of a data source by its ID. Returns None if not found.
-    pub async fn get_data_source_key(&self, data_source_id: i64) -> Result<Option<String>> {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let result = conn.query_row(
-                "SELECT key FROM data_sources WHERE id = ?1",
-                rusqlite::params![data_source_id],
-                |row| row.get::<_, String>(0),
-            );
-            match result {
-                Ok(key) => Ok(Some(key)),
-                Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(e) => Err(e).context("Get data source key failed"),
-            }
-        })
-        .await
-        .context("Task join failed")?
-    }
 }

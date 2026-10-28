@@ -59,11 +59,13 @@ mod simulation;
 mod smtp_settings;
 #[cfg(feature = "snmp_scan")]
 mod snmp_scan;
+mod sse;
 pub(crate) mod stream;
 mod system;
 mod system_docs;
 mod tag_tree;
 mod telemetry_delete;
+pub(crate) mod ui;
 mod user_notifications;
 mod vertical_templates;
 mod voltrus_plc_devices;
@@ -99,7 +101,7 @@ pub struct AppState {
     pub started_at: std::time::Instant,
     pub auth_secret: String,
     pub cors_origin: Option<String>,
-    pub cookie_secure: bool,
+    pub cookie_secure: crate::models::CookieSecure,
     pub retention_config: crate::models::RetentionConfig,
     pub flow_engine: Option<Arc<crate::flow_engine::engine::FlowEngine>>,
     pub login_rate_limiter: crate::security::LoginRateLimiter,
@@ -173,6 +175,17 @@ impl AppError {
             message.into(),
         )))
     }
+}
+
+/// A device poll interval must be 1 ms to one hour; 0 would spin the poller.
+pub fn check_poll_interval(interval_ms: u64) -> Result<(), AppError> {
+    let max = crate::device_templates::MAX_INTERVAL_MS;
+    if interval_ms == 0 || interval_ms > max {
+        return Err(AppError::bad_request(format!(
+            "interval_ms must be 1-{max}"
+        )));
+    }
+    Ok(())
 }
 
 impl IntoResponse for AppError {
@@ -688,6 +701,8 @@ pub fn create_router(state: AppState) -> Router {
     // Protected routes (any authenticated user — read-only for non-admins)
     let protected = Router::new()
         .route("/api/v1/live", get(system::get_live))
+        // Live data as server-sent events: the fallback for networks that block WebSocket
+        .route("/api/v1/stream", get(sse::sse_handler))
         .route(
             "/api/v1/widgets",
             get(crate::widget_sdk::widget_api::list_widgets),
@@ -956,6 +971,12 @@ pub fn create_router(state: AppState) -> Router {
     let protected = protected.merge(mqtt_broker_routes());
     let protected = protected.merge(voltrus_plc_routes());
     let protected = protected.merge(ext_routes.protected);
+    // The API reference lists every endpoint, so it needs a session or an API key like
+    // the endpoints it describes (and gets the same rate limit and security headers).
+    #[cfg(feature = "openapi")]
+    let protected = protected
+        .route("/api/v1/openapi.json", get(openapi::openapi_spec))
+        .route("/api/docs", get(openapi::scalar_docs));
 
     let protected = protected.layer(middleware::from_fn_with_state(
         state.clone(),
@@ -1409,8 +1430,11 @@ pub fn create_router(state: AppState) -> Router {
         ));
 
     // Static file serving WITHOUT CORS headers
+    // The UI built into the binary answers first; a ./static/index.html on disk, or a
+    // build with nothing embedded, passes the request on to ServeDir (see ui.rs).
     let static_router = Router::new()
         .fallback_service(ServeDir::new("static").fallback(ServeFile::new("static/index.html")))
+        .layer(middleware::from_fn(ui::embedded_ui_middleware))
         .layer(middleware::from_fn(
             crate::security::block_source_maps_middleware,
         ))
@@ -1427,18 +1451,10 @@ pub fn create_router(state: AppState) -> Router {
             crate::security::strip_forwarded_host_middleware,
         ));
 
-    // `mut` is consumed by the cfg(openapi) docs-route attachment below.
-    #[allow(unused_mut)]
-    let mut router = Router::new().merge(api_router).merge(static_router);
-
-    #[cfg(feature = "openapi")]
-    {
-        router = router
-            .route("/api/v1/openapi.json", get(openapi::openapi_spec))
-            .route("/api/docs", get(openapi::scalar_docs));
-    }
-
-    router.with_state(state)
+    Router::new()
+        .merge(api_router)
+        .merge(static_router)
+        .with_state(state)
 }
 
 // Middleware types re-exported from middleware module
