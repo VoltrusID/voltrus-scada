@@ -119,6 +119,19 @@ fn default_mqtt_auth_mode() -> String {
     "none".to_string()
 }
 
+/// Historian retention and compaction.
+///
+/// Tiers, newest to oldest:
+///
+/// * `raw`: full resolution. Samples older than `pack_after_secs` are packed
+///   into Gorilla/RLE blocks (about 1 to 3 bytes per sample for typical
+///   signals instead of ~50 for a plain row). Kept for the tier's `keep`
+///   seconds, then rolled into hourly aggregates (and exported to
+///   `archive_dir` first when the tier has `archive: true`).
+/// * `hourly`: min/avg/max per hour, kept for `keep` seconds beyond the raw
+///   window, then rolled into daily aggregates.
+/// * `daily`: min/avg/max per day, kept for `keep` seconds beyond the hourly
+///   window (`null` = forever).
 #[derive(Debug, Clone, Deserialize)]
 pub struct RetentionConfig {
     #[serde(default = "default_retention_enabled")]
@@ -129,6 +142,17 @@ pub struct RetentionConfig {
     pub archive_dir: String,
     #[serde(default = "default_tiers")]
     pub tiers: Vec<RetentionTier>,
+    /// Pack full-resolution samples into compressed blocks. When false the
+    /// samples stay as plain rows until they expire.
+    #[serde(default = "default_pack_enabled")]
+    pub pack_enabled: bool,
+    /// Complete hours that ended at least this long ago are packed; younger
+    /// samples stay as plain rows so inserts and the live trend stay cheap.
+    #[serde(default = "default_pack_after")]
+    pub pack_after_secs: u64,
+    /// How often the compaction worker looks for hours to pack.
+    #[serde(default = "default_pack_interval")]
+    pub pack_interval_secs: u64,
 }
 
 impl Default for RetentionConfig {
@@ -138,6 +162,46 @@ impl Default for RetentionConfig {
             run_interval_secs: default_run_interval(),
             archive_dir: default_archive_dir(),
             tiers: default_tiers(),
+            pack_enabled: default_pack_enabled(),
+            pack_after_secs: default_pack_after(),
+            pack_interval_secs: default_pack_interval(),
+        }
+    }
+}
+
+impl RetentionConfig {
+    /// Seconds a tier keeps its data, if it is bounded.
+    pub fn tier_keep(&self, name: &str) -> Option<u64> {
+        self.tiers
+            .iter()
+            .find(|t| t.name == name)
+            .and_then(|t| t.keep)
+    }
+
+    /// Whether expiring data of this tier is exported to `archive_dir` first.
+    pub fn tier_archive(&self, name: &str) -> bool {
+        self.tiers
+            .iter()
+            .find(|t| t.name == name)
+            .is_some_and(|t| t.archive)
+    }
+
+    /// Length of the full-resolution window in seconds; an unbounded tier
+    /// counts as a century so cutoffs stay plain subtraction.
+    pub fn raw_window_secs(&self) -> i64 {
+        self.window_secs("raw", 7_776_000)
+    }
+
+    /// Length of the hourly window (counted past the raw window) in seconds.
+    pub fn hourly_window_secs(&self) -> i64 {
+        self.window_secs("hourly", 7_776_000)
+    }
+
+    fn window_secs(&self, name: &str, missing: i64) -> i64 {
+        const CENTURY: i64 = 3_155_760_000;
+        match self.tiers.iter().find(|t| t.name == name) {
+            Some(t) => t.keep.map_or(CENTURY, |k| (k as i64).min(CENTURY)),
+            None => missing,
         }
     }
 }
@@ -151,18 +215,30 @@ fn default_run_interval() -> u64 {
 fn default_archive_dir() -> String {
     "./archive".to_string()
 }
+fn default_pack_enabled() -> bool {
+    true
+}
+fn default_pack_after() -> u64 {
+    3600
+}
+fn default_pack_interval() -> u64 {
+    600
+}
 
+/// Full resolution for 90 days (packed, so cheap), hourly aggregates for the 90
+/// days after that, daily aggregates for good. Archiving is opt-in: it writes
+/// a CSV copy of everything that leaves the raw tier, which is a lot of disk.
 fn default_tiers() -> Vec<RetentionTier> {
     vec![
         RetentionTier {
             name: "raw".into(),
-            keep: Some(604800),
+            keep: Some(7_776_000),
             downsample_to: Some("hourly".into()),
-            archive: true,
+            archive: false,
         },
         RetentionTier {
             name: "hourly".into(),
-            keep: Some(7776000),
+            keep: Some(7_776_000),
             downsample_to: Some("daily".into()),
             archive: false,
         },

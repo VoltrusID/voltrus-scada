@@ -1,22 +1,27 @@
 use super::Storage;
 use anyhow::Context;
 
-/// Compression tier statistics returned by get_compression_stats.
+/// Storage statistics returned by get_compression_stats.
 pub struct CompressionStats {
+    /// Raw full-resolution rows not yet packed.
     pub hot_rows: i64,
+    /// Hourly aggregate rows.
     pub warm_rows: i64,
+    /// Daily aggregate rows.
     pub cold_rows: i64,
+    /// Packed blocks and the samples and payload bytes they hold.
+    pub packed: super::PackedStats,
     pub db_size_bytes: u64,
 }
 
 impl Storage {
-    /// Get compression statistics across all tiers.
+    /// Get row counts and sizes across all tiers.
     pub async fn get_compression_stats(&self) -> anyhow::Result<CompressionStats> {
-        let conn = self.conn.clone();
+        let storage = self.clone();
         let db_path = self.db_path.clone();
 
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = storage.lock_conn();
 
             let hot_rows: i64 = conn
                 .query_row("SELECT COUNT(*) FROM telemetry", [], |row| row.get(0))
@@ -32,109 +37,20 @@ impl Storage {
                 .query_row("SELECT COUNT(*) FROM telemetry_daily", [], |row| row.get(0))
                 .unwrap_or(0);
 
+            let packed = super::historian::packed_stats(&conn)?;
+
             let db_size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
             Ok(CompressionStats {
                 hot_rows,
                 warm_rows,
                 cold_rows,
+                packed,
                 db_size_bytes,
             })
         })
         .await
         .context("Task join failed")?
-    }
-
-    pub async fn compress_hot_to_warm(&self, cutoff_ts: i64) -> anyhow::Result<usize> {
-        // Aggregate raw telemetry into hourly buckets and insert into telemetry_hourly
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let rows: Vec<(String, String)> = conn
-                .prepare(
-                    "SELECT DISTINCT device_id, metric FROM telemetry WHERE timestamp < ?1",
-                )?
-                .query_map(rusqlite::params![cutoff_ts], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            let mut compressed = 0usize;
-            for (device_id, metric) in &rows {
-                let result: (f64, f64, f64, i64, i64, i64) = conn
-                    .query_row(
-                        "SELECT COALESCE(AVG(value),0), COALESCE(MIN(value),0), COALESCE(MAX(value),0), COUNT(*), MIN(timestamp), MAX(timestamp) FROM telemetry WHERE device_id = ?1 AND metric = ?2 AND timestamp < ?3",
-                        rusqlite::params![device_id, metric, cutoff_ts],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
-                    )
-                    .unwrap_or((0.0, 0.0, 0.0, 0, 0, 0));
-
-                let (avg, min_val, max_val, count, _first_ts, _last_ts) = result;
-
-                if count > 0 {
-                    let hour_ts = (cutoff_ts / 3600) * 3600;
-                    conn.execute(
-                        "INSERT OR REPLACE INTO telemetry_hourly (device_id, metric, bucket_start, avg_value, min_value, max_value, sample_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        rusqlite::params![device_id, metric, hour_ts, avg, min_val, max_val, count],
-                    )?;
-
-                    let deleted = conn.execute(
-                        "DELETE FROM telemetry WHERE device_id = ?1 AND metric = ?2 AND timestamp < ?3",
-                        rusqlite::params![device_id, metric, cutoff_ts],
-                    )?;
-                    compressed += deleted;
-                }
-            }
-
-            Ok(compressed)
-        }).await.context("Task join failed")?
-    }
-
-    pub async fn compress_warm_to_cold(&self, cutoff_ts: i64) -> anyhow::Result<usize> {
-        // Aggregate hourly data into daily buckets
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let rows: Vec<(String, String)> = conn
-                .prepare(
-                    "SELECT DISTINCT device_id, metric FROM telemetry_hourly WHERE bucket_start < ?1",
-                )?
-                .query_map(rusqlite::params![cutoff_ts], |row| {
-                    Ok((row.get(0)?, row.get(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .collect();
-
-            let mut compressed = 0usize;
-            for (device_id, metric) in &rows {
-                let result: (f64, f64, f64, i64) = conn
-                    .query_row(
-                        "SELECT COALESCE(AVG(avg_value),0), COALESCE(MIN(min_value),0), COALESCE(MAX(max_value),0), SUM(sample_count) FROM telemetry_hourly WHERE device_id = ?1 AND metric = ?2 AND bucket_start < ?3",
-                        rusqlite::params![device_id, metric, cutoff_ts],
-                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-                    )
-                    .unwrap_or((0.0, 0.0, 0.0, 0));
-
-                let (avg, min_val, max_val, count) = result;
-
-                if count > 0 {
-                    let day_ts = (cutoff_ts / 86400) * 86400;
-                    conn.execute(
-                        "INSERT OR REPLACE INTO telemetry_daily (device_id, metric, bucket_start, avg_value, min_value, max_value, sample_count) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                        rusqlite::params![device_id, metric, day_ts, avg, min_val, max_val, count],
-                    )?;
-
-                    let deleted = conn.execute(
-                        "DELETE FROM telemetry_hourly WHERE device_id = ?1 AND metric = ?2 AND bucket_start < ?3",
-                        rusqlite::params![device_id, metric, cutoff_ts],
-                    )?;
-                    compressed += deleted;
-                }
-            }
-
-            Ok(compressed)
-        }).await.context("Task join failed")?
     }
 
     pub async fn list_custom_metrics(&self) -> anyhow::Result<Vec<crate::models::CustomMetric>> {
@@ -298,6 +214,8 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Full-resolution samples of one tag in `[from, to]`, oldest first, at
+    /// most 10000; raw rows and packed blocks merged.
     pub async fn get_metric_values_for_range(
         &self,
         device_id: &str,
@@ -305,22 +223,15 @@ impl Storage {
         from: i64,
         to: i64,
     ) -> anyhow::Result<Vec<(i64, f64)>> {
-        let conn = self.conn.clone();
+        let storage = self.clone();
         let device_id = device_id.to_string();
         let metric = metric.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut stmt = conn.prepare(
-                "SELECT timestamp, value FROM telemetry WHERE device_id = ?1 AND metric = ?2 AND timestamp >= ?3 AND timestamp <= ?4 ORDER BY timestamp LIMIT 10000",
-            ).context("Prepare failed")?;
-
-            let rows = stmt.query_map(
-                rusqlite::params![device_id, metric, from, to],
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)),
-            ).context("Query failed")?;
-
-            Ok(rows.filter_map(|r| r.ok()).collect())
-        }).await.context("Task join failed")?
+            let conn = storage.lock_conn();
+            super::historian::read_series(&conn, &device_id, &metric, from, to, Some(10000))
+        })
+        .await
+        .context("Task join failed")?
     }
 }

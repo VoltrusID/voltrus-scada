@@ -18,6 +18,7 @@ mod egress;
 #[cfg(feature = "ethernet-ip")]
 mod enip_storage;
 mod flows;
+mod historian;
 mod hub;
 mod license_storage;
 #[cfg(feature = "modbus")]
@@ -55,6 +56,21 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 
 use crate::models::DataPoint;
+
+pub use historian::{Agg, ArchiveSink, BUCKET_SECS, ExpireReport, PackReport, PackedStats, Sample};
+
+/// Group `(timestamp, metric, value)` rows by timestamp; a later row of the
+/// same metric and timestamp replaces an earlier one.
+fn group_by_timestamp(
+    rows: Vec<(i64, String, f64)>,
+) -> Vec<(i64, std::collections::HashMap<String, f64>)> {
+    let mut grouped: std::collections::BTreeMap<i64, std::collections::HashMap<String, f64>> =
+        std::collections::BTreeMap::new();
+    for (ts, metric, value) in rows {
+        grouped.entry(ts).or_default().insert(metric, value);
+    }
+    grouped.into_iter().collect()
+}
 
 #[derive(Clone, Debug)]
 pub struct Storage {
@@ -182,6 +198,8 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Full-resolution samples of one tag in `[from, to]`, oldest first, at
+    /// most 10000. Packed and raw samples are merged transparently.
     pub async fn query_history(
         &self,
         device_id: &str,
@@ -189,36 +207,18 @@ impl Storage {
         from: i64,
         to: i64,
     ) -> Result<Vec<DataPoint>> {
-        let conn = self.conn.clone();
+        let storage = self.clone();
         let device_id = device_id.to_string();
         let metric = metric.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(|e| {
-                tracing::error!("Storage mutex poisoned: {e}");
-                e.into_inner()
-            });
-            let mut stmt = conn
-                .prepare(
-                    "SELECT timestamp, value FROM telemetry
-                     WHERE device_id = ?1 AND metric = ?2
-                     AND timestamp >= ?3 AND timestamp <= ?4
-                     ORDER BY timestamp
-                     LIMIT 10000",
-                )
-                .context("Prepare failed")?;
-
-            let rows = stmt
-                .query_map(rusqlite::params![device_id, metric, from, to], |row| {
-                    Ok(DataPoint {
-                        timestamp: row.get(0)?,
-                        value: row.get(1)?,
-                    })
-                })
-                .context("Query failed")?;
-
-            rows.collect::<Result<Vec<_>, _>>()
-                .context("Row mapping failed")
+            let conn = storage.lock_conn();
+            let samples =
+                historian::read_series(&conn, &device_id, &metric, from, to, Some(10000))?;
+            Ok(samples
+                .into_iter()
+                .map(|(timestamp, value)| DataPoint { timestamp, value })
+                .collect())
         })
         .await
         .context("Task join failed")?
@@ -230,44 +230,13 @@ impl Storage {
         from: i64,
         to: i64,
     ) -> Result<Vec<(i64, std::collections::HashMap<String, f64>)>> {
-        let conn = self.conn.clone();
+        let storage = self.clone();
         let device_id = device_id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap_or_else(|e| {
-                tracing::error!("Storage mutex poisoned: {e}");
-                e.into_inner()
-            });
-            let mut stmt = conn
-                .prepare(
-                    "SELECT timestamp, metric, value FROM telemetry
-                     WHERE device_id = ?1
-                     AND timestamp >= ?2 AND timestamp <= ?3
-                     ORDER BY timestamp
-                     LIMIT 10000",
-                )
-                .context("Prepare failed")?;
-
-            let rows = stmt
-                .query_map(rusqlite::params![device_id, from, to], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, f64>(2)?,
-                    ))
-                })
-                .context("Query failed")?;
-
-            let mut grouped: std::collections::BTreeMap<
-                i64,
-                std::collections::HashMap<String, f64>,
-            > = std::collections::BTreeMap::new();
-            for row in rows {
-                let (ts, metric, value) = row.context("Row mapping failed")?;
-                grouped.entry(ts).or_default().insert(metric, value);
-            }
-
-            Ok(grouped.into_iter().collect())
+            let conn = storage.lock_conn();
+            let rows = historian::read_device(&conn, &device_id, from, to, 10000)?;
+            Ok(group_by_timestamp(rows))
         })
         .await
         .context("Task join failed")?

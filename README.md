@@ -24,8 +24,11 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
 * **Alarms:** warning and critical thresholds, priorities, shelving, deadband,
   on and off delay, acknowledgement, alarm analytics, email, webhook and push
   notifications.
-* **Historian:** raw, hourly and daily tiers with automatic downsampling and
-  CSV archive, trends, SPC charts, annotations, CSV and Excel import and export.
+* **Historian:** full-resolution samples packed into compressed blocks
+  (delta-of-delta timestamps, XOR floats, run-length digitals), per-tag
+  deadband, hourly and daily tiers with automatic downsampling and CSV archive,
+  trends, SPC charts, annotations, CSV and Excel import and export. See
+  [docs/historian.md](docs/historian.md).
 * **Automation:** visual flow engine, JavaScript scripts (QuickJS), recipes,
   a command queue with write read-back, simulation mode.
 * **API:** REST with an OpenAPI document, plus TypeScript and Python SDKs in

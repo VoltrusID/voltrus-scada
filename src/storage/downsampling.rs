@@ -1,35 +1,53 @@
-use super::Storage;
+use super::{Storage, historian};
 use anyhow::{Context, Result};
 
 impl Storage {
     // ── Downsampling & Retention ──
 
+    /// Aggregate every full-resolution sample (packed and raw) older than
+    /// `cutoff` into hourly buckets. Returns the number of hourly rows written.
+    ///
+    /// `cutoff` should sit on an hour boundary: an hour that is cut in half is
+    /// written from the half that is older than `cutoff`.
     pub async fn downsample_raw_to_hourly(&self, cutoff: i64) -> Result<u64> {
-        let conn = self.conn.clone();
+        let storage = self.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "INSERT OR REPLACE INTO telemetry_hourly (device_id, metric, bucket_start, avg_value, min_value, max_value, sample_count)
-                 SELECT device_id, metric,
-                        (timestamp / 3600) * 3600 as bucket_start,
-                        AVG(value), MIN(value), MAX(value), COUNT(*)
-                 FROM telemetry
-                 WHERE timestamp < ?1
-                 GROUP BY device_id, metric, bucket_start",
-                rusqlite::params![cutoff],
-            ).context("Downsample raw to hourly failed").map(|n| n as u64)
-        }).await.context("Task join failed")?
+            let series = {
+                let conn = storage.lock_conn();
+                historian::series_before(&conn, cutoff)?
+            };
+            let mut written = 0u64;
+            for (device_id, metric) in &series {
+                let conn = storage.lock_conn();
+                let hours = historian::aggregate_hours_before(&conn, device_id, metric, cutoff)?;
+                let tx = conn
+                    .unchecked_transaction()
+                    .context("Begin downsample tx failed")?;
+                for (hour, agg) in &hours {
+                    write_hourly(&tx, device_id, metric, *hour, agg)?;
+                    written += 1;
+                }
+                tx.commit().context("Commit downsample tx failed")?;
+            }
+            Ok(written)
+        })
+        .await
+        .context("Task join failed")?
     }
 
     pub async fn downsample_hourly_to_daily(&self, cutoff: i64) -> Result<u64> {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
+            // The daily mean weighs each hour by its sample count.
             conn.execute(
                 "INSERT OR REPLACE INTO telemetry_daily (device_id, metric, bucket_start, avg_value, min_value, max_value, sample_count)
                  SELECT device_id, metric,
                         (bucket_start / 86400) * 86400 as day_start,
-                        AVG(avg_value), MIN(min_value), MAX(max_value), SUM(sample_count)
+                        CASE WHEN SUM(sample_count) > 0
+                             THEN SUM(avg_value * sample_count) / SUM(sample_count)
+                             ELSE AVG(avg_value) END,
+                        MIN(min_value), MAX(max_value), SUM(sample_count)
                  FROM telemetry_hourly
                  WHERE bucket_start < ?1
                  GROUP BY device_id, metric, day_start",
@@ -38,16 +56,30 @@ impl Storage {
         }).await.context("Task join failed")?
     }
 
+    /// Delete every full-resolution sample (raw rows and packed blocks) older
+    /// than `cutoff`. Returns the number of samples removed.
     pub async fn delete_raw_older_than(&self, cutoff: i64) -> Result<u64> {
-        let conn = self.conn.clone();
+        let storage = self.clone();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "DELETE FROM telemetry WHERE timestamp < ?1",
-                rusqlite::params![cutoff],
-            )
-            .context("Delete raw telemetry failed")
-            .map(|n| n as u64)
+            let conn = storage.lock_conn();
+            let tx = conn
+                .unchecked_transaction()
+                .context("Begin delete tx failed")?;
+            let raw = tx
+                .execute(
+                    "DELETE FROM telemetry WHERE timestamp < ?1",
+                    rusqlite::params![cutoff],
+                )
+                .context("Delete raw telemetry failed")? as u64;
+            let packed = historian::delete_packed_range(
+                &tx,
+                None,
+                None,
+                i64::MIN,
+                cutoff.saturating_sub(1),
+            )?;
+            tx.commit().context("Commit failed")?;
+            Ok(raw + packed)
         })
         .await
         .context("Task join failed")?
@@ -85,8 +117,8 @@ impl Storage {
 
     /// Delete the readings of `device_id` (only `metric`'s when given) with
     /// `from <= timestamp <= to`, in seconds. The hourly and daily tiers lose
-    /// the buckets that lie wholly inside the range. Returns the rows deleted
-    /// from the raw, hourly and daily tiers.
+    /// the buckets that lie wholly inside the range. Returns the samples
+    /// deleted from the full-resolution (raw and packed), hourly and daily tiers.
     pub async fn delete_telemetry_range(
         &self,
         device_id: &str,
@@ -94,11 +126,11 @@ impl Storage {
         from: i64,
         to: i64,
     ) -> Result<(u64, u64, u64)> {
-        let conn = self.conn.clone();
+        let storage = self.clone();
         let device_id = device_id.to_string();
         let metric = metric.map(str::to_string);
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = storage.lock_conn();
             let tx = conn.unchecked_transaction().context("Begin tx failed")?;
             // `?2 IS NULL` leaves the metric unrestricted.
             let raw = tx
@@ -108,7 +140,9 @@ impl Storage {
                        AND timestamp >= ?3 AND timestamp <= ?4",
                     rusqlite::params![device_id, metric, from, to],
                 )
-                .context("Delete raw telemetry failed")?;
+                .context("Delete raw telemetry failed")? as u64;
+            let packed =
+                historian::delete_packed_range(&tx, Some(&device_id), metric.as_deref(), from, to)?;
             let hourly = tx
                 .execute(
                     "DELETE FROM telemetry_hourly
@@ -126,32 +160,7 @@ impl Storage {
                 )
                 .context("Delete daily telemetry failed")?;
             tx.commit().context("Commit failed")?;
-            Ok((raw as u64, hourly as u64, daily as u64))
-        })
-        .await
-        .context("Task join failed")?
-    }
-
-    pub async fn query_raw_for_archive(
-        &self,
-        cutoff: i64,
-    ) -> Result<Vec<(String, String, i64, f64)>> {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut stmt = conn
-                .prepare(
-                    "SELECT device_id, metric, timestamp, value FROM telemetry
-                 WHERE timestamp < ?1 ORDER BY timestamp",
-                )
-                .context("Prepare archive query failed")?;
-            let rows = stmt
-                .query_map(rusqlite::params![cutoff], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-                })
-                .context("Query archive rows failed")?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .context("Row mapping failed")
+            Ok((raw + packed, hourly as u64, daily as u64))
         })
         .await
         .context("Task join failed")?
@@ -163,6 +172,8 @@ impl Storage {
     /// - Raw:   [raw_cutoff, ∞)  — recent high-resolution data
     /// - Hourly: [hourly_cutoff, raw_cutoff) — mid-range aggregates
     /// - Daily:  (-∞, hourly_cutoff) — long-term aggregates
+    ///
+    /// The raw tier is full resolution: raw rows and packed blocks together.
     ///
     /// `min_interval_secs` controls resolution awareness: if the caller needs data
     /// at coarser intervals than a tier provides, that tier is skipped.
@@ -176,11 +187,11 @@ impl Storage {
         hourly_cutoff: i64,
         min_interval_secs: i64,
     ) -> Result<Vec<(i64, std::collections::HashMap<String, f64>)>> {
-        let conn = self.conn.clone();
+        let storage = self.clone();
         let device_id = device_id.to_string();
 
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
+            let conn = storage.lock_conn();
 
             let mut grouped: std::collections::BTreeMap<
                 i64,
@@ -263,27 +274,10 @@ impl Storage {
             let raw_from = from.max(raw_cutoff);
             let raw_to = to;
             if min_interval_secs <= 300 && raw_from < raw_to {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT timestamp, metric, value FROM telemetry
-                     WHERE device_id = ?1 AND timestamp >= ?2 AND timestamp <= ?3
-                     ORDER BY timestamp LIMIT 10000",
-                    )
-                    .context("Prepare raw failed")?;
-                let rows = stmt
-                    .query_map(rusqlite::params![device_id, raw_from, raw_to], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, f64>(2)?,
-                        ))
-                    })
-                    .context("Query raw failed")?;
-                let mut count = 0usize;
-                for row in rows {
-                    let (ts, metric, value) = row.context("Row mapping failed")?;
+                let rows = historian::read_device(&conn, &device_id, raw_from, raw_to, 10000)?;
+                let count = rows.len();
+                for (ts, metric, value) in rows {
                     grouped.entry(ts).or_default().insert(metric, value);
-                    count += 1;
                 }
                 if count >= 10000 {
                     tracing::warn!(
@@ -299,6 +293,7 @@ impl Storage {
     }
 
     /// Count total rows matching the export query filters (for pagination meta).
+    /// Counts full-resolution samples, raw and packed.
     pub async fn count_telemetry(
         &self,
         device_id: Option<&str>,
@@ -306,56 +301,13 @@ impl Storage {
         from: Option<i64>,
         to: Option<i64>,
     ) -> Result<i64> {
-        let conn = self.conn.clone();
+        let storage = self.clone();
         let device_id = device_id.map(|s| s.to_string());
         let metric = metric.map(|s| s.to_string());
 
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let mut sql = String::from("SELECT COUNT(*) FROM telemetry WHERE 1=1");
-            if device_id.is_some() {
-                sql.push_str(" AND device_id = ?1");
-            }
-            if metric.is_some() {
-                sql.push_str(&format!(
-                    " AND metric = ?{}",
-                    if device_id.is_some() { 2 } else { 1 }
-                ));
-            }
-            if from.is_some() {
-                let idx = device_id.is_some() as usize + metric.is_some() as usize + 1;
-                sql.push_str(&format!(" AND timestamp >= ?{idx}"));
-            }
-            if to.is_some() {
-                let idx = device_id.is_some() as usize
-                    + metric.is_some() as usize
-                    + from.is_some() as usize
-                    + 1;
-                sql.push_str(&format!(" AND timestamp <= ?{idx}"));
-            }
-
-            let mut stmt = conn.prepare(&sql).context("Prepare count failed")?;
-
-            let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-            if let Some(ref d) = device_id {
-                params.push(Box::new(d.clone()));
-            }
-            if let Some(ref m) = metric {
-                params.push(Box::new(m.clone()));
-            }
-            if let Some(f) = from {
-                params.push(Box::new(f));
-            }
-            if let Some(t) = to {
-                params.push(Box::new(t));
-            }
-
-            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-                params.iter().map(|p| p.as_ref()).collect();
-            let count: i64 = stmt
-                .query_row(param_refs.as_slice(), |row| row.get(0))
-                .context("Count query failed")?;
-            Ok(count)
+            let conn = storage.lock_conn();
+            historian::count_samples(&conn, device_id.as_deref(), metric.as_deref(), from, to)
         })
         .await
         .context("Task join failed")?
@@ -363,8 +315,9 @@ impl Storage {
 
     /// Query telemetry rows for the export API with optional aggregation.
     ///
-    /// When `aggregation` is None, returns raw rows from the `telemetry` table.
-    /// When `aggregation` is Some("avg"|"min"|"max"|"count"|"sum"), uses the
+    /// When `aggregation` is None, returns full-resolution samples (raw rows and
+    /// packed blocks merged), newest first. When `aggregation` is
+    /// Some("avg"|"min"|"max"|"count"|"sum"), uses the
     /// appropriate aggregate table (`telemetry_hourly` or `telemetry_daily`)
     /// depending on the requested `interval`.
     ///
@@ -380,6 +333,35 @@ impl Storage {
         limit: usize,
         offset: usize,
     ) -> Result<(Vec<(i64, String, String, f64)>, i64)> {
+        // Full resolution: raw rows and packed blocks merged.
+        if aggregation.is_none() || interval.is_none() {
+            let storage = self.clone();
+            let device_id = device_id.map(|s| s.to_string());
+            let metric = metric.map(|s| s.to_string());
+            return tokio::task::spawn_blocking(move || {
+                let conn = storage.lock_conn();
+                let total = historian::count_samples(
+                    &conn,
+                    device_id.as_deref(),
+                    metric.as_deref(),
+                    from,
+                    to,
+                )?;
+                let rows = historian::export_page(
+                    &conn,
+                    device_id.as_deref(),
+                    metric.as_deref(),
+                    from,
+                    to,
+                    limit,
+                    offset,
+                )?;
+                Ok((rows, total))
+            })
+            .await
+            .context("Task join failed")?;
+        }
+
         // Determine the target table, time column, and value column up front
         // so the WHERE clause and count query use the correct names.
         let (table, ts_col, val_col) = match (aggregation, interval) {
@@ -403,16 +385,13 @@ impl Storage {
                 };
                 (tbl, "bucket_start", val)
             }
-            _ => ("telemetry", "timestamp", "value"),
+            _ => unreachable!("full-resolution export returned above"),
         };
 
         // Determine total count for meta — query the correct table
-        let total = if aggregation.is_some() {
-            self.count_telemetry_table(table, ts_col, device_id, metric, from, to)
-                .await?
-        } else {
-            self.count_telemetry(device_id, metric, from, to).await?
-        };
+        let total = self
+            .count_telemetry_table(table, ts_col, device_id, metric, from, to)
+            .await?;
 
         let conn = self.conn.clone();
         let device_id = device_id.map(|s| s.to_string());
@@ -492,10 +471,11 @@ impl Storage {
         .context("Task join failed")?
     }
 
-    /// Count rows in an arbitrary telemetry table (raw or aggregated) for pagination meta.
+    /// Count rows in an aggregated telemetry table for pagination meta.
     ///
-    /// `table` is the table name (e.g. "telemetry", "telemetry_hourly", "telemetry_daily").
-    /// `ts_col` is the time column name ("timestamp" for raw, "bucket_start" for aggregated).
+    /// `table` is `telemetry_hourly` or `telemetry_daily`; `ts_col` is their time
+    /// column (`bucket_start`). Full-resolution counts go through
+    /// [`Storage::count_telemetry`], which includes packed blocks.
     pub async fn count_telemetry_table(
         &self,
         table: &str,
@@ -558,4 +538,29 @@ impl Storage {
         .await
         .context("Task join failed")?
     }
+}
+
+/// Insert or replace one hourly aggregate.
+pub(super) fn write_hourly(
+    conn: &rusqlite::Connection,
+    device_id: &str,
+    metric: &str,
+    hour: i64,
+    agg: &historian::Agg,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO telemetry_hourly (device_id, metric, bucket_start, avg_value, min_value, max_value, sample_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            device_id,
+            metric,
+            hour,
+            agg.mean(),
+            agg.min,
+            agg.max,
+            agg.count as i64
+        ],
+    )
+    .context("Write hourly aggregate failed")?;
+    Ok(())
 }

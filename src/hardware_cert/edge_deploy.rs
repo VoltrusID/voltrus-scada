@@ -85,8 +85,7 @@ fn generate_raspberry_pi_guide(platform: &PlatformInfo) -> String {
          persist_interval_secs: 5\n\
          auth_secret: CHANGE_THIS_TO_A_LONG_RANDOM_STRING\n\n\
          retention:\n\
-           hot_days: 1\n\
-           warm_days: 30\n\
+           pack_after_secs: 3600\n\
            enabled: true\n\n\
          # SD card optimization:\n\
          # Use longer persist interval to reduce writes\n\
@@ -174,8 +173,7 @@ fn generate_industrial_pc_guide(_platform: &PlatformInfo) -> String {
          persist_interval_secs: 5\n\
          auth_secret: CHANGE_THIS_TO_A_LONG_RANDOM_STRING\n\n\
          retention:\n\
-           hot_days: 1\n\
-           warm_days: 30\n\
+           pack_after_secs: 3600\n\
            enabled: true\n\
          EOF\n\
          ```\n\n\
@@ -237,8 +235,7 @@ fn generate_generic_guide(_platform: &PlatformInfo) -> String {
      persist_interval_secs: 5\n\
      auth_secret: CHANGE_THIS_TO_A_LONG_RANDOM_STRING\n\n\
      retention:\n\
-       hot_days: 1\n\
-       warm_days: 30\n\
+       pack_after_secs: 3600\n\
        enabled: true\n\
      EOF\n\
      ```\n\n\
@@ -305,10 +302,13 @@ fn generate_sd_card_optimization(platform: &PlatformInfo) -> String {
         amplification by 10-50x.\n\n\
      2. **WAL Mode**: SQLite uses Write-Ahead Logging, which appends sequentially\n\
         instead of writing to random positions. Much better for SD cards.\n\n\
-     3. **Deadband Filtering**: Only stores values that change beyond the configured\n\
-        threshold. Eliminates 60-90% of writes for steady-state data.\n\n\
-     4. **Compression**: Background compression converts raw telemetry into\n\
-        compact delta-encoded aggregates. Reduces storage by 50-100x.\n\n\
+     3. **Deadband Filtering**: A tag with `history_deadband` in its source config\n\
+        only stores values that move beyond that band (plus a heartbeat sample),\n\
+        which removes most writes for steady signals. See docs/historian.md.\n\n\
+     4. **Compression**: Complete hours older than an hour are packed into\n\
+        compressed blocks (about 2.5 bytes per sample instead of ~64 for a row),\n\
+        which also removes most of the rows the SD card would otherwise keep\n\
+        rewriting.\n\n\
      5. **Reduced fsync**: WAL mode with synchronous=NORMAL minimizes forced\n\
         disk flushes while maintaining data integrity.\n\n\
      ### Additional SD Card Tips\n\

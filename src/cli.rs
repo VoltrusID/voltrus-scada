@@ -1023,16 +1023,20 @@ fn handle_db_stats(args: &[String]) -> bool {
                 println!("Database: {}", db_path);
                 println!("Size: {:.2} MB", stats.db_size_bytes as f64 / 1_048_576.0);
                 println!();
-                println!("Hot (raw telemetry):   {} rows", stats.hot_rows);
-                println!("Warm (hourly):         {} rows", stats.warm_rows);
-                println!("Cold (daily):          {} rows", stats.cold_rows);
-                println!();
-                let hot_mb = stats.hot_rows as f64 * 48.0 / 1_048_576.0;
-                let warm_mb = stats.warm_rows as f64 * 80.0 / 1_048_576.0;
-                let cold_mb = stats.cold_rows as f64 * 200.0 / 1_048_576.0;
-                println!("Estimated hot:  {:.2} MB", hot_mb);
-                println!("Estimated warm: {:.2} MB", warm_mb);
-                println!("Estimated cold: {:.2} MB", cold_mb);
+                println!("Raw (unpacked rows):   {} rows", stats.hot_rows);
+                println!(
+                    "Packed (full res):     {} samples in {} blocks, {:.2} MB ({:.2} bytes/sample)",
+                    stats.packed.samples,
+                    stats.packed.blocks,
+                    stats.packed.payload_bytes as f64 / 1_048_576.0,
+                    if stats.packed.samples > 0 {
+                        stats.packed.payload_bytes as f64 / stats.packed.samples as f64
+                    } else {
+                        0.0
+                    }
+                );
+                println!("Hourly aggregates:     {} rows", stats.warm_rows);
+                println!("Daily aggregates:      {} rows", stats.cold_rows);
             }
             Err(e) => {
                 eprintln!("Error: {e}");

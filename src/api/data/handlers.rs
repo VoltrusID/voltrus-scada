@@ -70,20 +70,8 @@ pub async fn get_history(
         .collect();
 
     let now = crate::timeutil::now_secs();
-    let raw_keep = state
-        .retention_config
-        .tiers
-        .iter()
-        .find(|t| t.name == "raw")
-        .and_then(|t| t.keep)
-        .unwrap_or(604800) as i64;
-    let hourly_keep = state
-        .retention_config
-        .tiers
-        .iter()
-        .find(|t| t.name == "hourly")
-        .and_then(|t| t.keep)
-        .unwrap_or(7776000) as i64;
+    let raw_keep = state.retention_config.raw_window_secs();
+    let hourly_keep = state.retention_config.hourly_window_secs();
     let raw_cutoff = now - raw_keep;
     let hourly_cutoff = raw_cutoff - hourly_keep;
     let min_interval_secs = (interval_ms / 1000).max(1) as i64;
