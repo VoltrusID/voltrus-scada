@@ -19,22 +19,10 @@ ignore = [
     # rustls-pemfile is unmaintained — upstream dependency of reqwest/rustls
     # Review: check if reqwest has updated
     "RUSTSEC-2025-0134",
-    # rustls-webpki: multiple vulnerabilities — transitive via rumqttd, no fix upstream
-    # HIGH PRIORITY: 4 advisories. Consider replacing rumqttd if no upstream fix.
-    # Review: check rumqttd releases for webpki bump
-    "RUSTSEC-2026-0049",
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
-    "RUSTSEC-2026-0104",
     # crossbeam-epoch: invalid pointer dereference — transitive via rumqttd
     # (embedded broker). No fix: rumqttd 0.20 pins crossbeam-epoch 0.9.x.
     # Review: check rumqttd releases for a crossbeam-epoch bump.
     "RUSTSEC-2026-0204",
-    # quick-xml: DoS (quadratic duplicate-attribute check + unbounded namespace
-    # allocation) — transitive via calamine (Excel import). No clean fix at the
-    # current calamine pin. Review: check calamine for a quick-xml bump.
-    "RUSTSEC-2026-0194",
-    "RUSTSEC-2026-0195",
 ]
 
 [bans]

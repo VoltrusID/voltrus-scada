@@ -40,9 +40,6 @@ each release.
 | ash-window | 0.13.0 | MIT OR Apache-2.0 |
 | ashpd | 0.11.1 | MIT |
 | ashpd | 0.12.3 | MIT |
-| asn1-rs | 0.5.2 | MIT/Apache-2.0 |
-| asn1-rs-derive | 0.4.0 | MIT/Apache-2.0 |
-| asn1-rs-impl | 0.1.0 | MIT/Apache-2.0 |
 | async-broadcast | 0.7.2 | MIT OR Apache-2.0 |
 | async-channel | 1.9.0 | Apache-2.0 OR MIT |
 | async-channel | 2.5.0 | Apache-2.0 OR MIT |
@@ -71,7 +68,7 @@ each release.
 | async-tungstenite | 0.25.1 | MIT |
 | async_io_stream | 0.3.3 | Unlicense |
 | async_zip | 0.0.17 | MIT |
-| atoi_simd | 0.17.0 | MIT OR Apache-2.0 |
+| atoi_simd | 0.18.1 | MIT OR Apache-2.0 |
 | atomic | 0.5.3 | Apache-2.0/MIT |
 | atomic-polyfill | 1.0.3 | MIT OR Apache-2.0 |
 | atomic-waker | 1.1.2 | Apache-2.0 OR MIT |
@@ -114,9 +111,7 @@ each release.
 | byteorder | 1.5.0 | Unlicense OR MIT |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.11.1 | MIT |
-| bzip2 | 0.5.2 | MIT OR Apache-2.0 |
-| bzip2-sys | 0.1.13+1.0.8 | MIT/Apache-2.0 |
-| calamine | 0.34.0 | MIT |
+| calamine | 0.37.0 | MIT |
 | calloop | 0.13.0 | MIT |
 | calloop-wayland-source | 0.3.0 | MIT |
 | cbc | 0.1.2 | MIT OR Apache-2.0 |
@@ -152,7 +147,6 @@ each release.
 | const-oid | 0.10.2 | Apache-2.0 OR MIT |
 | const-random | 0.1.18 | MIT OR Apache-2.0 |
 | const-random-macro | 0.1.16 | MIT OR Apache-2.0 |
-| constant_time_eq | 0.3.1 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | convert_case | 0.4.0 | MIT |
 | convert_case | 0.6.0 | MIT |
 | convert_case | 0.11.0 | MIT |
@@ -193,10 +187,8 @@ each release.
 | debug_unsafe | 0.1.4 | MIT OR Apache-2.0 |
 | deflate64 | 0.1.12 | MIT |
 | der | 0.7.10 | Apache-2.0 OR MIT |
-| der-parser | 8.2.0 | MIT/Apache-2.0 |
 | der_derive | 0.7.3 | Apache-2.0 OR MIT |
 | deranged | 0.5.8 | MIT OR Apache-2.0 |
-| derive_arbitrary | 1.4.2 | MIT OR Apache-2.0 |
 | derive_more | 0.99.20 | MIT |
 | digest | 0.10.7 | MIT OR Apache-2.0 |
 | digest | 0.11.3 | MIT OR Apache-2.0 |
@@ -395,8 +387,6 @@ each release.
 | lyon_geom | 1.0.19 | MIT OR Apache-2.0 |
 | lyon_path | 1.0.19 | MIT OR Apache-2.0 |
 | lyon_tessellation | 1.0.20 | MIT OR Apache-2.0 |
-| lzma-rs | 0.3.0 | MIT |
-| lzma-sys | 0.1.20 | MIT/Apache-2.0 |
 | mac | 0.1.1 | MIT/Apache-2.0 |
 | malloc_buf | 0.0.6 | MIT |
 | matchers | 0.2.0 | MIT |
@@ -455,7 +445,6 @@ each release.
 | objc_exception | 0.1.2 | MIT |
 | objc_id | 0.1.1 | MIT |
 | object | 0.39.1 | Apache-2.0 OR MIT |
-| oid-registry | 0.6.1 | MIT/Apache-2.0 |
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | once_cell_polyfill | 1.70.2 | MIT OR Apache-2.0 |
 | oo7 | 0.5.0 | MIT |
@@ -517,8 +506,8 @@ each release.
 | qoi | 0.4.1 | MIT/Apache-2.0 |
 | quanta | 0.12.6 | MIT |
 | quick-error | 2.0.1 | MIT/Apache-2.0 |
-| quick-xml | 0.39.2 | MIT |
 | quick-xml | 0.41.0 | MIT |
+| quick-xml | 0.42.0 | MIT |
 | quinn | 0.11.9 | MIT OR Apache-2.0 |
 | quinn-proto | 0.11.15 | MIT OR Apache-2.0 |
 | quinn-udp | 0.5.14 | MIT OR Apache-2.0 |
@@ -576,15 +565,12 @@ each release.
 | rustc-hash | 1.1.0 | Apache-2.0/MIT |
 | rustc-hash | 2.1.2 | Apache-2.0 OR MIT |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
-| rusticata-macros | 4.1.0 | MIT/Apache-2.0 |
 | rustix | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
-| rustls | 0.22.4 | Apache-2.0 OR ISC OR MIT |
 | rustls | 0.23.40 | Apache-2.0 OR ISC OR MIT |
 | rustls-native-certs | 0.8.4 | Apache-2.0 OR ISC OR MIT |
 | rustls-pemfile | 2.2.0 | Apache-2.0 OR ISC OR MIT |
 | rustls-pki-types | 1.14.1 | MIT OR Apache-2.0 |
-| rustls-webpki | 0.102.8 | ISC |
 | rustls-webpki | 0.103.13 | ISC |
 | rustversion | 1.0.22 | MIT OR Apache-2.0 |
 | rustybuzz | 0.14.1 | MIT |
@@ -669,7 +655,6 @@ each release.
 | syn | 2.0.117 | MIT OR Apache-2.0 |
 | syn | 3.0.3 | MIT OR Apache-2.0 |
 | sync_wrapper | 1.0.2 | Apache-2.0 |
-| synstructure | 0.12.6 | MIT |
 | synstructure | 0.13.2 | MIT |
 | sys-locale | 0.3.2 | MIT OR Apache-2.0 |
 | sysinfo | 0.31.4 | MIT |
@@ -703,7 +688,6 @@ each release.
 | tokio | 1.52.1 | MIT |
 | tokio-macros | 2.7.0 | MIT |
 | tokio-modbus | 0.16.1 | MIT OR Apache-2.0 |
-| tokio-rustls | 0.25.0 | MIT/Apache-2.0 |
 | tokio-rustls | 0.26.4 | MIT OR Apache-2.0 |
 | tokio-socks | 0.5.3 | MIT |
 | tokio-tungstenite | 0.26.2 | MIT |
@@ -735,7 +719,7 @@ each release.
 | tungstenite | 0.21.0 | MIT OR Apache-2.0 |
 | tungstenite | 0.26.2 | MIT OR Apache-2.0 |
 | tungstenite | 0.29.0 | MIT OR Apache-2.0 |
-| typed-path | 0.12.3 | MIT OR Apache-2.0 |
+| typed-path | 0.13.0 | MIT OR Apache-2.0 |
 | typeid | 1.0.3 | MIT OR Apache-2.0 |
 | typenum | 1.20.0 | MIT OR Apache-2.0 |
 | ucd-trie | 0.1.7 | MIT OR Apache-2.0 |
@@ -881,7 +865,6 @@ each release.
 | x11rb | 0.13.2 | MIT OR Apache-2.0 |
 | x11rb-protocol | 0.13.2 | MIT OR Apache-2.0 |
 | x509-cert | 0.2.5 | Apache-2.0 OR MIT |
-| x509-parser | 0.15.1 | MIT OR Apache-2.0 |
 | xattr | 0.2.3 | MIT/Apache-2.0 |
 | xattr | 1.6.1 | MIT OR Apache-2.0 |
 | xcb | 1.7.1 | MIT |
@@ -891,7 +874,6 @@ each release.
 | xkbcommon | 0.8.0 | MIT |
 | xkeysym | 0.2.1 | MIT OR Apache-2.0 OR Zlib |
 | xmlwriter | 0.1.0 | MIT |
-| xz2 | 0.1.7 | MIT/Apache-2.0 |
 | y4m | 0.8.0 | MIT |
 | yaml-rust2 | 0.8.1 | MIT OR Apache-2.0 |
 | yazi | 0.2.1 | Apache-2.0 OR MIT |
@@ -917,14 +899,10 @@ each release.
 | zerotrie | 0.2.4 | Unicode-3.0 |
 | zerovec | 0.11.6 | Unicode-3.0 |
 | zerovec-derive | 0.11.3 | Unicode-3.0 |
-| zip | 2.4.2 | MIT |
-| zip | 7.2.0 | MIT |
+| zip | 9.1.3 | MIT |
 | zlib-rs | 0.6.3 | Zlib |
 | zmij | 1.0.21 | MIT |
 | zopfli | 0.8.3 | Apache-2.0 |
-| zstd | 0.13.3 | MIT |
-| zstd-safe | 7.2.4 | MIT OR Apache-2.0 |
-| zstd-sys | 2.0.16+zstd.1.5.7 | MIT/Apache-2.0 |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
 | zune-inflate | 0.2.54 | MIT OR Apache-2.0 OR Zlib |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib |
@@ -1018,8 +996,8 @@ each release.
 | require-from-string | 2.0.2 | MIT |
 | resize-observer-polyfill | 1.5.1 | MIT |
 | scheduler | 0.27.0 | MIT |
-| seroval | 1.6.9 | MIT |
-| seroval-plugins | 1.6.9 | MIT |
+| seroval | 1.7.3 | MIT |
+| seroval-plugins | 1.7.3 | MIT |
 | shebang-command | 2.0.0 | MIT |
 | shebang-regex | 3.0.0 | MIT |
 | stats-gl | 2.4.2 | MIT |

@@ -147,23 +147,26 @@ impl WidgetRegistry {
 
     pub async fn install(&self, widget_id: &str, zip_data: &[u8]) -> anyhow::Result<()> {
         let widget_dir = self.widgets_dir.join(widget_id);
-        fs::create_dir_all(&widget_dir)?;
 
         let reader = std::io::Cursor::new(zip_data);
         let mut archive = zip::ZipArchive::new(reader)?;
+        // Rejects duplicate names, local/central header mismatches and
+        // overlapping entries (zip cloaking) before anything touches the disk.
+        archive.validate_header_consistency()?;
+
+        fs::create_dir_all(&widget_dir)?;
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
-            let name = file.name().to_string();
-
-            if name.contains("..") {
+            let Some(rel_path) = file.enclosed_name() else {
                 continue;
-            }
+            };
+            let name = rel_path.to_string_lossy();
             if name.ends_with(".exe") || name.ends_with(".sh") || name.ends_with(".bat") {
                 continue;
             }
 
-            let out_path = widget_dir.join(&name);
+            let out_path = widget_dir.join(&rel_path);
             if file.is_dir() {
                 fs::create_dir_all(&out_path)?;
             } else {
@@ -207,5 +210,128 @@ impl WidgetRegistry {
         }
         self.widgets.write().await.remove(widget_id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    const MANIFEST: &str = r#"{"id":"demo","name":"Demo"}"#;
+
+    fn build_zip(entries: &[(&str, &[u8])], method: zip::CompressionMethod) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = SimpleFileOptions::default().compression_method(method);
+        for (name, data) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn replace_nth(haystack: &mut [u8], needle: &[u8], replacement: &[u8], nth: usize) {
+        assert_eq!(needle.len(), replacement.len());
+        let pos = haystack
+            .windows(needle.len())
+            .enumerate()
+            .filter(|(_, w)| *w == needle)
+            .nth(nth)
+            .map(|(i, _)| i)
+            .expect("needle present");
+        haystack[pos..pos + needle.len()].copy_from_slice(replacement);
+    }
+
+    #[tokio::test]
+    async fn install_round_trips_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = WidgetRegistry::new(root.path().join("widgets"));
+        let zip = build_zip(
+            &[
+                ("manifest.json", MANIFEST.as_bytes()),
+                ("widget.js", b"console.log('hi');"),
+                ("assets/style.css", b"body{}"),
+            ],
+            zip::CompressionMethod::Deflated,
+        );
+
+        registry.install("demo", &zip).await.unwrap();
+
+        let dir = root.path().join("widgets/demo");
+        assert_eq!(
+            fs::read_to_string(dir.join("widget.js")).unwrap(),
+            "console.log('hi');"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("assets/style.css")).unwrap(),
+            "body{}"
+        );
+        let info = registry.get("demo").await.unwrap();
+        assert!(info.has_js && !info.has_css);
+    }
+
+    #[tokio::test]
+    async fn install_skips_path_traversal_and_executables() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = WidgetRegistry::new(root.path().join("widgets"));
+        let zip = build_zip(
+            &[
+                ("manifest.json", MANIFEST.as_bytes()),
+                ("../escape.txt", b"nope"),
+                ("/abs_escape.txt", b"nope"),
+                ("a/../../escape2.txt", b"nope"),
+                ("run.sh", b"#!/bin/sh"),
+                ("tool.exe", b"MZ"),
+            ],
+            zip::CompressionMethod::Stored,
+        );
+
+        registry.install("demo", &zip).await.unwrap();
+
+        let dir = root.path().join("widgets/demo");
+        assert!(dir.join("manifest.json").exists());
+        assert!(!dir.join("run.sh").exists());
+        assert!(!dir.join("tool.exe").exists());
+        assert!(!root.path().join("widgets/escape.txt").exists());
+        assert!(!root.path().join("widgets/escape2.txt").exists());
+        assert!(!root.path().join("escape.txt").exists());
+        assert!(!root.path().join("abs_escape.txt").exists());
+        assert!(!std::path::Path::new("/abs_escape.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn install_rejects_duplicate_entry_names() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = WidgetRegistry::new(root.path().join("widgets"));
+        let mut zip = build_zip(
+            &[("a.txt", b"first"), ("b.txt", b"second")],
+            zip::CompressionMethod::Stored,
+        );
+        // Rename `b.txt` to `a.txt` in both the local and central headers.
+        replace_nth(&mut zip, b"b.txt", b"a.txt", 0);
+        replace_nth(&mut zip, b"b.txt", b"a.txt", 0);
+
+        assert!(registry.install("demo", &zip).await.is_err());
+        assert!(!root.path().join("widgets/demo").exists());
+    }
+
+    #[tokio::test]
+    async fn install_rejects_local_central_header_mismatch() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = WidgetRegistry::new(root.path().join("widgets"));
+        let mut zip = build_zip(
+            &[
+                ("manifest.json", MANIFEST.as_bytes()),
+                ("widget.js", b"console.log('hi');"),
+            ],
+            zip::CompressionMethod::Stored,
+        );
+        // Change only the local header's name (first occurrence); the central
+        // directory keeps `widget.js`, so the two parsers disagree.
+        replace_nth(&mut zip, b"widget.js", b"widgex.js", 0);
+
+        assert!(registry.install("demo", &zip).await.is_err());
+        assert!(!root.path().join("widgets/demo").exists());
     }
 }
