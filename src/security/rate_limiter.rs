@@ -181,11 +181,20 @@ pub async fn login_ip_rate_limit_middleware(
 /// loopback, i.e. a local reverse proxy or tunnel; a remote client cannot spoof
 /// them. Returns `"unknown"` when no peer address was recorded (test oneshots).
 pub fn client_ip(req: &Request) -> String {
-    let Some(ConnectInfo(peer)) = req.extensions().get::<ConnectInfo<SocketAddr>>() else {
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(peer)| *peer);
+    client_ip_from_parts(peer, req.headers())
+}
+
+/// [`client_ip`] for handlers that extract `ConnectInfo` and the headers
+/// instead of the whole request.
+pub fn client_ip_from_parts(peer: Option<SocketAddr>, headers: &axum::http::HeaderMap) -> String {
+    let Some(peer) = peer else {
         return "unknown".to_string();
     };
     if peer.ip().is_loopback() {
-        let headers = req.headers();
         let forwarded = headers
             .get("cf-connecting-ip")
             .and_then(|v| v.to_str().ok())

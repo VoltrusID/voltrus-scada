@@ -198,52 +198,18 @@ async fn check_password_and_login(
         );
     }
 
-    // Successful login — reset failed attempts. Other sessions of the same
-    // user (another browser or device) keep their refresh tokens; only the
-    // refresh token this client presents is replaced by the new one.
+    // Successful login — reset failed attempts, then open the session.
     let _ = state.storage.reset_failed_attempts(&body.username).await;
-    if let Some(old) = jar.get("voltrus_refresh") {
-        let old_hash = hash_refresh_token(old.value());
-        let _ = state.storage.revoke_refresh_token(&old_hash).await;
-    }
     state.login_rate_limiter.cleanup();
-
-    let secret = &state.auth_secret;
-    let access_token = create_token(&body.username, &user.role, secret);
-
-    // Generate refresh token
-    let refresh_token_raw = generate_refresh_token();
-    let refresh_hash = hash_refresh_token(&refresh_token_raw);
-    let refresh_expires = crate::timeutil::now_secs() + REFRESH_TOKEN_EXPIRY_SECS;
-    let _ = state
-        .storage
-        .create_refresh_token(
-            &body.username,
-            &refresh_hash,
-            refresh_expires,
-            crate::timeutil::now_secs(),
-        )
-        .await;
-
-    let access_cookie =
-        axum_extra::extract::cookie::Cookie::build(("voltrus_token", access_token.clone()))
-            .http_only(true)
-            .secure(state.cookie_secure)
-            .same_site(axum_extra::extract::cookie::SameSite::Strict)
-            .max_age(time::Duration::seconds(900)) // 15 minutes
-            .path("/")
-            .build();
-
-    let refresh_cookie =
-        axum_extra::extract::cookie::Cookie::build(("voltrus_refresh", refresh_token_raw))
-            .http_only(true)
-            .secure(state.cookie_secure)
-            .same_site(axum_extra::extract::cookie::SameSite::Strict)
-            .max_age(time::Duration::seconds(REFRESH_TOKEN_EXPIRY_SECS))
-            .path("/")
-            .build();
-
-    let jar = jar.add(access_cookie).add(refresh_cookie);
+    let jar = issue_session(
+        &state.storage,
+        &state.auth_secret,
+        state.cookie_secure,
+        jar,
+        &body.username,
+        &user.role,
+    )
+    .await;
     (
         StatusCode::OK,
         json!({
@@ -254,6 +220,62 @@ async fn check_password_and_login(
         }),
         jar,
     )
+}
+
+/// Open a login session for an authenticated user: a signed access token and a
+/// rotating refresh token, both set as the `voltrus_token` and `voltrus_refresh`
+/// cookies. Local login and add-on sign-in providers (SSO) share it so every
+/// session looks the same to the rest of the server.
+///
+/// Other sessions of the same user (another browser or device) keep their
+/// refresh tokens; only the refresh token this client presents is replaced by
+/// the new one.
+pub async fn issue_session(
+    storage: &crate::storage::Storage,
+    auth_secret: &str,
+    cookie_secure: bool,
+    jar: CookieJar,
+    username: &str,
+    role: &str,
+) -> CookieJar {
+    if let Some(old) = jar.get("voltrus_refresh") {
+        let old_hash = hash_refresh_token(old.value());
+        let _ = storage.revoke_refresh_token(&old_hash).await;
+    }
+
+    let access_token = create_token(username, role, auth_secret);
+
+    // Generate refresh token
+    let refresh_token_raw = generate_refresh_token();
+    let refresh_hash = hash_refresh_token(&refresh_token_raw);
+    let refresh_expires = crate::timeutil::now_secs() + REFRESH_TOKEN_EXPIRY_SECS;
+    let _ = storage
+        .create_refresh_token(
+            username,
+            &refresh_hash,
+            refresh_expires,
+            crate::timeutil::now_secs(),
+        )
+        .await;
+
+    let access_cookie = axum_extra::extract::cookie::Cookie::build(("voltrus_token", access_token))
+        .http_only(true)
+        .secure(cookie_secure)
+        .same_site(axum_extra::extract::cookie::SameSite::Strict)
+        .max_age(time::Duration::seconds(900)) // 15 minutes
+        .path("/")
+        .build();
+
+    let refresh_cookie =
+        axum_extra::extract::cookie::Cookie::build(("voltrus_refresh", refresh_token_raw))
+            .http_only(true)
+            .secure(cookie_secure)
+            .same_site(axum_extra::extract::cookie::SameSite::Strict)
+            .max_age(time::Duration::seconds(REFRESH_TOKEN_EXPIRY_SECS))
+            .path("/")
+            .build();
+
+    jar.add(access_cookie).add(refresh_cookie)
 }
 
 #[utoipa::path(
