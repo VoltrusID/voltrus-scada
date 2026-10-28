@@ -12,7 +12,7 @@ use serde_json::json;
 
 pub const LOGIN_MAX_ATTEMPTS: u32 = 5;
 const LOGIN_WINDOW_SECS: u64 = 60;
-const LOGIN_MAX_IP_ATTEMPTS: u32 = 10;
+pub const LOGIN_MAX_IP_ATTEMPTS: u32 = 10;
 
 const GLOBAL_MAX_REQUESTS: u32 = 2000;
 const GLOBAL_WINDOW_SECS: u64 = 60;
@@ -138,30 +138,40 @@ impl Default for GlobalRateLimiter {
     }
 }
 
-/// Middleware that rate-limits login attempts by IP address.
-pub async fn login_rate_limit_middleware(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    req: Request,
+/// Client IP resolved by [`client_ip`], attached to login requests by
+/// [`login_ip_rate_limit_middleware`] so the handler audits the same address
+/// that was rate limited.
+#[derive(Clone, Debug)]
+pub struct ClientIp(pub String);
+
+/// Per-IP brute-force limit for the login route.
+///
+/// Rejects with 429 once an IP has [`LOGIN_MAX_IP_ATTEMPTS`] failed logins in the
+/// window; only failed responses (401/403) count, so legitimate users behind the
+/// same address are not penalised for successful logins. The IP is
+/// [`client_ip`], so proxy headers are honoured only from loopback peers.
+pub async fn login_ip_rate_limit_middleware(
+    State(state): State<crate::api::AppState>,
+    mut req: Request,
     next: Next,
-) -> impl IntoResponse {
-    let limiter = req
-        .extensions()
-        .get::<LoginRateLimiter>()
-        .cloned()
-        .unwrap_or_default();
-
-    let key = addr.ip().to_string();
-
-    if !limiter.is_allowed(&key) {
+) -> Response {
+    let ip = client_ip(&req);
+    if !state.login_rate_limiter.is_ip_allowed(&ip) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             axum::Json(json!({"error": "Too many login attempts. Please try again later."})),
         )
             .into_response();
     }
-
-    limiter.record_attempt(&key);
-    next.run(req).await
+    req.extensions_mut().insert(ClientIp(ip.clone()));
+    let resp = next.run(req).await;
+    if matches!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ) {
+        state.login_rate_limiter.record_ip_attempt(&ip);
+    }
+    resp
 }
 
 /// Client IP for rate limiting and auditing.

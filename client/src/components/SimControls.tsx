@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { inputStyle, monoInputStyle, labelStyle, labelTextStyle, btnStyle, parseConfig } from '../styles'
-import { toggleSimulation, goLive, listSimProfiles } from '../api/simulation'
-import type { SimProfile } from '../api/simulation'
+import {
+  toggleSimulation, goLive, listSimProfiles, getGoLiveStatus, rollbackGoLive,
+  getGoLiveSettings, updateGoLiveSettings,
+} from '../api/simulation'
+import type { SimProfile, GoLiveStatus } from '../api/simulation'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -75,7 +78,9 @@ function ConfirmDialog({
                 ? 'rgba(34,197,94,.15)'
                 : confirmColor === 'var(--warn)'
                   ? 'rgba(234,179,8,.15)'
-                  : 'rgba(34,211,238,.15)',
+                  : confirmColor === 'var(--crit)'
+                    ? 'rgba(239,68,68,.15)'
+                    : 'rgba(34,211,238,.15)',
               color: confirmColor,
               cursor: loading ? 'not-allowed' : 'pointer',
               opacity: loading ? 0.5 : 1,
@@ -164,6 +169,15 @@ export function SimControls({
   // Confirmation dialogs
   const [showGoLiveConfirm, setShowGoLiveConfirm] = useState(false)
   const [showEnableConfirm, setShowEnableConfirm] = useState(false)
+  const [showRollbackConfirm, setShowRollbackConfirm] = useState(false)
+
+  // Go-live verification state and safety settings
+  const [goLiveStatus, setGoLiveStatus] = useState<GoLiveStatus>({ active: false })
+  const [rollingBack, setRollingBack] = useState(false)
+  const [graceSecs, setGraceSecs] = useState(60)
+  const [autoRollback, setAutoRollback] = useState(false)
+  const [savingSafety, setSavingSafety] = useState(false)
+  const [safetyError, setSafetyError] = useState('')
 
   // Sync props to local state
   useEffect(() => {
@@ -190,6 +204,31 @@ export function SimControls({
       }
     }
   }, [simConfig])
+
+  // Track the go-live while the device is live: verification, then rollback availability.
+  const refreshGoLiveStatus = useCallback(async () => {
+    try {
+      setGoLiveStatus(await getGoLiveStatus(deviceId))
+    } catch {
+      // keep the last known status; the next poll retries
+    }
+  }, [deviceId])
+
+  useEffect(() => {
+    if (simEnabled) {
+      setGoLiveStatus({ active: false })
+      return
+    }
+    refreshGoLiveStatus()
+    const timer = setInterval(refreshGoLiveStatus, 3000)
+    return () => clearInterval(timer)
+  }, [simEnabled, refreshGoLiveStatus])
+
+  useEffect(() => {
+    getGoLiveSettings()
+      .then(s => { setGraceSecs(s.grace_secs); setAutoRollback(s.auto_rollback) })
+      .catch(() => {})
+  }, [])
 
   // Fetch profiles on mount
   const fetchProfiles = useCallback(async () => {
@@ -267,11 +306,44 @@ export function SimControls({
     try {
       await goLive(deviceId)
       setSimEnabled(false)
+      await refreshGoLiveStatus()
       onUpdate()
     } catch (e: any) {
       setError(e.message || 'Failed to switch to live mode')
     } finally {
       setToggling(false)
+    }
+  }
+
+  // Roll back to the pre-go-live snapshot and return to simulation
+  const handleRollback = async () => {
+    setRollingBack(true)
+    setError('')
+    try {
+      await rollbackGoLive(deviceId)
+      setShowRollbackConfirm(false)
+      setGoLiveStatus({ active: false })
+      setSimEnabled(true)
+      onUpdate()
+    } catch (e: any) {
+      setShowRollbackConfirm(false)
+      setError(e.message || 'Rollback failed')
+    } finally {
+      setRollingBack(false)
+    }
+  }
+
+  const handleSaveSafety = async () => {
+    setSavingSafety(true)
+    setSafetyError('')
+    try {
+      const saved = await updateGoLiveSettings({ grace_secs: graceSecs, auto_rollback: autoRollback })
+      setGraceSecs(saved.grace_secs)
+      setAutoRollback(saved.auto_rollback)
+    } catch (e: any) {
+      setSafetyError(e.message || 'Failed to save go-live settings')
+    } finally {
+      setSavingSafety(false)
     }
   }
 
@@ -452,6 +524,93 @@ export function SimControls({
         </div>
       )}
 
+      {/* Go-live safety settings (before going live) */}
+      {simEnabled && (
+        <div style={{
+          display: 'flex', flexDirection: 'column', gap: 8,
+          padding: '10px 12px', borderRadius: 6, border: '1px solid var(--border)',
+        }}>
+          <div style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+            Go-live safety
+          </div>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+              Connection grace (seconds)
+              <input
+                type="number"
+                min={5}
+                max={3600}
+                value={graceSecs}
+                onChange={e => setGraceSecs(parseInt(e.target.value) || 5)}
+                style={{ ...monoInputStyle, width: 70, fontSize: 12 }}
+              />
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={autoRollback}
+                onChange={e => setAutoRollback(e.target.checked)}
+              />
+              Roll back automatically if the device does not connect
+            </label>
+            <button
+              onClick={handleSaveSafety}
+              disabled={savingSafety}
+              style={{ ...btnStyle, border: '1px solid var(--border)', color: 'var(--fg)', fontSize: 12, padding: '4px 10px', opacity: savingSafety ? 0.5 : 1 }}
+            >
+              {savingSafety ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          {safetyError && <div style={{ fontSize: 12, color: 'var(--crit)' }}>{safetyError}</div>}
+        </div>
+      )}
+
+      {/* Live-mode verification and rollback */}
+      {!simEnabled && goLiveStatus.active && (
+        <div style={{
+          padding: '10px 12px', borderRadius: 6,
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
+          background: goLiveStatus.state === 'failed' ? 'rgba(239,68,68,.1)'
+            : goLiveStatus.state === 'connected' ? 'rgba(34,197,94,.08)' : 'rgba(234,179,8,.08)',
+          border: `1px solid ${goLiveStatus.state === 'failed' ? 'rgba(239,68,68,.3)'
+            : goLiveStatus.state === 'connected' ? 'rgba(34,197,94,.25)' : 'rgba(234,179,8,.2)'}`,
+        }}>
+          <div>
+            <div style={{
+              fontSize: 12, fontWeight: 600,
+              color: goLiveStatus.state === 'failed' ? 'var(--crit)'
+                : goLiveStatus.state === 'connected' ? 'var(--ok)' : '#facc15',
+            }}>
+              {goLiveStatus.state === 'failed' && 'Device did not connect'}
+              {goLiveStatus.state === 'connected' && 'Device connected'}
+              {goLiveStatus.state === 'verifying' && 'Waiting for device to connect...'}
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+              {goLiveStatus.state === 'failed' && (goLiveStatus.auto_rollback
+                ? `No connection within ${goLiveStatus.grace_secs}s. Automatic rollback is enabled.`
+                : `No connection within ${goLiveStatus.grace_secs}s. Roll back to restore the configuration from before go-live and return to simulation.`)}
+              {goLiveStatus.state === 'connected' && 'Live data is flowing. You can still roll back to the pre-go-live configuration.'}
+              {goLiveStatus.state === 'verifying' && `${goLiveStatus.grace_remaining_secs}s left in the connection window.`}
+            </div>
+          </div>
+          <button
+            onClick={() => setShowRollbackConfirm(true)}
+            disabled={rollingBack || toggling}
+            style={{
+              ...btnStyle,
+              border: '1px solid var(--crit)',
+              background: goLiveStatus.state === 'failed' ? 'rgba(239,68,68,.15)' : 'transparent',
+              color: 'var(--crit)',
+              cursor: rollingBack || toggling ? 'not-allowed' : 'pointer',
+              opacity: rollingBack || toggling ? 0.5 : 1,
+              fontSize: 12, padding: '5px 12px', fontWeight: 600, whiteSpace: 'nowrap',
+            }}
+          >
+            {rollingBack ? 'Rolling back...' : 'Roll back to simulation'}
+          </button>
+        </div>
+      )}
+
       {/* Error */}
       {error && (
         <div style={{
@@ -472,6 +631,19 @@ export function SimControls({
           onConfirm={handleEnableSim}
           onCancel={() => setShowEnableConfirm(false)}
           loading={toggling}
+        />
+      )}
+
+      {/* Rollback confirmation dialog */}
+      {showRollbackConfirm && (
+        <ConfirmDialog
+          title="Roll Back to Simulation"
+          message="This restores the configuration saved just before go-live and returns the device to simulation mode. Configuration changes made since going live are discarded; a snapshot of the current state is kept."
+          confirmLabel="Roll Back"
+          confirmColor="var(--crit)"
+          onConfirm={handleRollback}
+          onCancel={() => setShowRollbackConfirm(false)}
+          loading={rollingBack}
         />
       )}
 

@@ -7,20 +7,6 @@ use serde_json::json;
 
 use super::*;
 
-fn extract_ip(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(',').next())
-        .map(|s| s.trim().to_string())
-        .or_else(|| {
-            headers
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.trim().to_string())
-        })
-}
-
 fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
     headers
         .get("user-agent")
@@ -42,11 +28,12 @@ fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
 )]
 pub async fn login(
     State(state): State<AppState>,
+    Extension(crate::security::ClientIp(client_ip)): Extension<crate::security::ClientIp>,
     jar: CookieJar,
     headers: HeaderMap,
     Json(body): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let source_ip = extract_ip(&headers);
+    let source_ip = Some(client_ip);
     let user_agent = extract_user_agent(&headers);
     let rate_key_user = format!("login:{}", body.username);
 

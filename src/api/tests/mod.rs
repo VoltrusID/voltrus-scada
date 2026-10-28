@@ -10,10 +10,12 @@ mod csv_import;
 mod data_sources;
 mod device_templates;
 mod flows;
+mod go_live;
 mod helpers;
 mod history;
 mod import_nodered;
 mod license_status;
+mod login_rate_limit;
 #[cfg(feature = "mcp")]
 mod mcp;
 mod mqtt_broker;
