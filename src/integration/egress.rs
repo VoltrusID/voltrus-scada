@@ -343,16 +343,10 @@ fn sanitize_filename(s: &str) -> String {
         .collect()
 }
 
-pub async fn run_egress_scheduler(
-    storage: Storage,
-    mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
-) {
+pub async fn run_egress_scheduler(storage: Storage) {
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
     loop {
-        tokio::select! {
-            _ = interval.tick() => {}
-            _ = shutdown_rx.recv() => { tracing::info!("Egress scheduler shutting down"); return; }
-        }
+        interval.tick().await;
         if !crate::node_role::is_active() {
             continue;
         }

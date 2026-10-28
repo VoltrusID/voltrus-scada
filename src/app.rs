@@ -625,11 +625,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     // Spawn egress scheduler
     {
         let egress_storage = storage.clone();
-        let (_egress_shutdown_tx, egress_shutdown_rx) = tokio::sync::broadcast::channel::<()>(1);
-        tokio::spawn(async move {
-            crate::integration::egress::run_egress_scheduler(egress_storage, egress_shutdown_rx)
-                .await;
-        });
+        tokio::spawn(crate::integration::egress::run_egress_scheduler(
+            egress_storage,
+        ));
         tracing::info!("Data egress scheduler started");
     }
 
