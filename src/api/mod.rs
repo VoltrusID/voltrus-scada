@@ -632,7 +632,13 @@ pub fn create_router(state: AppState) -> Router {
             get(crate::network::handle_list_networks),
         )
         .route("/api/v1/health/detailed", get(crate::health::health_check))
-        .route("/api/v1/auth/login", post(auth::login))
+        .route(
+            "/api/v1/auth/login",
+            post(auth::login).route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::security::login_ip_rate_limit_middleware,
+            )),
+        )
         .route("/api/v1/auth/refresh", post(auth::refresh_token))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::auth_me))
@@ -1144,7 +1150,18 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/devices/{id}/simulate",
             get(simulation::get_simulation).post(simulation::toggle_simulation),
         )
-        .route("/api/v1/devices/{id}/go-live", post(simulation::go_live))
+        .route(
+            "/api/v1/devices/{id}/go-live",
+            get(simulation::get_go_live_status).post(simulation::go_live),
+        )
+        .route(
+            "/api/v1/devices/{id}/go-live/rollback",
+            post(simulation::rollback_go_live),
+        )
+        .route(
+            "/api/v1/settings/go-live",
+            get(simulation::get_go_live_settings).put(simulation::update_go_live_settings),
+        )
         // Node-RED import
         .route(
             "/api/v1/import/node-red",

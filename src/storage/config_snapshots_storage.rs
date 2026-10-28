@@ -153,64 +153,55 @@ impl Storage {
                 Err(e) => return Err(e).context("Query snapshot_data failed"),
             };
 
-            let snapshot: serde_json::Map<String, serde_json::Value> =
-                serde_json::from_str(&snapshot_data).context("Parse snapshot JSON failed")?;
-
             let tx = conn
                 .unchecked_transaction()
                 .context("Begin rollback tx failed")?;
-
-            for table in &VERSIONED_TABLES {
-                if let Some(table_data) = snapshot.get(*table) {
-                    let arr = match table_data.as_array() {
-                        Some(a) => a,
-                        None => continue,
-                    };
-
-                    // Delete all existing rows
-                    let _ = tx.execute(&format!("DELETE FROM {}", table), []).ok(); // table may not exist
-
-                    if arr.is_empty() {
-                        continue;
-                    }
-
-                    // Determine column names from the first row object
-                    if let Some(serde_json::Value::Object(first_row)) = arr.first() {
-                        let col_names: Vec<&str> = first_row.keys().map(|s| s.as_str()).collect();
-                        let placeholders: Vec<String> =
-                            (1..=col_names.len()).map(|i| format!("?{}", i)).collect();
-                        let insert_sql = format!(
-                            "INSERT INTO {} ({}) VALUES ({})",
-                            table,
-                            col_names.join(", "),
-                            placeholders.join(", "),
-                        );
-
-                        for row_obj in arr {
-                            if let serde_json::Value::Object(obj) = row_obj {
-                                let params: Vec<Box<dyn rusqlite::types::ToSql>> = col_names
-                                    .iter()
-                                    .map(|col| {
-                                        let val = obj.get(*col).unwrap_or(&serde_json::Value::Null);
-                                        json_to_rusqlite_value(val)
-                                    })
-                                    .collect();
-
-                                let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-                                    params.iter().map(|p| p.as_ref()).collect();
-
-                                tx.execute(&insert_sql, param_refs.as_slice())
-                                    .context(format!(
-                                        "Insert rollback row into {} failed",
-                                        table
-                                    ))?;
-                            }
-                        }
-                    }
-                }
-            }
-
+            apply_snapshot(&tx, &snapshot_data)?;
             tx.commit().context("Commit rollback tx failed")?;
+            Ok(true)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Undo a go-live in one transaction: restore the pre-go-live snapshot, put
+    /// `device_id` back into simulation mode and drop its go-live record
+    /// (`go_live:<device_id>` setting). Either everything happens or nothing does.
+    /// Returns false when the snapshot no longer exists.
+    pub async fn rollback_go_live(&self, device_id: &str, snapshot_id: i64) -> Result<bool> {
+        let conn = self.conn.clone();
+        let device_id = device_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let snapshot_data: String = match conn.query_row(
+                "SELECT snapshot_data FROM config_snapshots WHERE id = ?1",
+                rusqlite::params![snapshot_id],
+                |row| row.get(0),
+            ) {
+                Ok(d) => d,
+                Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(false),
+                Err(e) => return Err(e).context("Query snapshot_data failed"),
+            };
+
+            let tx = conn
+                .unchecked_transaction()
+                .context("Begin go-live rollback tx failed")?;
+            apply_snapshot(&tx, &snapshot_data)?;
+            let affected = tx
+                .execute(
+                    "UPDATE devices SET simulation_mode = 1 WHERE id = ?1",
+                    rusqlite::params![device_id],
+                )
+                .context("Re-enable simulation failed")?;
+            if affected == 0 {
+                anyhow::bail!("Device {device_id} is not in the pre-go-live snapshot");
+            }
+            tx.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                rusqlite::params![format!("go_live:{device_id}")],
+            )
+            .context("Clear go-live record failed")?;
+            tx.commit().context("Commit go-live rollback tx failed")?;
             Ok(true)
         })
         .await
@@ -257,6 +248,67 @@ impl Storage {
 }
 
 // ── Config Snapshot helper functions ──
+
+/// Replace the contents of every versioned table inside `tx` with the rows
+/// stored in `snapshot_data`. The caller owns the transaction and decides when
+/// to commit, so a rollback can be combined with other writes atomically.
+fn apply_snapshot(tx: &rusqlite::Transaction<'_>, snapshot_data: &str) -> Result<()> {
+    let snapshot: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(snapshot_data).context("Parse snapshot JSON failed")?;
+
+    for table in &VERSIONED_TABLES {
+        if let Some(table_data) = snapshot.get(*table) {
+            let arr = match table_data.as_array() {
+                Some(a) => a,
+                None => continue,
+            };
+
+            // Delete all existing rows
+            let _ = tx.execute(&format!("DELETE FROM {}", table), []).ok(); // table may not exist
+
+            if arr.is_empty() {
+                continue;
+            }
+
+            // Determine column names from the first row object
+            if let Some(serde_json::Value::Object(first_row)) = arr.first() {
+                let col_names: Vec<&str> = first_row.keys().map(|s| s.as_str()).collect();
+                let placeholders: Vec<String> =
+                    (1..=col_names.len()).map(|i| format!("?{}", i)).collect();
+                let insert_sql = format!(
+                    "INSERT INTO {} ({}) VALUES ({})",
+                    table,
+                    col_names.join(", "),
+                    placeholders.join(", "),
+                );
+
+                for row_obj in arr {
+                    if let serde_json::Value::Object(obj) = row_obj {
+                        let params: Vec<Box<dyn rusqlite::types::ToSql>> = col_names
+                            .iter()
+                            .map(|col| {
+                                let val = obj.get(*col).unwrap_or(&serde_json::Value::Null);
+                                json_to_rusqlite_value(val)
+                            })
+                            .collect();
+
+                        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+                            params.iter().map(|p| p.as_ref()).collect();
+
+                        tx.execute(&insert_sql, param_refs.as_slice())
+                            .context(format!(
+                                "Insert rollback row into {} failed",
+                                table
+                            ))?;
+                    }
+                }
+            }
+        }
+    }
+
+
+    Ok(())
+}
 
 fn rusqlite_value_to_json(val: rusqlite::types::Value) -> serde_json::Value {
     match val {

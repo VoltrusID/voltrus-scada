@@ -58,6 +58,19 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    pub async fn delete_setting(&self, key: &str) -> Result<()> {
+        let conn = self.conn.clone();
+        let key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute("DELETE FROM settings WHERE key = ?1", rusqlite::params![key])
+                .context("Delete setting failed")?;
+            Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     // ── User Preferences ──
 
     /// Get a user-scoped preference value. Returns None if not set.

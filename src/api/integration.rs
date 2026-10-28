@@ -73,11 +73,30 @@ pub async fn grafana_search(State(state): State<AppState>) -> Result<impl IntoRe
     Ok(Json(json!(targets)))
 }
 
+/// Base URL clients should use to reach this server. A wildcard bind address
+/// (`0.0.0.0`, `::`) is not routable, so the machine hostname stands in for it;
+/// a specific bind address is used as is.
+fn connection_base_url(bind_host: &str, port: u16, hostname: &str) -> String {
+    let host = match bind_host.trim() {
+        "" | "0.0.0.0" | "::" | "[::]" => hostname,
+        h => h,
+    };
+    if host.contains(':') && !host.starts_with('[') {
+        format!("http://[{}]:{}", host, port)
+    } else {
+        format!("http://{}:{}", host, port)
+    }
+}
+
 pub async fn connection_info(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<impl IntoResponse, AppError> {
     let hostname = sysinfo::System::host_name().unwrap_or_else(|| "localhost".to_string());
-    let base_url = format!("http://{}:8080", hostname);
+    let (bind_host, port) = match crate::config::load_config(&state.config_path) {
+        Ok(cfg) => (cfg.server_host, cfg.server_port),
+        Err(_) => ("0.0.0.0".to_string(), 3000),
+    };
+    let base_url = connection_base_url(&bind_host, port, &hostname);
     Ok(Json(json!({
         "rest_api": { "base_url": format!("{}/api/v1", base_url), "authentication": "Cookie or API Key (X-API-Key header)" },
         "prometheus": { "enabled": true, "endpoint": format!("{}/metrics", base_url), "metrics": ["voltrus_tag_value", "voltrus_device_up", "voltrus_alarms_active"] },
@@ -400,5 +419,28 @@ fn validate_schedule(schedule: &str) -> Result<(), AppError> {
         _ => Err(AppError(anyhow::anyhow!(
             "Schedule must be 'hourly', 'daily', 'weekly', or 'every_Nm'/'every_Nh'/'every_Nd'"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::connection_base_url;
+
+    #[test]
+    fn base_url_uses_configured_port_and_hostname_for_wildcard_bind() {
+        assert_eq!(
+            connection_base_url("0.0.0.0", 3000, "scada-1"),
+            "http://scada-1:3000"
+        );
+        assert_eq!(connection_base_url("::", 9000, "scada-1"), "http://scada-1:9000");
+    }
+
+    #[test]
+    fn base_url_keeps_specific_bind_address() {
+        assert_eq!(
+            connection_base_url("10.1.2.3", 8443, "scada-1"),
+            "http://10.1.2.3:8443"
+        );
+        assert_eq!(connection_base_url("fd00::5", 3000, "x"), "http://[fd00::5]:3000");
     }
 }
