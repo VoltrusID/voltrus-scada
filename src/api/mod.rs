@@ -228,6 +228,34 @@ async fn edition_header_middleware(
     resp
 }
 
+/// The passive node of a redundant pair serves reads and the paths an add-on
+/// exempts (sign-in, the pair's own control endpoints) and refuses every other
+/// write, so its configuration cannot diverge from the active node's. Answers
+/// carry `x-voltrus-node-role: standby` so clients can tell which node spoke.
+async fn node_role_middleware(req: Request, next: Next) -> axum::response::Response {
+    const ROLE_HEADER: HeaderName = HeaderName::from_static("x-voltrus-node-role");
+    if !crate::node_role::request_allowed(req.method(), req.uri().path()) {
+        let mut resp = (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({
+                "error": "This node is the standby of a redundant pair and is read-only. Make changes on the active node.",
+                "code": "standby_read_only",
+            })),
+        )
+            .into_response();
+        resp.headers_mut()
+            .insert(ROLE_HEADER, HeaderValue::from_static("standby"));
+        return resp;
+    }
+    let passive = !crate::node_role::is_active();
+    let mut resp = next.run(req).await;
+    if passive {
+        resp.headers_mut()
+            .insert(ROLE_HEADER, HeaderValue::from_static("standby"));
+    }
+    resp
+}
+
 // --- Protocol route helper functions (cfg-gated) ---
 
 #[cfg(feature = "modbus")]
@@ -1365,6 +1393,7 @@ pub fn create_router(state: AppState) -> Router {
             state.clone(),
             edition_header_middleware,
         ))
+        .layer(middleware::from_fn(node_role_middleware))
         .layer(cors)
         .layer(DefaultBodyLimit::max(1024 * 1024)) // 1MB body limit
         .layer(middleware::from_fn_with_state(

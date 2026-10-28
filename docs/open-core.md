@@ -68,6 +68,16 @@ runs with `edition::Community`: no add-on, no licence, nothing gated.
 The Enterprise add-on is a separate crate that depends on this one and calls
 `voltrus::run` with its own extension. It is not in this repository.
 
+An extension can also run the process as one node of a redundant pair. It decides
+the starting role in `Extension::resolve_node_role` and flips `node_role::set`
+afterwards. While a node is not active (`node_role::is_active()` is false), the
+core does not poll devices (unless the extension asks for passive polling), does
+not write to devices by any path, skips history persistence, alarm evaluation,
+retention, egress, OEE, the command queue and flows, and answers every HTTP write
+except the paths the extension exempts with `503`. A single node is always
+active, so the open core behaves exactly as before. `Storage::with_conn` and
+`Storage::open_reader` give an extension the database access replication needs.
+
 Things worth knowing:
 
 * The **storage layer and data models are public**, including tables and

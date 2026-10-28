@@ -259,26 +259,7 @@ pub async fn start_device(
     }
 
     // Build runtime config
-    let device_key = format!("bacnet_{}", device.id);
-    let config = BacnetDeviceConfig {
-        id: device_key.clone(),
-        ip: device.ip.clone(),
-        port: device.port,
-        device_instance: device.device_instance,
-        interval_ms: device.interval_ms,
-        cov_enabled: device.cov_enabled,
-        cov_lifetime: device.cov_lifetime,
-        objects: objects
-            .iter()
-            .map(|o| BacnetObjectConfig {
-                object_type: o.object_type.clone(),
-                object_instance: o.object_instance,
-                property: o.property.clone(),
-                name: o.name.clone(),
-                cov_increment: o.cov_increment,
-            })
-            .collect(),
-    };
+    let config = BacnetDeviceConfig::from_rows(device, &objects);
 
     state.poller_manager.start_bacnet(config).await;
 

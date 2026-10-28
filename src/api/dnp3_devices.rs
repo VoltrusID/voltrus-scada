@@ -381,25 +381,7 @@ pub async fn start_device(
     }
 
     // Build runtime config
-    let device_key = format!("dnp3_{}", device.id);
-    let config = Dnp3DeviceConfig {
-        id: device_key.clone(),
-        ip: device.ip.clone(),
-        port: device.port,
-        master_address: device.master_address,
-        outstation_address: device.outstation_address,
-        event_scan_interval_ms: device.event_scan_interval_ms,
-        points: points
-            .iter()
-            .map(|p| crate::models::Dnp3PointConfig {
-                group_num: p.group_num,
-                variation: p.variation,
-                point_index: p.point_index,
-                name: p.name.clone(),
-                scale: p.scale,
-            })
-            .collect(),
-    };
+    let config = Dnp3DeviceConfig::from_rows(&device, &points);
 
     state.poller_manager.start_dnp3(config).await;
 

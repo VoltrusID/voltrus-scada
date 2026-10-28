@@ -9,6 +9,9 @@ pub async fn write_tag(
     register: &RegisterConfig,
     value: f64,
 ) -> WriteResult {
+    if !crate::node_role::is_active() {
+        return WriteResult::refused_passive();
+    }
     let start = std::time::Instant::now();
     let addr = format!("{}:{}", config.ip, config.port);
     let socket_addr: std::net::SocketAddr = match addr.parse() {

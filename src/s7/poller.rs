@@ -102,6 +102,9 @@ pub async fn write_tag(
     value: f64,
     data_type: Option<&str>,
 ) -> WriteResult {
+    if !crate::node_role::is_active() {
+        return WriteResult::refused_passive();
+    }
     let start = std::time::Instant::now();
     let url = format!("{}:{}", ip, port);
 

@@ -41,14 +41,20 @@ pub async fn run_retention_task(storage: Storage, config: RetentionConfig) {
     pack_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
+        // A passive node keeps whatever its active peer replicates; packing,
+        // deleting or rolling up history locally would diverge from it.
         tokio::select! {
             _ = pack_tick.tick(), if config.pack_enabled => {
-                if let Err(e) = run_pack_cycle(&storage, &config).await {
+                if crate::node_role::is_active()
+                    && let Err(e) = run_pack_cycle(&storage, &config).await
+                {
                     tracing::error!("Historian packing failed: {e:#}");
                 }
             }
             _ = retention_tick.tick() => {
-                if let Err(e) = run_retention_cycle(&storage, &config).await {
+                if crate::node_role::is_active()
+                    && let Err(e) = run_retention_cycle(&storage, &config).await
+                {
                     tracing::error!("Retention cycle failed: {e:#}");
                 }
             }

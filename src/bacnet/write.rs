@@ -18,6 +18,9 @@ pub async fn write_property(
     property: &str,
     value: f64,
 ) -> WriteResult {
+    if !crate::node_role::is_active() {
+        return WriteResult::refused_passive();
+    }
     let start = std::time::Instant::now();
     let addr = format!("{}:{}", ip, port);
     let object_type = object_type.to_string();

@@ -111,6 +111,13 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     let cache = cache.with_storage(storage.clone());
     let license_status = {
         let status = ext.resolve_license(&storage).await;
+        let start = ext
+            .resolve_node_role(&app_config, &storage, &status)
+            .await?;
+        crate::node_role::set(start.active, start.passive_polling);
+        if !start.active {
+            tracing::warn!("Starting as the passive node of a redundant pair");
+        }
         Arc::new(std::sync::RwLock::new(status))
     };
     tracing::info!("Edition: {}", ext.name());
@@ -172,36 +179,41 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         );
     }
 
-    // Load device configs from DB and start pollers
+    // Load device configs from DB and start pollers. The passive node of a
+    // redundant pair starts none: its peer owns the devices until it takes over.
     let poller_manager = PollerManager::new(
         cache.clone(),
         storage.clone(),
         network::NetworkManager::new(app_config.networks.clone()),
     );
-    #[cfg(feature = "modbus")]
-    {
-        let device_configs = storage.get_all_device_configs().await?;
-        for config in &device_configs {
-            poller_manager.start(config.clone()).await;
-            tracing::info!("Started poller for device {}", config.id);
+    if crate::node_role::polls_devices() {
+        #[cfg(feature = "modbus")]
+        {
+            let device_configs = storage.get_all_device_configs().await?;
+            for config in &device_configs {
+                poller_manager.start(config.clone()).await;
+                tracing::info!("Started poller for device {}", config.id);
+            }
         }
-    }
 
-    // Start OPC-UA pollers
-    #[cfg(feature = "opcua")]
-    match storage.get_all_opcua_device_configs().await {
-        Ok(opcua_configs) => {
-            for config in &opcua_configs {
-                poller_manager.start_opcua(config.clone()).await;
-                tracing::info!("Started OPC-UA poller for device {}", config.id);
+        // Start OPC-UA pollers
+        #[cfg(feature = "opcua")]
+        match storage.get_all_opcua_device_configs().await {
+            Ok(opcua_configs) => {
+                for config in &opcua_configs {
+                    poller_manager.start_opcua(config.clone()).await;
+                    tracing::info!("Started OPC-UA poller for device {}", config.id);
+                }
+                if !opcua_configs.is_empty() {
+                    tracing::info!("Started {} OPC-UA device(s)", opcua_configs.len());
+                }
             }
-            if !opcua_configs.is_empty() {
-                tracing::info!("Started {} OPC-UA device(s)", opcua_configs.len());
+            Err(e) => {
+                tracing::warn!("Failed to load OPC-UA device configs: {}", e);
             }
         }
-        Err(e) => {
-            tracing::warn!("Failed to load OPC-UA device configs: {}", e);
-        }
+    } else {
+        tracing::info!("Passive node: device pollers start when this node takes over");
     }
 
     // Build optional email notifier from SMTP config
@@ -241,6 +253,11 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
             let mut history_filter = crate::deadband::HistoryFilter::new();
             loop {
                 ticker.tick().await;
+                // The passive node of a redundant pair never stores samples or
+                // raises alarms: the active node does, and replication feeds this one.
+                if !crate::node_role::is_active() {
+                    continue;
+                }
                 let snapshots = cache.get_all().await;
                 if snapshots.is_empty() {
                     continue;
@@ -591,6 +608,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
+                if !crate::node_role::is_active() {
+                    continue;
+                }
                 match storage.auto_unshelf_expired_alarms().await {
                     Ok(unshelved) => {
                         unshelf_ws_manager.broadcast_alarm_updates("unshelved", None, &unshelved);

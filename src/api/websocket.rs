@@ -318,6 +318,15 @@ async fn handle_tag_write(
     value: f64,
     cmd_id: String,
 ) {
+    if !crate::node_role::is_active() {
+        reject_write(
+            &state.ws_manager,
+            conn_id,
+            cmd_id,
+            crate::node_role::NOT_ACTIVE_MESSAGE,
+        );
+        return;
+    }
     let data_source_id: i64 = match tag_id.parse() {
         Ok(id) => id,
         Err(_) => {
