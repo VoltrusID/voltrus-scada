@@ -125,3 +125,69 @@ async fn test_write_to_numeric_device_keeps_numeric_id() {
     .await;
     assert_eq!(list.as_array().unwrap().len(), 1);
 }
+
+/// A write is audited from the moment it is accepted: who asked and why, before the
+/// queue's own "system" transitions.
+#[tokio::test]
+async fn test_rest_write_records_the_user_and_reason_in_the_audit_trail() {
+    let app = test_app_with_seeded_admin().await;
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+    let id = writable_source(&app, &cookie, "setpoint", "modbus", "plc-1").await;
+
+    let (status, accepted) = send_request(
+        &app,
+        "POST",
+        &format!("/api/v1/tags/{id}/write"),
+        None,
+        Some(&cookie),
+        Some(serde_json::json!({"value": 7.5, "reason": "  commissioning  "})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+    let command_id = accepted["command_id"].as_str().unwrap();
+
+    let (status, audit) = send_request(
+        &app,
+        "GET",
+        &format!("/api/v1/commands/{command_id}/audit"),
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = audit.as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{audit}");
+    assert_eq!(entries[0]["changed_by"], "admin");
+    assert_eq!(entries[0]["new_status"], "pending");
+    assert_eq!(entries[0]["reason"], "commissioning");
+}
+
+#[tokio::test]
+async fn test_rest_write_to_an_unknown_tag_is_404_and_a_non_number_is_400() {
+    let app = test_app_with_seeded_admin().await;
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+
+    let (status, body) = send_request(
+        &app,
+        "POST",
+        "/api/v1/tags/9999/write",
+        None,
+        Some(&cookie),
+        Some(serde_json::json!({"value": 1})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    let id = writable_source(&app, &cookie, "flag", "modbus", "plc-1").await;
+    let (status, body) = send_request(
+        &app,
+        "POST",
+        &format!("/api/v1/tags/{id}/write"),
+        None,
+        Some(&cookie),
+        Some(serde_json::json!({"value": "high"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}

@@ -3,6 +3,16 @@ db_path: "data.db"
 persist_interval_secs: 5
 # auth_secret: "change-me-to-a-strong-random-string"
 
+# Secure attribute of the sign-in cookies: auto (default), true or false.
+# auto sets it when the request came over HTTPS through a reverse proxy or tunnel on
+# this machine that sends X-Forwarded-Proto: https (or Cloudflare's CF-Visitor), and
+# leaves it off for plain http://<ip>:3000, where a browser would drop a Secure cookie.
+# Use true behind an HTTPS proxy that runs on another machine.
+# cookie_secure: auto
+
+# Each device's interval_ms must be 1 to 3600000; a value outside that range stops
+# the server at startup with a message naming the device.
+
 devices:
   - id: "plts_1"
     ip: "192.168.1.10"

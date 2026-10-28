@@ -100,7 +100,13 @@ pub async fn create_modbus_device(
     let ip = body["ip"].as_str().unwrap_or("").to_string();
     let port = body["port"].as_u64().unwrap_or(502) as u16;
     let unit_id = body["unit_id"].as_u64().unwrap_or(1) as u8;
-    let interval_ms = body["interval_ms"].as_u64().unwrap_or(1000);
+    let interval_ms = match body.get("interval_ms") {
+        None | Some(serde_json::Value::Null) => 1000,
+        Some(v) => v
+            .as_u64()
+            .ok_or_else(|| AppError::bad_request("interval_ms must be a whole number"))?,
+    };
+    super::check_poll_interval(interval_ms)?;
     let endianness = body["endianness"].as_str().unwrap_or("big").to_string();
 
     if id.is_empty() {
@@ -176,6 +182,14 @@ pub async fn update_modbus_device(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    match body.get("interval_ms") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(v) => super::check_poll_interval(
+            v.as_u64()
+                .ok_or_else(|| AppError::bad_request("interval_ms must be a whole number"))?,
+        )?,
+    }
+
     state.storage.update_modbus_device(&id, &body).await?;
 
     // If registers array is present, replace registers too
@@ -375,11 +389,14 @@ pub async fn scan_network(
     Extension(auth): Extension<AuthUser>,
     Json(body): Json<ScanNetworkRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    if body.range.is_empty() {
-        return Err(AppError(anyhow::anyhow!("Range (CIDR) is required")));
+    if body.range.trim().is_empty() {
+        return Err(AppError::bad_request("Range (CIDR) is required"));
     }
 
-    let devices = crate::discovery::scan_network(&body.range, body.port, 500).await?;
+    // A malformed or oversized range is the caller's mistake, not a server error.
+    let addresses = crate::discovery::parse_cidr(body.range.trim())
+        .map_err(|e| AppError::bad_request(format!("{e:#}")))?;
+    let devices = crate::discovery::scan_addresses(addresses, body.port, 500).await?;
 
     state.audit_logger.log(crate::security::AuditEvent {
         action: "scan_network".to_string(),

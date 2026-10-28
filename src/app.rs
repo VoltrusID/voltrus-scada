@@ -7,6 +7,7 @@ use crate::storage::Storage;
 use crate::{
     cli, command_queue, config, health, network, notification, oee, retention, widget_sdk,
 };
+use axum::serve::ListenerExt;
 use std::sync::Arc;
 
 fn run_watchdog() {
@@ -817,11 +818,12 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     api::stream::spawn_data_broadcaster(cache.clone(), storage.clone(), Some(ws_manager.clone()));
     let app = api::create_router(state);
+    api::ui::log_source().await;
 
     let addr = format!("{}:{}", app_config.server_host, app_config.server_port);
     tracing::info!("Server listening on {addr}");
 
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let listener = bind_listener(&addr).await?;
 
     let shutdown = async {
         tokio::signal::ctrl_c()
@@ -849,4 +851,41 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     tracing::info!("Server shutdown complete");
     Ok(())
+}
+
+/// Listen on `addr`, with TCP_NODELAY on every accepted socket: live-data frames are
+/// small and sent right after a request or response, so Nagle's algorithm plus the
+/// browser's delayed ACK would hold them back by tens of milliseconds.
+async fn bind_listener(
+    addr: &str,
+) -> anyhow::Result<axum::serve::TapIo<tokio::net::TcpListener, fn(&mut tokio::net::TcpStream)>> {
+    Ok(tokio::net::TcpListener::bind(addr)
+        .await?
+        .tap_io(set_nodelay as fn(&mut tokio::net::TcpStream)))
+}
+
+fn set_nodelay(tcp_stream: &mut tokio::net::TcpStream) {
+    if let Err(err) = tcp_stream.set_nodelay(true) {
+        tracing::debug!("failed to set TCP_NODELAY on accepted socket: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::serve::Listener;
+
+    #[tokio::test]
+    async fn accepted_sockets_have_tcp_nodelay() {
+        let mut listener = bind_listener("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let client =
+            tokio::spawn(async move { tokio::net::TcpStream::connect(addr).await.unwrap() });
+        let (accepted, _) = listener.accept().await;
+        assert!(
+            accepted.nodelay().unwrap(),
+            "the server side of the connection must not use Nagle"
+        );
+        client.await.unwrap();
+    }
 }

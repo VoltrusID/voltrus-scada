@@ -77,6 +77,7 @@ export {
   useReplaceModbusRegisters,
   useRestartModbusPoller,
   useScanModbusRegisters,
+  useScanModbusNetwork,
 } from './modbus'
 
 export type { ScannedRegister } from './modbus'

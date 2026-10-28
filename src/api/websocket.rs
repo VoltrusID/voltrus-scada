@@ -21,7 +21,7 @@ use crate::ws_types::{ClientMessage, ServerMessage};
     path = "/api/v1/ws",
     tag = "Stream",
     responses(
-        (status = 200, description = "Server-sent events stream"),
+        (status = 101, description = "Switching protocols: MessagePack frames in both directions"),
     ),
     security(("api_key" = []), ("cookie_auth" = []))
 )]
@@ -260,10 +260,9 @@ async fn handle_client_message(
             tag_id,
             value,
             command_id,
+            reason,
         } => {
-            let cmd_id = command_id
-                .clone()
-                .unwrap_or_else(|| format!("direct-{}", crate::timeutil::now_secs()));
+            let cmd_id = command_id.clone().unwrap_or_else(next_command_id);
 
             // Permission check: only admins can write via WebSocket
             if role != "admin" {
@@ -277,7 +276,16 @@ async fn handle_client_message(
                 return;
             }
 
-            handle_tag_write(state, conn_id, username, tag_id, *value, cmd_id).await;
+            handle_tag_write(
+                state,
+                conn_id,
+                username,
+                tag_id,
+                *value,
+                reason.clone(),
+                cmd_id,
+            )
+            .await;
         }
 
         ClientMessage::Ping => {
@@ -290,7 +298,17 @@ async fn handle_client_message(
     }
 }
 
-// -- Tag write handling: direct write, no queue ----------------------------
+// -- Tag write handling: through the command queue -------------------------
+
+/// A command id for a write whose client did not choose one.
+fn next_command_id() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "ws-{}-{}",
+        crate::timeutil::now_millis(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
 
 /// Answer a refused write to the connection that asked for it.
 fn reject_write(
@@ -310,12 +328,18 @@ fn reject_write(
     );
 }
 
+/// A write over the WebSocket takes the same road as `POST /tags/{id}/write`:
+/// the tag's write policy is checked and the command is queued with an audit
+/// entry naming the user. The queue processor delivers it and broadcasts the
+/// `sent`, `acked` or `failed` acknowledgements under the same command id; the
+/// requester is told right away that the command is `pending`.
 async fn handle_tag_write(
     state: &AppState,
     conn_id: &str,
     username: &str,
     tag_id: &str,
     value: f64,
+    reason: Option<String>,
     cmd_id: String,
 ) {
     let data_source_id: i64 = match tag_id.parse() {
@@ -332,159 +356,49 @@ async fn handle_tag_write(
         }
     };
 
-    // Look up data source to get device_id and source_config
-    let ds = match state.storage.get_data_source_by_id(data_source_id).await {
-        Ok(Some(ds)) => ds,
-        _ => {
-            tracing::warn!("WS: data source {} not found", data_source_id);
-            reject_write(&state.ws_manager, conn_id, cmd_id, "Data source not found");
-            return;
-        }
+    let submission = super::commands::TagWriteSubmission {
+        tag_id: data_source_id,
+        value,
+        policy: "immediate".to_string(),
+        scheduled_at: None,
+        reason,
+        command_id: Some(cmd_id.clone()),
     };
-
-    // Check write policy
-    let writable = state
-        .storage
-        .get_write_policy(data_source_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|p| p.writable)
-        .unwrap_or(false);
-
-    if !writable {
-        tracing::warn!("WS: data source {} is not writable", data_source_id);
-        reject_write(&state.ws_manager, conn_id, cmd_id, "Tag is not writable");
-        return;
-    }
-
-    let cache_device_id = ds.device_id.clone();
-    // Cache metrics live under the bare register name (see data::metric_name).
-    let metric_key = crate::api::data::metric_name(&ds.key, &ds.device_id).to_string();
-
-    // Execute the write directly based on protocol
-    let result = execute_direct_write(state, &ds, value).await;
-
-    tracing::info!(
-        "WS: user={} direct write {}={value} → {} ({}ms)",
-        username,
-        ds.name,
-        if result.success { "OK" } else { "FAIL" },
-        result.latency_ms,
-    );
-
-    // Only a written value reaches the cache, and through it every client via
-    // the data broadcaster pipeline; after a failed write the device still
-    // holds the old value.
-    if result.success {
-        state
-            .cache
-            .set_metric_value(&cache_device_id, &metric_key, value)
-            .await;
-    }
-
-    // The result goes to the requesting connection only.
-    state.ws_manager.send_to(
-        conn_id,
-        crate::ws_types::ServerMessage::CommandAck {
-            command_id: cmd_id,
-            status: if result.success {
-                "acked".to_string()
-            } else {
-                "failed".to_string()
-            },
-            device_response: result.device_response.or(result.error),
-            latency_ms: Some(result.latency_ms),
-        },
-    );
-}
-
-/// Execute a write directly to the device, bypassing the command queue.
-async fn execute_direct_write(
-    state: &AppState,
-    ds: &crate::models::DataSource,
-    value: f64,
-) -> crate::models::WriteResult {
-    let start = std::time::Instant::now();
-    let fail = |msg: &str| crate::models::WriteResult {
-        success: false,
-        device_response: None,
-        error: Some(msg.to_string()),
-        latency_ms: start.elapsed().as_millis() as u64,
-    };
-
-    match ds.source_type.as_str() {
-        #[cfg(feature = "modbus")]
-        "modbus" => {
-            // Parse register address
-            let address = match parse_modbus_address(&ds.source_config) {
-                Some(a) => a,
-                None => return fail("Could not parse Modbus register address"),
-            };
-
-            // Get device config
-            let device = match state.storage.get_modbus_device(&ds.device_id).await {
-                Ok(Some(d)) => d,
-                _ => return fail("Modbus device not found"),
-            };
-
-            let config = crate::models::DeviceConfig {
-                id: device.id.clone(),
-                ip: device.ip.clone(),
-                port: device.port,
-                unit_id: device.unit_id,
-                interval_ms: device.interval_ms,
-                endianness: match device.endianness.as_str() {
-                    "little" => crate::models::Endianness::Little,
-                    "swapped" => crate::models::Endianness::Swapped,
-                    _ => crate::models::Endianness::Big,
+    match super::commands::submit_tag_write(state, username, submission).await {
+        Ok(cmd) => {
+            tracing::info!(
+                "WS: user={} queued write {}={value} as command {}",
+                username,
+                data_source_id,
+                cmd.id
+            );
+            state.ws_manager.send_to(
+                conn_id,
+                ServerMessage::CommandAck {
+                    command_id: cmd.id,
+                    status: cmd.status,
+                    device_response: None,
+                    latency_ms: None,
                 },
-                registers: vec![],
-                readback: None,
-                network: None,
-            };
-
-            let register = crate::models::RegisterConfig {
-                name: "unknown".into(),
-                address,
-                reg_type: crate::models::RegisterType::Uint16,
-                scale: 1.0,
-                register_area: "holding".into(),
-                zero_based: false,
-            };
-            crate::modbus::write_tag(&state.modbus_pool, &config, &register, value).await
+            );
         }
-        _ => fail("Direct write not supported for this protocol"),
+        Err(refusal) => {
+            let message = refusal.message();
+            tracing::warn!(
+                "WS: user={} write to data source {} refused: {}",
+                username,
+                data_source_id,
+                message
+            );
+            reject_write(&state.ws_manager, conn_id, cmd_id, &message);
+        }
     }
-}
-
-/// Parse Modbus register address from source_config JSON.
-#[cfg(feature = "modbus")]
-fn parse_modbus_address(source_config: &str) -> Option<u16> {
-    let config: serde_json::Value = serde_json::from_str(source_config).ok()?;
-    let convert = |addr: u16| -> u16 {
-        if addr >= 40001 {
-            addr - 40001
-        } else if addr >= 30001 {
-            addr - 30001
-        } else {
-            addr
-        }
-    };
-    config
-        .get("address")
-        .and_then(|v| v.as_u64().map(|a| convert(a as u16)))
-        .or_else(|| {
-            config
-                .get("register")
-                .and_then(|v| v.as_u64().map(|a| convert(a as u16)))
-        })
 }
 
 // -- Helpers ----------------------------------------------------------------
 
 /// Map a user role to a list of permission strings.
-fn role_to_permissions(role: &str) -> Vec<String> {
+pub(super) fn role_to_permissions(role: &str) -> Vec<String> {
     match role {
         "admin" => vec!["read".to_string(), "write".to_string(), "admin".to_string()],
         "api" => vec!["read".to_string(), "write".to_string()],
@@ -515,6 +429,7 @@ mod tests {
             tag_id: tag_id.to_string(),
             value: 42.0,
             command_id: Some(command_id.to_string()),
+            reason: None,
         }
     }
 
@@ -629,19 +544,240 @@ mod tests {
         assert_eq!(state.cache.get_metric_value("temp").await, Some(1.0));
     }
 
-    #[tokio::test]
-    async fn failed_device_write_answers_the_requester_and_leaves_the_cache() {
-        let (state, mut me, mut other, id) = setup(true).await;
-        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
+    async fn set_policy(state: &AppState, id: i64, update: crate::models::WritePolicyUpdate) {
+        state
+            .storage
+            .update_write_policy(id, &update)
+            .await
+            .unwrap();
+    }
 
-        let (command_id, status, reason) = only_ack(&mut me);
-        assert_eq!((command_id.as_str(), status.as_str()), ("c1", "failed"));
-        assert_eq!(reason.as_deref(), Some("Modbus device not found"));
-        assert!(other.try_recv().is_err(), "the result is not broadcast");
+    fn writable_with(
+        configure: impl FnOnce(&mut crate::models::WritePolicyUpdate),
+    ) -> crate::models::WritePolicyUpdate {
+        let mut update = crate::models::WritePolicyUpdate {
+            writable: Some(true),
+            write_min: None,
+            write_max: None,
+            write_max_rate: None,
+            write_requires_reason: None,
+            write_deadband: None,
+        };
+        configure(&mut update);
+        update
+    }
+
+    async fn assert_rejected(
+        state: &AppState,
+        me: &mut Receiver<WsFrame>,
+        id: i64,
+        command_id: &str,
+        expected: &str,
+    ) {
+        let (got_id, status, reason) = only_ack(me);
+        assert_eq!((got_id.as_str(), status.as_str()), (command_id, "rejected"));
+        assert!(
+            reason.as_deref().unwrap().contains(expected),
+            "{reason:?} should mention {expected:?}"
+        );
+        assert!(
+            state
+                .storage
+                .get_command(command_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "a refused write is not queued"
+        );
+        let _ = id;
+    }
+
+    #[tokio::test]
+    async fn permitted_write_is_queued_audited_and_reported_pending() {
+        let (state, mut me, mut other, id) = setup(true).await;
+        set_policy(
+            &state,
+            id,
+            writable_with(|p| p.write_requires_reason = Some(true)),
+        )
+        .await;
+
+        let msg = ClientMessage::TagWrite {
+            tag_id: id.to_string(),
+            value: 42.0,
+            command_id: Some("c1".into()),
+            reason: Some("raise setpoint for test run".into()),
+        };
+        dispatch(&state, "admin", msg).await;
+
+        let (command_id, status, _) = only_ack(&mut me);
+        assert_eq!((command_id.as_str(), status.as_str()), ("c1", "pending"));
+        assert!(other.try_recv().is_err(), "nobody else is told");
+
+        let cmd = state.storage.get_command("c1").await.unwrap().unwrap();
+        assert_eq!(cmd.created_by, "admin");
+        assert_eq!(cmd.status, "pending");
+        assert_eq!(cmd.value, "42");
+        assert_eq!(cmd.data_source_id, id);
+        assert_eq!(cmd.device_ref, "dev1");
+
+        let audit = state.storage.get_command_audit("c1").await.unwrap();
+        assert_eq!(audit.len(), 1);
+        assert_eq!(audit[0].new_status, "pending");
+        assert_eq!(audit[0].changed_by, "admin");
+        assert_eq!(
+            audit[0].reason.as_deref(),
+            Some("raise setpoint for test run")
+        );
+
         assert_eq!(
             state.cache.get_metric_value("temp").await,
             Some(1.0),
-            "the value that was not written is not shown"
+            "the cache changes when the device acknowledges, not when the write is queued"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_without_command_id_gets_a_generated_one() {
+        let (state, mut me, _other, id) = setup(true).await;
+        let msg = ClientMessage::TagWrite {
+            tag_id: id.to_string(),
+            value: 5.0,
+            command_id: None,
+            reason: None,
+        };
+        dispatch(&state, "admin", msg).await;
+        let (command_id, status, _) = only_ack(&mut me);
+        assert_eq!(status, "pending");
+        assert!(
+            state
+                .storage
+                .get_command(&command_id)
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn write_outside_the_range_is_refused() {
+        let (state, mut me, _other, id) = setup(true).await;
+        set_policy(
+            &state,
+            id,
+            writable_with(|p| {
+                p.write_min = Some(Some(10.0));
+                p.write_max = Some(Some(50.0));
+            }),
+        )
+        .await;
+
+        dispatch(&state, "admin", write_msg(&id.to_string(), "low")).await; // 42 is inside
+        assert_eq!(only_ack(&mut me).1, "pending");
+
+        let too_high = ClientMessage::TagWrite {
+            tag_id: id.to_string(),
+            value: 51.0,
+            command_id: Some("high".into()),
+            reason: None,
+        };
+        dispatch(&state, "admin", too_high).await;
+        assert_rejected(&state, &mut me, id, "high", "above maximum").await;
+
+        let too_low = ClientMessage::TagWrite {
+            tag_id: id.to_string(),
+            value: 9.0,
+            command_id: Some("low2".into()),
+            reason: None,
+        };
+        dispatch(&state, "admin", too_low).await;
+        assert_rejected(&state, &mut me, id, "low2", "below minimum").await;
+    }
+
+    #[tokio::test]
+    async fn write_that_is_not_finite_is_refused() {
+        let (state, mut me, _other, id) = setup(true).await;
+        let msg = ClientMessage::TagWrite {
+            tag_id: id.to_string(),
+            value: f64::NAN,
+            command_id: Some("nan".into()),
+            reason: None,
+        };
+        dispatch(&state, "admin", msg).await;
+        assert_rejected(&state, &mut me, id, "nan", "Invalid numeric value").await;
+    }
+
+    #[tokio::test]
+    async fn write_requiring_a_reason_is_refused_without_one() {
+        let (state, mut me, _other, id) = setup(true).await;
+        set_policy(
+            &state,
+            id,
+            writable_with(|p| p.write_requires_reason = Some(true)),
+        )
+        .await;
+
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
+        assert_rejected(&state, &mut me, id, "c1", "Reason is required").await;
+
+        let blank = ClientMessage::TagWrite {
+            tag_id: id.to_string(),
+            value: 42.0,
+            command_id: Some("c2".into()),
+            reason: Some("   ".into()),
+        };
+        dispatch(&state, "admin", blank).await;
+        assert_rejected(&state, &mut me, id, "c2", "Reason is required").await;
+    }
+
+    #[tokio::test]
+    async fn write_within_the_deadband_is_refused() {
+        let (state, mut me, _other, id) = setup(true).await;
+        set_policy(
+            &state,
+            id,
+            writable_with(|p| p.write_deadband = Some(Some(5.0))),
+        )
+        .await;
+        state
+            .cache
+            .update("dev1", HashMap::from([("temp".to_string(), 40.0)]), false)
+            .await;
+
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await; // |42 - 40| <= 5
+        assert_rejected(&state, &mut me, id, "c1", "deadband").await;
+    }
+
+    #[tokio::test]
+    async fn write_over_the_rate_limit_is_refused() {
+        let (state, mut me, _other, id) = setup(true).await;
+        set_policy(
+            &state,
+            id,
+            writable_with(|p| p.write_max_rate = Some(Some(1))),
+        )
+        .await;
+
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
+        assert_eq!(only_ack(&mut me).1, "pending");
+
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c2")).await;
+        assert_rejected(&state, &mut me, id, "c2", "Rate limit").await;
+    }
+
+    #[tokio::test]
+    async fn reusing_a_command_id_is_refused() {
+        let (state, mut me, _other, id) = setup(true).await;
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
+        assert_eq!(only_ack(&mut me).1, "pending");
+
+        dispatch(&state, "admin", write_msg(&id.to_string(), "c1")).await;
+        let (_, status, reason) = only_ack(&mut me);
+        assert_eq!(status, "rejected");
+        assert!(reason.unwrap().contains("already in use"));
+        assert_eq!(
+            state.storage.get_command_audit("c1").await.unwrap().len(),
+            1
         );
     }
 }

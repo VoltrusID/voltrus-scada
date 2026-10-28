@@ -45,7 +45,7 @@ fi
 
 # Build first
 echo -e "${CYAN}Building voltrus and simulators...${NC}"
-cargo build --release 2>/dev/null
+VOLTRUS_SKIP_UI_EMBED=1 cargo build --release 2>/dev/null
 echo -e "${GREEN}Build complete.${NC}"
 echo ""
 

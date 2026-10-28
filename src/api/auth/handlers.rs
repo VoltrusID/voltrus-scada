@@ -1,9 +1,10 @@
 use axum::Json;
-use axum::extract::{Extension, State};
+use axum::extract::{ConnectInfo, Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum_extra::extract::CookieJar;
 use serde_json::json;
+use std::net::SocketAddr;
 
 use super::*;
 
@@ -29,10 +30,17 @@ fn extract_user_agent(headers: &HeaderMap) -> Option<String> {
 pub async fn login(
     State(state): State<AppState>,
     Extension(crate::security::ClientIp(client_ip)): Extension<crate::security::ClientIp>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     jar: CookieJar,
     headers: HeaderMap,
     Json(body): Json<LoginRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let secure = state
+        .cookie_secure
+        .resolve(crate::security::request_is_https(
+            peer.as_ref().map(|Extension(ConnectInfo(p))| p),
+            &headers,
+        ));
     let source_ip = Some(client_ip);
     let user_agent = extract_user_agent(&headers);
     let rate_key_user = format!("login:{}", body.username);
@@ -83,6 +91,7 @@ pub async fn login(
                         now_secs,
                         source_ip.clone(),
                         user_agent.clone(),
+                        secure,
                     )
                     .await
                 }
@@ -96,6 +105,7 @@ pub async fn login(
                     now_secs,
                     source_ip.clone(),
                     user_agent.clone(),
+                    secure,
                 )
                 .await
             }
@@ -139,6 +149,7 @@ async fn check_password_and_login(
     now_secs: i64,
     source_ip: Option<String>,
     user_agent: Option<String>,
+    secure: bool,
 ) -> (StatusCode, serde_json::Value, CookieJar) {
     if !verify_password(&body.password, &user.password_hash) {
         state.login_rate_limiter.record_attempt(rate_key_user);
@@ -228,7 +239,7 @@ async fn check_password_and_login(
     let access_cookie =
         axum_extra::extract::cookie::Cookie::build(("voltrus_token", access_token.clone()))
             .http_only(true)
-            .secure(state.cookie_secure)
+            .secure(secure)
             .same_site(axum_extra::extract::cookie::SameSite::Strict)
             .max_age(time::Duration::seconds(900)) // 15 minutes
             .path("/")
@@ -237,7 +248,7 @@ async fn check_password_and_login(
     let refresh_cookie =
         axum_extra::extract::cookie::Cookie::build(("voltrus_refresh", refresh_token_raw))
             .http_only(true)
-            .secure(state.cookie_secure)
+            .secure(secure)
             .same_site(axum_extra::extract::cookie::SameSite::Strict)
             .max_age(time::Duration::seconds(REFRESH_TOKEN_EXPIRY_SECS))
             .path("/")
@@ -349,8 +360,16 @@ pub async fn get_csrf_token(State(state): State<AppState>, jar: CookieJar) -> im
 )]
 pub async fn refresh_token(
     State(state): State<AppState>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    headers: HeaderMap,
     jar: CookieJar,
 ) -> Result<impl IntoResponse, AppError> {
+    let secure = state
+        .cookie_secure
+        .resolve(crate::security::request_is_https(
+            peer.as_ref().map(|Extension(ConnectInfo(p))| p),
+            &headers,
+        ));
     let refresh_token = jar.get("voltrus_refresh").map(|c| c.value()).unwrap_or("");
     if refresh_token.is_empty() {
         return Ok((
@@ -395,7 +414,7 @@ pub async fn refresh_token(
             let access_cookie =
                 axum_extra::extract::cookie::Cookie::build(("voltrus_token", new_access))
                     .http_only(true)
-                    .secure(state.cookie_secure)
+                    .secure(secure)
                     .same_site(axum_extra::extract::cookie::SameSite::Strict)
                     .max_age(time::Duration::seconds(900))
                     .path("/")
@@ -404,7 +423,7 @@ pub async fn refresh_token(
             let refresh_cookie =
                 axum_extra::extract::cookie::Cookie::build(("voltrus_refresh", new_refresh_raw))
                     .http_only(true)
-                    .secure(state.cookie_secure)
+                    .secure(secure)
                     .same_site(axum_extra::extract::cookie::SameSite::Strict)
                     .max_age(time::Duration::seconds(REFRESH_TOKEN_EXPIRY_SECS))
                     .path("/")

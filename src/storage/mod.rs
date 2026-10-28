@@ -118,18 +118,22 @@ impl Storage {
             }
         }
 
+        // WAL with synchronous=NORMAL, the settings the database runs with, are set
+        // before the schema is created. Creating it in the default rollback-journal
+        // mode with synchronous=FULL costs an fsync (several, in fact) per statement:
+        // about 950 ms of a first start on a VPS disk. In WAL mode a commit does not
+        // sync; the WAL is synced at checkpoints, as in normal operation.
+        let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
+        let _ = conn.execute_batch("PRAGMA synchronous=NORMAL;");
+        let _ = conn.execute_batch("PRAGMA wal_autocheckpoint=1000;");
+        let _ = conn.execute_batch("PRAGMA busy_timeout=5000;");
+
         schema::init_schema(&conn)?;
 
         // Initialize asset tables
         if let Err(e) = crate::asset::storage::AssetStorage::init_schema(&conn) {
             tracing::warn!("Failed to initialize asset schema: {}", e);
         }
-
-        // Enable WAL mode for better concurrent read/write performance
-        let _ = conn.execute_batch("PRAGMA journal_mode=WAL;");
-        let _ = conn.execute_batch("PRAGMA synchronous=NORMAL;");
-        let _ = conn.execute_batch("PRAGMA wal_autocheckpoint=1000;");
-        let _ = conn.execute_batch("PRAGMA busy_timeout=5000;");
 
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),

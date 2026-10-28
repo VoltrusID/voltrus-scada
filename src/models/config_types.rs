@@ -22,8 +22,9 @@ pub struct AppConfig {
     pub auth_secret: Option<String>,
     #[serde(default)]
     pub cors_origin: Option<String>,
-    #[serde(default = "default_cookie_secure")]
-    pub cookie_secure: bool,
+    /// `Secure` attribute of the login cookies: `true`, `false` or `auto` (default).
+    #[serde(default)]
+    pub cookie_secure: CookieSecure,
     #[serde(default)]
     pub retention: RetentionConfig,
     #[serde(default)]
@@ -184,8 +185,55 @@ pub struct RetentionTier {
     pub archive: bool,
 }
 
-fn default_cookie_secure() -> bool {
-    true
+/// When the login cookies carry the `Secure` attribute.
+///
+/// A browser drops a `Secure` cookie that arrives over plain HTTP, except from
+/// `localhost`, so a first run at `http://<lan-ip>:3000` could never log in with
+/// an unconditional `Secure`. `Auto` sets it exactly when the request came in
+/// over HTTPS, which the server itself does not terminate, so that means a
+/// loopback reverse proxy or tunnel announcing it (`X-Forwarded-Proto: https` or
+/// `CF-Visitor` with scheme https). `Always` and `Never` ignore the request; use
+/// `Always` behind a proxy that is not on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CookieSecure {
+    Always,
+    Never,
+    #[default]
+    Auto,
+}
+
+impl CookieSecure {
+    /// Whether the cookie gets `Secure`, given whether the request was HTTPS.
+    pub fn resolve(self, request_is_https: bool) -> bool {
+        match self {
+            Self::Always => true,
+            Self::Never => false,
+            Self::Auto => request_is_https,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CookieSecure {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Flag(bool),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Flag(true) => Ok(Self::Always),
+            Raw::Flag(false) => Ok(Self::Never),
+            Raw::Text(t) => match t.trim().to_ascii_lowercase().as_str() {
+                "auto" => Ok(Self::Auto),
+                "true" | "always" => Ok(Self::Always),
+                "false" | "never" => Ok(Self::Never),
+                other => Err(serde::de::Error::custom(format!(
+                    "cookie_secure must be true, false or auto, got '{other}'"
+                ))),
+            },
+        }
+    }
 }
 
 fn default_server_port() -> u16 {

@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ModbusDevice, ModbusRegister } from '../types'
 import { queryKeys } from './keys'
 import { fetchJson, fetchOk } from './fetch'
+import type { DiscoveredDevice } from '../networkScan'
 
 export function useModbusDevices(enabled = true) {
   return useQuery({
@@ -144,6 +145,20 @@ export function useScanModbusRegisters() {
         body: JSON.stringify(params),
       })
       return res.json() as Promise<ScannedRegister[]>
+    },
+  })
+}
+
+/** Scan a subnet (an IPv4 range of at most /24) for Modbus TCP devices. */
+export function useScanModbusNetwork() {
+  return useMutation({
+    mutationFn: async (params: { range: string; port: number }) => {
+      const res = await fetchOk('/api/v1/modbus-devices/scan-network', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(params),
+      })
+      return res.json() as Promise<{ devices: DiscoveredDevice[]; count: number }>
     },
   })
 }

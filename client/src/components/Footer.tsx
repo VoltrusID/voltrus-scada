@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useWsConnected } from '../store/dashboardStore'
+import { useWsConnected, useLiveTransport } from '../store/dashboardStore'
 import type { Screen } from '../types'
 import { useLicense } from '../LicenseContext'
 import { siteLabel, supportLabel, supportState } from '../edition/license'
@@ -20,6 +20,7 @@ const VIEW_LABELS: Record<string, string> = {
 
 export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Props) {
   const wsConnected = useWsConnected()
+  const transport = useLiveTransport()
   const license = useLicense()
   const site = siteLabel(license)
   const support = supportLabel(license)
@@ -64,7 +65,7 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
           boxShadow: wsConnected ? '0 0 6px rgba(34,197,94,.4)' : '0 0 6px rgba(245,158,11,.4)',
         }} />
         <span style={{ color: wsConnected ? 'var(--ok)' : 'var(--warn)', fontWeight: 600 }}>
-          {wsConnected ? 'LIVE' : 'CONNECTING'}
+          {wsConnected ? (transport === 'sse' ? 'LIVE (SSE)' : 'LIVE') : 'CONNECTING'}
         </span>
       </div>
 

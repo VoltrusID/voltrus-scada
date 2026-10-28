@@ -57,7 +57,7 @@ pub fn parse_cidr(cidr: &str) -> Result<Vec<IpAddr>> {
     // Limit to /24 at most (254 hosts) to prevent accidental large scans
     if host_count > 254 {
         anyhow::bail!(
-            "Subnet /{} has {} hosts — maximum supported is /24 (254 hosts). Use a smaller subnet range.",
+            "Subnet /{} has {} hosts; maximum supported is /24 (254 hosts). Use a smaller subnet range.",
             mask,
             host_count
         );
@@ -78,8 +78,15 @@ pub fn parse_cidr(cidr: &str) -> Result<Vec<IpAddr>> {
 /// Scan a subnet for Modbus TCP devices.
 /// Returns a list of responsive devices with their register values.
 pub async fn scan_network(cidr: &str, port: u16, timeout_ms: u64) -> Result<Vec<DiscoveredDevice>> {
-    let addresses = parse_cidr(cidr)?;
+    scan_addresses(parse_cidr(cidr)?, port, timeout_ms).await
+}
 
+/// Scan an already parsed list of addresses (see [`parse_cidr`]).
+pub async fn scan_addresses(
+    addresses: Vec<IpAddr>,
+    port: u16,
+    timeout_ms: u64,
+) -> Result<Vec<DiscoveredDevice>> {
     let concurrency_limit = 50;
     let timeout = std::time::Duration::from_millis(timeout_ms);
 

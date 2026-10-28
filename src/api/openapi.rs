@@ -1,4 +1,5 @@
 use axum::response::Html;
+use utoipa::openapi::security::{ApiKey, ApiKeyValue, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
 #[derive(OpenApi)]
@@ -182,6 +183,7 @@ use utoipa::{Modify, OpenApi};
         crate::api::notifications::test_notification,
         // Stream
         crate::api::websocket::websocket_handler,
+        crate::api::sse::sse_handler,
         // Shortcuts
         crate::api::shortcuts::get_shortcuts,
         crate::api::shortcuts::save_shortcuts,

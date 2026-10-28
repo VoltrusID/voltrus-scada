@@ -91,6 +91,8 @@ pub async fn create_device(
         )));
     }
 
+    super::check_poll_interval(req.interval_ms)?;
+
     let id = state
         .storage
         .create_opcua_device(
@@ -164,6 +166,10 @@ pub async fn update_device(
         return Err(AppError(anyhow::anyhow!(
             "Device URL must start with opc.tcp://"
         )));
+    }
+
+    if let Some(interval_ms) = req.interval_ms {
+        super::check_poll_interval(interval_ms)?;
     }
 
     state

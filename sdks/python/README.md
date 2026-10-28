@@ -239,6 +239,9 @@ The server serves a Scalar API reference from its own spec:
 - UI: `http://your-server:3000/api/docs`
 - OpenAPI JSON: `http://your-server:3000/api/v1/openapi.json`
 
+Both need authentication like the rest of the API: sign in to the web UI in the
+same browser first, or send an API key in the `X-API-Key` header for the JSON.
+
 ## 24/7 operation
 
 For unattended production use, see

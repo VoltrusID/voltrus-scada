@@ -56,7 +56,7 @@ path = "src/bin/bacnet-sim.rs"
 required-features = ["bacnet"]
 
 [features]
-default = ["snmp_scan", "modbus", "opcua", "mqtt-broker", "bacnet", "dnp3", "ethernet-ip", "s7", "scripts", "mcp"]
+default = ["openapi", "snmp_scan", "modbus", "opcua", "mqtt-broker", "bacnet", "dnp3", "ethernet-ip", "s7", "scripts", "mcp"]
 openapi = []
 mcp = []
 snmp_scan = []
@@ -111,6 +111,10 @@ regex = "1"
 zip = "=2.4"
 calamine = "0.34.0"
 snmp = "0.2.2"
+mime_guess = "2"
+
+[build-dependencies]
+flate2 = "=1.1.9"
 
 [dev-dependencies]
 http = "=1.4.0"

@@ -2,6 +2,11 @@ name: Release
 
 # Builds the Core binaries for each tagged version and attaches them to a GitHub
 # release. Push a tag like v0.48.0 (it must match the version in Cargo.toml).
+#
+# Order matters: the web client is built first (the `client` job) and its output
+# is downloaded into ./static before `cargo build --release`, because a release
+# build embeds ./static into the executable (build.rs). The archives therefore
+# hold the binary alone, no static/ folder.
 
 on:
   push:
@@ -55,6 +60,13 @@ jobs:
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             musl: true
+          # Cross-compiled from Linux with zig, as the official build does
+          # (voltrus-scada-enterprise/release.sh).
+          - name: windows-x86_64
+            os: ubuntu-latest
+            target: x86_64-pc-windows-gnu
+            zigbuild: true
+            ext: .exe
           - name: macos-aarch64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -78,31 +90,55 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} --bin voltrus --bin modbus-sim
+      - uses: mlugg/setup-zig@v2
+        if: matrix.zigbuild
 
+      - uses: taiki-e/install-action@v2
+        if: matrix.zigbuild
+        with:
+          tool: cargo-zigbuild
+
+      # The web client, built by the `client` job. It must be in ./static before the
+      # build below: a release build embeds it and fails without it.
       - uses: actions/download-artifact@v4
         with:
           name: static
           path: static
 
+      - name: Build
+        shell: bash
+        run: |
+          test -f static/index.html || { echo "static/index.html is missing: the web client has to be built first"; exit 1; }
+          if [ "${{ matrix.zigbuild }}" = "true" ]; then build="cargo zigbuild"; else build="cargo build"; fi
+          $build --release --target ${{ matrix.target }} --bin voltrus --bin modbus-sim
+
       - name: Package
+        shell: bash
         run: |
           name="voltrus-core-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          rel="target/${{ matrix.target }}/release"
           mkdir -p "dist/$name"
-          cp target/${{ matrix.target }}/release/voltrus target/${{ matrix.target }}/release/modbus-sim "dist/$name/"
-          cp -r static "dist/$name/static"
+          cp "$rel/voltrus${{ matrix.ext }}" "$rel/modbus-sim${{ matrix.ext }}" "dist/$name/"
           cp config.yaml "dist/$name/config.yaml.example"
-          cp deploy/voltrus.service LICENSE NOTICE THIRD-PARTY-LICENSES.md "dist/$name/"
-          tar -C dist -czf "dist/$name.tar.gz" "$name"
-          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          cp LICENSE NOTICE THIRD-PARTY-LICENSES.md "dist/$name/"
+          if [ "${{ matrix.name }}" = "windows-x86_64" ]; then
+            archive="$name.zip"
+            (cd dist && zip -r -q "$archive" "$name")
+          else
+            cp deploy/voltrus.service "dist/$name/"
+            archive="$name.tar.gz"
+            tar -C dist -czf "dist/$archive" "$name"
+          fi
+          (cd dist && shasum -a 256 "$archive" > "$archive.sha256")
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: |
             dist/*.tar.gz
+            dist/*.zip
             dist/*.sha256
+          if-no-files-found: error
 
   # The native operator console, as an ad-hoc signed app bundle for Apple
   # silicon (see native/README-native.md).

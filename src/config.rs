@@ -40,6 +40,13 @@ fn validate(config: &AppConfig) -> Result<()> {
             device.id
         );
         anyhow::ensure!(
+            (1..=crate::device_templates::MAX_INTERVAL_MS).contains(&device.interval_ms),
+            "Device {} has interval_ms {}; it must be 1-{} (a 0 ms poll would spin the CPU)",
+            device.id,
+            device.interval_ms,
+            crate::device_templates::MAX_INTERVAL_MS
+        );
+        anyhow::ensure!(
             !device.registers.is_empty(),
             "Device {} has no registers",
             device.id
@@ -126,6 +133,37 @@ devices:
         assert_eq!(config.devices[0].port, 502); // default
         assert_eq!(config.devices[0].registers.len(), 1);
         assert_eq!(config.devices[0].registers[0].scale, 0.1);
+    }
+
+    fn load_with_interval(interval: &str) -> Result<AppConfig> {
+        let yaml = format!(
+            r#"
+devices:
+  - id: "dev1"
+    ip: "10.0.0.1"
+    interval_ms: {interval}
+    registers:
+      - name: "temp"
+        address: 100
+"#
+        );
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(yaml.as_bytes()).unwrap();
+        load_config(f.path().to_str().unwrap())
+    }
+
+    #[test]
+    fn test_interval_bounds() {
+        for ok in ["1", "1000", "3600000"] {
+            assert!(load_with_interval(ok).is_ok(), "{ok} should be accepted");
+        }
+        for bad in ["0", "3600001"] {
+            let err = load_with_interval(bad).unwrap_err().to_string();
+            assert!(
+                err.contains("dev1") && err.contains("1-3600000"),
+                "{bad}: {err}"
+            );
+        }
     }
 
     #[test]

@@ -3,25 +3,67 @@ use anyhow::{Context, Result};
 
 use crate::models::{Command, CommandAuditEntry, CommandQuery};
 
+fn insert_command_row(conn: &rusqlite::Connection, cmd: &Command) -> Result<()> {
+    conn.execute(
+        "INSERT INTO commands (id, data_source_id, device_id, protocol, value, status, policy,
+             scheduled_at, retry_count, max_retries, error_message, created_at, sent_at, acked_at,
+             resolved_at, created_by, device_ref)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+        rusqlite::params![
+            cmd.id,
+            cmd.data_source_id,
+            cmd.device_id,
+            cmd.protocol,
+            cmd.value,
+            cmd.status,
+            cmd.policy,
+            cmd.scheduled_at,
+            cmd.retry_count,
+            cmd.max_retries,
+            cmd.error_message,
+            cmd.created_at,
+            cmd.sent_at,
+            cmd.acked_at,
+            cmd.resolved_at,
+            cmd.created_by,
+            cmd.device_ref,
+        ],
+    )
+    .context("Insert command failed")?;
+    Ok(())
+}
+
 impl Storage {
     pub async fn insert_command(&self, cmd: &Command) -> Result<()> {
         let conn = self.conn.clone();
         let cmd = cmd.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO commands (id, data_source_id, device_id, protocol, value, status, policy,
-                     scheduled_at, retry_count, max_retries, error_message, created_at, sent_at, acked_at,
-                     resolved_at, created_by, device_ref)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
-                rusqlite::params![
-                    cmd.id, cmd.data_source_id, cmd.device_id, cmd.protocol, cmd.value,
-                    cmd.status, cmd.policy, cmd.scheduled_at, cmd.retry_count, cmd.max_retries,
-                    cmd.error_message, cmd.created_at, cmd.sent_at, cmd.acked_at, cmd.resolved_at,
-                    cmd.created_by, cmd.device_ref,
-                ],
+            insert_command_row(&conn, &cmd)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Insert a command and, in the same transaction, its first audit-log entry:
+    /// who created it (`created_by`) and why. Writes from a user (REST,
+    /// WebSocket) use this so the audit trail starts with the person, not with
+    /// the queue's own "system" transitions.
+    pub async fn insert_command_audited(&self, cmd: &Command, reason: Option<&str>) -> Result<()> {
+        let conn = self.conn.clone();
+        let cmd = cmd.clone();
+        let reason = reason.map(str::to_string);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().context("Begin tx failed")?;
+            insert_command_row(&tx, &cmd)?;
+            tx.execute(
+                "INSERT INTO command_audit_log (command_id, old_status, new_status, changed_by, reason, created_at)
+                 VALUES (?, '', ?, ?, ?, ?)",
+                rusqlite::params![cmd.id, cmd.status, cmd.created_by, reason, cmd.created_at],
             )
-            .context("Insert command failed")?;
+            .context("Insert command audit log failed")?;
+            tx.commit().context("Commit failed")?;
             Ok(())
         })
         .await
