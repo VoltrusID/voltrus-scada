@@ -296,16 +296,12 @@ fn apply_snapshot(tx: &rusqlite::Transaction<'_>, snapshot_data: &str) -> Result
                             params.iter().map(|p| p.as_ref()).collect();
 
                         tx.execute(&insert_sql, param_refs.as_slice())
-                            .context(format!(
-                                "Insert rollback row into {} failed",
-                                table
-                            ))?;
+                            .context(format!("Insert rollback row into {} failed", table))?;
                     }
                 }
             }
         }
     }
-
 
     Ok(())
 }

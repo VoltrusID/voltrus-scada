@@ -88,9 +88,7 @@ fn connection_base_url(bind_host: &str, port: u16, hostname: &str) -> String {
     }
 }
 
-pub async fn connection_info(
-    State(state): State<AppState>,
-) -> Result<impl IntoResponse, AppError> {
+pub async fn connection_info(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     let hostname = sysinfo::System::host_name().unwrap_or_else(|| "localhost".to_string());
     let (bind_host, port) = match crate::config::load_config(&state.config_path) {
         Ok(cfg) => (cfg.server_host, cfg.server_port),
@@ -432,7 +430,10 @@ mod tests {
             connection_base_url("0.0.0.0", 3000, "scada-1"),
             "http://scada-1:3000"
         );
-        assert_eq!(connection_base_url("::", 9000, "scada-1"), "http://scada-1:9000");
+        assert_eq!(
+            connection_base_url("::", 9000, "scada-1"),
+            "http://scada-1:9000"
+        );
     }
 
     #[test]
@@ -441,6 +442,9 @@ mod tests {
             connection_base_url("10.1.2.3", 8443, "scada-1"),
             "http://10.1.2.3:8443"
         );
-        assert_eq!(connection_base_url("fd00::5", 3000, "x"), "http://[fd00::5]:3000");
+        assert_eq!(
+            connection_base_url("fd00::5", 3000, "x"),
+            "http://[fd00::5]:3000"
+        );
     }
 }

@@ -44,7 +44,13 @@ async fn fail_n_times(app: &Router, peer: &str, xff_prefix: Option<&str>, n: u32
 #[tokio::test]
 async fn ip_limit_blocks_one_ip_but_not_another() {
     let app = create_router(seeded_admin_app_state().await);
-    fail_n_times(&app, "203.0.113.10", None, crate::security::LOGIN_MAX_IP_ATTEMPTS).await;
+    fail_n_times(
+        &app,
+        "203.0.113.10",
+        None,
+        crate::security::LOGIN_MAX_IP_ATTEMPTS,
+    )
+    .await;
 
     // Even correct credentials are refused from the exhausted IP.
     assert_eq!(
@@ -79,7 +85,14 @@ async fn loopback_proxy_forwarded_ip_is_limited_per_real_client() {
     let app = create_router(seeded_admin_app_state().await);
     let n = crate::security::LOGIN_MAX_IP_ATTEMPTS;
     for i in 0..n {
-        let s = login_from(&app, "127.0.0.1", Some("198.51.100.30"), &format!("g{i}"), "x").await;
+        let s = login_from(
+            &app,
+            "127.0.0.1",
+            Some("198.51.100.30"),
+            &format!("g{i}"),
+            "x",
+        )
+        .await;
         assert_eq!(s, StatusCode::UNAUTHORIZED);
     }
     assert_eq!(
@@ -103,5 +116,11 @@ async fn successful_logins_do_not_consume_the_ip_budget() {
             StatusCode::OK
         );
     }
-    fail_n_times(&app, "203.0.113.40", None, crate::security::LOGIN_MAX_IP_ATTEMPTS).await;
+    fail_n_times(
+        &app,
+        "203.0.113.40",
+        None,
+        crate::security::LOGIN_MAX_IP_ATTEMPTS,
+    )
+    .await;
 }

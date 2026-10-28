@@ -63,8 +63,11 @@ impl Storage {
         let key = key.to_string();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
-            conn.execute("DELETE FROM settings WHERE key = ?1", rusqlite::params![key])
-                .context("Delete setting failed")?;
+            conn.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                rusqlite::params![key],
+            )
+            .context("Delete setting failed")?;
             Ok(())
         })
         .await

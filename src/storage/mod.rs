@@ -79,7 +79,11 @@ struct DbKey(Option<Arc<str>>);
 
 impl std::fmt::Debug for DbKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(if self.0.is_some() { "DbKey(set)" } else { "DbKey(none)" })
+        f.write_str(if self.0.is_some() {
+            "DbKey(set)"
+        } else {
+            "DbKey(none)"
+        })
     }
 }
 

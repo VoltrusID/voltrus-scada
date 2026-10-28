@@ -175,7 +175,9 @@ async fn load_go_live_settings(storage: &crate::storage::Storage) -> GoLiveSetti
     GoLiveSettings {
         grace_secs: get(SETTING_GRACE_SECS)
             .and_then(|v| v.parse::<i64>().ok())
-            .map_or(DEFAULT_GRACE_SECS, |v| v.clamp(MIN_GRACE_SECS, MAX_GRACE_SECS)),
+            .map_or(DEFAULT_GRACE_SECS, |v| {
+                v.clamp(MIN_GRACE_SECS, MAX_GRACE_SECS)
+            }),
         auto_rollback: get(SETTING_AUTO_ROLLBACK) == Some("true"),
     }
 }
@@ -330,7 +332,11 @@ fn spawn_auto_rollback(state: AppState, device_id: String, record: GoLiveRecord)
             current.snapshot_id
         );
         if let Err(code) = perform_rollback(&state, &device_id, &current).await {
-            tracing::error!("Automatic go-live rollback for {} failed: {}", device_id, code);
+            tracing::error!(
+                "Automatic go-live rollback for {} failed: {}",
+                device_id,
+                code
+            );
         }
     });
 }

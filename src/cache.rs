@@ -98,7 +98,10 @@ impl DeviceCache {
         };
 
         // Log device connect on transition to online
-        if was_offline && crate::node_role::is_active() && let Some(storage) = &self.storage {
+        if was_offline
+            && crate::node_role::is_active()
+            && let Some(storage) = &self.storage
+        {
             let _ = storage
                 .insert_security_event(&crate::models::CreateSecurityEvent {
                     event_type: "device_connected".into(),
@@ -135,7 +138,9 @@ impl DeviceCache {
         };
 
         // Log device connect/disconnect transitions
-        if crate::node_role::is_active() && let Some(storage) = &self.storage {
+        if crate::node_role::is_active()
+            && let Some(storage) = &self.storage
+        {
             match (&old_status, &status) {
                 (Some(DeviceStatus::Offline), DeviceStatus::Online)
                 | (None, DeviceStatus::Online) => {

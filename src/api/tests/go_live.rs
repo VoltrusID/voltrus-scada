@@ -43,15 +43,28 @@ async fn rollback_restores_snapshot_and_returns_to_simulation() {
     let (app, cookie, state) = admin_app().await;
     simulated_device(&app, &cookie, &state.storage).await;
 
-    let (status, live) =
-        send_request(&app, "POST", "/api/v1/devices/plc-1/go-live", None, Some(&cookie), None)
-            .await;
+    let (status, live) = send_request(
+        &app,
+        "POST",
+        "/api/v1/devices/plc-1/go-live",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{live}");
     assert_eq!(live["auto_rollback"], false);
-    assert_eq!(sim_state(&app, &cookie, "plc-1").await["simulation_mode"], false);
+    assert_eq!(
+        sim_state(&app, &cookie, "plc-1").await["simulation_mode"],
+        false
+    );
 
     // A config edit made while live is part of what the rollback discards.
-    state.storage.create_device("plc-2", "Added live", 1).await.unwrap();
+    state
+        .storage
+        .create_device("plc-2", "Added live", 1)
+        .await
+        .unwrap();
 
     let (status, body) = send_request(
         &app,
@@ -76,7 +89,11 @@ async fn rollback_restores_snapshot_and_returns_to_simulation() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "edit after go-live was not reverted");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "edit after go-live was not reverted"
+    );
 
     // The record is consumed: nothing left to roll back, status is inactive.
     let (status, _) = send_request(
@@ -89,7 +106,15 @@ async fn rollback_restores_snapshot_and_returns_to_simulation() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (_, st) = send_request(&app, "GET", "/api/v1/devices/plc-1/go-live", None, Some(&cookie), None).await;
+    let (_, st) = send_request(
+        &app,
+        "GET",
+        "/api/v1/devices/plc-1/go-live",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
     assert_eq!(st["active"], false);
 
     // The pre-rollback state stays recoverable.
@@ -100,7 +125,11 @@ async fn rollback_restores_snapshot_and_returns_to_simulation() {
 #[tokio::test]
 async fn rollback_without_go_live_and_go_live_unknown_device_are_404() {
     let (app, cookie, state) = admin_app().await;
-    state.storage.create_device("plc-1", "PLC 1", 0).await.unwrap();
+    state
+        .storage
+        .create_device("plc-1", "PLC 1", 0)
+        .await
+        .unwrap();
 
     let (status, _) = send_request(
         &app,
@@ -112,20 +141,40 @@ async fn rollback_without_go_live_and_go_live_unknown_device_are_404() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) =
-        send_request(&app, "POST", "/api/v1/devices/nope/go-live", None, Some(&cookie), None).await;
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/devices/nope/go-live",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     // A refused go-live must not leave a snapshot behind or a record.
-    assert!(state.storage.list_config_snapshots(10).await.unwrap().is_empty());
+    assert!(
+        state
+            .storage
+            .list_config_snapshots(10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]
 async fn rollback_with_deleted_snapshot_is_410_and_changes_nothing() {
     let (app, cookie, state) = admin_app().await;
     simulated_device(&app, &cookie, &state.storage).await;
-    let (_, live) =
-        send_request(&app, "POST", "/api/v1/devices/plc-1/go-live", None, Some(&cookie), None)
-            .await;
+    let (_, live) = send_request(
+        &app,
+        "POST",
+        "/api/v1/devices/plc-1/go-live",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
     let snap = live["snapshot_id"].as_i64().unwrap();
     assert!(state.storage.delete_config_snapshot(snap).await.unwrap());
 
@@ -139,7 +188,10 @@ async fn rollback_with_deleted_snapshot_is_410_and_changes_nothing() {
     )
     .await;
     assert_eq!(status, StatusCode::GONE);
-    assert_eq!(sim_state(&app, &cookie, "plc-1").await["simulation_mode"], false);
+    assert_eq!(
+        sim_state(&app, &cookie, "plc-1").await["simulation_mode"],
+        false
+    );
 }
 
 #[tokio::test]
@@ -172,7 +224,10 @@ async fn status_reports_verifying_connected_and_failed() {
     assert_eq!(st["state"], "connected");
 
     // Grace window elapsed with the device still offline.
-    state.cache.set_status("plc-1", crate::models::DeviceStatus::Offline).await;
+    state
+        .cache
+        .set_status("plc-1", crate::models::DeviceStatus::Offline)
+        .await;
     let record = json!({
         "snapshot_id": st["snapshot_id"],
         "went_live_at": crate::timeutil::now_secs() - 120,
@@ -192,7 +247,15 @@ async fn status_reports_verifying_connected_and_failed() {
 #[tokio::test]
 async fn go_live_settings_default_off_and_clamp() {
     let (app, cookie, _) = admin_app().await;
-    let (_, s) = send_request(&app, "GET", "/api/v1/settings/go-live", None, Some(&cookie), None).await;
+    let (_, s) = send_request(
+        &app,
+        "GET",
+        "/api/v1/settings/go-live",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
     assert_eq!(s, json!({"grace_secs": 60, "auto_rollback": false}));
     let (_, s) = send_request(
         &app,
@@ -220,7 +283,15 @@ async fn auto_rollback_fires_only_when_enabled_and_device_never_connects() {
         Some(json!({"grace_secs": 5, "auto_rollback": true})),
     )
     .await;
-    send_request(&app, "POST", "/api/v1/devices/plc-1/go-live", None, Some(&cookie), None).await;
+    send_request(
+        &app,
+        "POST",
+        "/api/v1/devices/plc-1/go-live",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
     for _ in 0..40 {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         if sim_state(&app, &cookie, "plc-1").await["simulation_mode"] == true {
@@ -243,9 +314,20 @@ async fn offline_device_stays_live_when_auto_rollback_is_off() {
         Some(json!({"grace_secs": 5, "auto_rollback": false})),
     )
     .await;
-    send_request(&app, "POST", "/api/v1/devices/plc-1/go-live", None, Some(&cookie), None).await;
+    send_request(
+        &app,
+        "POST",
+        "/api/v1/devices/plc-1/go-live",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
     tokio::time::sleep(std::time::Duration::from_secs(7)).await;
-    assert_eq!(sim_state(&app, &cookie, "plc-1").await["simulation_mode"], false);
+    assert_eq!(
+        sim_state(&app, &cookie, "plc-1").await["simulation_mode"],
+        false
+    );
 }
 
 #[tokio::test]
@@ -261,8 +343,19 @@ async fn auto_rollback_spares_a_device_that_connected() {
         Some(json!({"grace_secs": 5, "auto_rollback": true})),
     )
     .await;
-    send_request(&app, "POST", "/api/v1/devices/plc-1/go-live", None, Some(&cookie), None).await;
+    send_request(
+        &app,
+        "POST",
+        "/api/v1/devices/plc-1/go-live",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
     state.cache.update("plc-1", Default::default(), false).await;
     tokio::time::sleep(std::time::Duration::from_secs(7)).await;
-    assert_eq!(sim_state(&app, &cookie, "plc-1").await["simulation_mode"], false);
+    assert_eq!(
+        sim_state(&app, &cookie, "plc-1").await["simulation_mode"],
+        false
+    );
 }
