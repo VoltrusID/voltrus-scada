@@ -835,9 +835,17 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         std::process::exit(0);
     };
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    // `serve(listener, router)` runs `Router::clone().with_state(())` for every accepted
+    // connection, which deep-copies the whole route table (every route's layer stack
+    // and its `AppState`): ~14 MB held for as long as the connection stays open.
+    // The make-service form hands each connection a cheap `Arc` clone of the router,
+    // and records the peer address as `ConnectInfo` for `security::client_ip`.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await?;
 
     tracing::info!("Server shutdown complete");
     Ok(())

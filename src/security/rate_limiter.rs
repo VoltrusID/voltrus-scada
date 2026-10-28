@@ -164,6 +164,36 @@ pub async fn login_rate_limit_middleware(
     next.run(req).await
 }
 
+/// Client IP for rate limiting and auditing.
+///
+/// Uses the TCP peer address. Proxy headers (`CF-Connecting-IP`, then the first
+/// `X-Forwarded-For` hop, then `X-Real-IP`) are only trusted when the peer is
+/// loopback, i.e. a local reverse proxy or tunnel; a remote client cannot spoof
+/// them. Returns `"unknown"` when no peer address was recorded (test oneshots).
+pub fn client_ip(req: &Request) -> String {
+    let Some(ConnectInfo(peer)) = req.extensions().get::<ConnectInfo<SocketAddr>>() else {
+        return "unknown".to_string();
+    };
+    if peer.ip().is_loopback() {
+        let headers = req.headers();
+        let forwarded = headers
+            .get("cf-connecting-ip")
+            .and_then(|v| v.to_str().ok())
+            .or_else(|| {
+                headers
+                    .get("x-forwarded-for")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.split(',').next())
+            })
+            .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
+            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok());
+        if let Some(ip) = forwarded {
+            return ip.to_string();
+        }
+    }
+    peer.ip().to_string()
+}
+
 /// Middleware that applies a global per-IP rate limit to all requests.
 /// This protects public endpoints like /api/health and /api/settings/branding
 /// from being used as amplification or enumeration vectors.
@@ -172,13 +202,7 @@ pub async fn global_rate_limit_middleware(
     req: Request,
     next: Next,
 ) -> Response {
-    // Extract client IP if available (may not be present in test oneshot)
-    let ip = req
-        .extensions()
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-
+    let ip = client_ip(&req);
     if !state.global_rate_limiter.is_allowed(&ip) {
         return (
             StatusCode::TOO_MANY_REQUESTS,

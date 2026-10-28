@@ -1,7 +1,7 @@
 use super::AppState;
 use axum::Json;
 use axum::extract::Request;
-use axum::extract::{ConnectInfo, Extension, State};
+use axum::extract::{Extension, State};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::IntoResponse;
@@ -61,12 +61,7 @@ pub async fn cookie_auth_middleware(
     req: Request,
     next: Next,
 ) -> impl IntoResponse {
-    // Extract client IP if available (may not be present in test oneshot)
-    let client_ip = req
-        .extensions()
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
+    let client_ip = crate::security::client_ip(&req);
 
     let mut req = req;
 
