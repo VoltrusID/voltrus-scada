@@ -56,6 +56,7 @@ pub mod models;
 #[cfg(feature = "mqtt-broker")]
 pub mod mqtt_broker;
 pub mod network;
+pub mod node_role;
 pub mod notification;
 pub mod oee;
 #[cfg(feature = "opcua")]

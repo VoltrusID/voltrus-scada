@@ -56,10 +56,22 @@ use rusqlite::Connection;
 
 use crate::models::DataPoint;
 
+/// The database encryption key, kept so side connections can open the same file.
+/// Never printed.
+#[derive(Clone, Default)]
+struct DbKey(Option<Arc<str>>);
+
+impl std::fmt::Debug for DbKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "DbKey(set)" } else { "DbKey(none)" })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Storage {
     conn: Arc<Mutex<Connection>>,
     db_path: String,
+    key: DbKey,
 }
 
 impl Storage {
@@ -86,8 +98,9 @@ impl Storage {
 
     /// Run `f` on the shared connection on a blocking thread. The closure gets
     /// exclusive access for its whole duration, so it can open one transaction
-    /// that spans several tables. Used by the project YAML import/export.
-    pub(crate) async fn with_conn<T, F>(&self, f: F) -> Result<T>
+    /// that spans several tables. Used by the project YAML import/export and by
+    /// add-on editions that replicate the database.
+    pub async fn with_conn<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
@@ -99,6 +112,29 @@ impl Storage {
         })
         .await
         .context("Task join failed")?
+    }
+
+    /// Open a second, read-only connection to the same database file. A long
+    /// read (a consistent snapshot of every table) on it does not hold the
+    /// shared connection, so the pollers and the API keep writing meanwhile.
+    /// WAL mode gives the reader a stable view for the length of its
+    /// transaction. Fails for an in-memory database.
+    pub fn open_reader(&self) -> Result<Connection> {
+        anyhow::ensure!(
+            self.db_path != ":memory:",
+            "an in-memory database has no file to open a second connection on"
+        );
+        let conn = Connection::open_with_flags(
+            &self.db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .with_context(|| format!("Failed to open database for reading: {}", self.db_path))?;
+        if let Some(key) = self.key.0.as_deref() {
+            conn.execute_batch(&format!("PRAGMA key = '{}';", key.replace('\'', "''")))
+                .context("Failed to set database encryption key on reader")?;
+        }
+        conn.execute_batch("PRAGMA busy_timeout=5000;")?;
+        Ok(conn)
     }
 
     pub fn new_with_key(path: &str, encryption_key: Option<&str>) -> Result<Self> {
@@ -134,6 +170,7 @@ impl Storage {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             db_path: path.to_string(),
+            key: DbKey(encryption_key.map(Arc::from)),
         })
     }
 
@@ -146,6 +183,7 @@ impl Storage {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             db_path: ":memory:".to_string(),
+            key: DbKey::default(),
         })
     }
 

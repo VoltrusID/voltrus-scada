@@ -320,6 +320,22 @@ pub struct HaConfig {
     pub failover_after_missed: u32,
     #[serde(default)]
     pub tls: Option<TlsConfig>,
+    /// Pre-shared secret that authenticates the link between the two nodes.
+    /// Identical on both nodes, at least 32 characters. The environment
+    /// variable `VOLTRUS_HA_SECRET` overrides it. Never serialised.
+    #[serde(default, skip_serializing)]
+    pub shared_secret: String,
+    /// How often the active node ships changes to its standby, in milliseconds.
+    #[serde(default = "default_ha_sync_interval_ms")]
+    pub sync_interval_ms: u64,
+    /// Keep device pollers running on the standby for live read-only values.
+    /// The standby still never writes to devices and never stores samples.
+    #[serde(default)]
+    pub standby_polling: bool,
+    /// Optional third party that keeps a network partition from promoting a
+    /// second active node.
+    #[serde(default)]
+    pub witness: Option<HaWitnessConfig>,
 }
 
 impl Default for HaConfig {
@@ -333,8 +349,30 @@ impl Default for HaConfig {
             heartbeat_interval_ms: default_heartbeat_ms(),
             failover_after_missed: default_failover_missed(),
             tls: None,
+            shared_secret: String::new(),
+            sync_interval_ms: default_ha_sync_interval_ms(),
+            standby_polling: false,
+            witness: None,
         }
     }
+}
+
+/// `ha.witness:` in the config file.
+///
+/// * `arbiter`: a `voltrus ha-witness` process (any third machine) that grants
+///   the active role as a lease. Prevents two active nodes under any partition.
+/// * `tcp`: a TCP connect to `address` (a gateway, a PLC). The standby promotes
+///   only if it can reach it; an active node that loses both its peer and the
+///   witness stops.
+/// * `http`: the same with an HTTP GET to the URL in `address`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaWitnessConfig {
+    #[serde(default = "default_ha_witness_kind")]
+    pub kind: String,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default = "default_ha_witness_timeout_ms")]
+    pub timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -419,6 +457,15 @@ fn default_heartbeat_ms() -> u64 {
 }
 fn default_failover_missed() -> u32 {
     3
+}
+fn default_ha_sync_interval_ms() -> u64 {
+    200
+}
+fn default_ha_witness_kind() -> String {
+    "arbiter".to_string()
+}
+fn default_ha_witness_timeout_ms() -> u64 {
+    1500
 }
 fn default_check_interval() -> u64 {
     10

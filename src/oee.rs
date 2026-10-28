@@ -69,6 +69,9 @@ pub async fn run_oee_monitor(cache: DeviceCache, storage: Storage) {
 
     loop {
         interval.tick().await;
+        if !crate::node_role::is_active() {
+            continue;
+        }
 
         let snapshots = cache.get_all().await;
         if snapshots.is_empty() {

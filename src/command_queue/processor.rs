@@ -60,6 +60,10 @@ impl CommandQueue {
             tokio::time::interval(std::time::Duration::from_millis(POLL_INTERVAL_MS));
         loop {
             interval.tick().await;
+            // Queued commands wait for the node that owns the devices.
+            if !crate::node_role::is_active() {
+                continue;
+            }
             if let Err(e) = self.process_queue().await {
                 tracing::warn!("Command queue processor error: {}", e);
             }

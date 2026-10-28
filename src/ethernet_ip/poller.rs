@@ -101,6 +101,9 @@ async fn try_connect_and_poll(config: &EnipDeviceRuntimeConfig, cache: &DeviceCa
 /// Connects to the PLC at `ip:port`, writes the value as a DINT (i32) to the
 /// named tag, and returns a `WriteResult`.
 pub async fn write_tag(ip: &str, port: u16, tag_name: &str, value: f64) -> WriteResult {
+    if !crate::node_role::is_active() {
+        return WriteResult::refused_passive();
+    }
     let start = std::time::Instant::now();
     let url = format!("{}:{}", ip, port);
 

@@ -76,6 +76,9 @@ pub async fn write_tag(
     variable_name: &str,
     value: f64,
 ) -> crate::models::WriteResult {
+    if !crate::node_role::is_active() {
+        return crate::models::WriteResult::refused_passive();
+    }
     let start = std::time::Instant::now();
     let client = PlcRuntimeClient::new(url, transport);
 

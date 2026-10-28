@@ -184,3 +184,16 @@ pub struct WriteResult {
     pub error: Option<String>,
     pub latency_ms: u64,
 }
+
+impl WriteResult {
+    /// The answer of a node that does not own the devices right now (the
+    /// passive node of a redundant pair).
+    pub fn refused_passive() -> Self {
+        Self {
+            success: false,
+            device_response: None,
+            error: Some(crate::node_role::NOT_ACTIVE_MESSAGE.to_string()),
+            latency_ms: 0,
+        }
+    }
+}

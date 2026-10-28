@@ -15,6 +15,6 @@ use serde_json::json;
 
 use crate::api::{AppError, AppState, AuthUser};
 use crate::models::{
-    BacnetDeviceConfig, BacnetObjectConfig, CreateBacnetDeviceRequest, CreateBacnetObjectRequest,
+    BacnetDeviceConfig, CreateBacnetDeviceRequest, CreateBacnetObjectRequest,
     UpdateBacnetDeviceRequest,
 };

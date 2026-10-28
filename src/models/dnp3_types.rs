@@ -69,6 +69,31 @@ pub struct Dnp3DeviceConfig {
     pub points: Vec<Dnp3PointConfig>,
 }
 
+impl Dnp3DeviceConfig {
+    /// The poller config for a stored device and its points. The poller id is
+    /// `dnp3_<device id>`, the key its readings carry in the cache.
+    pub fn from_rows(device: &Dnp3Device, points: &[Dnp3Point]) -> Self {
+        Self {
+            id: format!("dnp3_{}", device.id),
+            ip: device.ip.clone(),
+            port: device.port,
+            master_address: device.master_address,
+            outstation_address: device.outstation_address,
+            event_scan_interval_ms: device.event_scan_interval_ms,
+            points: points
+                .iter()
+                .map(|p| Dnp3PointConfig {
+                    group_num: p.group_num,
+                    variation: p.variation,
+                    point_index: p.point_index,
+                    name: p.name.clone(),
+                    scale: p.scale,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Dnp3PointConfig {
     pub group_num: u8,

@@ -142,6 +142,19 @@ pub trait Extension: Send + Sync + 'static {
         Box::pin(async { LicenseStatus::Community })
     }
 
+    /// Decide, before any device poller starts, whether this process starts as
+    /// the active node (the default) or as the passive node of a redundant
+    /// pair. Called once, right after the licence is resolved. An error stops
+    /// the process rather than risk two active nodes. See [`crate::node_role`].
+    fn resolve_node_role<'a>(
+        &'a self,
+        _config: &'a AppConfig,
+        _storage: &'a Storage,
+        _license: &'a LicenseStatus,
+    ) -> BoxFuture<'a, anyhow::Result<crate::node_role::Start>> {
+        Box::pin(async { Ok(crate::node_role::Start::default()) })
+    }
+
     /// Extra CLI help text appended to `--help`.
     fn cli_help(&self) -> &'static str {
         ""

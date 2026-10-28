@@ -353,6 +353,9 @@ pub async fn run_egress_scheduler(
             _ = interval.tick() => {}
             _ = shutdown_rx.recv() => { tracing::info!("Egress scheduler shutting down"); return; }
         }
+        if !crate::node_role::is_active() {
+            continue;
+        }
         let jobs = match storage.get_enabled_egress_jobs().await {
             Ok(j) => j,
             Err(e) => {

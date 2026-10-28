@@ -319,6 +319,11 @@ async fn run_flow(
     storage: &Storage,
     cache: &DeviceCache,
 ) {
+    // Flows act on devices and on the outside world: only the active node of a
+    // redundant pair runs them.
+    if !crate::node_role::is_active() {
+        return;
+    }
     let start = std::time::Instant::now();
     // Execute process nodes (in array order) before output nodes so the grouped
     // canvas layout matches the real execution order.

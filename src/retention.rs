@@ -27,6 +27,11 @@ pub async fn run_retention_task(storage: Storage, config: RetentionConfig) {
 
     loop {
         interval.tick().await;
+        // A passive node keeps whatever its active peer replicates; deleting
+        // or compressing history locally would diverge from it.
+        if !crate::node_role::is_active() {
+            continue;
+        }
 
         if let Err(e) = run_retention_cycle(&storage, &config).await {
             tracing::error!("Retention cycle failed: {e}");

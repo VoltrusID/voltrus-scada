@@ -57,6 +57,32 @@ pub struct BacnetDeviceConfig {
     pub objects: Vec<BacnetObjectConfig>,
 }
 
+impl BacnetDeviceConfig {
+    /// The poller config for a stored device and its objects. The poller id is
+    /// `bacnet_<device id>`, the key its readings carry in the cache.
+    pub fn from_rows(device: &BacnetDevice, objects: &[BacnetObject]) -> Self {
+        Self {
+            id: format!("bacnet_{}", device.id),
+            ip: device.ip.clone(),
+            port: device.port,
+            device_instance: device.device_instance,
+            interval_ms: device.interval_ms,
+            cov_enabled: device.cov_enabled,
+            cov_lifetime: device.cov_lifetime,
+            objects: objects
+                .iter()
+                .map(|o| BacnetObjectConfig {
+                    object_type: o.object_type.clone(),
+                    object_instance: o.object_instance,
+                    property: o.property.clone(),
+                    name: o.name.clone(),
+                    cov_increment: o.cov_increment,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct BacnetObjectConfig {
     pub object_type: String,

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
@@ -260,5 +261,93 @@ impl PollerManager {
 
     pub async fn is_running(&self, device_id: &str) -> bool {
         self.handles.read().await.contains_key(device_id)
+    }
+
+    /// Ids of the pollers that exist right now, whether or not their device is
+    /// answering. A node that takes the devices over starts the same set.
+    pub async fn running_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.handles.read().await.keys().cloned().collect();
+        ids.sort();
+        ids
+    }
+
+    /// Stop every poller and drop the live values they left in the cache, so a
+    /// node that hands the devices to its peer does not keep showing stale
+    /// readings as current.
+    pub async fn release_all(&self) {
+        let ids = self.running_ids().await;
+        self.stop_all().await;
+        for id in ids {
+            self.cache.remove(&id).await;
+        }
+    }
+
+    /// Start the pollers this node owns from the stored device configuration.
+    ///
+    /// Every enabled Modbus and OPC-UA device starts, which is what a fresh
+    /// process starts at boot. S7, EtherNet/IP, Voltrus PLC, DNP3 and BACnet
+    /// devices are started by an operator, so they start only when their poller
+    /// id is in `also_running`: the set the previous owner of the devices was
+    /// running. Returns how many pollers were started.
+    pub async fn start_configured(&self, also_running: &HashSet<String>) -> anyhow::Result<usize> {
+        let mut started = 0usize;
+        #[cfg(feature = "modbus")]
+        for config in self.storage.get_all_device_configs().await? {
+            self.start(config).await;
+            started += 1;
+        }
+        #[cfg(feature = "opcua")]
+        for config in self.storage.get_all_opcua_device_configs().await? {
+            self.start_opcua(config).await;
+            started += 1;
+        }
+        #[cfg(feature = "s7")]
+        for config in self.storage.get_all_s7_device_configs().await? {
+            if also_running.contains(&config.id) {
+                self.start_s7(config).await;
+                started += 1;
+            }
+        }
+        #[cfg(feature = "ethernet-ip")]
+        for config in self.storage.get_all_enip_device_configs().await? {
+            if also_running.contains(&config.id) {
+                self.start_ethernet_ip(config).await;
+                started += 1;
+            }
+        }
+        for config in self.storage.get_all_voltrus_plc_device_configs().await? {
+            if also_running.contains(&config.id) {
+                self.start_voltrus_plc(config).await;
+                started += 1;
+            }
+        }
+        #[cfg(feature = "dnp3")]
+        for device in self.storage.list_dnp3_devices().await? {
+            if !device.enabled || !also_running.contains(&format!("dnp3_{}", device.id)) {
+                continue;
+            }
+            let points = self.storage.list_dnp3_points(device.id).await?;
+            if !points.is_empty() {
+                self.start_dnp3(Dnp3DeviceConfig::from_rows(&device, &points))
+                    .await;
+                started += 1;
+            }
+        }
+        #[cfg(feature = "bacnet")]
+        for device in self.storage.list_bacnet_devices().await? {
+            if !device.enabled || !also_running.contains(&format!("bacnet_{}", device.id)) {
+                continue;
+            }
+            let objects = self.storage.list_bacnet_objects(device.id).await?;
+            if !objects.is_empty() {
+                self.start_bacnet(crate::models::BacnetDeviceConfig::from_rows(
+                    &device, &objects,
+                ))
+                .await;
+                started += 1;
+            }
+        }
+        let _ = also_running;
+        Ok(started)
     }
 }
