@@ -18,6 +18,8 @@ const SECRETS: &[&str] = &[
     "SLACKsecret",
     "WHsecretPath",
     "whAuthTok",
+    "tgBotTokenSecretValue1234",
+    "EAAGwhatsappSecretToken",
     "ftp-pass-1",
     "camera-pw",
     "hub-api-key-123",
@@ -91,7 +93,9 @@ INSERT INTO recipes (name,category,device_id,"values",version,description,create
 INSERT INTO notification_settings (source_key,channel_type,config,enabled,created_at) VALUES
  ('voltage','email','["ops@example.com"]',1,100),
  ('voltage','webhook','["https://hooks.slack.com/services/T0/B0/SLACKsecret"]',1,100),
- ('voltage','email','["b@example.com"]',0,101);
+ ('voltage','email','["b@example.com"]',0,101),
+ ('voltage','telegram','{"bot_token":"123456789:tgBotTokenSecretValue1234","chat_ids":["42","-100777"]}',1,102),
+ ('voltage','whatsapp','{"access_token":"EAAGwhatsappSecretToken","phone_number_id":"106540352242922","recipients":["+6281234567890"],"template_name":"alarm_notice","language":"id","parameters":["severity","value"]}',1,103);
 INSERT INTO outbound_webhooks (name,url,events,device_filter,headers,enabled,retry_count,timeout_ms,created_at) VALUES
  ('Slack','https://hooks.slack.com/services/T1/B1/WHsecretPath','["alarm","tag_change"]','"all"','{"Authorization":"Bearer whAuthTok","Content-Type":"application/json"}',1,3,10000,100);
 INSERT INTO egress_jobs (name,enabled,schedule,format,destination,device_ids,time_range,compression,created_at,updated_at) VALUES ('Nightly',1,'daily','csv','sftp://bob:ftp-pass-1@files.example.com/out','all','24h',1,100,100);
@@ -450,6 +454,23 @@ async fn import_recreates_everything_with_cross_references_intact() {
         .await,
         "[\"https://hooks.slack.com/services/T0/B0/SLACKsecret\"]"
     );
+    // Chat channel tokens round-trip too; their other fields stay readable.
+    assert_eq!(
+        scalar_text(
+            &b,
+            "SELECT config FROM notification_settings WHERE channel_type='telegram'"
+        )
+        .await,
+        r#"{"bot_token":"123456789:tgBotTokenSecretValue1234","chat_ids":["42","-100777"]}"#
+    );
+    assert!(
+        scalar_text(
+            &b,
+            "SELECT config FROM notification_settings WHERE channel_type='whatsapp'"
+        )
+        .await
+        .contains("\"access_token\":\"EAAGwhatsappSecretToken\"")
+    );
     // Script text is lossless and its syntax state is recomputed.
     assert_eq!(
         scalar_text(&b, "SELECT source FROM scripts WHERE name='scale'").await,
@@ -744,7 +765,7 @@ async fn dry_run_writes_nothing() {
 async fn failed_import_rolls_everything_back() {
     let s = fresh();
     let bad = format!(
-        "{SMALL}notifications:\n- source_key: v\n  channel_type: carrier-pigeon\n  config: []\n"
+        "{SMALL}notifications:\n- source_key: v\n  channel_type: smoke-signal\n  config: []\n"
     );
     let err = apply_import(&s, &doc_of(&bad), Mode::Merge)
         .await

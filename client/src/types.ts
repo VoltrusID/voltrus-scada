@@ -321,8 +321,10 @@ export interface FlowTriggerConfig {
 export interface NotificationSetting {
   id: number
   source_key: string
-  channel_type: 'email' | 'webhook' | 'push' | 'sms'
-  config: string  // JSON string: email/webhook/push use string arrays; sms uses object array '[{"phone":"5551234567","carrier":"att"}]'
+  channel_type: 'email' | 'webhook' | 'push' | 'telegram' | 'whatsapp'
+  // JSON string: email/webhook/push use string arrays; telegram and whatsapp use an object. The server
+  // masks their token as '********' in responses.
+  config: string
   enabled: boolean
   created_at: number
 }

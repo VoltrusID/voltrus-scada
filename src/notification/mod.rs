@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod email;
 pub mod push;
 pub mod webhook;
@@ -9,7 +10,7 @@ use webhook::{WebhookPayload, format_triggered_at, send_webhook_alarm};
 
 /// Dispatch alarm notifications to all configured channels for the given source_key.
 ///
-/// Loads notification settings from the database and sends via email, webhook, and/or push.
+/// Loads notification settings from the database and sends via email, webhook, push, and/or the chat channels of the edition.
 /// This is spawned as an async task so it never blocks the alarm creation flow.
 pub async fn dispatch_alarm_notifications(
     storage: Storage,
@@ -107,41 +108,38 @@ pub async fn dispatch_alarm_notifications(
                     }
                 }
             }
-            "sms" => {
-                if let Some(sender) = crate::edition::sms_sender() {
-                    if let Some(ref notifier) = email_notifier {
-                        // config is a JSON array of objects: [{"phone": "5551234567", "carrier": "att"}]
-                        let targets: Vec<serde_json::Value> =
-                            serde_json::from_str(&setting.config).unwrap_or_default();
-                        for target in &targets {
-                            let phone = target["phone"].as_str().unwrap_or("");
-                            let carrier = target["carrier"].as_str().unwrap_or("");
-                            if !phone.is_empty()
-                                && !carrier.is_empty()
-                                && let Err(e) = sender
-                                    .send_alarm(
-                                        notifier.smtp_config(),
-                                        phone,
-                                        carrier,
-                                        &alarm.message,
-                                    )
-                                    .await
-                            {
+            channel @ ("telegram" | "whatsapp") => {
+                let Some(sender) = crate::edition::chat_sender() else {
+                    tracing::warn!(
+                        "{} notification requested but chat delivery is not available in this edition",
+                        channel
+                    );
+                    continue;
+                };
+                let chat_alarm = crate::edition::ChatAlarm {
+                    severity: alarm.severity.clone(),
+                    source_key: alarm.source_key.clone(),
+                    source_name: source_name.clone(),
+                    value: alarm.value,
+                    threshold: alarm.threshold,
+                    unit: source_info.map(|s| s.unit.clone()).unwrap_or_default(),
+                    message: alarm.message.clone(),
+                    triggered_at: triggered_at_str.clone(),
+                };
+                match sender.send(channel, &setting.config, &chat_alarm).await {
+                    Ok(deliveries) => {
+                        for d in deliveries {
+                            if let Some(err) = d.error {
                                 tracing::error!(
-                                    "Failed to send SMS to {}@{}: {}",
-                                    phone,
-                                    carrier,
-                                    e
+                                    "Failed to send {} notification to {}: {}",
+                                    channel,
+                                    d.target,
+                                    err
                                 );
                             }
                         }
-                    } else {
-                        tracing::warn!("SMS notification requested but SMTP is not configured");
                     }
-                } else {
-                    tracing::warn!(
-                        "SMS notification requested but SMS delivery is not available in this edition"
-                    );
+                    Err(e) => tracing::error!("Failed to send {} notification: {}", channel, e),
                 }
             }
             other => {

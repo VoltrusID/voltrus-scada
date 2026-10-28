@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { NotificationSetting } from '../types'
 import { queryKeys } from './keys'
 import { fetchJson, fetchOk } from './fetch'
+import type { TestOutcome } from '../notificationTest'
 
 export function useNotificationSettings() {
   return useQuery({
@@ -59,13 +60,13 @@ export function useDeleteNotificationSetting() {
 
 export function useTestNotification() {
   return useMutation({
-    mutationFn: async (data: { channel_type: string; config: string }) => {
+    mutationFn: async (data: { channel_type: string; config: string; source_key?: string; setting_id?: number }) => {
       const res = await fetchOk('/api/v1/notifications/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      return res.json() as Promise<{ success: boolean }>
+      return res.json() as Promise<TestOutcome>
     },
   })
 }

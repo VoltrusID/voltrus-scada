@@ -567,7 +567,7 @@ fn hvac_chiller_plant() -> FeedTemplate {
                 },
             ],
         },
-        network_notes: Some("Chiller plants typically use BACnet/IP or Modbus TCP for chiller integration. Each chiller has its own controller (Carel, Danfoss, carrier) with a BACnet or Modbus gateway.".into()),
+        network_notes: Some("Chiller plants typically use BACnet/IP or Modbus TCP for chiller integration. Each chiller has its own controller (Carel, Danfoss, Trane) with a BACnet or Modbus gateway.".into()),
     }
 }
 

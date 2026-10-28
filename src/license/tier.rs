@@ -62,8 +62,8 @@ impl LicenseTier {
         self.integrator_or_above()
     }
 
-    /// SMS alarm notifications.
-    pub fn sms_notifications(&self) -> bool {
+    /// Telegram and WhatsApp alarm notifications.
+    pub fn chat_notifications(&self) -> bool {
         self.integrator_or_above()
     }
 
@@ -111,7 +111,7 @@ impl LicenseTier {
             "white_label": self.white_label(),
             "theme_full": self.theme_full(),
             "pdf_reporting": self.pdf_reporting(),
-            "sms_notifications": self.sms_notifications(),
+            "chat_notifications": self.chat_notifications(),
             "multi_site": self.multi_site(),
             "sso": self.sso(),
             "sso_saml": self.sso_saml(),

@@ -45,7 +45,7 @@ export interface BrandingProvider {
 }
 
 /**
- * An extra notification channel type (for example SMS). Core handles
+ * An extra notification channel type (Telegram, WhatsApp). Core handles
  * email, webhook and push itself.
  */
 export interface NotificationChannel {
@@ -61,6 +61,8 @@ export interface NotificationChannel {
   /** Config stored for a brand new rule. */
   emptyConfig: string
   isValid: (config: string) => boolean
+  /** Why `config` cannot be saved, shown under the editor; null when it is valid. */
+  validate?: (config: string) => string | null
   /** Turns the editor's working config into the string persisted on save (for example drops blank rows). */
   serialize: (config: string) => string
   /** Short text for the targets column. */

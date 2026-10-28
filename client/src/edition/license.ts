@@ -17,7 +17,7 @@ export const FEATURE_FLAG_KEYS = [
   'white_label',
   'theme_full',
   'pdf_reporting',
-  'sms_notifications',
+  'chat_notifications',
   'multi_site',
   'sso',
   'sso_saml',

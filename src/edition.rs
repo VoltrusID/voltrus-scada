@@ -18,7 +18,7 @@ use axum::Router;
 use crate::api::AppState;
 use crate::cache::DeviceCache;
 use crate::license::LicenseStatus;
-use crate::models::{AppConfig, SmtpConfig};
+use crate::models::AppConfig;
 use crate::notification::email::EmailNotifier;
 use crate::poller_manager::PollerManager;
 use crate::storage::Storage;
@@ -71,31 +71,55 @@ pub struct StartContext {
     pub email_notifier: Option<EmailNotifier>,
 }
 
-/// Sends alarm text messages. Registered by an extension that provides SMS.
-pub trait SmsSender: Send + Sync {
-    /// Email-to-SMS gateway domain for a carrier id, `None` if unsupported.
-    fn carrier_gateway(&self, carrier: &str) -> Option<&'static str>;
-
-    fn send_alarm<'a>(
-        &'a self,
-        smtp: &'a SmtpConfig,
-        phone: &'a str,
-        carrier: &'a str,
-        message: &'a str,
-    ) -> BoxFuture<'a, anyhow::Result<()>>;
+/// One alarm as a chat channel (Telegram, WhatsApp) delivers it.
+#[derive(Debug, Clone)]
+pub struct ChatAlarm {
+    pub severity: String,
+    pub source_key: String,
+    pub source_name: String,
+    pub value: f64,
+    pub threshold: f64,
+    pub unit: String,
+    pub message: String,
+    /// RFC 3339 trigger time.
+    pub triggered_at: String,
 }
 
-static SMS_SENDER: OnceLock<Arc<dyn SmsSender>> = OnceLock::new();
+/// What happened to one recipient of a chat notification.
+#[derive(Debug, Clone)]
+pub struct ChatDelivery {
+    /// Chat id (Telegram) or phone number (WhatsApp).
+    pub target: String,
+    /// `None` when the message was accepted by the provider.
+    pub error: Option<String>,
+}
+
+/// Delivers alarms over chat channels. Registered by an extension that
+/// provides them. `config` is the stored channel config JSON, already
+/// validated by [`crate::notification::chat`].
+pub trait ChatSender: Send + Sync {
+    /// Send `alarm` to every recipient of the channel (`telegram` or
+    /// `whatsapp`). An `Err` means the config could not be used at all;
+    /// per-recipient failures come back in the deliveries.
+    fn send<'a>(
+        &'a self,
+        channel: &'a str,
+        config: &'a str,
+        alarm: &'a ChatAlarm,
+    ) -> BoxFuture<'a, anyhow::Result<Vec<ChatDelivery>>>;
+}
+
+static CHAT_SENDER: OnceLock<Arc<dyn ChatSender>> = OnceLock::new();
 static HOSTED_AI: OnceLock<Arc<dyn HostedAi>> = OnceLock::new();
 
-/// Register the SMS sender (first registration wins).
-pub fn register_sms_sender(sender: Arc<dyn SmsSender>) {
-    let _ = SMS_SENDER.set(sender);
+/// Register the chat sender (first registration wins).
+pub fn register_chat_sender(sender: Arc<dyn ChatSender>) {
+    let _ = CHAT_SENDER.set(sender);
 }
 
-/// The registered SMS sender, if an extension provides one.
-pub fn sms_sender() -> Option<&'static Arc<dyn SmsSender>> {
-    SMS_SENDER.get()
+/// The registered chat sender, if an extension provides one.
+pub fn chat_sender() -> Option<&'static Arc<dyn ChatSender>> {
+    CHAT_SENDER.get()
 }
 
 /// A hosted AI completion service for the `voltrus_ai` copilot provider.

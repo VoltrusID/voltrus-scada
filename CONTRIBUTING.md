@@ -9,7 +9,7 @@ protocol fixes, documentation and focused features are all welcome.
   the direction. The Core is deliberately scoped to what one site needs. Features
   that belong to the paid Enterprise add-on (single sign-on, 21 CFR Part 11,
   IEC 62443 audit mode, hot standby, multi-site hub, RTSP video, white-label,
-  scheduled PDF and SMS reports) are not accepted into this repository, see
+  scheduled PDF reports, Telegram and WhatsApp alarms) are not accepted into this repository, see
   [docs/open-core.md](docs/open-core.md).
 * Security problems: do not open a public issue, see [SECURITY.md](SECURITY.md).
 * Name and logo: the Voltrus trademarks stay with JoyoDigitama, see
