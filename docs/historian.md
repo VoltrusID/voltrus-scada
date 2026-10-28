@@ -36,6 +36,15 @@ under `source_config:` next to the tag's other settings):
 different setting. `GET /api/v1/compression/deadband` lists the tags that filter
 their history.
 
+In the web client: edit a tag (Edit panel, General tab, or the `cfg` popover in
+Data Manager, Sources) and fill in *History storage*. To set it on many tags,
+tick them in Data Manager, Sources and use *History deadband...* in the bar that
+appears; *Remove deadband* puts them back to storing every sample. The values are
+checked before saving (band 0 or more, percent at most 100, heartbeat a whole
+number of seconds). System, Storage shows the stored sizes, the running
+retention settings (read-only, they come from `config.yaml`) and the tags that
+filter.
+
 Tags without `history_deadband` store every sample, with one exception that
 applies to all tags: a sample that repeats the last stored one exactly (same
 timestamp and value, which is what the loop sees when a device has stopped

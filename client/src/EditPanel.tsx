@@ -3,10 +3,12 @@ import { SensorConfig } from './types';
 import { SOURCE_TYPES, CHART_TYPES, SOURCE_CATEGORY, SIMULATE_TYPES } from './types';
 import { inputStyle, monoInputStyle, labelStyle, labelTextStyle, tabStyle, parseConfig, normalizeKeyEvent, displayShortcut } from './styles';
 import { SourceConfigFields } from './SourceConfigFields';
+import { HistoryDeadbandFields } from './components/HistoryDeadbandFields';
 
 export function EditPanel({ sensor, activeScreen, onSave, onDelete, onClose, shortcuts }: { sensor: SensorConfig; activeScreen: string; onSave: (s: SensorConfig, shortcut?: string | null) => void; onDelete: (id: number) => void; onClose: () => void; shortcuts: Record<number, string> }) {
   const [form, setForm] = useState(sensor);
   const [tab, setTab] = useState<'general' | 'source'>('general');
+  const [histErrors, setHistErrors] = useState<string[]>([]);
   const [srcConfig, setSrcConfig] = useState<Record<string, any>>(() => {
     const parsed = parseConfig(sensor.source_config);
     if (sensor.source_type === 'modbus' && sensor.device_id) {
@@ -67,6 +69,12 @@ export function EditPanel({ sensor, activeScreen, onSave, onDelete, onClose, sho
                   <label style={labelStyle}><span style={labelTextStyle}>low crit</span><input type="number" step="any" value={srcConfig.low_crit ?? ''} onChange={e => setSrcConfig(c => { const n = { ...c }; const v = e.target.value === '' ? NaN : parseFloat(e.target.value); if (isNaN(v)) delete n.low_crit; else n.low_crit = v; return n; })} placeholder="—" style={monoInputStyle} /></label>
                   <label style={labelStyle}><span style={labelTextStyle}>deadband</span><input type="number" step="any" min="0" value={srcConfig.deadband ?? 0} onChange={e => setSrcConfig(c => ({ ...c, deadband: parseFloat(e.target.value) || 0 }))} placeholder="0" style={monoInputStyle} /></label>
                 </div>
+              </div>
+            )}
+            {!hideNumberFields && (
+              <div style={{ gridColumn: '1 / -1', borderTop: '1px solid var(--border)', marginTop: 4, paddingTop: 8 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>History storage (deadband, optional)</div>
+                <HistoryDeadbandFields config={srcConfig} onChange={setSrcConfig} onValidityChange={setHistErrors} />
               </div>
             )}
             {!hideNumberFields && (
@@ -185,7 +193,7 @@ export function EditPanel({ sensor, activeScreen, onSave, onDelete, onClose, sho
         </div>
         </div>
         <div style={{ display: 'flex', gap: 8, padding: '0 16px 16px' }}>
-          <button onClick={() => { onSave({ ...form, source_config: JSON.stringify(srcConfig) }, capturedShortcut); }} style={{ padding: '6px 16px', borderRadius: 6, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 13 }}>Save</button>
+          <button disabled={histErrors.length > 0} title={histErrors[0]} onClick={() => { onSave({ ...form, source_config: JSON.stringify(srcConfig) }, capturedShortcut); }} style={{ padding: '6px 16px', borderRadius: 6, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: histErrors.length > 0 ? 'not-allowed' : 'pointer', opacity: histErrors.length > 0 ? 0.5 : 1, fontSize: 13 }}>Save</button>
           <button onClick={() => onDelete(sensor.id)} style={{ padding: '6px 16px', borderRadius: 6, border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)', cursor: 'pointer', fontSize: 13 }}>Delete</button>
         </div>
       </div>

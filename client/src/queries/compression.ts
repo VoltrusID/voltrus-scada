@@ -30,6 +30,22 @@ export interface DeadbandEntry {
   max_interval_secs: number | null
 }
 
+/** The running retention and packing settings (GET /api/v1/compression/config). */
+export interface CompressionConfig {
+  enabled: boolean
+  pack_enabled: boolean
+  pack_after_secs: number
+  pack_interval_secs: number
+  /** Full-resolution window; null keeps it forever. */
+  raw_keep_secs: number | null
+  /** Hourly window past the raw window; null keeps it forever. */
+  hourly_keep_secs: number | null
+  /** Daily window past the hourly window; null keeps it forever. */
+  daily_keep_secs: number | null
+  /** Expiring full-resolution data is exported to CSV first. */
+  archive_raw: boolean
+}
+
 // ── Hooks ──
 
 export function useCompressionStats() {
@@ -44,5 +60,12 @@ export function useCompressionDeadband() {
   return useQuery({
     queryKey: queryKeys.compressionDeadband,
     queryFn: () => fetchJson<DeadbandEntry[]>('/api/v1/compression/deadband'),
+  })
+}
+
+export function useCompressionConfig() {
+  return useQuery({
+    queryKey: queryKeys.compressionConfig,
+    queryFn: () => fetchJson<CompressionConfig>('/api/v1/compression/config'),
   })
 }
