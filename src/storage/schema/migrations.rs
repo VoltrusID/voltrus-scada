@@ -476,4 +476,25 @@ pub(super) fn run_migrations(conn: &Connection) {
         CREATE INDEX IF NOT EXISTS idx_device_templates_manufacturer
             ON device_templates(manufacturer, model);",
     );
+
+    // Migration: packed full-resolution history. The compaction worker turns the
+    // raw `telemetry` rows of every complete hour into one Gorilla/RLE block per
+    // tag and hour (see compression::block); readers merge both. `seq` numbers the
+    // blocks of one tag-hour (only more than one past 4M samples). Databases
+    // created before this keep all their raw rows until the worker packs them.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS telemetry_blocks (
+            device_id TEXT NOT NULL,
+            metric TEXT NOT NULL,
+            bucket_start INTEGER NOT NULL,
+            seq INTEGER NOT NULL,
+            first_ts INTEGER NOT NULL,
+            last_ts INTEGER NOT NULL,
+            sample_count INTEGER NOT NULL,
+            data BLOB NOT NULL,
+            PRIMARY KEY (device_id, metric, bucket_start, seq)
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS idx_telemetry_blocks_bucket
+            ON telemetry_blocks(bucket_start);",
+    );
 }

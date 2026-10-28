@@ -206,3 +206,128 @@ async fn test_history_keyed_by_id_keeps_tags_that_share_a_key() {
         assert!(by_id["data"][id]["count"].as_i64().unwrap() > 0, "{id}");
     }
 }
+
+/// Packing history into compressed blocks must not change what the trend shows.
+#[tokio::test]
+async fn test_history_is_the_same_after_packing() {
+    let state = seeded_admin_app_state().await;
+    let storage = state.storage.clone();
+    let app = create_router(state);
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+    create_source(
+        &app,
+        &cookie,
+        serde_json::json!({
+            "key": "pv_power", "name": "PV power", "source_type": "modbus",
+            "device_id": "inverter-1",
+        }),
+    )
+    .await;
+
+    let start = (crate::timeutil::now_secs() - 1500) / 10 * 10;
+    let rows: Vec<(String, i64, String, f64)> = (0..120)
+        .map(|i| {
+            (
+                "inverter-1".to_string(),
+                start + i * 10,
+                "pv_power".to_string(),
+                50.0 + (i % 17) as f64 * 1.25,
+            )
+        })
+        .collect();
+    storage.insert_batch(&rows).await.unwrap();
+
+    let queries = ["range=30m", "range=30m&agg=avg", "range=30m&agg=minmax"];
+    let mut before = Vec::new();
+    for q in queries {
+        before.push(history(&app, &cookie, q).await);
+    }
+    assert_eq!(before[0]["data"]["pv_power"]["count"], 120);
+
+    // Pack everything, current hour included.
+    let report = storage
+        .pack_history(crate::timeutil::now_secs() + 2 * 3600, usize::MAX)
+        .await
+        .unwrap();
+    assert!(report.samples == 120);
+
+    for (q, expected) in queries.iter().zip(&before) {
+        assert_eq!(&history(&app, &cookie, q).await, expected, "{q}");
+    }
+
+    let (status, stats) = send_request(
+        &app,
+        "GET",
+        "/api/v1/compression/stats",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(stats["packed_samples"], 120);
+    assert_eq!(stats["hot_rows"], 0);
+    assert!(stats["packed_bytes_per_sample"].as_f64().unwrap() > 0.0);
+}
+
+#[tokio::test]
+async fn test_compression_config_and_deadband_reflect_the_running_setup() {
+    let app = test_app_with_seeded_admin().await;
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+    create_source(
+        &app,
+        &cookie,
+        serde_json::json!({
+            "key": "level", "name": "Level", "source_type": "modbus", "device_id": "tank-1",
+            "source_config": {
+                "history_deadband": 0.5, "history_deadband_type": "percent",
+                "history_max_interval_secs": 300,
+                "deadband": 3.0
+            },
+        }),
+    )
+    .await;
+    create_source(
+        &app,
+        &cookie,
+        serde_json::json!({
+            "key": "flow", "name": "Flow", "source_type": "modbus", "device_id": "tank-1",
+            "source_config": {"deadband": 3.0},
+        }),
+    )
+    .await;
+
+    let (status, entries) = send_request(
+        &app,
+        "GET",
+        "/api/v1/compression/deadband",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // Only the tag with history_deadband; the alarm `deadband` key is something else.
+    assert_eq!(
+        entries,
+        serde_json::json!([{
+            "device_id": "tank-1", "metric": "level", "deadband_type": "percent",
+            "deadband_value": 0.5, "max_interval_secs": 300
+        }])
+    );
+
+    let (status, config) = send_request(
+        &app,
+        "GET",
+        "/api/v1/compression/config",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(config["pack_enabled"], true);
+    assert_eq!(config["pack_after_secs"], 3600);
+    assert_eq!(config["raw_keep_secs"], 7_776_000);
+    assert_eq!(config["daily_keep_secs"], serde_json::Value::Null);
+}

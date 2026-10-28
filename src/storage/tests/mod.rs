@@ -2,6 +2,8 @@ mod alarm_tests;
 mod api_key_tests;
 mod command_tests;
 mod downsampling_tests;
+mod historian_bench;
+mod historian_tests;
 mod hub_tests;
 mod license_tests;
 mod modbus_tests;

@@ -242,6 +242,7 @@ use utoipa::{Modify, OpenApi};
         // Compression
         crate::api::compression::get_compression_stats,
         crate::api::compression::get_compression_config,
+        crate::api::compression::get_compression_deadband,
         crate::api::compression::get_system_memory,
         // Device templates
         crate::api::device_templates::list_templates,
@@ -384,6 +385,7 @@ use utoipa::{Modify, OpenApi};
         crate::api::compression::CompressionStatsResponse,
         crate::api::compression::CompressionConfigResponse,
         crate::api::compression::MemoryStatsResponse,
+        crate::api::compression::DeadbandEntryResponse,
         // User schemas
         crate::models::User,
         crate::models::CreateUserRequest,

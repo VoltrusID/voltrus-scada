@@ -45,20 +45,70 @@ pub async fn aggregate_metrics(
         interval_secs
     };
 
-    // Use raw telemetry for short ranges, hourly for longer ranges
+    // Hourly aggregates only exist for hours that already left full
+    // resolution, so a long range reads them for its old part and the
+    // full-resolution samples (raw rows and packed blocks) for the rest.
     let use_hourly = (to - from) > 86400 * 7 && interval >= 3600;
 
-    let results = if use_hourly {
-        storage
-            .aggregate_hourly(device_id, metric, from, to, interval)
-            .await?
-    } else {
-        storage
-            .aggregate_raw(device_id, metric, from, to, interval)
-            .await?
-    };
+    let full = storage
+        .aggregate_raw(device_id, metric, from, to, interval)
+        .await?;
+    if !use_hourly {
+        return Ok(full);
+    }
+    let hourly = storage
+        .aggregate_hourly(device_id, metric, from, to, interval)
+        .await?;
+    Ok(merge_buckets(hourly, full))
+}
 
-    Ok(results)
+/// Combine two ascending bucket lists; a bucket present in both is merged
+/// (count-weighted mean, widest min/max and time span).
+fn merge_buckets(
+    a: Vec<(i64, AggregatedMetric)>,
+    b: Vec<(i64, AggregatedMetric)>,
+) -> Vec<(i64, AggregatedMetric)> {
+    let mut out: Vec<(i64, AggregatedMetric)> = Vec::with_capacity(a.len() + b.len());
+    let (mut a, mut b) = (a.into_iter().peekable(), b.into_iter().peekable());
+    loop {
+        let next = match (a.peek(), b.peek()) {
+            (Some(x), Some(y)) if x.0 == y.0 => {
+                let (bucket, x) = a.next().expect("peeked");
+                let (_, y) = b.next().expect("peeked");
+                let count = x.count + y.count;
+                let avg = if count == 0 {
+                    0.0
+                } else {
+                    (x.avg * x.count as f64 + y.avg * y.count as f64) / count as f64
+                };
+                (
+                    bucket,
+                    AggregatedMetric {
+                        metric: x.metric,
+                        min: x.min.min(y.min),
+                        max: x.max.max(y.max),
+                        avg,
+                        stddev: 0.0,
+                        count,
+                        first_ts: x.first_ts.min(y.first_ts),
+                        last_ts: x.last_ts.max(y.last_ts),
+                    },
+                )
+            }
+            (Some(x), Some(y)) => {
+                if x.0 < y.0 {
+                    a.next().expect("peeked")
+                } else {
+                    b.next().expect("peeked")
+                }
+            }
+            (Some(_), None) => a.next().expect("peeked"),
+            (None, Some(_)) => b.next().expect("peeked"),
+            (None, None) => break,
+        };
+        out.push(next);
+    }
+    out
 }
 
 /// Compare two time periods for a given metric.

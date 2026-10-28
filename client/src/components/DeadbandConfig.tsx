@@ -15,7 +15,8 @@ export const DeadbandConfig: React.FC = () => {
             <th className="text-left py-2">Device</th>
             <th className="text-left py-2">Metric</th>
             <th className="text-left py-2">Type</th>
-            <th className="text-right py-2">Value</th>
+            <th className="text-right py-2">Band</th>
+            <th className="text-right py-2">Heartbeat</th>
           </tr>
         </thead>
         <tbody>
@@ -24,13 +25,19 @@ export const DeadbandConfig: React.FC = () => {
               <td className="py-2 text-gray-300">{entry.device_id}</td>
               <td className="py-2 text-gray-300">{entry.metric}</td>
               <td className="py-2 text-gray-400">{entry.deadband_type}</td>
-              <td className="py-2 text-right text-gray-300">{entry.deadband_value}</td>
+              <td className="py-2 text-right text-gray-300">
+                {entry.deadband_value}
+                {entry.deadband_type === 'percent' ? ' %' : ''}
+              </td>
+              <td className="py-2 text-right text-gray-300">
+                {entry.max_interval_secs ? `${entry.max_interval_secs} s` : 'none'}
+              </td>
             </tr>
           ))}
           {(!entries || entries.length === 0) && (
             <tr>
-              <td colSpan={4} className="py-4 text-center text-gray-500">
-                Using defaults (0.1% analog, 0 digital)
+              <td colSpan={5} className="py-4 text-center text-gray-500">
+                No tag filters its history. Every sample is stored. Set history_deadband in a tag source config to filter.
               </td>
             </tr>
           )}

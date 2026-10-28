@@ -687,6 +687,10 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/compression/config",
             get(compression::get_compression_config),
         )
+        .route(
+            "/api/v1/compression/deadband",
+            get(compression::get_compression_deadband),
+        )
         .route("/api/v1/version", get(system::get_version))
         .route("/api/v1/docs/topology", get(system_docs::get_topology))
         .route("/api/v1/docs/tag-xref", get(system_docs::get_tag_xref))

@@ -238,6 +238,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                 String,
                 crate::alarm_delay::DelayState,
             > = std::collections::HashMap::new();
+            let mut history_filter = crate::deadband::HistoryFilter::new();
             loop {
                 ticker.tick().await;
                 let snapshots = cache.get_all().await;
@@ -255,12 +256,34 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                         ));
                     }
                 }
+                // Per-tag history deadband (see deadband.rs): the tag list is
+                // read once per cycle and shared with alarm evaluation below.
+                let sources = storage.list_data_sources(None).await;
+                if let Ok(sources) = &sources {
+                    history_filter.set_rules(
+                        sources
+                            .iter()
+                            .filter_map(|source| {
+                                let cfg = serde_json::from_str::<serde_json::Value>(
+                                    &source.source_config,
+                                )
+                                .ok()?;
+                                let rule = crate::deadband::HistoryRule::from_source_config(&cfg)?;
+                                let metric =
+                                    crate::api::data::metric_name(&source.key, &source.device_id);
+                                Some(((source.device_id.clone(), metric.to_string()), rule))
+                            })
+                            .collect(),
+                    );
+                }
+                let records = history_filter.filter(records);
                 if let Err(e) = storage.insert_batch(&records).await {
+                    history_filter.reset();
                     tracing::error!("Persistence error: {e}");
                 }
 
                 // Evaluate alarm thresholds
-                if let Ok(sources) = storage.list_data_sources(None).await {
+                if let Ok(sources) = sources {
                     let mut value_map = std::collections::HashMap::new();
                     for snap in &snapshots {
                         for (metric, value) in &snap.metrics {

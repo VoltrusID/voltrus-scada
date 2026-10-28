@@ -30,21 +30,8 @@ devices:
         address: 40011
         type: "float32"
 
-  # Data retention - automatic downsampling and archiving
-  # retention:
-  #   enabled: true
-  #   run_interval_secs: 21600  # every 6 hours
-  #   archive_dir: "./archive"
-  #   tiers:
-  #     - name: raw
-  #       keep: 604800           # 7 days (in seconds)
-  #       downsample_to: hourly
-  #       archive: true          # export raw to CSV+gzip before deleting
-  #     - name: hourly
-  #       keep: 7776000          # 90 days
-  #       downsample_to: daily
-  #     - name: daily
-  #       keep: null             # forever
+  # Historian retention and compression: see the retention block near the end
+  # of this file and docs/historian.md.
 
   - id: "plts_2"
     ip: "192.168.1.11"
@@ -72,21 +59,25 @@ devices:
         address: 40011
         type: "float32"
 
-# Data retention - automatic downsampling and archiving
+# Historian retention and compression. Full-resolution samples older than
+# pack_after_secs are packed into compressed blocks; docs/historian.md has the details.
 # retention:
 #   enabled: true
-#   run_interval_secs: 21600  # every 6 hours
+#   run_interval_secs: 21600  # roll expired tiers up every 6 hours
+#   pack_enabled: true
+#   pack_after_secs: 3600     # complete hours older than this are packed
+#   pack_interval_secs: 600   # how often the packer runs
 #   archive_dir: "./archive"
 #   tiers:
-#     - name: raw
-#       keep: 604800           # 7 days (in seconds)
+#     - name: raw             # full resolution (packed after pack_after_secs)
+#       keep: 7776000         # 90 days (in seconds)
 #       downsample_to: hourly
-#       archive: true          # export raw to CSV+gzip before deleting
-#     - name: hourly
-#       keep: 7776000          # 90 days
+#       archive: false        # true: export expiring samples to CSV+gzip first
+#     - name: hourly          # min/avg/max per hour, kept this long past the raw window
+#       keep: 7776000         # 90 days
 #       downsample_to: daily
-#     - name: daily
-#       keep: null             # forever
+#     - name: daily           # min/avg/max per day, past the hourly window
+#       keep: null            # forever
 
 # SMTP email notifications (optional - uncomment and fill to enable)
 # smtp:
