@@ -111,6 +111,7 @@ each release.
 | byteorder | 1.5.0 | Unlicense OR MIT |
 | byteorder-lite | 0.1.0 | Unlicense OR MIT |
 | bytes | 1.11.1 | MIT |
+| bzip2 | 0.6.1 | MIT OR Apache-2.0 |
 | calamine | 0.37.0 | MIT |
 | calloop | 0.13.0 | MIT |
 | calloop-wayland-source | 0.3.0 | MIT |
@@ -294,7 +295,7 @@ each release.
 | gpui_sum_tree | 0.2.2 | Apache-2.0 |
 | gpui_util | 0.2.2 | Apache-2.0 |
 | gpui_util_macros | 0.2.2 | Apache-2.0 |
-| grid | 0.18.0 | MIT |
+| grid | 1.0.1 | MIT |
 | h2 | 0.4.16 | MIT |
 | half | 2.7.1 | MIT OR Apache-2.0 |
 | hash32 | 0.2.1 | MIT OR Apache-2.0 |
@@ -369,6 +370,7 @@ each release.
 | leb128fmt | 0.1.0 | MIT OR Apache-2.0 |
 | lebe | 0.5.3 | BSD-3-Clause |
 | lettre | 0.11.22 | MIT |
+| libbz2-rs-sys | 0.2.5 | bzip2-1.0.6 |
 | libc | 0.2.186 | MIT OR Apache-2.0 |
 | libfuzzer-sys | 0.4.13 | (MIT OR Apache-2.0) AND NCSA |
 | libloading | 0.8.9 | ISC |
@@ -387,6 +389,7 @@ each release.
 | lyon_geom | 1.0.19 | MIT OR Apache-2.0 |
 | lyon_path | 1.0.19 | MIT OR Apache-2.0 |
 | lyon_tessellation | 1.0.20 | MIT OR Apache-2.0 |
+| lzma-rust2 | 0.23.0 | Apache-2.0 |
 | mac | 0.1.1 | MIT/Apache-2.0 |
 | malloc_buf | 0.0.6 | MIT |
 | matchers | 0.2.0 | MIT |
@@ -491,6 +494,7 @@ each release.
 | postcard | 1.1.3 | MIT OR Apache-2.0 |
 | potential_utf | 0.1.5 | Unicode-3.0 |
 | powerfmt | 0.2.0 | MIT OR Apache-2.0 |
+| ppmd-rust | 1.5.2 | CC0-1.0 OR MIT-0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
 | prettyplease | 0.2.37 | MIT OR Apache-2.0 |
 | proc-macro-crate | 3.5.0 | MIT OR Apache-2.0 |
@@ -661,7 +665,7 @@ each release.
 | sysinfo | 0.34.2 | MIT |
 | system-configuration | 0.6.1 | MIT OR Apache-2.0 |
 | system-configuration-sys | 0.6.0 | MIT OR Apache-2.0 |
-| taffy | 0.9.0 | MIT |
+| taffy | 0.9.2 | MIT |
 | take-until | 0.2.0 | MIT |
 | tao-core-video-sys | 0.2.0 | MIT |
 | tar | 0.4.45 | MIT OR Apache-2.0 |
