@@ -18,6 +18,9 @@ USAGE:
                                             Restore from backup archive
     voltrus factory-reset [CONFIG]     Delete all data and reset to defaults
     voltrus db stats [CONFIG]          Print database statistics
+    voltrus db vacuum [CONFIG]         Rebuild the database file to return free space to the
+                                            filesystem (stop the server first; needs free disk
+                                            equal to the database size)
     voltrus edr report [CONFIG]        Show EDR compatibility report
     voltrus edr exclusions [CONFIG]    Show recommended EDR exclusions
     voltrus edr exclusions-ps1 [CONFIG] Generate Defender exclusion PowerShell script
@@ -989,12 +992,13 @@ fn handle_factory_reset(args: &[String]) -> bool {
 
 fn handle_db(args: &[String]) -> bool {
     if args.len() < 3 {
-        eprintln!("Usage: {} db stats [CONFIG_PATH]", args[0]);
+        eprintln!("Usage: {} db <stats|vacuum> [CONFIG_PATH]", args[0]);
         return true;
     }
 
     match args[2].as_str() {
         "stats" => handle_db_stats(args),
+        "vacuum" => handle_db_vacuum(args),
         other => {
             eprintln!("Unknown db subcommand: {}", other);
             true
@@ -1037,9 +1041,58 @@ fn handle_db_stats(args: &[String]) -> bool {
                 );
                 println!("Hourly aggregates:     {} rows", stats.warm_rows);
                 println!("Daily aggregates:      {} rows", stats.cold_rows);
+                let free_pages = storage.query_pragma("freelist_count").await.unwrap_or_default();
+                match storage.query_pragma("auto_vacuum").await.as_deref() {
+                    Ok("2") => println!("Free pages:            {free_pages} (auto_vacuum=incremental: returned by the retention worker)"),
+                    _ => println!(
+                        "Free pages:            {free_pages} (auto_vacuum off: the file does not shrink; run `voltrus db vacuum` with the server stopped to reclaim it)"
+                    ),
+                }
             }
             Err(e) => {
                 eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+        }
+    });
+    true
+}
+
+/// `voltrus db vacuum`: rebuild the database file with `VACUUM`, which returns
+/// every free page to the filesystem and switches the file to
+/// `auto_vacuum=INCREMENTAL` so the server can keep it small from then on.
+fn handle_db_vacuum(args: &[String]) -> bool {
+    let db_path = config::load_config(&find_config_path(args))
+        .map(|c| c.db_path.clone())
+        .unwrap_or_else(|_| "voltrus.db".to_string());
+
+    if !std::path::Path::new(&db_path).exists() {
+        eprintln!("Database not found: {db_path}");
+        std::process::exit(1);
+    }
+    let storage = match Storage::new(&db_path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Failed to open database: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    println!(
+        "Rebuilding {db_path} (stop the server first; this needs free disk equal to the database size)..."
+    );
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        match storage.vacuum_full().await {
+            Ok(report) => {
+                println!(
+                    "Done: {:.2} MB -> {:.2} MB (database plus WAL).",
+                    report.before_bytes as f64 / 1_048_576.0,
+                    report.after_bytes as f64 / 1_048_576.0
+                );
+            }
+            Err(e) => {
+                eprintln!("Vacuum failed: {e:#}");
                 std::process::exit(1);
             }
         }
@@ -1078,6 +1131,7 @@ fn find_config_path(args: &[String]) -> String {
             && arg != "factory-reset"
             && arg != "db"
             && arg != "stats"
+            && arg != "vacuum"
             && arg != "edr"
             && arg != "hw"
             && arg != "egress"

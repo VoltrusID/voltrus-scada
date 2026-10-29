@@ -47,7 +47,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
         let first_msg: Message = match timeout(Duration::from_secs(30), stream.next()).await {
             Ok(Some(Ok(msg))) => msg,
             Ok(Some(Err(e))) => {
-                tracing::warn!("WS: error receiving first message: {}", e);
+                log_receive_error("error receiving first message", &e);
                 return;
             }
             Ok(None) | Err(_) => {
@@ -219,7 +219,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
                         // Pong responses are handled automatically by tungstenite
                     }
                     Some(Err(e)) => {
-                        tracing::warn!("WS: recv error: {}", e);
+                        log_receive_error("recv error", &e);
                         break;
                     }
                 }
@@ -423,6 +423,51 @@ async fn send_msg(
     let bytes = rmp_serde::to_vec_named(msg)
         .map_err(|e| axum::Error::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
     sink.send(Message::Binary(bytes.into())).await
+}
+
+/// A peer that vanished without saying goodbye: the TCP connection was reset or
+/// broken, or closed without the WebSocket closing handshake. Browsers do this
+/// whenever a tab is closed or a phone leaves the Wi-Fi, so it is not a fault.
+/// Walks the error chain because the cause sits under axum's and tungstenite's
+/// wrappers.
+fn is_routine_disconnect(err: &(dyn std::error::Error + 'static)) -> bool {
+    use std::io::ErrorKind;
+    let mut current = Some(err);
+    while let Some(e) = current {
+        if let Some(io) = e.downcast_ref::<std::io::Error>()
+            && matches!(
+                io.kind(),
+                ErrorKind::ConnectionReset
+                    | ErrorKind::ConnectionAborted
+                    | ErrorKind::BrokenPipe
+                    | ErrorKind::UnexpectedEof
+                    | ErrorKind::NotConnected
+            )
+        {
+            return true;
+        }
+        // tungstenite's `ProtocolError::ResetWithoutClosingHandshake`, and its
+        // `ConnectionClosed` / `AlreadyClosed`, which are not public through axum.
+        let text = e.to_string();
+        if text.contains("without closing handshake")
+            || text.contains("Connection closed normally")
+            || text.contains("closed connection")
+        {
+            return true;
+        }
+        current = e.source();
+    }
+    false
+}
+
+/// Log a receive failure: a client that just went away at debug, anything else
+/// (a malformed frame, an oversized message) at warn.
+fn log_receive_error(what: &str, err: &axum::Error) {
+    if is_routine_disconnect(err) {
+        tracing::debug!("WS: client went away ({what}): {err}");
+    } else {
+        tracing::warn!("WS: {what}: {err}");
+    }
 }
 
 #[cfg(test)]
@@ -875,5 +920,100 @@ mod tests {
             state.storage.get_command_audit("c1").await.unwrap().len(),
             1
         );
+    }
+
+    /// What the server's `recv()` returns when the client ends the connection
+    /// in a given way, as `(is_routine_disconnect, error text)`. Uses a real
+    /// socket so the error is the one tungstenite produces, not a hand-made one.
+    async fn server_receive_error(
+        client_action: impl AsyncFnOnce(&mut tokio::net::TcpStream),
+    ) -> (bool, String) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<(bool, String)>();
+        let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+        let app = axum::Router::new().route(
+            "/ws",
+            axum::routing::get(move |ws: WebSocketUpgrade| {
+                let tx = tx.clone();
+                async move {
+                    ws.on_upgrade(move |mut socket| async move {
+                        let verdict = match socket.recv().await {
+                            Some(Err(e)) => (is_routine_disconnect(&e), e.to_string()),
+                            other => (false, format!("no error: {other:?}")),
+                        };
+                        if let Some(tx) = tx.lock().unwrap().take() {
+                            let _ = tx.send(verdict);
+                        }
+                    })
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: localhost\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\
+                  Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut head = [0u8; 12];
+        client.read_exact(&mut head).await.unwrap();
+        assert_eq!(&head, b"HTTP/1.1 101", "upgrade accepted");
+
+        client_action(&mut client).await;
+        drop(client);
+
+        let verdict = tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .expect("server noticed the disconnect")
+            .unwrap();
+        server.abort();
+        verdict
+    }
+
+    #[tokio::test]
+    async fn a_client_that_closes_the_tcp_stream_is_a_routine_disconnect() {
+        let (routine, text) = server_receive_error(async |_client| {}).await;
+        assert!(routine, "closed without a closing handshake: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_reset_connection_is_a_routine_disconnect() {
+        let (routine, text) = server_receive_error(async |client| {
+            client.set_zero_linger().unwrap();
+        })
+        .await;
+        assert!(routine, "connection reset: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_protocol_violation_is_still_a_real_error() {
+        use tokio::io::AsyncWriteExt;
+        // An unmasked client frame: a client bug, not a vanished peer.
+        let (routine, text) = server_receive_error(async |client| {
+            client.write_all(&[0x82, 0x01, 0x41]).await.unwrap();
+        })
+        .await;
+        assert!(!routine, "must stay a warning: {text}");
+    }
+
+    #[test]
+    fn io_errors_wrapped_by_the_stack_are_classified_by_kind() {
+        use std::io::{Error, ErrorKind};
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::BrokenPipe,
+            ErrorKind::ConnectionAborted,
+        ] {
+            assert!(is_routine_disconnect(&axum::Error::new(Error::from(kind))));
+        }
+        for kind in [ErrorKind::PermissionDenied, ErrorKind::InvalidData] {
+            assert!(!is_routine_disconnect(&axum::Error::new(Error::from(kind))));
+        }
     }
 }

@@ -4,7 +4,7 @@ import {
   applyHistoryDeadband, describeHistoryDeadband, historyDeadbandWarnings,
   readHistoryDeadband, validateHistoryDeadband, type HistoryDeadbandForm,
 } from '../src/historyDeadband.ts'
-import { formatBytes, formatDuration } from '../src/storageFormat.ts'
+import { eventRetentionRows, formatBytes, formatDuration } from '../src/storageFormat.ts'
 
 const form = (over: Partial<HistoryDeadbandForm>): HistoryDeadbandForm => ({ type: 'absolute', value: '', maxInterval: '', ...over })
 
@@ -74,4 +74,27 @@ test('storage panel formatting', () => {
   assert.equal(formatBytes(512), '512 B')
   assert.equal(formatBytes(1536), '1.50 KB')
   assert.equal(formatBytes(5 * 1024 ** 3), '5.00 GB')
+})
+
+test('retention table shows the keep in force and says when the licence holds it', () => {
+  const base = {
+    enabled: true, pack_enabled: true, pack_after_secs: 3600, pack_interval_secs: 600,
+    raw_keep_secs: 7776000, hourly_keep_secs: 7776000, daily_keep_secs: null, archive_raw: false,
+    event_keep_secs: 63072000, security_keep_secs: 63072000, audit_keep_secs: null,
+    run_log_keep_secs: 7776000, compliance_hold: false,
+  }
+  const rows = Object.fromEntries(eventRetentionRows(base).map(([label, value, help]) => [label, { value, help }]))
+  assert.equal(rows['Alarms and downtime kept'].value, '730 days')
+  assert.equal(rows['Security log kept'].value, '730 days')
+  assert.equal(rows['Audit trails kept'].value, 'forever')
+  assert.equal(rows['Run history kept'].value, '90 days')
+  assert.doesNotMatch(rows['Audit trails kept'].help, /licence/)
+
+  const held = Object.fromEntries(
+    eventRetentionRows({ ...base, security_keep_secs: null, audit_keep_secs: null, compliance_hold: true })
+      .map(([label, value, help]) => [label, { value, help }]),
+  )
+  assert.equal(held['Security log kept'].value, 'forever')
+  assert.match(held['Security log kept'].help, /Held by the licence/)
+  assert.match(held['Audit trails kept'].help, /Held by the licence/)
 })

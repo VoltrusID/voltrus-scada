@@ -120,7 +120,8 @@ fn default_mqtt_auth_mode() -> String {
     "none".to_string()
 }
 
-/// Historian retention and compaction.
+/// Historian retention and compaction, plus retention of the event and audit
+/// tables.
 ///
 /// Tiers, newest to oldest:
 ///
@@ -133,6 +134,23 @@ fn default_mqtt_auth_mode() -> String {
 ///   window, then rolled into daily aggregates.
 /// * `daily`: min/avg/max per day, kept for `keep` seconds beyond the hourly
 ///   window (`null` = forever).
+///
+/// The `*_keep_secs` keys bound the tables that grow with plant events. Each
+/// is a number of seconds; `0` or `null` keeps the rows forever. Expired
+/// refresh tokens are always removed and have no key.
+///
+/// * `event_keep_secs` (default 2 years): cleared alarms with their journal,
+///   and downtime events. Active, acknowledged-but-not-cleared and shelved
+///   alarms are never removed.
+/// * `security_keep_secs` (default 2 years): the security event log. Kept
+///   forever, whatever this says, when the licence includes IEC 62443 mode.
+/// * `audit_keep_secs` (default forever): the audit trails (`audit_log`,
+///   `alarm_audit_log`, finished commands with their `command_audit_log`).
+///   Kept forever, whatever this says, when the licence includes 21 CFR
+///   Part 11 or IEC 62443 mode. Electronic signature records are never
+///   removed.
+/// * `run_log_keep_secs` (default 90 days): flow run and script execution
+///   history, which only exists for debugging.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RetentionConfig {
     #[serde(default = "default_retention_enabled")]
@@ -154,6 +172,23 @@ pub struct RetentionConfig {
     /// How often the compaction worker looks for hours to pack.
     #[serde(default = "default_pack_interval")]
     pub pack_interval_secs: u64,
+    #[serde(default = "default_event_keep")]
+    pub event_keep_secs: Option<u64>,
+    #[serde(default = "default_security_keep")]
+    pub security_keep_secs: Option<u64>,
+    #[serde(default)]
+    pub audit_keep_secs: Option<u64>,
+    #[serde(default = "default_run_log_keep")]
+    pub run_log_keep_secs: Option<u64>,
+    /// Rows deleted per transaction. A large first purge runs as many short
+    /// transactions with a pause between them, so the writers that share the
+    /// database connection are never held up for long.
+    #[serde(default = "default_purge_batch_rows")]
+    pub purge_batch_rows: u32,
+    /// Free pages handed back to the filesystem per step after a purge
+    /// (databases created with `auto_vacuum=INCREMENTAL` only).
+    #[serde(default = "default_vacuum_step_pages")]
+    pub vacuum_step_pages: u32,
 }
 
 impl Default for RetentionConfig {
@@ -166,11 +201,70 @@ impl Default for RetentionConfig {
             pack_enabled: default_pack_enabled(),
             pack_after_secs: default_pack_after(),
             pack_interval_secs: default_pack_interval(),
+            event_keep_secs: default_event_keep(),
+            security_keep_secs: default_security_keep(),
+            audit_keep_secs: None,
+            run_log_keep_secs: default_run_log_keep(),
+            purge_batch_rows: default_purge_batch_rows(),
+            vacuum_step_pages: default_vacuum_step_pages(),
         }
     }
 }
 
+/// Which retention keys the licence forbids from deleting anything.
+///
+/// The core cannot see how an add-on runs its compliance modes, but it does
+/// see the entitlements the add-on resolves: a licence that includes 21 CFR
+/// Part 11 or IEC 62443 mode means the site may be audited against it, so the
+/// trails those modes depend on are kept whatever `retention:` says.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ComplianceHold {
+    /// `audit_log`, `alarm_audit_log`, finished commands and their audit.
+    pub audit: bool,
+    /// The security event log.
+    pub security: bool,
+}
+
+impl ComplianceHold {
+    pub fn from_tier(tier: &crate::license::LicenseTier) -> Self {
+        Self {
+            audit: tier.cfr_part_11() || tier.iec_62443(),
+            security: tier.iec_62443(),
+        }
+    }
+}
+
+/// How long each class of event data is kept once the compliance hold is
+/// applied. `None` keeps it forever.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveKeep {
+    pub events: Option<u64>,
+    pub security: Option<u64>,
+    pub audit: Option<u64>,
+    pub run_logs: Option<u64>,
+}
+
 impl RetentionConfig {
+    /// The keep values in force: `0` and `null` mean forever, and a class the
+    /// licence holds is forever regardless of the configured value.
+    pub fn effective_keep(&self, hold: ComplianceHold) -> EffectiveKeep {
+        let bounded = |keep: Option<u64>| keep.filter(|&secs| secs > 0);
+        EffectiveKeep {
+            events: bounded(self.event_keep_secs),
+            security: if hold.security {
+                None
+            } else {
+                bounded(self.security_keep_secs)
+            },
+            audit: if hold.audit {
+                None
+            } else {
+                bounded(self.audit_keep_secs)
+            },
+            run_logs: bounded(self.run_log_keep_secs),
+        }
+    }
+
     /// Seconds a tier keeps its data, if it is bounded.
     pub fn tier_keep(&self, name: &str) -> Option<u64> {
         self.tiers
@@ -224,6 +318,27 @@ fn default_pack_after() -> u64 {
 }
 fn default_pack_interval() -> u64 {
     600
+}
+
+/// Two years: long enough for two annual audit cycles and a year-over-year
+/// comparison of alarm rates, short enough to bound a plant that chatters.
+const TWO_YEARS_SECS: u64 = 2 * 365 * 86_400;
+
+fn default_event_keep() -> Option<u64> {
+    Some(TWO_YEARS_SECS)
+}
+fn default_security_keep() -> Option<u64> {
+    Some(TWO_YEARS_SECS)
+}
+/// Flow and script run history is a debugging aid; the UI shows the last 20 runs.
+fn default_run_log_keep() -> Option<u64> {
+    Some(90 * 86_400)
+}
+fn default_purge_batch_rows() -> u32 {
+    5_000
+}
+fn default_vacuum_step_pages() -> u32 {
+    2_000
 }
 
 /// Full resolution for 90 days (packed, so cheap), hourly aggregates for the 90

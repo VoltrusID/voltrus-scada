@@ -44,6 +44,16 @@ export interface CompressionConfig {
   daily_keep_secs: number | null
   /** Expiring full-resolution data is exported to CSV first. */
   archive_raw: boolean
+  /** Cleared alarms (with their journal) and downtime events; null keeps them forever. */
+  event_keep_secs: number | null
+  /** Security event log, as in effect: null when kept forever (always so under IEC 62443). */
+  security_keep_secs: number | null
+  /** Audit trails, as in effect: null (the default) keeps them forever. Always null under 21 CFR Part 11 or IEC 62443. */
+  audit_keep_secs: number | null
+  /** Flow run and script execution history; null keeps it forever. */
+  run_log_keep_secs: number | null
+  /** The licence holds audit trails and the security log whatever retention: says. */
+  compliance_hold: boolean
 }
 
 // ── Hooks ──

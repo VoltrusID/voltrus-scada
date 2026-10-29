@@ -595,8 +595,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     {
         let storage = storage.clone();
         let retention_config = app_config.retention.clone();
+        let retention_license = license_status.clone();
         tokio::spawn(async move {
-            retention::run_retention_task(storage, retention_config).await;
+            retention::run_retention_task(storage, retention_config, retention_license).await;
         });
         tracing::info!("Data retention/compression task started");
     }

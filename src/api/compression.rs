@@ -68,6 +68,21 @@ pub struct CompressionConfigResponse {
     pub daily_keep_secs: Option<u64>,
     /// Whether expiring full-resolution data is exported to CSV first.
     pub archive_raw: bool,
+    /// Cleared alarms (with their journal) and downtime events are removed
+    /// after this many seconds; `null` keeps them forever.
+    pub event_keep_secs: Option<u64>,
+    /// The security event log, in effect: `null` when the licence includes
+    /// IEC 62443 mode, which keeps it forever whatever the config says.
+    pub security_keep_secs: Option<u64>,
+    /// Audit trails (`audit_log`, alarm audit, finished commands), in effect:
+    /// `null` (the default) keeps them forever, and the licence's 21 CFR
+    /// Part 11 or IEC 62443 mode forces `null`.
+    pub audit_keep_secs: Option<u64>,
+    /// Flow run and script execution history; `null` keeps it forever.
+    pub run_log_keep_secs: Option<u64>,
+    /// True when the licence holds the audit trails and the security log
+    /// regardless of `retention:`.
+    pub compliance_hold: bool,
 }
 
 /// GET /api/v1/compression/config -- the running retention and packing settings
@@ -84,6 +99,8 @@ pub async fn get_compression_config(
     State(state): State<crate::api::AppState>,
 ) -> Result<impl IntoResponse, crate::api::AppError> {
     let cfg = &state.retention_config;
+    let hold = crate::models::ComplianceHold::from_tier(&state.tier());
+    let keep = cfg.effective_keep(hold);
     Ok(Json(CompressionConfigResponse {
         enabled: cfg.enabled,
         pack_enabled: cfg.pack_enabled,
@@ -93,6 +110,11 @@ pub async fn get_compression_config(
         hourly_keep_secs: cfg.tier_keep("hourly"),
         daily_keep_secs: cfg.tier_keep("daily"),
         archive_raw: cfg.tier_archive("raw"),
+        event_keep_secs: keep.events,
+        security_keep_secs: keep.security,
+        audit_keep_secs: keep.audit,
+        run_log_keep_secs: keep.run_logs,
+        compliance_hold: hold.audit || hold.security,
     }))
 }
 
@@ -150,12 +172,17 @@ pub async fn get_compression_deadband(
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MemoryStatsResponse {
+    /// Resident set size of this Voltrus process.
     pub rss_mb: f64,
+    /// Memory in use on the whole machine (all processes).
+    pub system_used_mb: f64,
+    /// Physical memory of the machine.
+    pub system_total_mb: f64,
     pub hot_cache_entries: usize,
     pub connection_pool_size: usize,
 }
 
-/// GET /api/v1/system/memory -- get system memory usage
+/// GET /api/v1/system/memory -- memory of this process and of the machine
 #[utoipa::path(
     get,
     path = "/api/v1/system/memory",
@@ -168,13 +195,52 @@ pub struct MemoryStatsResponse {
 pub async fn get_system_memory(
     State(_state): State<crate::api::AppState>,
 ) -> Result<impl IntoResponse, crate::api::AppError> {
-    use sysinfo::System;
-    let mut sys = System::new();
-    sys.refresh_memory();
+    memory_stats(crate::api::system_sampler::SystemSampler::global())
+        .await
+        .map(Json)
+}
 
-    Ok(Json(MemoryStatsResponse {
-        rss_mb: sys.used_memory() as f64 / 1_048_576.0,
+async fn memory_stats(
+    sampler: &crate::api::system_sampler::SystemSampler,
+) -> Result<MemoryStatsResponse, crate::api::AppError> {
+    const MB: f64 = 1_048_576.0;
+    let host = sampler.sample().await?;
+    Ok(MemoryStatsResponse {
+        rss_mb: host.process.rss_bytes.unwrap_or(0) as f64 / MB,
+        system_used_mb: host.memory_used_bytes as f64 / MB,
+        system_total_mb: host.memory_total_bytes as f64 / MB,
         hot_cache_entries: 0,
         connection_pool_size: 0,
-    }))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::system_sampler::SystemSampler;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn memory_endpoint_reports_process_rss_and_names_the_system_totals() {
+        let sampler = SystemSampler::new(Duration::from_secs(60));
+        let stats = memory_stats(&sampler).await.unwrap();
+
+        // The test process is a few MB to a few hundred MB. Whole-system used
+        // memory (what this endpoint used to report as rss_mb) is far above
+        // the process on any machine that runs the test suite in parallel.
+        assert!(stats.rss_mb > 1.0, "rss_mb {}", stats.rss_mb);
+        assert!(stats.rss_mb < 4096.0, "rss_mb {}", stats.rss_mb);
+        assert!(stats.system_total_mb >= stats.system_used_mb);
+        assert!(
+            stats.rss_mb < stats.system_used_mb,
+            "rss_mb {} is this process, not the {} MB used machine-wide",
+            stats.rss_mb,
+            stats.system_used_mb
+        );
+
+        let json = serde_json::to_value(&stats).unwrap();
+        for key in ["rss_mb", "system_used_mb", "system_total_mb"] {
+            assert!(json[key].is_number(), "{key} is serialized");
+        }
+    }
 }

@@ -63,6 +63,7 @@ mod sse;
 pub(crate) mod stream;
 mod system;
 mod system_docs;
+mod system_sampler;
 mod tag_tree;
 mod telemetry_delete;
 pub(crate) mod ui;

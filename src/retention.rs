@@ -1,35 +1,47 @@
 use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
+use crate::license::LicenseStatus;
+use crate::models::{ComplianceHold, RetentionConfig};
+use crate::storage::{ArchiveSink, PurgeKind, Sample, Storage, VacuumReport};
+use crate::timeutil;
 use anyhow::{Context, Result};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-use crate::models::RetentionConfig;
-use crate::storage::{ArchiveSink, Sample, Storage};
-use crate::timeutil;
-
 /// Tag-hours packed per call before the worker takes a breath.
 const PACK_BATCH: usize = 2000;
 
-/// Background historian maintenance: the compaction worker packs complete
-/// hours older than `pack_after_secs` into compressed blocks every
-/// `pack_interval_secs`, and the retention cycle rolls expired tiers up every
-/// `run_interval_secs`. Both run on this one task so they never overlap.
-pub async fn run_retention_task(storage: Storage, config: RetentionConfig) {
-    if !config.enabled {
-        tracing::info!("Data retention disabled");
-        return;
+/// Background maintenance: the compaction worker packs complete hours older
+/// than `pack_after_secs` into compressed blocks every `pack_interval_secs`,
+/// and the retention cycle rolls expired tiers up, trims the event and audit
+/// tables and returns freed pages to the filesystem every `run_interval_secs`.
+/// All of it runs on this one task so the passes never overlap.
+///
+/// `retention.enabled: false` stops the historian tiers and the event and audit
+/// trimming, but expired refresh tokens are still removed: they are not data
+/// anyone keeps, and nothing else would ever delete them.
+pub async fn run_retention_task(
+    storage: Storage,
+    config: RetentionConfig,
+    license_status: Arc<RwLock<LicenseStatus>>,
+) {
+    if config.enabled {
+        tracing::info!(
+            "Historian maintenance started (pack: {} every {}s after {}s, retention every {}s, archive_dir: {})",
+            if config.pack_enabled { "on" } else { "off" },
+            config.pack_interval_secs,
+            config.pack_after_secs,
+            config.run_interval_secs,
+            config.archive_dir,
+        );
+    } else {
+        tracing::info!(
+            "Data retention disabled; expired refresh tokens are still removed every {}s",
+            config.run_interval_secs
+        );
     }
-
-    tracing::info!(
-        "Historian maintenance started (pack: {} every {}s after {}s, retention every {}s, archive_dir: {})",
-        if config.pack_enabled { "on" } else { "off" },
-        config.pack_interval_secs,
-        config.pack_after_secs,
-        config.run_interval_secs,
-        config.archive_dir,
-    );
 
     let mut retention_tick = tokio::time::interval(std::time::Duration::from_secs(
         config.run_interval_secs.max(1),
@@ -44,7 +56,7 @@ pub async fn run_retention_task(storage: Storage, config: RetentionConfig) {
         // A passive node keeps whatever its active peer replicates; packing,
         // deleting or rolling up history locally would diverge from it.
         tokio::select! {
-            _ = pack_tick.tick(), if config.pack_enabled => {
+            _ = pack_tick.tick(), if config.enabled && config.pack_enabled => {
                 if crate::node_role::is_active()
                     && let Err(e) = run_pack_cycle(&storage, &config).await
                 {
@@ -52,10 +64,19 @@ pub async fn run_retention_task(storage: Storage, config: RetentionConfig) {
                 }
             }
             _ = retention_tick.tick() => {
-                if crate::node_role::is_active()
+                if !crate::node_role::is_active() {
+                    continue;
+                }
+                if config.enabled
                     && let Err(e) = run_retention_cycle(&storage, &config).await
                 {
                     tracing::error!("Retention cycle failed: {e:#}");
+                }
+                let hold = ComplianceHold::from_tier(
+                    &license_status.read().unwrap_or_else(|e| e.into_inner()).tier(),
+                );
+                if let Err(e) = run_purge_cycle(&storage, &config, hold).await {
+                    tracing::error!("Event retention failed: {e:#}");
                 }
             }
         }
@@ -142,6 +163,115 @@ pub async fn run_retention_cycle(storage: &Storage, config: &RetentionConfig) ->
 
     tracing::info!("Retention cycle complete");
     Ok(())
+}
+
+/// What one [`run_purge_cycle`] removed.
+#[derive(Debug, Default)]
+pub struct PurgeSummary {
+    pub removed: Vec<(PurgeKind, u64)>,
+    /// `None` when `vacuum_step_pages` is 0.
+    pub vacuum: Option<VacuumReport>,
+}
+
+impl PurgeSummary {
+    /// Rows removed from the tables of `kind`.
+    pub fn removed(&self, kind: PurgeKind) -> u64 {
+        self.removed
+            .iter()
+            .filter(|(k, _)| *k == kind)
+            .map(|(_, n)| n)
+            .sum()
+    }
+}
+
+/// Trim the event and audit tables to their configured keep, then hand the
+/// freed pages back to the filesystem.
+///
+/// * Expired and revoked refresh tokens always go.
+/// * With `retention.enabled`, rows older than the effective keep of each class
+///   go (see [`RetentionConfig::effective_keep`]): cleared alarms, downtime
+///   events, the security log, run history and, only when configured and not
+///   held by the licence, the audit trails.
+///
+/// One failing table is logged and does not stop the others; the first error
+/// is returned at the end.
+pub async fn run_purge_cycle(
+    storage: &Storage,
+    config: &RetentionConfig,
+    hold: ComplianceHold,
+) -> Result<PurgeSummary> {
+    let now = timeutil::now_secs();
+    let mut plan = vec![(PurgeKind::RefreshTokens, now)];
+
+    if config.enabled {
+        let keep = config.effective_keep(hold);
+        let cutoff = |secs: u64| now.saturating_sub(i64::try_from(secs).unwrap_or(i64::MAX));
+        if let Some(secs) = keep.events {
+            plan.push((PurgeKind::ClearedAlarms, cutoff(secs)));
+            plan.push((PurgeKind::DowntimeEvents, cutoff(secs)));
+        }
+        if let Some(secs) = keep.security {
+            plan.push((PurgeKind::SecurityLog, cutoff(secs)));
+        }
+        if let Some(secs) = keep.run_logs {
+            plan.push((PurgeKind::FlowRuns, cutoff(secs)));
+            plan.push((PurgeKind::ScriptExecutions, cutoff(secs)));
+        }
+        if let Some(secs) = keep.audit {
+            plan.push((PurgeKind::AuditLog, cutoff(secs)));
+            plan.push((PurgeKind::AlarmAuditLog, cutoff(secs)));
+            plan.push((PurgeKind::FinishedCommands, cutoff(secs)));
+        }
+        if hold.audit && config.audit_keep_secs.is_some_and(|s| s > 0) {
+            tracing::info!(
+                "retention.audit_keep_secs is ignored: the licence includes 21 CFR Part 11 or IEC 62443 mode, so audit trails are kept"
+            );
+        }
+        if hold.security && config.security_keep_secs.is_some_and(|s| s > 0) {
+            tracing::info!(
+                "retention.security_keep_secs is ignored: the licence includes IEC 62443 mode, so the security log is kept"
+            );
+        }
+    }
+
+    let mut summary = PurgeSummary::default();
+    let mut first_error = None;
+    for (kind, cutoff) in plan {
+        match storage.purge(kind, cutoff, config.purge_batch_rows).await {
+            Ok(0) => {}
+            Ok(removed) => {
+                tracing::info!("Retention removed {removed} rows ({kind:?})");
+                summary.removed.push((kind, removed));
+            }
+            Err(e) => {
+                tracing::error!("Retention of {kind:?} failed: {e:#}");
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+
+    if config.vacuum_step_pages > 0 {
+        match storage.incremental_vacuum(config.vacuum_step_pages).await {
+            Ok(report) => {
+                if report.freed_pages > 0 {
+                    tracing::info!(
+                        "Returned {} free database pages to the filesystem",
+                        report.freed_pages
+                    );
+                }
+                summary.vacuum = Some(report);
+            }
+            Err(e) => {
+                tracing::error!("Incremental vacuum failed: {e:#}");
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(summary),
+    }
 }
 
 /// Appends expiring samples to `<archive_dir>/<YYYY-MM-DD>.csv.gz`, one gzip
@@ -237,6 +367,7 @@ mod tests {
             pack_enabled: true,
             pack_after_secs: 3600,
             pack_interval_secs: 60,
+            ..RetentionConfig::default()
         }
     }
 
@@ -386,5 +517,387 @@ mod tests {
             .unwrap();
         assert_eq!(count, 400);
         assert!((avg - 17.5).abs() < 1e-9, "weighted mean, got {avg}");
+    }
+
+    // ── Event and audit retention ──
+
+    const DAY: i64 = 86_400;
+
+    async fn count(storage: &Storage, table: &str) -> i64 {
+        let sql = format!("SELECT COUNT(*) FROM {table}");
+        storage
+            .with_conn(move |conn| Ok(conn.query_row(&sql, [], |r| r.get(0))?))
+            .await
+            .unwrap()
+    }
+
+    /// Every table retention touches, with one row ~900 days old and one fresh
+    /// row, plus rows that must survive any keep: an unresolved old alarm, an
+    /// ongoing downtime event, an unfinished command, an e-signature.
+    async fn seed_history(storage: &Storage) {
+        let t = timeutil::now_secs();
+        let old = t - 900 * DAY;
+        let recent = t - DAY;
+        storage
+            .with_conn(move |conn| {
+                for created in [old, recent] {
+                    conn.execute(
+                        "INSERT INTO alarms (source_key, severity, value, threshold, message, triggered_at, resolved_at, state)
+                         VALUES ('cleared', 'warning', 1, 1, 'm', ?1, ?1, 'resolved')",
+                        [created],
+                    )?;
+                    let alarm = conn.last_insert_rowid();
+                    conn.execute(
+                        "INSERT INTO alarm_journal (alarm_id, event, at) VALUES (?1, 'triggered', ?2)",
+                        rusqlite::params![alarm, created],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO alarm_audit_log (alarm_id, action, performed_by, created_at) VALUES (?1, 'created', 'system', ?2)",
+                        rusqlite::params![alarm, created],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO downtime_events (device_id, state, started_at, ended_at, created_at) VALUES ('d', 's', ?1, ?1 + 60, ?1)",
+                        [created],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO security_log (event_type, severity, created_at) VALUES ('login_failed', 'info', ?1)",
+                        [created],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO audit_log (action, username, resource, created_at) VALUES ('update', 'admin', 'device', ?1)",
+                        [created],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO flow_runs (flow_id, started_at, duration_ms, success) VALUES ('f', ?1, 5, 1)",
+                        [created],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO electronic_signatures (user_id, action, resource_type, resource_id, reason, meaning, signature_hash, created_at)
+                         VALUES ('admin', 'approve', 'recipe', '1', 'r', 'm', 'h', ?1)",
+                        [created],
+                    )?;
+                }
+                conn.execute(
+                    "INSERT INTO scripts (id, name, source) VALUES (1, 's', '')",
+                    [],
+                )?;
+                for created in [old, recent] {
+                    conn.execute(
+                        "INSERT INTO script_executions (script_id, duration_ms, status, created_at) VALUES (1, 5, 'success', ?1)",
+                        [created],
+                    )?;
+                    let id = format!("done{created}");
+                    conn.execute(
+                        "INSERT INTO commands (id, data_source_id, device_id, protocol, value, status, policy, created_at, resolved_at, created_by)
+                         VALUES (?1, 1, 1, 'modbus', '1', 'acked', 'immediate', ?2, ?2, 'op')",
+                        rusqlite::params![id, created],
+                    )?;
+                    conn.execute(
+                        "INSERT INTO command_audit_log (command_id, old_status, new_status, changed_by, created_at) VALUES (?1, 'sent', 'acked', 'system', ?2)",
+                        rusqlite::params![id, created],
+                    )?;
+                }
+                // Survivors, however old.
+                conn.execute(
+                    "INSERT INTO alarms (source_key, severity, value, threshold, message, triggered_at, state)
+                     VALUES ('active', 'critical', 1, 1, 'm', ?1, 'active')",
+                    [old],
+                )?;
+                conn.execute(
+                    "INSERT INTO downtime_events (device_id, state, started_at, created_at) VALUES ('d', 's', ?1, ?1)",
+                    [old],
+                )?;
+                conn.execute(
+                    "INSERT INTO commands (id, data_source_id, device_id, protocol, value, status, policy, created_at, created_by)
+                     VALUES ('inflight', 1, 1, 'modbus', '1', 'sent', 'immediate', ?1, 'op')",
+                    [old],
+                )?;
+                // Tokens: expired, live.
+                conn.execute(
+                    "INSERT INTO refresh_tokens (token_hash, username, expires_at, created_at) VALUES ('expired', 'u', ?1, ?2)",
+                    rusqlite::params![t - 10, old],
+                )?;
+                conn.execute(
+                    "INSERT INTO refresh_tokens (token_hash, username, expires_at, created_at) VALUES ('live', 'u', ?1, ?2)",
+                    rusqlite::params![t + 1000, t],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Row counts of every table seeded above.
+    async fn counts(storage: &Storage) -> std::collections::BTreeMap<&'static str, i64> {
+        let mut out = std::collections::BTreeMap::new();
+        for table in [
+            "alarms",
+            "alarm_journal",
+            "alarm_audit_log",
+            "downtime_events",
+            "security_log",
+            "audit_log",
+            "flow_runs",
+            "script_executions",
+            "electronic_signatures",
+            "commands",
+            "command_audit_log",
+            "refresh_tokens",
+        ] {
+            out.insert(table, count(storage, table).await);
+        }
+        out
+    }
+
+    const NO_HOLD: ComplianceHold = ComplianceHold {
+        audit: false,
+        security: false,
+    };
+
+    #[tokio::test]
+    async fn defaults_trim_events_and_keep_every_audit_trail() {
+        let storage = Storage::new_in_memory().unwrap();
+        seed_history(&storage).await;
+
+        let summary = run_purge_cycle(&storage, &RetentionConfig::default(), NO_HOLD)
+            .await
+            .unwrap();
+
+        let c = counts(&storage).await;
+        // Events: the 900-day-old cleared alarm, ended downtime, security row,
+        // flow run and script execution are gone (2 years / 90 days); recent
+        // ones, the active alarm and the ongoing downtime stay.
+        assert_eq!(c["alarms"], 2, "recent cleared + old active");
+        assert_eq!(c["alarm_journal"], 1, "the old alarm's journal follows it");
+        assert_eq!(c["downtime_events"], 2, "recent ended + old ongoing");
+        assert_eq!(c["security_log"], 1);
+        assert_eq!(c["flow_runs"], 1);
+        assert_eq!(c["script_executions"], 1);
+        // Audit trails and signatures: nothing deleted by default.
+        assert_eq!(c["audit_log"], 2);
+        assert_eq!(c["alarm_audit_log"], 2, "audit rows outlive their alarm");
+        assert_eq!(c["commands"], 3);
+        assert_eq!(c["command_audit_log"], 2);
+        assert_eq!(c["electronic_signatures"], 2);
+        // Tokens: expired gone, live stays.
+        assert_eq!(c["refresh_tokens"], 1);
+
+        assert_eq!(summary.removed(PurgeKind::RefreshTokens), 1);
+        assert_eq!(summary.removed(PurgeKind::ClearedAlarms), 1);
+        assert_eq!(summary.removed(PurgeKind::AuditLog), 0);
+        assert!(summary.vacuum.is_some());
+    }
+
+    #[tokio::test]
+    async fn audit_retention_is_opt_in_and_never_touches_signatures() {
+        let storage = Storage::new_in_memory().unwrap();
+        seed_history(&storage).await;
+        let cfg = RetentionConfig {
+            audit_keep_secs: Some(730 * DAY as u64),
+            ..RetentionConfig::default()
+        };
+
+        run_purge_cycle(&storage, &cfg, NO_HOLD).await.unwrap();
+
+        let c = counts(&storage).await;
+        assert_eq!(c["audit_log"], 1);
+        assert_eq!(c["alarm_audit_log"], 1);
+        assert_eq!(
+            c["commands"], 2,
+            "finished old command gone, in-flight and recent stay"
+        );
+        assert_eq!(c["command_audit_log"], 1);
+        assert_eq!(
+            c["electronic_signatures"], 2,
+            "Part 11 records are never purged"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_licence_hold_overrides_configured_audit_and_security_keep() {
+        let hold = ComplianceHold::from_tier(&crate::license::LicenseTier::Enterprise);
+        assert_eq!(
+            hold,
+            ComplianceHold {
+                audit: true,
+                security: true
+            }
+        );
+        assert_eq!(
+            ComplianceHold::from_tier(&crate::license::LicenseTier::Community),
+            NO_HOLD
+        );
+        assert_eq!(
+            ComplianceHold::from_tier(&crate::license::LicenseTier::Integrator),
+            NO_HOLD
+        );
+
+        let storage = Storage::new_in_memory().unwrap();
+        seed_history(&storage).await;
+        let before = counts(&storage).await;
+        let cfg = RetentionConfig {
+            audit_keep_secs: Some(DAY as u64),
+            security_keep_secs: Some(DAY as u64),
+            ..RetentionConfig::default()
+        };
+
+        run_purge_cycle(&storage, &cfg, hold).await.unwrap();
+
+        let c = counts(&storage).await;
+        for table in [
+            "audit_log",
+            "alarm_audit_log",
+            "commands",
+            "command_audit_log",
+            "security_log",
+            "electronic_signatures",
+        ] {
+            assert_eq!(c[table], before[table], "{table} is held");
+        }
+        // Event history is not held: the old cleared alarm still goes.
+        assert_eq!(c["alarms"], 2);
+    }
+
+    #[test]
+    fn effective_keep_treats_zero_and_null_as_forever_and_applies_the_hold() {
+        let cfg = RetentionConfig {
+            event_keep_secs: Some(0),
+            security_keep_secs: None,
+            audit_keep_secs: Some(5),
+            run_log_keep_secs: Some(7),
+            ..RetentionConfig::default()
+        };
+        let keep = cfg.effective_keep(NO_HOLD);
+        assert_eq!(keep.events, None);
+        assert_eq!(keep.security, None);
+        assert_eq!(keep.audit, Some(5));
+        assert_eq!(keep.run_logs, Some(7));
+
+        let held = cfg.effective_keep(ComplianceHold {
+            audit: true,
+            security: false,
+        });
+        assert_eq!(held.audit, None);
+        assert_eq!(held.run_logs, Some(7));
+    }
+
+    #[test]
+    fn config_defaults_apply_when_the_keys_are_absent() {
+        let cfg: RetentionConfig = serde_yaml_neo::from_str("run_interval_secs: 60\n").unwrap();
+        let keep = cfg.effective_keep(NO_HOLD);
+        assert_eq!(keep.events, Some(2 * 365 * 86_400));
+        assert_eq!(keep.security, Some(2 * 365 * 86_400));
+        assert_eq!(keep.audit, None, "audit trails default to forever");
+        assert_eq!(keep.run_logs, Some(90 * 86_400));
+        assert_eq!(cfg.purge_batch_rows, 5_000);
+        assert_eq!(cfg.vacuum_step_pages, 2_000);
+
+        let cfg: RetentionConfig = serde_yaml_neo::from_str(
+            "event_keep_secs: null\nsecurity_keep_secs: 0\naudit_keep_secs: 100\nrun_log_keep_secs: 50\n",
+        )
+        .unwrap();
+        let keep = cfg.effective_keep(NO_HOLD);
+        assert_eq!(keep.events, None, "explicit null keeps forever");
+        assert_eq!(keep.security, None, "0 keeps forever");
+        assert_eq!(keep.audit, Some(100));
+        assert_eq!(keep.run_logs, Some(50));
+    }
+
+    #[tokio::test]
+    async fn forever_keeps_every_event_but_still_drops_expired_tokens() {
+        let storage = Storage::new_in_memory().unwrap();
+        seed_history(&storage).await;
+        let cfg = RetentionConfig {
+            event_keep_secs: Some(0),
+            security_keep_secs: None,
+            run_log_keep_secs: Some(0),
+            ..RetentionConfig::default()
+        };
+
+        run_purge_cycle(&storage, &cfg, NO_HOLD).await.unwrap();
+
+        let c = counts(&storage).await;
+        assert_eq!(c["alarms"], 3);
+        assert_eq!(c["downtime_events"], 3);
+        assert_eq!(c["security_log"], 2);
+        assert_eq!(c["flow_runs"], 2);
+        assert_eq!(c["script_executions"], 2);
+        assert_eq!(c["refresh_tokens"], 1);
+    }
+
+    #[tokio::test]
+    async fn disabled_retention_still_purges_expired_tokens_and_nothing_else() {
+        let storage = Storage::new_in_memory().unwrap();
+        seed_history(&storage).await;
+        let before = counts(&storage).await;
+        let cfg = RetentionConfig {
+            enabled: false,
+            audit_keep_secs: Some(DAY as u64),
+            ..RetentionConfig::default()
+        };
+
+        run_purge_cycle(&storage, &cfg, NO_HOLD).await.unwrap();
+
+        let c = counts(&storage).await;
+        assert_eq!(c["refresh_tokens"], 1);
+        for table in before.keys().filter(|t| **t != "refresh_tokens") {
+            assert_eq!(c[table], before[table], "{table}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_one_second_keep_still_spares_unresolved_alarms() {
+        let storage = Storage::new_in_memory().unwrap();
+        seed_history(&storage).await;
+        let cfg = RetentionConfig {
+            event_keep_secs: Some(1),
+            ..RetentionConfig::default()
+        };
+
+        run_purge_cycle(&storage, &cfg, NO_HOLD).await.unwrap();
+
+        let active: i64 = storage
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM alarms WHERE source_key = 'active' AND resolved_at IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .await
+            .unwrap();
+        assert_eq!(active, 1);
+        assert_eq!(
+            count(&storage, "alarms").await,
+            1,
+            "every cleared alarm is gone"
+        );
+        assert_eq!(
+            count(&storage, "downtime_events").await,
+            1,
+            "the ongoing downtime event stays"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_failing_table_does_not_stop_the_others() {
+        let storage = Storage::new_in_memory().unwrap();
+        seed_history(&storage).await;
+        storage
+            .with_conn(|conn| Ok(conn.execute_batch("DROP TABLE security_log;")?))
+            .await
+            .unwrap();
+
+        let err = run_purge_cycle(&storage, &RetentionConfig::default(), NO_HOLD)
+            .await
+            .unwrap_err();
+
+        assert!(format!("{err:#}").contains("security_log"), "{err:#}");
+        assert_eq!(count(&storage, "refresh_tokens").await, 1);
+        assert_eq!(
+            count(&storage, "flow_runs").await,
+            1,
+            "later tables still ran"
+        );
     }
 }

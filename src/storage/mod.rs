@@ -27,6 +27,7 @@ mod notifications;
 mod oee;
 #[cfg(feature = "opcua")]
 mod opcua_storage;
+mod purge;
 mod recipes_storage;
 mod reports;
 mod retention;
@@ -60,6 +61,12 @@ use crate::models::DataPoint;
 pub use historian::{
     Agg, ArchiveSink, BUCKET_SECS, ExpireReport, PackReport, PackedStats, Sample, SeriesBucket,
 };
+pub use purge::{FullVacuumReport, PurgeKind, VacuumReport};
+
+/// Upper bound the WAL file is truncated to after a checkpoint. A burst (a large
+/// purge, a restore, a project import) can grow the WAL well past this; without
+/// the limit it would then stay that size on disk for good.
+const WAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
 
 /// The database encryption key, kept so side connections can open the same file.
 /// Never printed.
@@ -163,6 +170,12 @@ impl Storage {
             }
         }
 
+        // auto_vacuum only takes effect on a database that has no tables yet, so it
+        // is set before the first write: a new database can then hand free pages
+        // back with `incremental_vacuum` (see `Storage::incremental_vacuum`). An
+        // existing database keeps the mode it was created with until `voltrus db
+        // vacuum` rebuilds it.
+        let _ = conn.execute_batch("PRAGMA auto_vacuum=INCREMENTAL;");
         // WAL with synchronous=NORMAL, the settings the database runs with, are set
         // before the schema is created. Creating it in the default rollback-journal
         // mode with synchronous=FULL costs an fsync (several, in fact) per statement:
@@ -172,6 +185,10 @@ impl Storage {
         let _ = conn.execute_batch("PRAGMA synchronous=NORMAL;");
         let _ = conn.execute_batch("PRAGMA wal_autocheckpoint=1000;");
         let _ = conn.execute_batch("PRAGMA busy_timeout=5000;");
+        // Without a limit the WAL file keeps the size of its largest burst forever.
+        let _ = conn.execute_batch(&format!(
+            "PRAGMA journal_size_limit={WAL_SIZE_LIMIT_BYTES};"
+        ));
 
         schema::init_schema(&conn)?;
 
@@ -279,8 +296,16 @@ impl Storage {
                 tracing::error!("Storage mutex poisoned: {e}");
                 e.into_inner()
             });
+            // Pragmas answer with text (`journal_mode`) or integers (`auto_vacuum`).
             let result: String = conn
-                .query_row(&sql, [], |row| row.get(0))
+                .query_row(&sql, [], |row| {
+                    Ok(match row.get::<_, rusqlite::types::Value>(0)? {
+                        rusqlite::types::Value::Text(text) => text,
+                        rusqlite::types::Value::Integer(n) => n.to_string(),
+                        rusqlite::types::Value::Real(x) => x.to_string(),
+                        other => format!("{other:?}"),
+                    })
+                })
                 .context(format!("Failed to query PRAGMA: {}", sql))?;
             Ok(result)
         })
