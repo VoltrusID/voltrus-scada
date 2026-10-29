@@ -180,8 +180,12 @@ aggregate of an hour is computed from its block.
 
 ## Limits
 
-* Blocks are per tag and hour. A trend over a long range decodes the blocks it
-  covers, one at a time, and releases the database between tags.
+* Blocks are per tag and hour. A trend over a long range reads the blocks it
+  covers one tag at a time and releases the database between tags. Each block
+  stores its lowest, highest, sum and newest value, so a bucket that holds
+  whole blocks (the 30 day trend uses 4 h buckets) is answered without
+  decoding them; narrower buckets decode the blocks they cut through. Blocks
+  packed by an older version have no summary and are always decoded.
 
 ## Reading history without losing the end of the window
 

@@ -918,3 +918,106 @@ async fn the_hot_window_stays_raw() {
         .unwrap();
     assert_eq!(oldest_raw, BASE + 2 * HOUR);
 }
+
+#[tokio::test]
+async fn long_buckets_use_block_summaries_and_agree_with_decoding() {
+    let mut rows = generate(11);
+    // A tag with a non-finite sample has no summary and is always decoded.
+    rows.push(("d1".into(), BASE + 100, "odd".into(), 1.0));
+    rows.push(("d1".into(), BASE + 101, "odd".into(), f64::INFINITY));
+    rows.push(("d1".into(), BASE + 102, "odd".into(), 3.0));
+    let storage = Storage::new_in_memory().unwrap();
+    storage.insert_batch(&rows).await.unwrap();
+    storage
+        .pack_history(BASE + 6 * HOUR, usize::MAX)
+        .await
+        .unwrap();
+
+    let summarised = |s: &Storage| {
+        let s = s.clone();
+        async move {
+            s.with_conn(|c| {
+                Ok(c.query_row(
+                    "SELECT COUNT(*) FROM telemetry_blocks WHERE sum_v IS NOT NULL",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )?)
+            })
+            .await
+            .unwrap()
+        }
+    };
+    assert_eq!(
+        summarised(&storage).await,
+        5 * 6,
+        "every finite block has a summary"
+    );
+
+    let width = 86_400;
+    let with_summaries = storage
+        .query_device_series("d1", BASE, BASE + 6 * HOUR, width, None)
+        .await
+        .unwrap();
+    // Forget the summaries, as for blocks packed before they existed.
+    storage
+        .with_conn(|c| {
+            c.execute_batch("UPDATE telemetry_blocks SET min_v = NULL, max_v = NULL, sum_v = NULL, last_v = NULL")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(summarised(&storage).await, 0);
+    let decoded = storage
+        .query_device_series("d1", BASE, BASE + 6 * HOUR, width, None)
+        .await
+        .unwrap();
+
+    assert_eq!(with_summaries.len(), decoded.len());
+    for (metric, a) in &with_summaries {
+        let b = &decoded[metric];
+        assert_eq!(a.len(), b.len(), "{metric}");
+        for (x, y) in a.iter().zip(b) {
+            assert_eq!(
+                (x.start, x.min, x.max, x.last, x.last_ts, x.count),
+                (y.start, y.min, y.max, y.last, y.last_ts, y.count),
+                "{metric}"
+            );
+            assert!(
+                (x.avg - y.avg).abs() <= 1e-9 * y.avg.abs().max(1.0),
+                "{metric}: {} vs {}",
+                x.avg,
+                y.avg
+            );
+        }
+    }
+    // The tag with an infinity counts its two finite samples.
+    assert_eq!(decoded["odd"][0].count, 2);
+    assert_eq!(decoded["odd"][0].max, 3.0);
+
+    // Deleting inside a block rewrites its summary too.
+    storage
+        .pack_history(BASE + 6 * HOUR, usize::MAX)
+        .await
+        .unwrap();
+    storage
+        .delete_telemetry_range("d1", Some("temp"), BASE + 600, BASE + HOUR + 600)
+        .await
+        .unwrap();
+    let after = storage
+        .query_device_series(
+            "d1",
+            BASE,
+            BASE + 6 * HOUR,
+            width,
+            Some(["temp".to_string()].into()),
+        )
+        .await
+        .unwrap();
+    let want = rows
+        .iter()
+        .filter(|r| {
+            r.0 == "d1" && r.2 == "temp" && !(r.1 >= BASE + 600 && r.1 <= BASE + HOUR + 600)
+        })
+        .count() as u64;
+    assert_eq!(after["temp"].iter().map(|b| b.count).sum::<u64>(), want);
+}

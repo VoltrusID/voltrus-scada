@@ -478,6 +478,34 @@ impl Agg {
         self.last_ts = self.last_ts.max(ts);
     }
 
+    /// The compensated sum of everything added.
+    pub fn total(&self) -> f64 {
+        if self.err.is_finite() {
+            self.sum + self.err
+        } else {
+            self.sum
+        }
+    }
+
+    /// Fold in a block's summary: `count` samples between `first_ts` and
+    /// `last_ts` with the given sum, lowest and highest value.
+    pub fn add_sum(
+        &mut self,
+        first_ts: i64,
+        last_ts: i64,
+        sum: f64,
+        min: f64,
+        max: f64,
+        count: u64,
+    ) {
+        self.add_to_sum(sum);
+        self.min = self.min.min(min);
+        self.max = self.max.max(max);
+        self.count += count;
+        self.first_ts = self.first_ts.min(first_ts);
+        self.last_ts = self.last_ts.max(last_ts);
+    }
+
     pub fn mean(&self) -> f64 {
         if self.count == 0 {
             return 0.0;
@@ -611,8 +639,10 @@ pub(super) fn delete_packed_range(
                 params![dev, met, bucket, seq],
             )?;
         } else {
+            let stats = block_stats(&kept);
             conn.execute(
-                "UPDATE telemetry_blocks SET first_ts = ?5, last_ts = ?6, sample_count = ?7, data = ?8
+                "UPDATE telemetry_blocks SET first_ts = ?5, last_ts = ?6, sample_count = ?7, data = ?8,
+                        min_v = ?9, max_v = ?10, sum_v = ?11, last_v = ?12
                  WHERE device_id = ?1 AND metric = ?2 AND bucket_start = ?3 AND seq = ?4",
                 params![
                     dev,
@@ -622,12 +652,45 @@ pub(super) fn delete_packed_range(
                     kept[0].0,
                     kept[kept.len() - 1].0,
                     kept.len() as i64,
-                    encode_checked(&kept)?
+                    encode_checked(&kept)?,
+                    stats.map(|s| s.min),
+                    stats.map(|s| s.max),
+                    stats.map(|s| s.sum),
+                    stats.map(|s| s.last),
                 ],
             )?;
         }
     }
     Ok(removed)
+}
+
+// ── Block summaries ──
+
+/// Min, max, sum and newest value of a block's samples, stored next to the
+/// block so a bucket that holds a whole block need not decode it. Only for
+/// blocks whose samples are all finite; the others are decoded as always.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BlockStats {
+    min: f64,
+    max: f64,
+    sum: f64,
+    last: f64,
+}
+
+fn block_stats(samples: &[Sample]) -> Option<BlockStats> {
+    let mut agg = Agg::new();
+    for &(ts, v) in samples {
+        if !v.is_finite() {
+            return None;
+        }
+        agg.add(ts, v);
+    }
+    Some(BlockStats {
+        min: agg.min,
+        max: agg.max,
+        sum: agg.total(),
+        last: samples.last()?.1,
+    })
 }
 
 // ── Packing ──
@@ -688,7 +751,7 @@ fn pack_bucket(conn: &Connection, device_id: &str, metric: &str, bucket: i64) ->
     let packed_raw = raw.len() as u64;
     let samples = merge_by_timestamp(existing, raw, usize::MAX);
 
-    let encoded: Vec<(i64, i64, usize, Vec<u8>)> = samples
+    let encoded: Vec<(i64, i64, usize, Vec<u8>, Option<BlockStats>)> = samples
         .chunks(MAX_BLOCK_SAMPLES)
         .map(|chunk| {
             Ok((
@@ -696,6 +759,7 @@ fn pack_bucket(conn: &Connection, device_id: &str, metric: &str, bucket: i64) ->
                 chunk[chunk.len() - 1].0,
                 chunk.len(),
                 encode_checked(chunk)?,
+                block_stats(chunk),
             ))
         })
         .collect::<Result<_>>()?;
@@ -704,11 +768,12 @@ fn pack_bucket(conn: &Connection, device_id: &str, metric: &str, bucket: i64) ->
         "DELETE FROM telemetry_blocks WHERE device_id = ?1 AND metric = ?2 AND bucket_start = ?3",
         params![device_id, metric, bucket],
     )?;
-    for (seq, (first_ts, last_ts, count, data)) in encoded.iter().enumerate() {
+    for (seq, (first_ts, last_ts, count, data, stats)) in encoded.iter().enumerate() {
         tx.execute(
             "INSERT INTO telemetry_blocks
-                 (device_id, metric, bucket_start, seq, first_ts, last_ts, sample_count, data)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 (device_id, metric, bucket_start, seq, first_ts, last_ts, sample_count, data,
+                  min_v, max_v, sum_v, last_v)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 device_id,
                 metric,
@@ -717,7 +782,11 @@ fn pack_bucket(conn: &Connection, device_id: &str, metric: &str, bucket: i64) ->
                 first_ts,
                 last_ts,
                 *count as i64,
-                data
+                data,
+                stats.map(|s| s.min),
+                stats.map(|s| s.max),
+                stats.map(|s| s.sum),
+                stats.map(|s| s.last),
             ],
         )?;
     }
@@ -1101,6 +1170,27 @@ impl Bucketer {
         acc.agg.add(ts, v);
     }
 
+    /// A whole block that lies inside one bucket, from its stored summary.
+    fn block(
+        &mut self,
+        first_ts: i64,
+        last_ts: i64,
+        count: u64,
+        min: f64,
+        max: f64,
+        sum: f64,
+        last: f64,
+    ) {
+        if count == 0 {
+            return;
+        }
+        let acc = self.slot(last_ts);
+        if last_ts >= acc.agg.last_ts {
+            acc.last = last;
+        }
+        acc.agg.add_sum(first_ts, last_ts, sum, min, max, count);
+    }
+
     fn aggregate(&mut self, ts: i64, mean: f64, min: f64, max: f64, count: u64) {
         if count == 0 || !mean.is_finite() {
             return;
@@ -1187,10 +1277,69 @@ pub(super) fn bucket_series(
             );
         }
     }
-    scan_series(conn, device_id, metric, from, to, |ts, v| {
-        b.sample(ts, v);
-        true
-    })?;
+    // Packed blocks first, then the raw rows (newer, so they win a tie on the
+    // newest sample). Order inside a bucket does not matter to the result.
+    {
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT first_ts, last_ts, sample_count, min_v, max_v, sum_v, last_v, data
+                 FROM telemetry_blocks
+                 WHERE device_id = ?1 AND metric = ?2
+                   AND bucket_start >= ?3 AND bucket_start <= ?4
+                   AND last_ts >= ?5 AND first_ts <= ?6
+                 ORDER BY bucket_start, seq",
+            )
+            .context("Prepare packed bucket query failed")?;
+        let mut rows = stmt
+            .query(params![device_id, metric, bucket_start(from), to, from, to])
+            .context("Packed bucket query failed")?;
+        while let Some(row) = rows.next().context("Packed bucket row failed")? {
+            let (first_ts, last_ts): (i64, i64) = (row.get(0)?, row.get(1)?);
+            let one_bucket = first_ts.div_euclid(b.width) == last_ts.div_euclid(b.width);
+            let inside = first_ts >= from && last_ts <= to;
+            if one_bucket && inside {
+                let stats = (
+                    row.get::<_, Option<f64>>(3)?,
+                    row.get::<_, Option<f64>>(4)?,
+                    row.get::<_, Option<f64>>(5)?,
+                    row.get::<_, Option<f64>>(6)?,
+                );
+                if let (Some(min), Some(max), Some(sum), Some(last)) = stats {
+                    b.block(
+                        first_ts,
+                        last_ts,
+                        row.get::<_, i64>(2)?.max(0) as u64,
+                        min,
+                        max,
+                        sum,
+                        last,
+                    );
+                    continue;
+                }
+            }
+            let data = row.get_ref(7)?.as_blob().context("Block is not a blob")?;
+            for (ts, v) in decode_series(data).context("Corrupt history block")? {
+                if ts >= from && ts <= to {
+                    b.sample(ts, v);
+                }
+            }
+        }
+    }
+    {
+        let mut stmt = conn
+            .prepare_cached(
+                "SELECT timestamp, value FROM telemetry
+                 WHERE device_id = ?1 AND metric = ?2 AND timestamp >= ?3 AND timestamp <= ?4
+                 ORDER BY timestamp, id",
+            )
+            .context("Prepare raw bucket query failed")?;
+        let mut rows = stmt
+            .query(params![device_id, metric, from, to])
+            .context("Raw bucket query failed")?;
+        while let Some(row) = rows.next().context("Raw bucket row failed")? {
+            b.sample(row.get(0)?, row.get(1)?);
+        }
+    }
     Ok(b.finish())
 }
 

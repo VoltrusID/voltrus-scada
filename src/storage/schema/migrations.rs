@@ -502,6 +502,14 @@ pub(super) fn run_migrations(conn: &Connection) {
     if let Err(e) = rebuild_notification_settings(conn) {
         tracing::error!("Failed to migrate notification_settings: {e}");
     }
+    // Migration: per-block summaries (lowest, highest, sum and newest value) so a
+    // long trend bucket that holds a whole block does not decode it. NULL on
+    // blocks packed before this; those are decoded as before.
+    for col in ["min_v", "max_v", "sum_v", "last_v"] {
+        let _ = conn.execute_batch(&format!(
+            "ALTER TABLE telemetry_blocks ADD COLUMN {col} REAL"
+        ));
+    }
 }
 
 const NOTIFICATION_CHANNELS: &str = "'email', 'webhook', 'push', 'telegram', 'whatsapp'";
