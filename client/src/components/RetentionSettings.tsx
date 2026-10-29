@@ -1,6 +1,6 @@
 import React from 'react'
 import { useCompressionConfig } from '../queries/compression'
-import { formatDuration } from '../storageFormat'
+import { eventRetentionRows, formatDuration } from '../storageFormat'
 import { cardStyle, noteStyle, sectionTitle } from './storageStyles'
 
 /**
@@ -21,7 +21,7 @@ export const RetentionSettings: React.FC = () => {
   }
 
   const rows: [string, string, string][] = [
-    ['Retention worker', cfg.enabled ? 'on' : 'off', 'retention.enabled. When off, nothing is packed or expired.'],
+    ['Retention worker', cfg.enabled ? 'on' : 'off', 'retention.enabled. When off, nothing is packed or expired (expired login tokens are still removed).'],
     ['Packing', cfg.pack_enabled ? 'on' : 'off', 'retention.pack_enabled. Packs full-resolution samples into compressed blocks.'],
     ['Pack after', formatDuration(cfg.pack_after_secs), 'retention.pack_after_secs. Complete hours older than this are packed.'],
     ['Pack every', formatDuration(cfg.pack_interval_secs), 'retention.pack_interval_secs.'],
@@ -29,6 +29,7 @@ export const RetentionSettings: React.FC = () => {
     ['Hourly kept', formatDuration(cfg.hourly_keep_secs), 'tier hourly, keep, counted past the full-resolution window.'],
     ['Daily kept', formatDuration(cfg.daily_keep_secs), 'tier daily, keep, counted past the hourly window.'],
     ['Archive expiring data', cfg.archive_raw ? 'on' : 'off', 'tier raw, archive. Exports what leaves full resolution to CSV before deleting it; the files are large.'],
+    ...eventRetentionRows(cfg),
   ]
 
   return (

@@ -8,6 +8,7 @@ mod hub_tests;
 mod license_tests;
 mod modbus_tests;
 mod oee_tests;
+mod purge_tests;
 mod security_tests;
 mod tag_tree_tests;
 mod telemetry_tests;

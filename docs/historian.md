@@ -163,6 +163,11 @@ Once per `run_interval_secs`:
   mean weighs each hour by its sample count) and removed,
 * daily rows older than the `daily` window, if one is set, are removed.
 
+The same worker also trims the event and audit tables (cleared alarms,
+downtime, security log, run history, refresh tokens) and returns freed database
+pages to the filesystem. Those keys, their defaults, the compliance rules for
+audit trails and `voltrus db vacuum` are in [retention.md](retention.md).
+
 Packing can be switched off with `pack_enabled: false`; samples then stay plain
 rows until they expire. Expiry always goes through blocks, because the hourly
 aggregate of an hour is computed from its block.
@@ -171,7 +176,10 @@ aggregate of an hour is computed from its block.
 
 * `GET /api/v1/compression/stats`: row counts per tier, packed blocks, samples,
   payload bytes and bytes per sample, database size.
-* `GET /api/v1/compression/config`: the running retention and packing settings.
+* `GET /api/v1/compression/config`: the running retention and packing settings,
+  including the event and audit keeps in force (`null` is forever).
+* `voltrus db vacuum`: rebuild the database file to reclaim free space (server
+  stopped); see [retention.md](retention.md).
 * `GET /api/v1/compression/deadband`: tags that filter their history writes.
 * `voltrus db stats [CONFIG]`: the same statistics from the command line.
 * `DELETE /api/v1/telemetry` removes samples from rows and blocks alike;

@@ -163,7 +163,7 @@ pub(super) fn run_migrations(conn: &Connection) {
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS alarm_audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            alarm_id INTEGER NOT NULL REFERENCES alarms(id) ON DELETE CASCADE,
+            alarm_id INTEGER NOT NULL,
             action TEXT NOT NULL,
             performed_by TEXT NOT NULL,
             details TEXT NOT NULL DEFAULT '',
@@ -502,6 +502,56 @@ pub(super) fn run_migrations(conn: &Connection) {
     if let Err(e) = rebuild_notification_settings(conn) {
         tracing::error!("Failed to migrate notification_settings: {e}");
     }
+
+    // Migration: the alarm audit trail outlives the alarm row. Event retention
+    // removes old cleared alarms; their audit rows are only ever removed by the
+    // separate, opt-in `audit_keep_secs`, which a `ON DELETE CASCADE` would bypass.
+    if let Err(e) = detach_alarm_audit_from_alarms(conn) {
+        tracing::error!("Failed to migrate alarm_audit_log: {e}");
+    }
+
+    // Migration: indexes for the retention purge, which finds rows by age. Without
+    // them every batch of a large first purge would scan the whole table.
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_alarm_audit_created ON alarm_audit_log(created_at);
+         CREATE INDEX IF NOT EXISTS idx_flow_runs_started ON flow_runs(started_at);",
+    );
+}
+
+/// Rebuild `alarm_audit_log` without its foreign key to `alarms` when the stored
+/// table still has it (SQLite cannot drop a constraint in place). Rows are kept.
+fn detach_alarm_audit_from_alarms(conn: &Connection) -> rusqlite::Result<()> {
+    let has_fk: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_foreign_key_list('alarm_audit_log')",
+        [],
+        |row| row.get(0),
+    )?;
+    if has_fk == 0 {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE alarm_audit_log_new (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             alarm_id INTEGER NOT NULL,
+             action TEXT NOT NULL,
+             performed_by TEXT NOT NULL,
+             details TEXT NOT NULL DEFAULT '',
+             created_at INTEGER NOT NULL
+         );
+         INSERT INTO alarm_audit_log_new (id, alarm_id, action, performed_by, details, created_at)
+             SELECT id, alarm_id, action, performed_by, details, created_at FROM alarm_audit_log;
+         DROP TABLE alarm_audit_log;
+         ALTER TABLE alarm_audit_log_new RENAME TO alarm_audit_log;
+         CREATE INDEX IF NOT EXISTS idx_alarm_audit_alarm_time
+             ON alarm_audit_log(alarm_id, created_at);
+         CREATE INDEX IF NOT EXISTS idx_alarm_audit_action_time
+             ON alarm_audit_log(action, created_at);
+         COMMIT;",
+    )
+    .inspect_err(|_| {
+        let _ = conn.execute_batch("ROLLBACK;");
+    })
 }
 
 const NOTIFICATION_CHANNELS: &str = "'email', 'webhook', 'push', 'telegram', 'whatsapp'";
