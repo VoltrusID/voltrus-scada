@@ -316,7 +316,13 @@ pub enum Event {
         /// The server wants a new password before the operator works.
         must_change_password: bool,
     },
-    SignInFailed(String),
+    SignInFailed {
+        message: String,
+        /// The server refused the credentials (wrong password, locked or
+        /// disabled account), as opposed to being unreachable or busy:
+        /// trying them again only counts towards locking the account.
+        refused: bool,
+    },
     PasswordChanged(Result<(), String>),
     Tags(Vec<DataSource>),
     Updates(Vec<TagUpdateEntry>),
@@ -866,7 +872,10 @@ impl Actor {
                         self.begin(api, must_change.then_some(password));
                     }
                     Err(error) => {
-                        self.out.send(Event::SignInFailed(error.to_string()));
+                        self.out.send(Event::SignInFailed {
+                            message: error.to_string(),
+                            refused: api::refused(&error),
+                        });
                         self.out.send(Event::Link(Link::SignedOut));
                     }
                 }

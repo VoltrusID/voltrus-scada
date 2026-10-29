@@ -140,10 +140,12 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-  # The native operator console, as an ad-hoc signed app bundle for Apple
-  # silicon (see native/README-native.md).
+  # The native operator console with the server inside, as an ad-hoc signed
+  # app bundle for Apple silicon (see native/README-native.md). The server
+  # embeds the web client, so this job waits for it like `build`.
   native-macos:
     name: native-macos-aarch64
+    needs: client
     runs-on: macos-15
     permissions:
       contents: read
@@ -155,12 +157,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: native-macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: static
+          path: static
       - name: Build
-        run: cargo build --locked --release -p voltrus-scada-native
+        run: |
+          test -f static/index.html || { echo "static/index.html is missing: the web client has to be built first"; exit 1; }
+          cargo build --locked --release --workspace --bin voltrus-native --bin voltrus
       - name: Package
         run: |
           zip="voltrus-native-${GITHUB_REF_NAME}-macos-aarch64.zip"
-          VERSION="${GITHUB_REF_NAME#v}" native/scripts/bundle-macos.sh target/release/voltrus-native dist "$zip"
+          VERSION="${GITHUB_REF_NAME#v}" SERVER=target/release/voltrus \
+            native/scripts/bundle-macos.sh target/release/voltrus-native dist "$zip"
           (cd dist && shasum -a 256 "$zip" > "$zip.sha256")
       - uses: actions/upload-artifact@v4
         with:
@@ -169,9 +178,57 @@ jobs:
             dist/*.zip
             dist/*.sha256
 
+  # Windows as a local station: the console and the server (with the web
+  # client embedded) in one Inno Setup installer that runs the server as the
+  # VoltrusSCADA service (native/packaging/windows/voltrus-scada.iss). Built
+  # with MSVC on Windows; the installer is not code-signed.
+  native-windows:
+    name: native-windows-x86_64
+    needs: client
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: static
+          path: static
+      - name: Check licence notices
+        shell: bash
+        run: native/scripts/check-notices.sh
+      - name: Build
+        run: |
+          if (-not (Test-Path static/index.html)) { throw 'static/index.html is missing: the web client has to be built first' }
+          cargo build --locked --release --workspace --bin voltrus-native --bin voltrus
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Installer
+        run: |
+          $name = "voltrus-scada-$env:GITHUB_REF_NAME-windows-x86_64-setup"
+          $setup = native/scripts/installer-windows.ps1 -BinDir target/release -Out dist `
+            -Version ($env:GITHUB_REF_NAME.TrimStart('v')) -Name $name
+          $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$setup.sha256", "$hash  $name.exe`n")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-x86_64
+          path: |
+            dist/*-setup.exe
+            dist/*-setup.exe.sha256
+          if-no-files-found: error
+
   release:
     name: Publish release
-    needs: [build, native-macos]
+    needs: [build, native-macos, native-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -187,4 +244,4 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --title "Voltrus SCADA Core ${GITHUB_REF_NAME}" \
             --generate-notes \
-            --notes "Open-source Core under AGPL-3.0-or-later. These binaries are Core only (no Enterprise add-on, no licence key needed)."
+            --notes "Open-source Core under AGPL-3.0-or-later. These binaries are Core only (no Enterprise add-on, no licence key needed). The Windows installer and the macOS app are not code-signed: SmartScreen and Gatekeeper ask before the first run."

@@ -164,6 +164,29 @@ transaction (`--mode replace` also deletes what the project does not list).
 Secrets are written as `${ENV_NAME}` references. Format and examples:
 [`docs/project-format.md`](docs/project-format.md).
 
+### Local station / run as a service
+
+One PC can run the server and the native console together, like a classic HMI
+station. The server runs as an OS background service on 127.0.0.1, so closing
+the console never stops polling, alarms, history or writes.
+
+```bash
+voltrus station init            # config.yaml, data.db, logs/, station.toml
+voltrus service install         # Windows service / macOS LaunchAgent
+voltrus service start
+voltrus service status          # exit 0 running, 3 stopped, 4 not installed
+```
+
+The station directory is `%ProgramData%\Voltrus SCADA` on Windows,
+`~/Library/Application Support/Voltrus SCADA` on macOS and
+`~/.local/share/voltrus-scada` elsewhere (override with `--dir` or
+`VOLTRUS_STATION_DIR`). `station init` picks a free port from 3000, keeps an
+existing config and writes `station.toml`, the credential of the `station`
+admin account the console signs in with; run it again to repair it. The
+service runs `voltrus service run --dir <station dir>` and logs to
+`logs/voltrus.log`. On Linux use the systemd unit in
+[`deploy/voltrus.service`](deploy/voltrus.service) instead of `voltrus service`.
+
 ### Simulators and scenarios
 
 `cargo run --features modbus --bin modbus-sim` and the other `*-sim` binaries

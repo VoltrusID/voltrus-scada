@@ -25,6 +25,7 @@ pub(crate) mod settings;
 pub(crate) mod shift;
 mod sign_in;
 pub(crate) mod spark;
+mod station;
 pub(crate) mod status_bar;
 pub(crate) mod tag_chart;
 pub(crate) mod tag_detail;
@@ -33,6 +34,7 @@ pub(crate) mod tag_write;
 pub(crate) mod tags;
 pub(crate) mod toasts;
 pub(crate) mod trends;
+pub(crate) mod window_controls;
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -124,6 +126,8 @@ impl Render for Console {
                     ),
                 )
                 .into_any_element()
+        } else if self.phase == Phase::SignIn && self.station.local.is_some() {
+            station::render(self, cx)
         } else {
             sign_in::render(self, cx)
         };
@@ -338,6 +342,16 @@ impl Render for Console {
             .map(|this| dashboard::actions(this, cx))
             .map(|this| mimic::editor::actions(this, cx))
             .child(body)
+            // Over the navbar or the sign-in screen's top, under toasts
+            // and overlays.
+            .when(window_controls::SHOWN, |this| {
+                this.child(window_controls::render(
+                    in_console,
+                    self.navbar_gap.get(),
+                    window,
+                    cx,
+                ))
+            })
             .when(!self.toasts.is_empty(), |this| {
                 this.child(
                     AnyView::from(self.views.toasts.clone()).cached(

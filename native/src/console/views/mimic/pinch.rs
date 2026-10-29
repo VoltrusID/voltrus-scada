@@ -9,6 +9,8 @@ use async_channel::Receiver;
 /// A gesture, at a point of the window in points from its bottom-left
 /// corner (AppKit's `locationInWindow`).
 #[derive(Debug, Clone, Copy, PartialEq)]
+// Only the macOS monitor makes them; elsewhere the page still matches them.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) enum Gesture {
     /// Pinch: zoom by `1 + amount`.
     Magnify { amount: f64, x: f64, y: f64 },

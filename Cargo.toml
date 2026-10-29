@@ -112,6 +112,12 @@ zip = { version = "9.1", default-features = false, features = ["deflate", "defla
 calamine = "0.37"
 snmp = "0.2.2"
 mime_guess = "2"
+# station.toml: the local station credential the native console reads.
+toml = "0.8"
+
+# Runs `voltrus service run` under the Windows Service Control Manager.
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.8"
 
 [build-dependencies]
 flate2 = "=1.1.9"

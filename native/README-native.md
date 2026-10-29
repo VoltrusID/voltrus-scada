@@ -18,9 +18,13 @@ JetBrains Mono for values.
   (`~/Library/Application Support/voltrus-native/` on macOS); the password
   never is. When the server flags a generated or reset password, the console
   asks for a new one before anything else.
+- **Local station mode** on the computer that runs the server as a service
+  (see [Local station mode](#local-station-mode)): no sign-in card, the
+  console signs in to the station by itself and keeps doing so.
 - **Top navbar**, in the window's title bar row (right of the macOS traffic
-  lights, and the window's drag area): the Voltrus logo, "Voltrus SCADA" and
-  the server's address; the Overview, Tags, Alarms and Trends tabs (⌘1–⌘4,
+  lights, and the window's drag area; on Windows and Linux it also carries
+  minimize, maximize and close at its right end): the Voltrus logo, "Voltrus
+  SCADA" and the server's address; the Overview, Tags, Alarms and Trends tabs (⌘1–⌘4,
   shown in each tab's tooltip; Alarms carries the count still to
   acknowledge); then the light/dark switch, who is signed in with their role,
   and Sign out. Pages span the full width below it.
@@ -338,14 +342,110 @@ meter takes the refresh rate from the display).
 How the console is built, and how to add a page, a REST call, a key, an
 overlay or an animation: [`docs/architecture.md`](docs/architecture.md).
 
-Requires a recent stable Rust (edition 2024). CI builds and tests on macOS;
-GPUI also supports Linux (X11 or Wayland), which is not tested here.
+Requires a recent stable Rust (edition 2024). CI builds and tests on macOS
+and Windows; GPUI also supports Linux (X11 or Wayland), which is not tested
+here. On a Mac whose Xcode lacks the Metal toolchain (`cannot execute tool
+'metal'`), either `xcodebuild -downloadComponent MetalToolchain` or build
+with `--features gpui/runtime_shaders` (the shaders then compile at launch).
+
+## Local station mode
+
+One computer can be the whole station, as with a classic single-PC HMI: the
+server runs there as a system service bound to 127.0.0.1 (a Windows service,
+`VoltrusSCADA`; a launchd LaunchAgent, `id.voltrus.scada.server`, on macOS),
+so closing the console, or a GPU driver reset taking it down, never stops
+polling, alarms, history or writes. The console is only the window onto it.
+
+The station lives in one directory: `%ProgramData%\Voltrus SCADA` on
+Windows, `~/Library/Application Support/Voltrus SCADA` on macOS,
+`$XDG_DATA_HOME/voltrus-scada` (or `~/.local/share/voltrus-scada`) elsewhere,
+or `VOLTRUS_STATION_DIR` when set; the server's `voltrus station` and
+`voltrus service` commands resolve it the same way. `voltrus station init`
+writes there the server's `config.yaml`, its `data.db`, `logs/` and the
+console's credential, `station.toml`:
+
+```toml
+url = "http://127.0.0.1:3000"
+username = "station"
+password = "<generated>"
+```
+
+- **At launch**, without `--sign-in` or `--stress…`, a `station.toml` in the
+  station directory puts the console in local station mode. Instead of the
+  sign-in card it shows "Connecting to this station…", asks
+  `GET /api/v1/health` (again after 1 s, 2 s, 4 s, then every 5 s while the
+  server does not answer), then signs in with the station's account through
+  the normal sign-in. While the server is unreachable the screen says why,
+  shows the station directory and offers Retry (and "Sign in to another
+  server"). A session the server later ends is signed in again, once, by
+  itself. A sign-in the server refuses (wrong password, locked or disabled
+  account) is not tried again by itself, as each refusal counts towards
+  locking the account (10 within 15 minutes): the screen shows the server's
+  reason, and Retry reads `station.toml` again and tries once.
+  The station's address and account are not remembered as the last sign-in.
+  Each attempt is one line on stderr (`voltrus-native: station: …`, and
+  `voltrus-native: station: signed in to <url> as <user>`), for scripts.
+- **Sign out** leaves local station mode for the normal sign-in card, which
+  then offers **Use this station** to go back.
+- **Set up this computer as a station**: with no `station.toml` but the
+  server beside the console (`voltrus.exe` in the console's folder on
+  Windows, `Contents/MacOS/voltrus` in the macOS app), the sign-in card
+  offers to run the server's `station init`, `service install` and
+  `service start` (each with `--dir <station directory>`, off the UI thread,
+  their errors shown on the card), then enters local station mode.
+  Installing a Windows service needs an administrator: the installer does
+  it; from a zip, run the console as administrator once.
+
+## Windows
+
+```powershell
+cargo build --release -p voltrus-scada-native -p voltrus
+.\target\release\voltrus-native.exe
+```
+
+Builds with the MSVC toolchain (`x86_64-pc-windows-msvc`); CI builds,
+lints and tests it on `windows-2025` and runs `native/scripts/smoke-windows.ps1`.
+A release build is a windowed program (no console window opens beside it);
+run it with redirected output (`Start-Process -RedirectStandardError …`) to
+read what it prints. The window has no system title bar (as on macOS, the
+navbar is the title bar row), so the console draws its own minimize,
+maximize/restore and close at the navbar's right end, and on the sign-in
+and station screens; the navbar's empty middle moves the window, a
+double-click maximizes it, and Windows' snap layouts appear over maximize.
+Keys read Ctrl where macOS has ⌘.
+
+macOS only: the system notification for critical alarms, trackpad pinch on
+mimic screens (Ctrl-scroll and Ctrl+/Ctrl− zoom everywhere), the display's
+refresh rate in the HUD and the stress report, and the app menu bar (every
+command is in the palette and on its keys).
+
+## Packages
+
+- **Windows installer** (`native/packaging/windows/voltrus-scada.iss`, Inno
+  Setup 6.3 or later, built by `native/scripts/installer-windows.ps1` from
+  release binaries): installs the console and the server to
+  `Program Files\Voltrus SCADA`, then runs `voltrus station init`,
+  `voltrus service install` and `voltrus service start` (each with
+  `--dir "%ProgramData%\Voltrus SCADA"`, output in its `logs\setup.log`), so
+  the server runs as the `VoltrusSCADA` service on 127.0.0.1 and the console
+  signs in to it by itself. `config.yaml` is then readable by SYSTEM and
+  Administrators only; Users may read `station.toml`. Uninstalling stops and
+  removes the service and keeps the plant data unless asked (`/REMOVEDATA`
+  when silent). Unsigned: SmartScreen warns before it runs. The console's
+  icon and version resource come from `native/build.rs`
+  (`native/packaging/windows/voltrus.ico`, made from `AppIcon.svg` by
+  `swift native/scripts/windows-icon.swift`).
+- **macOS app bundle** (`native/scripts/bundle-macos.sh`, ad-hoc signed):
+  with `SERVER=target/release/voltrus` it carries the server as
+  `Contents/MacOS/voltrus`, which the console can set up as a local station.
 
 ## Layout
 
 ```
 native/src/
-  lib.rs            api, runtime, ws_types, stress, perf, tag_api and zone (no UI; used by the tests)
+  lib.rs            api, runtime, ws_types, stress, perf, tag_api, zone and station (no UI; used by the tests)
+  station.rs        the local station: its directory, station.toml, the bundled server and
+                    its setup commands, the retry back-off
   zone.rs           the operator's time zone: the offset at each instant, wall times read
                     with the zone's rules, the system zone re-read when it changes
   tag_api.rs        tag writes and policies, tag tree, naming convention, annotations,
@@ -375,12 +475,15 @@ native/src/
     store.rs        tags, values, statuses and history; update rate
     screens.rs      the session's screens: list, active screen, tags, layouts
     config.rs       remembered address and username
+    station.rs      local station mode: health checks, automatic sign-in, setup
     text_area.rs    the multi-line text field (handover notes)
     views/          one cached view per window part, one module per page
     shell.rs        settings, notifications, edition, kiosk lock (state and server calls)
     shortcuts.rs    server-kept shortcuts as live key bindings
     prefs.rs        workstation preferences (themes per brightness, kiosk, …)
-native/scripts/     CI: the solar-farm plant, app bundle, screenshots
+native/scripts/     CI: the solar-farm plant, app bundle, Windows installer and its
+                    station check, screenshots
+native/packaging/   Info.plist, icons, licence notices, the Windows installer script
 ```
 
 ## Tests

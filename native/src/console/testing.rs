@@ -26,13 +26,19 @@ pub(crate) struct Harness {
 impl Harness {
     /// A console at the sign-in card.
     pub fn new(cx: &mut TestAppContext) -> Self {
+        Self::with(cx, |_| {})
+    }
+
+    /// A console launched as `configure` changes the plain launch (no
+    /// sign-in, no station).
+    pub fn with(cx: &mut TestAppContext, configure: impl FnOnce(&mut Launch)) -> Self {
         let catalog = Rc::new(ThemeCatalog::bundled());
         let initial = catalog.resolve(theme::DEFAULT_DARK, true);
         // The console binds its keymap itself (`shortcuts::rebind`).
         cx.update(|cx| vt_ui::init(initial, cx));
         let (runtime, commands) = Handle::recorder();
         let (events, receiver) = async_channel::unbounded();
-        let launch = Launch {
+        let mut launch = Launch {
             sign_in: None,
             page: None,
             tag: None,
@@ -46,7 +52,11 @@ impl Harness {
             zone: LocalZone::utc(),
             appearance: Some(true),
             keys: None,
+            station_dir: None,
+            bundled_server: None,
+            local_station: false,
         };
+        configure(&mut launch);
         let (console, vcx) = cx.add_window_view(|window, cx| {
             Console::new(runtime, receiver, catalog, launch, window, cx)
         });
