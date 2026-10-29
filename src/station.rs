@@ -292,10 +292,11 @@ fn write_credential(path: &Path, credential: &Credential) -> Result<()> {
     write_atomic(path, text.as_bytes())
 }
 
-/// Make sure the `station` user exists as an enabled, unlocked admin that does
-/// not have to change its password, and return the password the console should
-/// use. The saved password is kept while it still verifies; otherwise a new
-/// random one is set (and the user's old sessions are revoked).
+/// Make sure the `station` user exists and does not have to change its
+/// password, and return the password the console should use. A new account is
+/// an admin; an existing one keeps its role and enabled state. The saved
+/// password is kept while it still verifies; otherwise a new random one is set
+/// (and the user's old sessions are revoked).
 async fn ensure_station_user(
     storage: &Storage,
     saved: Option<&Credential>,
@@ -320,17 +321,14 @@ async fn ensure_station_user(
                 .create_user(STATION_USER, &hash, "", "admin")
                 .await?;
         }
+        // An existing account keeps the role and the enabled state an admin
+        // gave it (a production station's `station` may be an operator, or
+        // switched off): init only repairs its password.
         Some(user) => {
             if password_changed {
                 let hash = crate::api::auth::hash_password(&password);
                 storage.update_user_password(user.id, &hash).await?;
                 storage.revoke_all_user_refresh_tokens(STATION_USER).await?;
-            }
-            if user.role != "admin" {
-                storage.update_user_role(user.id, "admin").await?;
-            }
-            if user.disabled {
-                storage.set_user_disabled(user.id, false).await?;
             }
         }
     }
@@ -663,5 +661,29 @@ mod tests {
             done.url,
             format!("http://127.0.0.1:{}", app_config.server_port)
         );
+    }
+
+    #[tokio::test]
+    async fn init_keeps_the_role_an_admin_gave_the_station_account() {
+        let tmp = tempfile::tempdir().unwrap();
+        init(tmp.path(), None).await.unwrap();
+        let app_config =
+            config::load_config(tmp.path().join(CONFIG_FILE).to_str().unwrap()).unwrap();
+        let storage = Storage::new(&app_config.db_path).unwrap();
+        let user = storage
+            .get_user_by_username(STATION_USER)
+            .await
+            .unwrap()
+            .unwrap();
+        storage.update_user_role(user.id, "viewer").await.unwrap();
+
+        // Re-run (an upgrade, a repair): the lowered role stays.
+        init(tmp.path(), None).await.unwrap();
+        let user = storage
+            .get_user_by_username(STATION_USER)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(user.role, "viewer");
     }
 }
