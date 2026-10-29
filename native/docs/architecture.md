@@ -23,6 +23,8 @@ follow these recipes; keep them true when you change the shell.
 | Views | `src/console/views/` | Functions over `&mut Console`, each part drawn by its own cached view. |
 | Screens | `src/screens.rs`, `src/console/screens.rs` | The server's screens and card layouts, and the card grid's rules (compaction, drag, resize, auto-arrange) as pure functions; the session's screens (`Screens`: list, active screen, tags, layouts) that the card dashboard and the mimic viewer share. |
 | Mimic | `src/mimic.rs`, `src/console/views/mimic/` | The HMI mimic's model (the server's SCADA rows, the editable `Layout`, the symbol library's geometry, live states, connection routes, the faceplate's command rules, the camera) as pure functions; the page that draws it on a canvas. |
+| Local station | `src/station.rs`, `src/console/station.rs`, `views/station.rs` | The station directory, `station.toml` and the bundled server's setup commands as pure functions; local station mode (health checks through `Command::Public`, sign-in with the station's account, retries with back-off) and its screen. |
+| Window controls | `views/window_controls.rs` | Minimize, maximize and close, and the drag area, where the system draws no title bar (Windows, Linux). |
 
 ## Rules
 
@@ -236,6 +238,18 @@ The window's minimum is 1024×640; `--window WxH` opens another size
 (screenshots; it may be smaller) and `--keys down,down` types keys once
 the launch overlay is up.
 
+On Windows and Linux the navbar also leaves `navfit::Parts::right` (the
+window controls' width) free at its right end. The controls and the drag
+area are drawn by the console's root, not by the cached navbar: GPUI
+records a `WindowControlArea` while painting and does not replay it for a
+cached view, so the navbar only reports its empty middle's bounds
+(`Console::navbar_gap`, from a `canvas` in its spacer) and the root puts
+the drag area there each frame. A drag area must never lie under a
+clickable element: Windows' hit test takes the first control area under
+the pointer, so it would swallow the click. On Windows the areas are the
+system's own (`WindowControlArea::{Drag, Min, Max, Close}`: snap layouts,
+double-click to maximize); elsewhere click handlers call the window.
+
 ## Animate
 
 - One-shot transitions: GPUI's `with_animation` with an id that changes per
@@ -434,6 +448,18 @@ edition}`.
   server): `Command::Public { base, key, call }` with
   `VoltrusApi::get_public`, answered by `Event::PublicReply` even while
   signed out.
+- **Local station mode** (`console/station.rs`): `Console::station` holds
+  the station directory, the bundled server and, while in the mode,
+  `Local` (status, back-off, the pending retry `Task`). Its health checks
+  are public calls under the `station.` scope, routed in `Console::apply`
+  before the shell's; the sign-in itself goes through
+  `Console::request_sign_in`, as the card's does. The console calls its
+  hooks: `signed_in`, `sign_in_failed` (in the mode a failure never
+  reaches the card: an unreachable server is tried again after the
+  back-off; a refusal, `Event::SignInFailed { refused }`, waits for Retry,
+  as each one counts towards locking the account), `session_ended` (a
+  `Link::Failed`) and `leave` (sign-out). `views::station` stands in for
+  the sign-in card while `Phase::SignIn` and in the mode.
 - **The keymap is rebuilt, not appended**: `shortcuts::rebind` clears
   GPUI's bindings and binds vt-ui's text field keys, every
   `keys::key_bindings()` row (less Quit and Sign out under the kiosk lock)

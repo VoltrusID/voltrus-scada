@@ -1,5 +1,9 @@
 //! voltrus-native: the GPUI operator console for the Voltrus SCADA server.
 
+// A release build is a window, not a console program: no console window
+// opens beside it on Windows (redirected output still reaches its files).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod console;
 
 use std::path::PathBuf;
@@ -11,6 +15,7 @@ use gpui::{
     App, AppContext as _, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point,
     px, size,
 };
+use voltrus_scada_native::station::{self, Start};
 use voltrus_scada_native::zone::LocalZone;
 use vt_ui::theme::{self, ThemeCatalog};
 
@@ -288,6 +293,11 @@ fn main() -> ExitCode {
     } else {
         None
     };
+    let station_dir = station::dir();
+    let local_station = station::start(
+        sign_in.is_some() || options.stress.is_some(),
+        station_dir.as_deref(),
+    ) == Start::Station;
     let launch = Launch {
         sign_in,
         page: options.page,
@@ -302,6 +312,9 @@ fn main() -> ExitCode {
         zone: LocalZone::system(),
         appearance: options.dark,
         keys: options.keys,
+        station_dir,
+        bundled_server: station::bundled_server(),
+        local_station,
     };
     let appearance = options.dark;
     let wanted = options

@@ -2,10 +2,11 @@
 //! the keymap and the routing of REST answers.
 
 use std::path::Path;
+use std::time::Duration;
 
 use gpui::{Action, AppContext as _, Bounds, Pixels, TestAppContext, px, size};
 use voltrus_scada_native::api::Alarm;
-use voltrus_scada_native::runtime::{Command, Event, Link};
+use voltrus_scada_native::runtime::{CallKey, Command, Event, Link, Reply};
 
 use super::audio::Annunciator;
 use super::keys::{
@@ -14,6 +15,7 @@ use super::keys::{
 };
 use super::navfit::Fit;
 use super::shell::Shell;
+use super::station::Status;
 use super::testing::Harness;
 use super::text_area::TextArea;
 use super::{Phase, pages, views};
@@ -189,6 +191,8 @@ fn every_call_key_scope_has_an_owner() {
         let scope = parts.next().unwrap_or_default();
         let owned = match scope {
             "shell" => true,
+            // The local station's health checks (`console::station`).
+            "station" => true,
             "data" => parts.next().is_some_and(|section| {
                 views::data_manager::SECTIONS
                     .iter()
@@ -257,10 +261,16 @@ fn the_navbar_steps_down_to_fit_every_window_width(cx: &mut TestAppContext) {
                 "{width} ({fit:?}): {a} {a_at:?} runs into {b} {b_at:?}"
             );
         }
-        // The avatar and sign-out whole, clear of the window's edge.
+        // The avatar and sign-out whole, clear of the window's edge (and
+        // of its controls, where the console draws them).
+        let controls = if views::window_controls::SHOWN {
+            f32::from(views::window_controls::WIDTH)
+        } else {
+            0.0
+        };
         for (name, at) in &parts[parts.len() - 2..] {
             assert!(
-                at.right() <= px(width - 12.0 + 0.5),
+                at.right() <= px(width - 12.0 - controls + 0.5),
                 "{width} ({fit:?}): {name} {at:?} is clipped"
             );
             assert!(at.size.width >= px(22.0), "{width}: {name} {at:?} squeezed");
@@ -331,4 +341,222 @@ fn menus_and_popovers_open_inside_a_small_window(cx: &mut TestAppContext) {
     h.draw();
     h.keys("down enter");
     assert!(h.update(|console, _, _| console.overlay_is("settings")));
+}
+
+/// A station directory of its own, with a `station.toml` if `credential`.
+fn station_dir(name: &str, credential: bool) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "voltrus-native-console-station-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    if credential {
+        std::fs::write(
+            dir.join("station.toml"),
+            "url = \"http://127.0.0.1:3999\"\nusername = \"station\"\npassword = \"s3cret\"\n",
+        )
+        .unwrap();
+    }
+    dir
+}
+
+/// A console launched in local station mode on `dir`.
+fn at_station(cx: &mut TestAppContext, dir: &Path) -> Harness {
+    let dir = dir.to_owned();
+    let mut h = Harness::with(cx, move |launch| {
+        launch.station_dir = Some(dir);
+        launch.local_station = true;
+    });
+    h.draw();
+    h
+}
+
+/// The health checks sent since the last look, by their sequence.
+fn health_checks(h: &mut Harness) -> Vec<i64> {
+    h.commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::Public { key, .. } if key.name == "station.health" => Some(key.arg),
+            _ => None,
+        })
+        .collect()
+}
+
+fn station_status(h: &mut Harness) -> Option<Status> {
+    h.update(|console, _, _| {
+        console
+            .station
+            .local
+            .as_ref()
+            .map(|local| local.status.clone())
+    })
+}
+
+#[gpui::test]
+fn a_local_station_shows_its_state_and_signs_in_by_itself(cx: &mut TestAppContext) {
+    let dir = station_dir("connect", true);
+    let mut h = at_station(cx, &dir);
+    assert_eq!(station_status(&mut h), Some(Status::Connecting));
+    assert!(h.cx.debug_bounds("station-dir").is_some());
+    assert!(
+        h.cx.debug_bounds("sign-in-card").is_none(),
+        "the station's state stands in for the sign-in card"
+    );
+    // The server is up: the console signs in with the station's account.
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(1),
+        reply: Reply::ok(()),
+    });
+    let sign_in = h.commands().into_iter().find_map(|command| match command {
+        Command::SignIn {
+            url,
+            username,
+            password,
+        } => Some((url, username, password)),
+        _ => None,
+    });
+    assert_eq!(
+        sign_in,
+        Some((
+            "http://127.0.0.1:3999".to_owned(),
+            "station".to_owned(),
+            "s3cret".to_owned()
+        ))
+    );
+    assert_eq!(station_status(&mut h), Some(Status::SigningIn));
+    h.sign_in("admin");
+    assert_eq!(station_status(&mut h), Some(Status::Live));
+    // The session ends: it signs in again, without the card.
+    h.event(Event::Link(Link::Failed("Not authorised".into())));
+    assert_eq!(health_checks(&mut h), [2]);
+    assert_eq!(station_status(&mut h), Some(Status::Connecting));
+    // Once: refused again, it waits for the operator.
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(2),
+        reply: Reply::ok(()),
+    });
+    h.commands();
+    h.event(Event::SignInFailed {
+        message: "Invalid credentials".into(),
+        refused: true,
+    });
+    assert!(matches!(station_status(&mut h), Some(Status::Refused(_))));
+    h.cx.executor().advance_clock(Duration::from_secs(60));
+    h.cx.run_until_parked();
+    assert!(health_checks(&mut h).is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui::test]
+fn an_unreachable_station_waits_and_asks_again(cx: &mut TestAppContext) {
+    let dir = station_dir("unreachable", true);
+    let mut h = at_station(cx, &dir);
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(1),
+        reply: Reply::failed("connection refused"),
+    });
+    h.draw();
+    assert!(matches!(
+        station_status(&mut h),
+        Some(Status::Unreachable(reason)) if reason.contains("connection refused")
+    ));
+    assert!(h.cx.debug_bounds("station-reason").is_some());
+    assert!(h.cx.debug_bounds("sign-in-card").is_none());
+    assert!(health_checks(&mut h).is_empty(), "not before the back-off");
+    h.cx.executor().advance_clock(Duration::from_secs(1));
+    h.cx.run_until_parked();
+    assert_eq!(health_checks(&mut h), [2], "after a second");
+    // A sign-in that did not reach the server is tried again too, never
+    // shown on the card.
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(2),
+        reply: Reply::ok(()),
+    });
+    h.commands();
+    h.event(Event::SignInFailed {
+        message: "error sending request".into(),
+        refused: false,
+    });
+    h.draw();
+    h.update(|console, _, _| {
+        assert_eq!(console.phase, Phase::SignIn);
+        assert_eq!(console.error, None);
+        assert!(!console.busy);
+        assert!(console.station.local.as_ref().is_some_and(|l| l.idle()));
+    });
+    assert!(h.cx.debug_bounds("sign-in-card").is_none());
+    h.cx.executor().advance_clock(Duration::from_secs(2));
+    h.cx.run_until_parked();
+    assert_eq!(health_checks(&mut h), [3], "after the back-off");
+    // A refused one is not: it counts towards locking the account. The
+    // station screen says why and waits for Retry.
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(3),
+        reply: Reply::ok(()),
+    });
+    h.commands();
+    h.event(Event::SignInFailed {
+        message: "Invalid credentials".into(),
+        refused: true,
+    });
+    h.draw();
+    assert!(matches!(
+        station_status(&mut h),
+        Some(Status::Refused(reason)) if reason.contains("Invalid credentials")
+    ));
+    assert!(h.update(|console, _, _| !console.busy && console.error.is_none()));
+    h.cx.executor().advance_clock(Duration::from_secs(60));
+    h.cx.run_until_parked();
+    assert!(health_checks(&mut h).is_empty(), "no retry by itself");
+    // Retry asks once, at once.
+    h.update(|console, _, cx| super::station::retry(console, cx));
+    assert_eq!(health_checks(&mut h), [4]);
+    assert_eq!(station_status(&mut h), Some(Status::Connecting));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui::test]
+fn signing_out_of_the_station_offers_it_again(cx: &mut TestAppContext) {
+    let dir = station_dir("sign-out", true);
+    let mut h = at_station(cx, &dir);
+    h.sign_in("admin");
+    h.update(|console, window, cx| console.sign_out(window, cx));
+    h.draw();
+    assert!(h.update(|console, _, _| console.station.local.is_none()));
+    assert!(h.cx.debug_bounds("sign-in-card").is_some());
+    assert!(h.cx.debug_bounds("station-return").is_some());
+    assert!(h.cx.debug_bounds("station-setup").is_none());
+    h.update(|console, _, cx| super::station::open(console, cx));
+    assert_eq!(health_checks(&mut h), [1]);
+    // (Drawn bounds outlive their element, so the card's cannot tell.)
+    assert_eq!(station_status(&mut h), Some(Status::Connecting));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui::test]
+fn the_card_offers_a_station_only_where_there_is_one_or_a_server(cx: &mut TestAppContext) {
+    // No station dir: nothing.
+    let mut h = Harness::new(cx);
+    h.draw();
+    assert!(h.cx.debug_bounds("station-return").is_none());
+    assert!(h.cx.debug_bounds("station-setup").is_none());
+    // A station with a credential, launched with `--sign-in` or a saved
+    // server: the card, with the way back to the station.
+    let dir = station_dir("card", true);
+    let mut h = Harness::with(cx, |launch| launch.station_dir = Some(dir.clone()));
+    h.draw();
+    assert!(h.cx.debug_bounds("sign-in-card").is_some());
+    assert!(h.cx.debug_bounds("station-return").is_some());
+    std::fs::remove_dir_all(&dir).unwrap();
+    // No station yet, but the server beside the console: set one up.
+    let dir = station_dir("setup", false);
+    let mut h = Harness::with(cx, |launch| {
+        launch.station_dir = Some(dir.clone());
+        launch.bundled_server = Some(dir.join("voltrus"));
+    });
+    h.draw();
+    assert!(h.cx.debug_bounds("station-setup").is_some());
+    assert!(h.cx.debug_bounds("station-return").is_none());
+    std::fs::remove_dir_all(&dir).unwrap();
 }

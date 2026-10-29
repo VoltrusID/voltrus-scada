@@ -6,7 +6,7 @@ use vt_ui::Icon;
 use vt_ui::components::{Button, brand_mark, field};
 use vt_ui::theme::*;
 
-use super::host;
+use super::{host, station, window_controls};
 use crate::console::{Console, Phase};
 
 pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
@@ -18,6 +18,9 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
         .map_or_else(String::new, |(name, _)| name.clone());
     let methods = (!changing)
         .then(|| super::edition::sign_in_methods(console, cx))
+        .flatten();
+    let station_row = (!changing)
+        .then(|| station::card_row(console, cx))
         .flatten();
     let edition = super::edition::sign_in_edition(console, cx);
 
@@ -76,6 +79,7 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
 
     let card = div()
         .w(px(380.0))
+        .debug_selector(|| "sign-in-card".into())
         .flex()
         .flex_col()
         .gap(SPACE_8)
@@ -136,6 +140,7 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                     ))
                 }),
         )
+        .children(station_row)
         .children(methods)
         .child(
             div()
@@ -167,6 +172,7 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
         .items_center()
         .justify_center()
         .gap(SPACE_8)
+        .when(window_controls::SHOWN, |this| this.pt(TITLE_BAR_HEIGHT))
         .bg(theme.chrome)
         .child(
             div()

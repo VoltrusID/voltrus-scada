@@ -19,6 +19,7 @@ mod redraw;
 pub mod screens;
 mod shell;
 pub mod shortcuts;
+mod station;
 pub mod store;
 #[cfg(test)]
 mod testing;
@@ -237,6 +238,15 @@ pub struct Launch {
     /// `--keys`: keystrokes typed once the console and its launch overlay
     /// are up (screenshots of a menu scrolled by the keyboard).
     pub keys: Option<String>,
+    /// The local station's directory (`station::dir`), if this platform
+    /// has one.
+    pub station_dir: Option<PathBuf>,
+    /// The server installed beside the console, which can set this
+    /// computer up as a station.
+    pub bundled_server: Option<PathBuf>,
+    /// Open in local station mode (`station::start`): the station has a
+    /// credential and the command line signs in to nothing else.
+    pub local_station: bool,
 }
 
 /// The cached views that draw the window's parts.
@@ -303,6 +313,11 @@ pub struct Console {
     pub menu_anchor: overlay::Anchor,
     /// What the navbar showed at its last draw (see `navfit`).
     pub nav_fit: navfit::Fit,
+    /// The navbar's empty middle, where the window drags from on Windows
+    /// and Linux (`views::window_controls`).
+    pub navbar_gap: overlay::Anchor,
+    /// The local station, and local station mode while in it.
+    pub station: station::Station,
     pub meter: Meter,
     pub hud: bool,
     hud_task: Option<Task<()>>,
@@ -348,6 +363,7 @@ impl Console {
         cx: &mut Context<Self>,
     ) -> Self {
         let saved = config::load();
+        let station = station::Station::new(&launch);
         let inputs = Inputs {
             url: input(
                 saved.url.unwrap_or_else(|| "http://localhost:3000".into()),
@@ -555,6 +571,8 @@ impl Console {
             more_anchor: Rc::default(),
             menu_anchor: Rc::default(),
             nav_fit: navfit::Fit::Full,
+            navbar_gap: Rc::default(),
+            station,
             meter: Rc::new(RefCell::new(meter::FrameMeter::default())),
             hud: false,
             hud_task: None,
@@ -598,6 +616,8 @@ impl Console {
                 .password
                 .update(cx, |field, cx| field.set_text(password, cx));
             console.sign_in(window, cx);
+        } else if launch.local_station {
+            station::open(&mut console, cx);
         }
         views::dashboard::launch(&mut console, launch.screen, launch.edit);
         if let Some(section) = launch.section.as_deref() {
@@ -664,7 +684,7 @@ impl Console {
             event,
             Event::Link(_)
                 | Event::SignedIn { .. }
-                | Event::SignInFailed(_)
+                | Event::SignInFailed { .. }
                 | Event::PasswordChanged(_)
                 | Event::PublicReply { .. }
         );
@@ -685,6 +705,8 @@ impl Console {
                     if self.phase == Phase::Console {
                         self.show_toast(reason.clone(), true, cx);
                     }
+                    // A local station signs in again by itself.
+                    station::session_ended(self, cx);
                 }
                 self.link = link;
             }
@@ -702,8 +724,10 @@ impl Console {
                     self.reset_session(window, cx);
                 }
                 self.sessions += 1;
-                // A stress run's synthetic server is not worth remembering.
-                if self.stress.is_none() {
+                station::signed_in(self, &server, &username);
+                // A stress run's synthetic server is not worth remembering,
+                // nor is the station's own account.
+                if self.stress.is_none() && self.station.local.is_none() {
                     config::save(&server, &username);
                 }
                 self.user = Some((username, role));
@@ -725,9 +749,11 @@ impl Console {
                 }
                 shell::signed_in(self, cx);
             }
-            Event::SignInFailed(error) => {
-                self.busy = false;
-                self.error = Some(error);
+            Event::SignInFailed { message, refused } => {
+                if !station::sign_in_failed(self, &message, refused, cx) {
+                    self.busy = false;
+                    self.error = Some(message);
+                }
             }
             Event::PasswordChanged(result) => {
                 self.busy = false;
@@ -834,7 +860,13 @@ impl Console {
                 self.devices
                     .insert(device_id, DeviceLink { online, latency_ms });
             }
-            Event::PublicReply { key, reply } => shell::on_public_reply(self, key, reply, cx),
+            Event::PublicReply { key, reply } => {
+                if key.scope() == station::SCOPE {
+                    station::on_public_reply(self, key, reply, window, cx);
+                } else {
+                    shell::on_public_reply(self, key, reply, cx);
+                }
+            }
         }
     }
 
@@ -942,15 +974,30 @@ impl Console {
         } else if username.is_empty() || password.is_empty() {
             self.error = Some("Enter your username and password".into());
         } else {
-            self.error = None;
-            self.busy = true;
-            self.send(Command::SignIn {
-                url,
-                username,
-                password,
-            });
-            window.focus(&self.focus);
+            self.request_sign_in(url, username, password, window, cx);
+            return;
         }
+        cx.notify();
+    }
+
+    /// Sign in to `url`: the sign-in card's fields, or the local station's
+    /// credential (`station`).
+    fn request_sign_in(
+        &mut self,
+        url: String,
+        username: String,
+        password: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.error = None;
+        self.busy = true;
+        self.send(Command::SignIn {
+            url,
+            username,
+            password,
+        });
+        window.focus(&self.focus);
         cx.notify();
     }
 
@@ -984,6 +1031,8 @@ impl Console {
         self.send(Command::SignOut);
         self.phase = Phase::SignIn;
         self.user = None;
+        // Local station mode ends: the sign-in card offers to come back.
+        station::leave(self, cx);
         // A password change still in flight is never answered once the
         // session ends, so nothing else would clear this.
         self.busy = false;
