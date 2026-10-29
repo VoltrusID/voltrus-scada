@@ -77,6 +77,10 @@ pub fn parse_time(s: &str) -> Option<i64> {
     None
 }
 
+/// Most samples one BI query reads. Rows are held in memory to be paged, so
+/// the range, not the page size, bounds the cost.
+const MAX_QUERY_SAMPLES: usize = 1_000_000;
+
 pub async fn execute_bi_query(storage: &Storage, query: &BiQuery) -> Result<BiResponse> {
     let now = crate::timeutil::now_secs();
     let from = query
@@ -108,31 +112,24 @@ pub async fn execute_bi_query(storage: &Storage, query: &BiQuery) -> Result<BiRe
 
     let mut all_rows = Vec::new();
     for device_id in &device_ids {
+        // Every sample of the range, or an error: a BI query that silently
+        // lacks its newest data is worse than one that asks for a shorter range.
         let data = storage
-            .query_device_metrics_merged(
-                device_id,
-                from,
-                to,
-                from - 86400,
-                from - 86400 - 7776000,
-                1,
-            )
+            .query_device_samples(device_id, from, to, MAX_QUERY_SAMPLES)
             .await?;
-        for (ts, metrics) in &data {
-            for (metric, value) in metrics {
-                if let Some(ref filter) = metric_filter
-                    && !filter.contains(metric)
-                {
-                    continue;
-                }
-                all_rows.push(BiRow {
-                    timestamp: *ts,
-                    timestamp_iso: format_timestamp_iso(*ts),
-                    device_id: device_id.clone(),
-                    metric: metric.clone(),
-                    value: *value,
-                });
+        for (ts, metric, value) in data {
+            if let Some(ref filter) = metric_filter
+                && !filter.contains(&metric)
+            {
+                continue;
             }
+            all_rows.push(BiRow {
+                timestamp: ts,
+                timestamp_iso: format_timestamp_iso(ts),
+                device_id: device_id.clone(),
+                metric,
+                value,
+            });
         }
     }
 

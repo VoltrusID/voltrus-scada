@@ -1,5 +1,18 @@
 use super::*;
 
+/// One tag's history in buckets, by metric name.
+type Series = std::collections::BTreeMap<String, Vec<crate::storage::SeriesBucket>>;
+
+/// The expression a tag is computed from, if it has one.
+fn expression_of(ds: &DataSource) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(&ds.source_config)
+        .ok()?
+        .get("expression")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
 /// GET /api/data?screen=X — fetch data sources, generate values using generators
 /// For source_type == "modbus": read from cache, evaluate expression if present
 #[utoipa::path(
@@ -29,6 +42,14 @@ pub async fn get_data(
 /// `sensor` (comma-separated tag keys) and `device` narrow the answer to those tags.
 /// `agg` is `sampling` (default), `avg` or `minmax`: the last two bucket the series into
 /// `interval` and `minmax` adds `min` and `max` arrays next to `values`.
+///
+/// Every series covers the whole requested window, up to its newest sample. A window
+/// with more samples than a response carries is thinned evenly over its whole length,
+/// never cut off: `sampling` answers every sample up to 2000 per tag and then the newest
+/// sample of each of 2000 equal slices (`downsampled: true` is added to such a series);
+/// `detail=full` does the same with a cap of 10000 points per tag. `avg` and `minmax` use
+/// the range's `interval`, widened if that would exceed 10000 points. Tags that are
+/// expressions are evaluated on the bucketed values of their inputs.
 /// `data` is keyed by tag key, and keys are not unique (two devices may share a register
 /// name), so the later source overwrites the earlier one; `keyed_by=id` keys it by data
 /// source id (the `id` of each `sensors` entry) instead, which is always unique.
@@ -60,40 +81,32 @@ pub async fn get_history(
     let (start, end) = generators::parse_range(range_str);
     let interval_ms = generators::interval_for_range(range_str, detail);
 
-    // Collect unique device_ids for modbus sources to batch-query
-    let modbus_device_ids: Vec<String> = data_sources
-        .iter()
-        .filter(|ds| ds.source_type == "modbus")
-        .map(|ds| ds.device_id.clone())
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
+    let full = detail == Some("full");
+    let plan = history::plan(agg, full, start, end, interval_ms);
 
-    let now = crate::timeutil::now_secs();
-    let raw_keep = state.retention_config.raw_window_secs();
-    let hourly_keep = state.retention_config.hourly_window_secs();
-    let raw_cutoff = now - raw_keep;
-    let hourly_cutoff = raw_cutoff - hourly_keep;
-    let min_interval_secs = (interval_ms / 1000).max(1) as i64;
-
-    // Query all telemetry for modbus devices across all tiers
-    let mut device_data: std::collections::HashMap<
-        String,
-        Vec<(i64, std::collections::HashMap<String, f64>)>,
-    > = std::collections::HashMap::new();
-    for device_id in &modbus_device_ids {
-        let data = state
+    // One query per device that has a real tag: the whole window in buckets,
+    // per tag. Only the tags that are asked for are read, unless one of them
+    // is an expression, which may name any tag of the device.
+    let mut wanted: std::collections::HashMap<String, Option<std::collections::HashSet<String>>> =
+        std::collections::HashMap::new();
+    for ds in data_sources.iter().filter(|ds| ds.source_type == "modbus") {
+        let entry = wanted
+            .entry(ds.device_id.clone())
+            .or_insert_with(|| Some(Default::default()));
+        if expression_of(ds).is_some() {
+            *entry = None;
+        } else if let Some(set) = entry {
+            set.insert(metric_name(&ds.key, &ds.device_id).to_string());
+        }
+    }
+    let mut device_data: std::collections::HashMap<String, Series> =
+        std::collections::HashMap::new();
+    for (device_id, metrics) in wanted {
+        let series = state
             .storage
-            .query_device_metrics_merged(
-                device_id,
-                start,
-                end,
-                raw_cutoff,
-                hourly_cutoff,
-                min_interval_secs,
-            )
+            .query_device_series(&device_id, start, end, plan.bucket_secs, metrics)
             .await?;
-        device_data.insert(device_id.clone(), data);
+        device_data.insert(device_id, series);
     }
 
     let mut data_source_summaries: Vec<DataSourceSummary> = Vec::new();
@@ -123,64 +136,26 @@ pub async fn get_history(
             source_type: data_source.source_type.clone(),
         });
 
-        let (points, band) = if data_source.source_type == "modbus" {
+        let (points, band, downsampled) = if data_source.source_type == "modbus" {
             // Real data from telemetry DB
-            let raw_points = device_data
-                .get(&data_source.device_id)
-                .map(|v| v.as_slice())
-                .unwrap_or(&[]);
+            let empty = Series::new();
+            let series = device_data.get(&data_source.device_id).unwrap_or(&empty);
 
-            // Check if there's an expression to evaluate
-            let expr: Option<String> =
-                serde_json::from_str::<serde_json::Value>(&data_source.source_config)
-                    .ok()
-                    .and_then(|cfg| {
-                        cfg.get("expression")
-                            .and_then(|v| v.as_str())
-                            .filter(|s| !s.is_empty())
-                            .map(|s| s.to_string())
-                    });
-
-            let samples: Vec<DataPoint> = if let Some(ref expr_str) = expr {
-                // Expression-based: evaluate at each timestamp
-                raw_points
-                    .iter()
-                    .filter_map(
-                        |(ts, metrics)| match expression::evaluate(expr_str, metrics) {
-                            Ok(val) => Some(DataPoint {
-                                timestamp: *ts,
-                                value: val,
-                            }),
-                            Err(_) => None,
-                        },
-                    )
-                    .collect::<Vec<_>>()
+            let (points, band) = if let Some(expr_str) = expression_of(data_source) {
+                history::expression_points(&expr_str, series, plan.mode)
             } else {
-                // Simple metric lookup
-                raw_points
-                    .iter()
-                    .filter_map(|(ts, metrics)| {
-                        metrics
-                            .get(metric_name(&data_source.key, &data_source.device_id))
-                            .map(|&v| DataPoint {
-                                timestamp: *ts,
-                                value: v,
-                            })
-                    })
-                    .collect::<Vec<_>>()
-            };
-
-            match agg {
-                "avg" | "minmax" => {
-                    let pairs: Vec<(i64, f64)> =
-                        samples.iter().map(|p| (p.timestamp, p.value)).collect();
-                    history::series_from_buckets(
-                        history::bucket_samples(&pairs, min_interval_secs),
-                        agg == "minmax",
-                    )
+                match series.get(metric_name(&data_source.key, &data_source.device_id)) {
+                    Some(buckets) => history::tag_points(buckets, plan.mode),
+                    None => (Vec::new(), None),
                 }
-                _ => (samples, None),
-            }
+            };
+            // Sampling leaves samples out when a bucket held more than one.
+            let downsampled = plan.mode == history::Mode::Sampling
+                && match series.get(metric_name(&data_source.key, &data_source.device_id)) {
+                    Some(buckets) => buckets.iter().any(|b| b.count > 1),
+                    None => false,
+                };
+            (points, band, downsampled)
         } else {
             // Synthetic data from generators
             let duration_secs = end - start;
@@ -219,7 +194,7 @@ pub async fn get_history(
                     }
                 }
             }
-            (pts, band)
+            (pts, band, false)
         };
 
         // Convert points to compact format
@@ -252,6 +227,11 @@ pub async fn get_history(
             sensor_data.insert("start".into(), json!(first_ts * 1000));
             sensor_data.insert("interval".into(), json!(calc_interval));
             sensor_data.insert("count".into(), json!(points.len()));
+            if downsampled {
+                // Some samples of the window are not in `values`: the answer was
+                // thinned to the point cap, evenly over the whole window.
+                sensor_data.insert("downsampled".into(), json!(true));
+            }
             data_map.insert(series_key.clone(), json!(sensor_data));
         }
     }

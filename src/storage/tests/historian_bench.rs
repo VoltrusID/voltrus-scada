@@ -337,3 +337,85 @@ async fn size_of_one_hour_of_1000_tags() {
         &tuned,
     );
 }
+
+/// How long the history endpoint's reader takes over long windows. Writes
+/// 46 tags at 1 s for two days (8 M samples), packs all but the last hour, then
+/// times `query_device_series` the way `/api/v1/history` calls it.
+#[tokio::test]
+#[ignore = "benchmark: 8 M samples, run with --ignored --nocapture (debug builds are slow)"]
+async fn long_range_query_time() {
+    const TAG_COUNT: usize = 46;
+    const DAYS: i64 = 2;
+    let dir = tempfile::tempdir().unwrap();
+    let storage = Storage::new(dir.path().join("long.db").to_str().unwrap()).unwrap();
+    let end = BASE + DAYS * 86_400;
+    let mut rng = StdRng::seed_from_u64(7);
+    let mut sigs: Vec<Signal> = (0..TAG_COUNT)
+        .map(|i| {
+            Signal::new(
+                [
+                    Class::SlowFloat32,
+                    Class::SlowScaled,
+                    Class::Noisy,
+                    Class::Digital,
+                ][i % 4],
+                &mut rng,
+            )
+        })
+        .collect();
+    let names: Vec<String> = (0..TAG_COUNT).map(|i| format!("tag{i:02}")).collect();
+    let t0 = std::time::Instant::now();
+    for hour in 0..DAYS * 24 {
+        let mut batch = Vec::with_capacity(TAG_COUNT * 3600);
+        for t in 0..3600 {
+            let ts = BASE + hour * 3600 + t;
+            for (i, sig) in sigs.iter_mut().enumerate() {
+                batch.push((
+                    "plant".to_string(),
+                    ts,
+                    names[i].clone(),
+                    sig.next(hour * 3600 + t, &mut rng),
+                ));
+            }
+        }
+        storage.insert_batch(&batch).await.unwrap();
+        if hour % 6 == 5 {
+            storage
+                .pack_history(BASE + hour * 3600, usize::MAX)
+                .await
+                .unwrap();
+        }
+    }
+    storage.pack_history(end - 3600, usize::MAX).await.unwrap();
+    println!(
+        "\nwrote and packed {} samples in {:.1} s",
+        TAG_COUNT as i64 * DAYS * 86_400,
+        t0.elapsed().as_secs_f64()
+    );
+
+    println!("window            width   tags  samples read    time      per 1M samples");
+    for (label, window, width, only_one) in [
+        ("30 min", 1_800, 1, false),
+        ("24 h  sampling", 86_400, 44, false),
+        ("24 h  avg", 86_400, 480, false),
+        ("48 h  avg", 2 * 86_400, 960, false),
+        ("48 h  avg, 1 tag", 2 * 86_400, 960, true),
+        ("48 h  7 d width", 2 * 86_400, 3_360, false),
+        ("48 h  30 d width", 2 * 86_400, 14_400, false),
+    ] {
+        let metrics = only_one.then(|| std::iter::once("tag00".to_string()).collect());
+        let t = std::time::Instant::now();
+        let series = storage
+            .query_device_series("plant", end - window, end, width, metrics)
+            .await
+            .unwrap();
+        let secs = t.elapsed().as_secs_f64();
+        let samples: u64 = series.values().flatten().map(|b| b.count).sum();
+        println!(
+            "{label:<17} {width:>5}s {:>5} {samples:>13} {:>8.0} ms {:>8.0} ms",
+            series.len(),
+            secs * 1000.0,
+            secs * 1000.0 / (samples as f64 / 1e6)
+        );
+    }
+}

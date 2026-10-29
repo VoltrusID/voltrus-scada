@@ -193,6 +193,10 @@ pub async fn execute_egress_job(storage: &Storage, job: &EgressJob) -> Result<()
     Ok(())
 }
 
+/// Most samples one egress file holds. The file is built in memory, so a job
+/// over a longer range than this fails and says so; split it into shorter jobs.
+const MAX_EXPORT_SAMPLES: usize = 3_000_000;
+
 async fn query_telemetry_data(
     storage: &Storage,
     device_ids: &[String],
@@ -201,26 +205,25 @@ async fn query_telemetry_data(
 ) -> Result<Vec<TelemetryRecord>> {
     let mut all_records = Vec::new();
     for device_id in device_ids {
+        // Every sample of the range, or an error: an export that silently lacks
+        // part of its range is worse than a failed job that says why.
         let data = storage
-            .query_device_metrics_merged(
+            .query_device_samples(
                 device_id,
                 start,
                 end,
-                start - 86400,
-                start - 86400 - 7776000,
-                1,
+                MAX_EXPORT_SAMPLES.saturating_sub(all_records.len()),
             )
             .await?;
-        for (ts, metrics) in &data {
-            for (metric, value) in metrics {
-                all_records.push(TelemetryRecord {
+        all_records.extend(
+            data.into_iter()
+                .map(|(timestamp, metric, value)| TelemetryRecord {
                     device_id: device_id.clone(),
-                    metric: metric.clone(),
-                    timestamp: *ts,
-                    value: *value,
-                });
-            }
-        }
+                    metric,
+                    timestamp,
+                    value,
+                }),
+        );
     }
     all_records.sort_by_key(|r| r.timestamp);
     Ok(all_records)

@@ -214,8 +214,10 @@ impl Storage {
         .context("Task join failed")?
     }
 
-    /// Full-resolution samples of one tag in `[from, to]`, oldest first, at
-    /// most 10000; raw rows and packed blocks merged.
+    /// Full-resolution samples of one tag in `[from, to]`, oldest first; raw
+    /// rows and packed blocks merged. For the statistics endpoints: a window
+    /// with more than 10000 samples comes back as an evenly spaced sample of
+    /// the whole window (every k-th, plus the last), not its first 10000.
     pub async fn get_metric_values_for_range(
         &self,
         device_id: &str,
@@ -229,7 +231,15 @@ impl Storage {
 
         tokio::task::spawn_blocking(move || {
             let conn = storage.lock_conn();
-            super::historian::read_series(&conn, &device_id, &metric, from, to, Some(10000))
+            super::historian::read_series_thinned(
+                &conn,
+                &device_id,
+                &metric,
+                from,
+                to,
+                super::historian::THIN_CAP,
+                super::historian::Thin::Stride,
+            )
         })
         .await
         .context("Task join failed")?
