@@ -126,7 +126,7 @@ async fn live_login_sensors_ws_stream() {
     });
     let mut refused = false;
     for _ in 0..30 {
-        if let Some(Event::SignInFailed(_)) = next(&events).await {
+        if let Some(Event::SignInFailed { .. }) = next(&events).await {
             refused = true;
             break;
         }
@@ -150,7 +150,7 @@ async fn live_login_sensors_ws_stream() {
     {
         match next(&events).await {
             Some(Event::SignedIn { .. }) => signed_in = true,
-            Some(Event::SignInFailed(error)) => panic!("sign-in failed: {error}"),
+            Some(Event::SignInFailed { message, .. }) => panic!("sign-in failed: {message}"),
             Some(Event::Tags(list)) => {
                 let keys: Vec<String> = list.iter().map(|tag| tag.key.clone()).collect();
                 handle.send(Command::Subscribe(keys.clone()));
@@ -291,7 +291,7 @@ async fn live_login_sensors_ws_stream() {
     });
     let signed_in = wait_for(&events, 20, |event| match event {
         Event::SignedIn { .. } => Some(Ok(())),
-        Event::SignInFailed(error) => Some(Err(error)),
+        Event::SignInFailed { message, .. } => Some(Err(message)),
         _ => None,
     })
     .await
@@ -356,7 +356,7 @@ async fn data_manager_sources_round_trip(url: &str, user: &str, pass: &str) {
         password: pass.to_owned(),
     });
     let signed_in = wait_for(&events, 30, |event| match event {
-        Event::SignInFailed(error) => panic!("sign-in failed: {error}"),
+        Event::SignInFailed { message, .. } => panic!("sign-in failed: {message}"),
         Event::Tags(list) => Some(list),
         _ => None,
     })
@@ -1823,7 +1823,7 @@ async fn admin_users_roles_keys_and_notification_rules(url: &str, user: &str, pa
         password: pass.to_owned(),
     });
     wait_for(&events, 30, |event| match event {
-        Event::SignInFailed(error) => panic!("sign-in failed: {error}"),
+        Event::SignInFailed { message, .. } => panic!("sign-in failed: {message}"),
         Event::Tags(list) => Some(list),
         _ => None,
     })
@@ -1877,7 +1877,9 @@ async fn admin_users_roles_keys_and_notification_rules(url: &str, user: &str, pa
         password: self_pass.clone(),
     });
     wait_for(&self_events, 30, |event| match event {
-        Event::SignInFailed(error) => panic!("the throwaway admin's sign-in failed: {error}"),
+        Event::SignInFailed { message, .. } => {
+            panic!("the throwaway admin's sign-in failed: {message}")
+        }
         Event::Tags(list) => Some(list),
         _ => None,
     })
@@ -2525,7 +2527,7 @@ async fn live_mimic_command() {
     });
     let live_link = wait_for(&events, 30, |event| match event {
         Event::Link(Link::Live) => Some(()),
-        Event::SignInFailed(error) => panic!("sign-in failed: {error}"),
+        Event::SignInFailed { message, .. } => panic!("sign-in failed: {message}"),
         _ => None,
     })
     .await;
