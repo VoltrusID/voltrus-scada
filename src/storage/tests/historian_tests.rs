@@ -133,37 +133,44 @@ async fn snapshot(storage: &Storage, from: i64, to: i64) -> Vec<String> {
         ));
     }
 
-    let dm = storage.query_device_metrics("d1", from, to).await.unwrap();
-    out.push(format!(
-        "device {:?}",
-        dm.iter()
-            .map(|(t, m)| {
-                let mut kv: Vec<_> = m.iter().map(|(k, v)| (k.clone(), bits(*v))).collect();
-                kv.sort();
-                (*t, kv)
-            })
-            .collect::<Vec<_>>()
-    ));
-    let merged = storage
-        .query_device_metrics_merged("d2", from, to, from - 1, from - 2, 1)
+    // The whole-window readers: bucketed (one width finer than the data, one
+    // coarser) and the export reader.
+    for width in [1, 90] {
+        let series = storage
+            .query_device_series("d1", from, to, width, None)
+            .await
+            .unwrap();
+        out.push(format!(
+            "series/{width} {:?}",
+            series
+                .iter()
+                .map(|(m, buckets)| (
+                    m.clone(),
+                    buckets
+                        .iter()
+                        .map(|b| (
+                            b.start,
+                            bits(b.avg),
+                            bits(b.min),
+                            bits(b.max),
+                            bits(b.last),
+                            b.last_ts,
+                            b.count
+                        ))
+                        .collect::<Vec<_>>()
+                ))
+                .collect::<Vec<_>>()
+        ));
+    }
+    let samples = storage
+        .query_device_samples("d1", from, to, usize::MAX)
         .await
         .unwrap();
     out.push(format!(
-        "merged {:?}",
-        merged
+        "samples {:?}",
+        samples
             .iter()
-            .map(|(t, m)| (*t, m.get("temp").map(|v| bits(*v))))
-            .collect::<Vec<_>>()
-    ));
-    let all_multi = storage
-        .query_history_multi("d1", from, to, None)
-        .await
-        .unwrap();
-    out.push(format!(
-        "multi-all {:?}",
-        all_multi
-            .iter()
-            .map(|p| (p.timestamp, bits(p.value)))
+            .map(|(t, m, v)| (*t, m.clone(), bits(*v)))
             .collect::<Vec<_>>()
     ));
 
@@ -395,44 +402,149 @@ async fn late_samples_merge_into_packed_hours() {
 }
 
 #[tokio::test]
-async fn read_limits_apply_to_the_merged_history() {
-    // More samples than the 10 000 row cap, half of them packed.
-    let storage = Storage::new_in_memory().unwrap();
+async fn long_windows_are_thinned_over_their_whole_length_not_cut_off() {
+    // More samples than the 10 000 point cap; one spike and one dip hidden in
+    // the middle. Half of the data ends up packed.
     let rows: Vec<Row> = (0..12_000)
-        .map(|i| ("d".into(), BASE + i, "x".into(), (i % 50) as f64))
+        .map(|i| {
+            let v = match i {
+                6_001 => 500.0,
+                6_002 => -500.0,
+                _ => (i % 50) as f64,
+            };
+            ("d".into(), BASE + i, "x".into(), v)
+        })
         .collect();
-    storage.insert_batch(&rows).await.unwrap();
-    let raw_only = storage
-        .query_history("d", "x", BASE, BASE + 12_000)
-        .await
-        .unwrap();
-    assert_eq!(raw_only.len(), 10_000);
-
-    storage
+    let end = BASE + 11_999;
+    let raw = Storage::new_in_memory().unwrap();
+    raw.insert_batch(&rows).await.unwrap();
+    let packed = Storage::new_in_memory().unwrap();
+    packed.insert_batch(&rows).await.unwrap();
+    packed
         .pack_history(BASE + 2 * HOUR, usize::MAX)
         .await
         .unwrap();
-    assert!(block_count(&storage).await > 0);
-    assert!(raw_rows(&storage).await > 0, "the last hour stays raw");
-    let mixed = storage
-        .query_history("d", "x", BASE, BASE + 12_000)
-        .await
-        .unwrap();
-    assert_eq!(mixed, raw_only);
+    assert!(block_count(&packed).await > 0);
+    assert!(raw_rows(&packed).await > 0, "the last hour stays raw");
 
-    let multi_raw = {
-        let s = Storage::new_in_memory().unwrap();
-        s.insert_batch(&rows).await.unwrap();
-        s.query_history_multi("d", BASE, BASE + 12_000, None)
+    for storage in [&raw, &packed] {
+        // A tag's history: thinned, ends where the window ends, keeps the extremes.
+        let h = storage.query_history("d", "x", BASE, end).await.unwrap();
+        assert!(h.len() <= 10_000 && h.len() > 5_000, "{} points", h.len());
+        assert_eq!(h[0].timestamp, BASE);
+        assert_eq!(h.last().unwrap().timestamp, end);
+        assert!(h.windows(2).all(|w| w[0].timestamp < w[1].timestamp));
+        assert!(h.iter().any(|p| p.value == 500.0) && h.iter().any(|p| p.value == -500.0));
+
+        // The report reader: same rule with a 5000 cap.
+        let m = storage
+            .query_history_multi("d", BASE, end, Some("x"))
             .await
-            .unwrap()
-    };
-    let multi_mixed = storage
-        .query_history_multi("d", BASE, BASE + 12_000, None)
+            .unwrap();
+        assert!(m.len() <= 5_000 && m.len() > 2_500, "{} points", m.len());
+        assert_eq!(m.last().unwrap().timestamp, end);
+        assert_eq!(m.iter().map(|p| p.value).fold(f64::MIN, f64::max), 500.0);
+        assert_eq!(m.iter().map(|p| p.value).fold(f64::MAX, f64::min), -500.0);
+
+        // The statistics reader: every k-th sample plus the last.
+        let v = storage
+            .get_metric_values_for_range("d", "x", BASE, end)
+            .await
+            .unwrap();
+        assert!(v.len() <= 10_001 && v.len() > 5_000, "{} points", v.len());
+        assert_eq!((v[0].0, v.last().unwrap().0), (BASE, end));
+
+        // A window under the cap comes back untouched.
+        let small = storage
+            .query_history("d", "x", BASE, BASE + 99)
+            .await
+            .unwrap();
+        assert_eq!(small.len(), 100);
+
+        // Without a tag filter the cap is a refusal, not a short answer.
+        assert!(
+            storage
+                .query_history_multi("d", BASE, end, None)
+                .await
+                .is_err()
+        );
+    }
+    // Raw and packed give the same thinned answer.
+    assert_eq!(
+        raw.query_history("d", "x", BASE, end).await.unwrap(),
+        packed.query_history("d", "x", BASE, end).await.unwrap()
+    );
+}
+
+#[tokio::test]
+async fn bucketed_series_cover_the_window_across_every_tier() {
+    // 3 hours of one tag at 10 s: the first hour only as a daily row, the
+    // second only as an hourly row, the rest as raw samples.
+    let storage = Storage::new_in_memory().unwrap();
+    let day = BASE / 86_400 * 86_400;
+    let rows: Vec<Row> = (0..3 * 360)
+        .map(|i| {
+            (
+                "d".into(),
+                day + 86_400 + HOUR * 2 + i * 10,
+                "x".into(),
+                7.0,
+            )
+        })
+        .collect();
+    storage.insert_batch(&rows).await.unwrap();
+    storage
+        .with_conn(move |c| {
+            for (table, start, avg, count) in [
+                ("telemetry_daily", day, 1.0, 8640),
+                ("telemetry_hourly", day + 86_400, 3.0, 360),
+            ] {
+                c.execute(
+                    &format!("INSERT INTO {table} (device_id, metric, bucket_start, avg_value, min_value, max_value, sample_count) VALUES ('d','x',?1,?2,?2,?2,?3)"),
+                    rusqlite::params![start, avg, count],
+                )?;
+            }
+            Ok(())
+        })
         .await
         .unwrap();
-    assert_eq!(multi_raw.len(), 5000);
-    assert_eq!(multi_mixed, multi_raw);
+    let (from, to) = (day, day + 86_400 + HOUR * 5);
+    let series = storage
+        .query_device_series("d", from, to, 3_600, None)
+        .await
+        .unwrap();
+    let buckets = &series["x"];
+    // One daily row, one hourly row and three hours of raw, each tier only for
+    // the time before the next one starts.
+    assert_eq!(buckets.first().unwrap().start, day);
+    assert_eq!(buckets.first().unwrap().avg, 1.0);
+    assert_eq!(buckets.first().unwrap().count, 8640);
+    assert_eq!(buckets.last().unwrap().start, day + 86_400 + HOUR * 4);
+    assert_eq!(buckets.last().unwrap().last, 7.0);
+    let starts: Vec<i64> = buckets.iter().map(|b| b.start).collect();
+    assert_eq!(
+        starts,
+        vec![
+            day,
+            day + 86_400,
+            day + 86_400 + HOUR * 2,
+            day + 86_400 + HOUR * 3,
+            day + 86_400 + HOUR * 4
+        ]
+    );
+    let total: u64 = buckets.iter().map(|b| b.count).sum();
+    assert_eq!(total, 8640 + 360 + 3 * 360);
+
+    // A coarse bucket folds the tiers together with count-weighted means.
+    let one = storage
+        .query_device_series("d", from, to, 2_592_000, None)
+        .await
+        .unwrap();
+    assert_eq!(one["x"].len(), 1);
+    let b = &one["x"][0];
+    let expected = (1.0 * 8640.0 + 3.0 * 360.0 + 7.0 * 1080.0) / (8640.0 + 360.0 + 1080.0);
+    assert!((b.avg - expected).abs() < 1e-9, "{} vs {expected}", b.avg);
+    assert_eq!((b.min, b.max), (1.0, 7.0));
 }
 
 #[tokio::test]

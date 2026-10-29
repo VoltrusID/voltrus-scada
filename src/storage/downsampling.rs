@@ -166,127 +166,64 @@ impl Storage {
         .context("Task join failed")?
     }
 
-    /// Query telemetry across all retention tiers, transparently merging raw/hourly/daily data.
+    /// A device's history over `[from, to]` as one series of buckets per tag,
+    /// from every retention tier (daily, hourly, packed and raw full
+    /// resolution), `bucket_secs` wide. The whole window is always covered:
+    /// the answer is as long as the window divided by the bucket width, never
+    /// cut short. `metrics` restricts the tags (`None` is all of them).
     ///
-    /// Tier time windows:
-    /// - Raw:   [raw_cutoff, ∞)  — recent high-resolution data
-    /// - Hourly: [hourly_cutoff, raw_cutoff) — mid-range aggregates
-    /// - Daily:  (-∞, hourly_cutoff) — long-term aggregates
-    ///
-    /// The raw tier is full resolution: raw rows and packed blocks together.
-    ///
-    /// `min_interval_secs` controls resolution awareness: if the caller needs data
-    /// at coarser intervals than a tier provides, that tier is skipped.
-    /// (raw=5s, hourly=3600s, daily=86400s)
-    pub async fn query_device_metrics_merged(
+    /// The connection is released between tags, so a long window does not hold
+    /// up the pollers' inserts for its whole duration.
+    pub async fn query_device_series(
         &self,
         device_id: &str,
         from: i64,
         to: i64,
-        raw_cutoff: i64,
-        hourly_cutoff: i64,
-        min_interval_secs: i64,
-    ) -> Result<Vec<(i64, std::collections::HashMap<String, f64>)>> {
+        bucket_secs: i64,
+        metrics: Option<std::collections::HashSet<String>>,
+    ) -> Result<std::collections::BTreeMap<String, Vec<historian::SeriesBucket>>> {
         let storage = self.clone();
         let device_id = device_id.to_string();
 
         tokio::task::spawn_blocking(move || {
+            let wanted: Vec<String> = {
+                let conn = storage.lock_conn();
+                historian::series_metrics(&conn, &device_id, from, to)?
+                    .into_iter()
+                    .filter(|m| metrics.as_ref().is_none_or(|set| set.contains(m)))
+                    .collect()
+            };
+            let mut out = std::collections::BTreeMap::new();
+            for metric in wanted {
+                let buckets = {
+                    let conn = storage.lock_conn();
+                    historian::bucket_series(&conn, &device_id, &metric, from, to, bucket_secs)?
+                };
+                if !buckets.is_empty() {
+                    out.insert(metric, buckets);
+                }
+            }
+            Ok(out)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Every full-resolution sample of a device in `[from, to]`, for exports:
+    /// `(timestamp, metric, value)` ascending. Fails when the range holds more
+    /// than `max_samples` rather than returning a short answer.
+    pub async fn query_device_samples(
+        &self,
+        device_id: &str,
+        from: i64,
+        to: i64,
+        max_samples: usize,
+    ) -> Result<Vec<(i64, String, f64)>> {
+        let storage = self.clone();
+        let device_id = device_id.to_string();
+        tokio::task::spawn_blocking(move || {
             let conn = storage.lock_conn();
-
-            let mut grouped: std::collections::BTreeMap<
-                i64,
-                std::collections::HashMap<String, f64>,
-            > = std::collections::BTreeMap::new();
-
-            // Daily data: (-∞, hourly_cutoff)
-            // Always useful at any resolution
-            let daily_from = from;
-            let daily_to = to.min(hourly_cutoff);
-            if daily_from < daily_to {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT bucket_start, metric, avg_value FROM telemetry_daily
-                     WHERE device_id = ?1 AND bucket_start >= ?2 AND bucket_start <= ?3
-                     ORDER BY bucket_start LIMIT 10000",
-                    )
-                    .context("Prepare daily failed")?;
-                let rows = stmt
-                    .query_map(rusqlite::params![device_id, daily_from, daily_to], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, f64>(2)?,
-                        ))
-                    })
-                    .context("Query daily failed")?;
-                let mut count = 0usize;
-                for row in rows {
-                    let (ts, metric, value) = row.context("Row mapping failed")?;
-                    grouped.entry(ts).or_default().insert(metric, value);
-                    count += 1;
-                }
-                if count >= 10000 {
-                    tracing::warn!(
-                        "query_device_metrics_merged: daily tier hit 10000-row cap for device {device_id}; older daily buckets omitted"
-                    );
-                }
-            }
-
-            // Hourly data: [hourly_cutoff, raw_cutoff)
-            // Skip if caller needs daily+ resolution only
-            let hourly_from = from.max(hourly_cutoff);
-            let hourly_to = to.min(raw_cutoff);
-            if min_interval_secs <= 3600 && hourly_from < hourly_to {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT bucket_start, metric, avg_value FROM telemetry_hourly
-                     WHERE device_id = ?1 AND bucket_start >= ?2 AND bucket_start <= ?3
-                     ORDER BY bucket_start LIMIT 10000",
-                    )
-                    .context("Prepare hourly failed")?;
-                let rows = stmt
-                    .query_map(
-                        rusqlite::params![device_id, hourly_from, hourly_to],
-                        |row| {
-                            Ok((
-                                row.get::<_, i64>(0)?,
-                                row.get::<_, String>(1)?,
-                                row.get::<_, f64>(2)?,
-                            ))
-                        },
-                    )
-                    .context("Query hourly failed")?;
-                let mut count = 0usize;
-                for row in rows {
-                    let (ts, metric, value) = row.context("Row mapping failed")?;
-                    grouped.entry(ts).or_default().insert(metric, value);
-                    count += 1;
-                }
-                if count >= 10000 {
-                    tracing::warn!(
-                        "query_device_metrics_merged: hourly tier hit 10000-row cap for device {device_id}; some hourly buckets omitted"
-                    );
-                }
-            }
-
-            // Raw data: [raw_cutoff, ∞)
-            // Skip if caller needs hourly+ resolution only (raw is ~5s intervals)
-            let raw_from = from.max(raw_cutoff);
-            let raw_to = to;
-            if min_interval_secs <= 300 && raw_from < raw_to {
-                let rows = historian::read_device(&conn, &device_id, raw_from, raw_to, 10000)?;
-                let count = rows.len();
-                for (ts, metric, value) in rows {
-                    grouped.entry(ts).or_default().insert(metric, value);
-                }
-                if count >= 10000 {
-                    tracing::warn!(
-                        "query_device_metrics_merged: raw tier hit 10000-row cap for device {device_id}; most recent raw samples omitted — narrow the time window"
-                    );
-                }
-            }
-
-            Ok(grouped.into_iter().collect())
+            historian::read_device_all(&conn, &device_id, from, to, max_samples)
         })
         .await
         .context("Task join failed")?

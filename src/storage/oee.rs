@@ -283,7 +283,12 @@ impl Storage {
     }
 
     /// Query telemetry history for a device with optional metric filter, oldest
-    /// first, at most 5000 samples; raw rows and packed blocks merged.
+    /// first; raw rows and packed blocks merged. A tag with more than 5000
+    /// samples in the window is thinned evenly over the whole window, keeping
+    /// the lowest and highest sample of each stretch, so a minimum or maximum
+    /// taken from the points is still the real one. Without a metric the
+    /// samples of every tag are returned together and the call fails if there
+    /// are more than 5000.
     pub async fn query_history_multi(
         &self,
         device_id: &str,
@@ -297,10 +302,16 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = storage.lock_conn();
             let samples: Vec<(i64, f64)> = match &metric {
-                Some(m) => {
-                    super::historian::read_series(&conn, &device_id, m, from, to, Some(5000))?
-                }
-                None => super::historian::read_device(&conn, &device_id, from, to, 5000)?
+                Some(m) => super::historian::read_series_thinned(
+                    &conn,
+                    &device_id,
+                    m,
+                    from,
+                    to,
+                    5000,
+                    super::historian::Thin::Extremes,
+                )?,
+                None => super::historian::read_device_all(&conn, &device_id, from, to, 5000)?
                     .into_iter()
                     .map(|(ts, _, v)| (ts, v))
                     .collect(),

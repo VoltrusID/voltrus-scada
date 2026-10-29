@@ -57,20 +57,9 @@ use rusqlite::Connection;
 
 use crate::models::DataPoint;
 
-pub use historian::{Agg, ArchiveSink, BUCKET_SECS, ExpireReport, PackReport, PackedStats, Sample};
-
-/// Group `(timestamp, metric, value)` rows by timestamp; a later row of the
-/// same metric and timestamp replaces an earlier one.
-fn group_by_timestamp(
-    rows: Vec<(i64, String, f64)>,
-) -> Vec<(i64, std::collections::HashMap<String, f64>)> {
-    let mut grouped: std::collections::BTreeMap<i64, std::collections::HashMap<String, f64>> =
-        std::collections::BTreeMap::new();
-    for (ts, metric, value) in rows {
-        grouped.entry(ts).or_default().insert(metric, value);
-    }
-    grouped.into_iter().collect()
-}
+pub use historian::{
+    Agg, ArchiveSink, BUCKET_SECS, ExpireReport, PackReport, PackedStats, Sample, SeriesBucket,
+};
 
 /// The database encryption key, kept so side connections can open the same file.
 /// Never printed.
@@ -244,8 +233,10 @@ impl Storage {
         .context("Task join failed")?
     }
 
-    /// Full-resolution samples of one tag in `[from, to]`, oldest first, at
-    /// most 10000. Packed and raw samples are merged transparently.
+    /// Full-resolution samples of one tag in `[from, to]`, oldest first. Packed
+    /// and raw samples are merged transparently. A window with more than 10000
+    /// samples is thinned evenly over the whole window (keeping each stretch's
+    /// lowest and highest sample), never cut off at the end.
     pub async fn query_history(
         &self,
         device_id: &str,
@@ -259,30 +250,19 @@ impl Storage {
 
         tokio::task::spawn_blocking(move || {
             let conn = storage.lock_conn();
-            let samples =
-                historian::read_series(&conn, &device_id, &metric, from, to, Some(10000))?;
+            let samples = historian::read_series_thinned(
+                &conn,
+                &device_id,
+                &metric,
+                from,
+                to,
+                historian::THIN_CAP,
+                historian::Thin::Extremes,
+            )?;
             Ok(samples
                 .into_iter()
                 .map(|(timestamp, value)| DataPoint { timestamp, value })
                 .collect())
-        })
-        .await
-        .context("Task join failed")?
-    }
-
-    pub async fn query_device_metrics(
-        &self,
-        device_id: &str,
-        from: i64,
-        to: i64,
-    ) -> Result<Vec<(i64, std::collections::HashMap<String, f64>)>> {
-        let storage = self.clone();
-        let device_id = device_id.to_string();
-
-        tokio::task::spawn_blocking(move || {
-            let conn = storage.lock_conn();
-            let rows = historian::read_device(&conn, &device_id, from, to, 10000)?;
-            Ok(group_by_timestamp(rows))
         })
         .await
         .context("Task join failed")?

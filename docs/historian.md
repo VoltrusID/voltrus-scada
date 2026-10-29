@@ -181,8 +181,29 @@ aggregate of an hour is computed from its block.
 ## Limits
 
 * Blocks are per tag and hour. A trend over a long range decodes the blocks it
-  covers, one at a time. The history API still caps a device query at 10 000
-  samples, as before.
+  covers, one at a time, and releases the database between tags.
+
+## Reading history without losing the end of the window
+
+No reader cuts a window off: an answer always runs from the start of the window
+to its newest sample, and when the window holds more samples than the answer
+carries, it is thinned evenly over its whole length.
+
+| Reader | What it returns |
+|---|---|
+| `GET /api/v1/history` (trends, MCP `read_history`), `agg=sampling` (default) | every sample up to 2 000 per tag, otherwise the newest sample of each of 2 000 equal slices of the window; such a series carries `"downsampled": true` |
+| the same with `detail=full` | the same rule with 10 000 points per tag |
+| the same with `agg=avg` or `agg=minmax` | one bucket per `interval` of the range (10 s for 30 min, 8 min for 24 h, ...), widened if that would exceed 10 000 points; `minmax` adds the lowest and highest sample of each bucket |
+| tags defined by an `expression` | the expression evaluated on the bucketed values of its inputs (their means, newest samples, or lows and highs by `agg`), so the band of a non-monotonic expression is approximate |
+| `GET /api/v1/analytics/spc`, `histogram`, `run-chart` | up to 10 000 samples; a longer window gives every k-th sample plus the last |
+| `Storage::query_history`, `query_history_multi` (reports) | up to 10 000 / 5 000 samples per tag; a longer window keeps the lowest and highest sample of every stretch, so a minimum or maximum taken from the points is the real one |
+| BI and Grafana queries, scheduled egress | every sample of the range, or an error naming the limit (1 000 000 samples per device for BI, 3 000 000 per file for egress); narrow the range or split the job |
+| `GET /api/v1/data/export` | paged with `limit` and `offset` (newest first), counts included |
+
+Ranges older than the full-resolution window are answered from the hourly and
+daily rows (count-weighted when buckets are merged); each tier is used only for
+the time before the next one starts, so no moment is counted twice.
+
 * Samples are `f64` and timestamps whole seconds, as in the `telemetry` table.
   SQLite cannot store NaN in that table, so NaN never reaches a block through
   the normal write path.
