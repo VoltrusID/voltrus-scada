@@ -5,13 +5,14 @@
 //!   `voltrus station` and `voltrus service` commands resolve it.
 //! - [`load`]: `station.toml`, the console's credential for the station.
 //! - [`start`]: whether the console opens in local station mode.
-//! - [`bundled_server`] and [`run`]: the `voltrus` server beside the
-//!   console, and its setup commands ([`Step`]).
+//! - [`bundled_server`], [`run`] and [`service_status`]: the `voltrus`
+//!   server beside the console, its setup commands ([`Step`]) and its
+//!   service's state.
 
 use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -175,20 +176,25 @@ pub enum Step {
 }
 
 impl Step {
-    pub const ALL: [Self; 3] = [Self::Init, Self::Install, Self::Start];
+    /// Setting up this computer as a station.
+    pub const SETUP: &[Self] = &[Self::Init, Self::Install, Self::Start];
+    /// Finishing a station whose service is not installed.
+    pub const FINISH: &[Self] = &[Self::Install, Self::Start];
+    /// Starting a station whose service is stopped.
+    pub const START: &[Self] = &[Self::Start];
 
-    /// The server's arguments for this step.
-    pub fn args(self, dir: &Path) -> Vec<OsString> {
-        let command: [&str; 2] = match self {
+    /// The server's command for this step.
+    fn command(self) -> [&'static str; 2] {
+        match self {
             Self::Init => ["station", "init"],
             Self::Install => ["service", "install"],
             Self::Start => ["service", "start"],
-        };
-        command
-            .into_iter()
-            .map(OsString::from)
-            .chain([OsString::from("--dir"), dir.as_os_str().to_owned()])
-            .collect()
+        }
+    }
+
+    /// The server's arguments for this step.
+    pub fn args(self, dir: &Path) -> Vec<OsString> {
+        with_dir(self.command(), dir)
     }
 
     /// What the step is doing, for the sign-in card.
@@ -201,22 +207,31 @@ impl Step {
     }
 }
 
+fn with_dir(command: [&str; 2], dir: &Path) -> Vec<OsString> {
+    command
+        .into_iter()
+        .map(OsString::from)
+        .chain([OsString::from("--dir"), dir.as_os_str().to_owned()])
+        .collect()
+}
+
+/// The station's service as `voltrus service status` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Service {
+    Running,
+    Stopped,
+    NotInstalled,
+}
+
 /// The most of a failed command's output shown.
 const OUTPUT_LIMIT: usize = 600;
 
-/// Run `step` with the station's `server` for `dir`, blocking until it
-/// ends; why it failed is its last output.
-pub fn run(server: &Path, step: Step, dir: &Path) -> Result<(), String> {
-    let args = step.args(dir);
-    let shown = args
-        .iter()
-        .take(2)
-        .map(|arg| arg.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(" ");
+/// Run the station's `server` with `args`, blocking until it ends, its
+/// output captured.
+fn execute(server: &Path, args: &[OsString]) -> Result<Output, String> {
     let mut command = Command::new(server);
     command
-        .args(&args)
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -227,12 +242,13 @@ pub fn run(server: &Path, step: Step, dir: &Path) -> Result<(), String> {
         // command line.
         command.creation_flags(0x0800_0000);
     }
-    let output = command
+    command
         .output()
-        .map_err(|error| format!("Could not run {}: {error}", server.display()))?;
-    if output.status.success() {
-        return Ok(());
-    }
+        .map_err(|error| format!("Could not run {}: {error}", server.display()))
+}
+
+/// Why `voltrus <command>` failed: its exit and its last output.
+fn failure(command: [&str; 2], output: &Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let said = if stderr.trim().is_empty() {
@@ -244,18 +260,49 @@ pub fn run(server: &Path, step: Step, dir: &Path) -> Result<(), String> {
     while !said.is_char_boundary(start) {
         start += 1;
     }
-    let mut message = format!("voltrus {shown} failed ({})", output.status);
+    let mut message = format!("voltrus {} failed ({})", command.join(" "), output.status);
     if !said.is_empty() {
         message.push_str(": ");
         message.push_str(&said[start..]);
     }
-    // Installing a Windows service needs an administrator.
-    if cfg!(windows) && step == Step::Install && said.to_ascii_lowercase().contains("denied") {
+    if cfg!(windows) && wants_administrator(said) {
         message.push_str(
-            " Run Voltrus SCADA as administrator once (right-click, Run as administrator) to install the service.",
+            " Run Voltrus SCADA as administrator once (right-click, Run as administrator) to set up the station.",
         );
     }
-    Err(message)
+    message
+}
+
+/// Whether a command's output says it was denied without saying how to get
+/// past it (Windows: installing a service or hardening the station folder
+/// needs an administrator; the server's own message may already say so).
+fn wants_administrator(said: &str) -> bool {
+    let said = said.to_ascii_lowercase();
+    said.contains("denied") && !said.contains("administrator")
+}
+
+/// Run `step` with the station's `server` for `dir`, blocking until it
+/// ends; why it failed is its last output.
+pub fn run(server: &Path, step: Step, dir: &Path) -> Result<(), String> {
+    let output = execute(server, &step.args(dir))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(failure(step.command(), &output))
+    }
+}
+
+/// Ask the station's `server` about its service (`voltrus service
+/// status`, exit 0 running, 3 stopped, 4 not installed), blocking.
+pub fn service_status(server: &Path, dir: &Path) -> Result<Service, String> {
+    const STATUS: [&str; 2] = ["service", "status"];
+    let output = execute(server, &with_dir(STATUS, dir))?;
+    match output.status.code() {
+        Some(0) => Ok(Service::Running),
+        Some(3) => Ok(Service::Stopped),
+        Some(4) => Ok(Service::NotInstalled),
+        _ => Err(failure(STATUS, &output)),
+    }
 }
 
 #[cfg(test)]
@@ -390,6 +437,51 @@ mod tests {
             args(Step::Start),
             ["service", "start", "--dir", "/srv/station"]
         );
+        assert_eq!(Step::SETUP, [Step::Init, Step::Install, Step::Start]);
+        assert_eq!(Step::FINISH, [Step::Install, Step::Start]);
+        assert_eq!(Step::START, [Step::Start]);
+    }
+
+    #[test]
+    fn a_denial_without_a_way_out_wants_an_administrator() {
+        assert!(wants_administrator(
+            "OpenSCManager: Access is denied. (os error 5)"
+        ));
+        assert!(!wants_administrator(
+            "Access denied: run voltrus station init as administrator"
+        ));
+        assert!(!wants_administrator("no service manager"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_service_status_reads_the_servers_exit_code() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("status");
+        let server = dir.join(SERVER_EXE);
+        // `voltrus service status --dir D` exits with the code in D/code.
+        std::fs::write(
+            &server,
+            "#!/bin/sh\n[ \"$2\" = status ] || exit 9\necho \"status of $4\"\nexit $(cat \"$4/code\")\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for (code, service) in [
+            ("0", Service::Running),
+            ("3", Service::Stopped),
+            ("4", Service::NotInstalled),
+        ] {
+            std::fs::write(dir.join("code"), code).unwrap();
+            assert_eq!(service_status(&server, &dir), Ok(service), "exit {code}");
+        }
+        std::fs::write(dir.join("code"), "1").unwrap();
+        let error = service_status(&server, &dir).unwrap_err();
+        assert!(
+            error.starts_with("voltrus service status failed"),
+            "{error}"
+        );
+        assert!(error.contains("status of"), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(unix)]

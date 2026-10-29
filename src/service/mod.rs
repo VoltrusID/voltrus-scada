@@ -107,7 +107,7 @@ pub(crate) async fn run(ext: Arc<dyn Extension>, dir: &Path) -> Result<()> {
             .config
             .to_str()
             .context("Config path is not valid UTF-8")?;
-        crate::app::serve(ext, config, shutdown).await
+        crate::app::serve(ext, config, shutdown, None).await
     }
 }
 

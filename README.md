@@ -182,7 +182,10 @@ The station directory is `%ProgramData%\Voltrus SCADA` on Windows,
 `~/.local/share/voltrus-scada` elsewhere (override with `--dir` or
 `VOLTRUS_STATION_DIR`). `station init` picks a free port from 3000, keeps an
 existing config and writes `station.toml`, the credential of the `station`
-admin account the console signs in with; run it again to repair it. The
+admin account the console signs in with; run it again to repair it. It also
+locks the directory down: private to your account on macOS and Linux; on
+Windows (run it as administrator) owned by Administrators, with only SYSTEM and
+Administrators allowed in and Users allowed to read `station.toml`. The
 service runs `voltrus service run --dir <station dir>` and logs to
 `logs/voltrus.log`. On Linux use the systemd unit in
 [`deploy/voltrus.service`](deploy/voltrus.service) instead of `voltrus service`.

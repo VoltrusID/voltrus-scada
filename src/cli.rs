@@ -48,7 +48,8 @@ USAGE:
                                             Set up this computer as a local station: config.yaml
                                             (127.0.0.1, free port from 3000), data.db, logs/ and the
                                             console sign-in station.toml in DIR (default: the
-                                            station directory). Safe to run again.
+                                            station directory). Safe to run again. Locks DIR down
+                                            (Windows: run as administrator)
     voltrus service install|uninstall|start|stop|status [--dir DIR]
                                             Manage the local station server as a background service
                                             (Windows service VoltrusSCADA, macOS LaunchAgent

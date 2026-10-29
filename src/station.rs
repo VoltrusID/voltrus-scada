@@ -101,17 +101,28 @@ pub struct Initialized {
     pub config_created: bool,
     /// The `station` user got a new password (and `station.toml` with it).
     pub password_changed: bool,
+    /// The seed created the `admin` user with a random password (not shown).
+    pub admin_created: bool,
+    pub config_path: PathBuf,
 }
 
 /// `voltrus station init`: create the station directory, its config and
 /// database, the `station` user and `station.toml`. Idempotent: an existing
 /// config (and its `auth_secret`) is kept, and the stored password is kept as
 /// long as it still signs in.
+///
+/// The directory is locked down before anything is written into it: private
+/// to the owner on unix; on Windows owned by Administrators, full control for
+/// SYSTEM and Administrators only, with Users allowed to list the folder and
+/// read `station.toml`. On Windows that needs an elevated prompt.
 pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
     let dir = std::path::absolute(dir)
         .with_context(|| format!("Cannot resolve station directory {}", dir.display()))?;
-    std::fs::create_dir_all(dir.join(LOG_DIR))
+    std::fs::create_dir_all(&dir)
         .with_context(|| format!("Cannot create station directory {}", dir.display()))?;
+    secure_dir(&dir)?;
+    std::fs::create_dir_all(dir.join(LOG_DIR))
+        .with_context(|| format!("Cannot create {}", dir.join(LOG_DIR).display()))?;
 
     let config_path = dir.join(CONFIG_FILE);
     let config_created = !config_path.exists();
@@ -133,7 +144,9 @@ pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
     let db_path = dir.join(&app_config.db_path);
     let storage =
         Storage::new_with_key(path_str(&db_path)?, app_config.db_encryption_key.as_deref())?;
-    storage.seed_database(&app_config.devices).await?;
+    // Setup output ends up in installer logs: the station signs in as
+    // `station`, so the generated `admin` password is not shown.
+    let admin_created = storage.seed_database_quietly(&app_config.devices).await?;
 
     let credential_path = dir.join(CREDENTIAL_FILE);
     let saved = read_credential(&credential_path);
@@ -147,6 +160,7 @@ pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
     if saved.as_ref() != Some(&credential) {
         write_credential(&credential_path, &credential)?;
     }
+    allow_users_to_read(&credential_path)?;
 
     Ok(Initialized {
         dir,
@@ -154,7 +168,113 @@ pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
         username: credential.username,
         config_created,
         password_changed,
+        admin_created,
+        config_path,
     })
+}
+
+/// Unix: the station directory is private to the user the service runs as.
+#[cfg(unix)]
+fn secure_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("Cannot restrict {}", dir.display()))
+}
+
+/// Windows: make BUILTIN\Administrators the owner of the directory and all in
+/// it, give it a protected ACL (SYSTEM and Administrators full control,
+/// inherited; Users may only list the folder itself) and let the contents
+/// inherit that. Fails before anything is written when not elevated, so a
+/// standard user cannot claim the folder first.
+///
+/// The directory may already hold files and folders: the installer creates
+/// `logs\` and writes `logs\setup.log` before it runs `station init`, and an
+/// earlier install leaves its data. So ownership is taken recursively and,
+/// after the folder ACL is set, every existing entry is reset (recursively) to
+/// inherit it, not only what init writes afterwards.
+#[cfg(windows)]
+fn secure_dir(dir: &Path) -> Result<()> {
+    const ADMINISTRATORS: &str = "*S-1-5-32-544";
+    const SYSTEM: &str = "*S-1-5-18";
+    const USERS: &str = "*S-1-5-32-545";
+    let dir_arg = dir.as_os_str();
+
+    if let Err(e) = icacls(&[dir_arg, "/setowner".as_ref(), ADMINISTRATORS.as_ref()]) {
+        return Err(e.context(format!(
+            "Cannot take ownership of {}. Run `voltrus station init` as administrator \
+             (from an elevated prompt).",
+            dir.display()
+        )));
+    }
+    icacls(&[
+        dir_arg,
+        "/setowner".as_ref(),
+        ADMINISTRATORS.as_ref(),
+        "/T".as_ref(),
+        "/C".as_ref(),
+    ])?;
+    // Drop every explicit entry, then replace the inherited ones with ours.
+    icacls(&[dir_arg, "/reset".as_ref()])?;
+    icacls(&[
+        dir_arg,
+        "/inheritance:r".as_ref(),
+        "/grant:r".as_ref(),
+        format!("{SYSTEM}:(OI)(CI)F").as_ref(),
+        format!("{ADMINISTRATORS}:(OI)(CI)F").as_ref(),
+        format!("{USERS}:(RX)").as_ref(),
+    ])?;
+    for entry in std::fs::read_dir(dir).with_context(|| format!("Cannot list {}", dir.display()))? {
+        let path = entry?.path();
+        icacls(&[
+            path.as_os_str(),
+            "/reset".as_ref(),
+            "/T".as_ref(),
+            "/C".as_ref(),
+        ])?;
+    }
+    Ok(())
+}
+
+/// Windows: the console runs as a standard user and reads `station.toml`.
+/// Rewriting the file replaces it, so the grant is applied after every write.
+#[cfg(windows)]
+fn allow_users_to_read(path: &Path) -> Result<()> {
+    icacls(&[
+        path.as_os_str(),
+        "/grant".as_ref(),
+        "*S-1-5-32-545:(R)".as_ref(),
+    ])
+}
+
+/// Unix: the console runs as the same user as the service.
+#[cfg(unix)]
+fn allow_users_to_read(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// Run `icacls` (well-known SIDs keep it independent of the Windows language).
+#[cfg(windows)]
+fn icacls(args: &[&std::ffi::OsStr]) -> Result<()> {
+    let output = std::process::Command::new("icacls")
+        .args(args)
+        .output()
+        .context("Cannot run icacls")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "icacls {} failed ({}): {}",
+        args.iter()
+            .map(|a| a.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" "),
+        output.status,
+        String::from_utf8_lossy(if output.stderr.is_empty() {
+            &output.stdout
+        } else {
+            &output.stderr
+        })
+        .trim()
+    );
+    Ok(())
 }
 
 /// Read `station.toml`; `None` when it is missing or unreadable.
@@ -248,16 +368,13 @@ fn free_port(start: u16) -> Result<u16> {
 }
 
 /// Nothing accepts connections on 127.0.0.1:`port` and the port can be bound
-/// there and on all interfaces. The connect check catches a listener on the
-/// other address that a bind with `SO_REUSEADDR` would not notice.
+/// there. The connect check catches a listener on all interfaces that a bind
+/// with `SO_REUSEADDR` would not notice. Only loopback is touched, so no
+/// firewall prompt appears.
 fn port_is_free(port: u16) -> bool {
     let loopback = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    if TcpStream::connect_timeout(&loopback, Duration::from_millis(200)).is_ok() {
-        return false;
-    }
-    [Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED]
-        .into_iter()
-        .all(|ip| TcpListener::bind((ip, port)).is_ok())
+    TcpStream::connect_timeout(&loopback, Duration::from_millis(200)).is_err()
+        && TcpListener::bind(loopback).is_ok()
 }
 
 fn random_alphanumeric(len: usize) -> String {
@@ -335,6 +452,13 @@ pub(crate) async fn handle_cli(args: &[String]) -> bool {
             println!("Station directory: {}", done.dir.display());
             println!("Server URL: {}", done.url);
             println!("Console user: {}", done.username);
+            if done.admin_created {
+                println!(
+                    "Created user admin with a random password. Set one with \
+                     `voltrus --reset-admin-password \"{}\"` or under Users.",
+                    done.config_path.display()
+                );
+            }
             true
         }
         Err(e) => {
@@ -458,6 +582,7 @@ mod tests {
         let first = init(&dir, Some(port)).await.unwrap();
         assert!(first.config_created);
         assert!(first.password_changed);
+        assert!(first.admin_created);
         assert_eq!(first.username, STATION_USER);
 
         let config_text = std::fs::read_to_string(dir.join(CONFIG_FILE)).unwrap();
@@ -473,6 +598,14 @@ mod tests {
         assert_eq!(app_config.auth_secret.as_deref().map(str::len), Some(48));
         assert_eq!(app_config.cookie_secure, crate::models::CookieSecure::Never);
         assert!(dir.join(LOG_DIR).is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&dir), 0o700);
+            assert_eq!(mode(&dir.join(CONFIG_FILE)), 0o600);
+            assert_eq!(mode(&dir.join(CREDENTIAL_FILE)), 0o600);
+        }
 
         let credential = read_credential(&dir.join(CREDENTIAL_FILE)).unwrap();
         assert_eq!(
@@ -487,6 +620,7 @@ mod tests {
         let second = init(&dir, Some(port)).await.unwrap();
         assert!(!second.config_created);
         assert!(!second.password_changed);
+        assert!(!second.admin_created);
         assert_eq!(
             std::fs::read_to_string(dir.join(CONFIG_FILE)).unwrap(),
             config_text

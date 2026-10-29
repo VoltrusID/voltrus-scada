@@ -459,7 +459,12 @@ edition}`.
   back-off; a refusal, `Event::SignInFailed { refused }`, waits for Retry,
   as each one counts towards locking the account), `session_ended` (a
   `Link::Failed`) and `leave` (sign-out). `views::station` stands in for
-  the sign-in card while `Phase::SignIn` and in the mode.
+  the sign-in card while `Phase::SignIn` and in the mode. Setup steps
+  (`station::Step`, blocking `std::process` runs of the bundled server)
+  run on the background executor one after the other (`run_steps`), for
+  the card's setup or, when the station does not answer and
+  `service status` says it is not installed or stopped, the station
+  screen's repair.
 - **The keymap is rebuilt, not appended**: `shortcuts::rebind` clears
   GPUI's bindings and binds vt-ui's text field keys, every
   `keys::key_bindings()` row (less Quit and Sign out under the kiosk lock)

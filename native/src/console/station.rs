@@ -9,14 +9,18 @@
 //!
 //! On a computer with the server beside the console but no station yet,
 //! the sign-in card offers to set one up: the server's `station init`,
-//! `service install` and `service start`, run off the UI thread.
+//! `service install` and `service start`, run off the UI thread. A setup
+//! that failed keeps its error and its button on the card. A station that
+//! does not answer is asked about its service (`service status`): one not
+//! installed (a setup that stopped after `station init`) offers to finish
+//! the setup, a stopped one to start it.
 
 use std::path::PathBuf;
 
 use gpui::{Context, Task, Window};
 use serde::de::IgnoredAny;
 use voltrus_scada_native::runtime::{Call, CallKey, Command, Reply};
-use voltrus_scada_native::station::{self, Credential, Step};
+use voltrus_scada_native::station::{self, Credential, Service, Step};
 
 use super::{Console, Launch};
 
@@ -56,14 +60,19 @@ impl Station {
         self.available = self.dir.as_deref().is_some_and(station::exists);
     }
 
-    /// Whether the sign-in card offers to set this computer up.
+    /// Whether the sign-in card offers to set this computer up: no station
+    /// yet, or a setup that is running or failed (after `station init`
+    /// made `station.toml`, the rest may still be missing).
     pub fn offers_setup(&self) -> bool {
-        self.server.is_some() && self.dir.is_some() && !self.available && self.local.is_none()
+        self.server.is_some()
+            && self.dir.is_some()
+            && self.local.is_none()
+            && (!self.available || self.setup.is_some())
     }
 
     /// Whether the sign-in card offers to go back to the station.
     pub fn offers_return(&self) -> bool {
-        self.available && self.local.is_none()
+        self.available && self.local.is_none() && self.setup.is_none()
     }
 }
 
@@ -79,6 +88,14 @@ pub struct Local {
     credential: Option<Credential>,
     /// The next attempt, while waiting for it.
     retry: Option<Task<()>>,
+    /// The station's service as the bundled server last reported it while
+    /// the station did not answer (`None` once it answers, or unknown).
+    pub service: Option<Result<Service, String>>,
+    /// Asking the bundled server about the service.
+    querying: bool,
+    /// Finishing the setup or starting the service, while it runs or once
+    /// it failed.
+    pub fix: Option<Setup>,
 }
 
 impl Local {
@@ -125,6 +142,9 @@ pub fn open(console: &mut Console, cx: &mut Context<Console>) {
         seq: 0,
         credential: None,
         retry: None,
+        service: None,
+        querying: false,
+        fix: None,
     });
     check(console, cx);
 }
@@ -218,8 +238,11 @@ pub fn on_public_reply(
     if let Some(error) = reply.error() {
         let reason = format!("The server is not answering: {error}");
         wait(console, reason, cx);
+        query_service(console, cx);
         return;
     }
+    // Up: whatever the service was, it serves.
+    local.service = None;
     let Some(credential) = local.credential.clone() else {
         return;
     };
@@ -288,25 +311,100 @@ pub fn session_ended(console: &mut Console, cx: &mut Context<Console>) {
     }
 }
 
-/// "Set up this computer as a station": the bundled server's setup steps
-/// one after the other, off the UI thread, then local station mode.
-pub fn set_up(console: &mut Console, cx: &mut Context<Console>) {
+/// Ask the bundled server whether the station's service is installed and
+/// running, off the UI thread: the station screen then offers to finish
+/// the setup or start the service.
+fn query_service(console: &mut Console, cx: &mut Context<Console>) {
     let (Some(server), Some(dir)) = (console.station.server.clone(), console.station.dir.clone())
     else {
         return;
     };
-    if matches!(console.station.setup, Some(Setup::Running(_))) {
+    let Some(local) = &mut console.station.local else {
+        return;
+    };
+    if local.querying || matches!(local.fix, Some(Setup::Running(_))) {
         return;
     }
-    console.station.setup = Some(Setup::Running(Step::Init));
-    console.error = None;
+    local.querying = true;
     cx.spawn(async move |this, cx| {
-        for step in Step::ALL {
-            let shown = this.update(cx, |console, cx| {
-                console.station.setup = Some(Setup::Running(step));
+        let service = cx
+            .background_executor()
+            .spawn(async move { station::service_status(&server, &dir) })
+            .await;
+        let _ = this.update(cx, |console, cx| {
+            if let Some(local) = &mut console.station.local {
+                local.querying = false;
+                local.service = Some(service);
                 cx.notify();
+            }
+        });
+    })
+    .detach();
+}
+
+/// Where a run of setup steps reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// The sign-in card's "Set up this computer as a station".
+    Card,
+    /// The station screen's "Finish setting up" or "Start the server".
+    Screen,
+}
+
+/// The progress of a run for `target`; `None` once there is nowhere to
+/// show it (local station mode ended).
+fn progress(console: &mut Console, target: Target) -> Option<&mut Option<Setup>> {
+    match target {
+        Target::Card => Some(&mut console.station.setup),
+        Target::Screen => console.station.local.as_mut().map(|local| &mut local.fix),
+    }
+}
+
+/// "Set up this computer as a station": the bundled server's setup steps
+/// one after the other, off the UI thread, then local station mode.
+pub fn set_up(console: &mut Console, cx: &mut Context<Console>) {
+    console.error = None;
+    run_steps(console, Target::Card, Step::SETUP, cx);
+}
+
+/// The station screen's "Finish setting up this station"
+/// ([`Step::FINISH`]) or "Start the station server" ([`Step::START`]),
+/// then a health check at once.
+pub fn repair(console: &mut Console, steps: &'static [Step], cx: &mut Context<Console>) {
+    run_steps(console, Target::Screen, steps, cx);
+}
+
+fn run_steps(
+    console: &mut Console,
+    target: Target,
+    steps: &'static [Step],
+    cx: &mut Context<Console>,
+) {
+    let (Some(server), Some(dir), Some(first)) = (
+        console.station.server.clone(),
+        console.station.dir.clone(),
+        steps.first().copied(),
+    ) else {
+        return;
+    };
+    let Some(slot) = progress(console, target) else {
+        return;
+    };
+    if matches!(slot, Some(Setup::Running(_))) {
+        return;
+    }
+    *slot = Some(Setup::Running(first));
+    cx.spawn(async move |this, cx| {
+        for &step in steps {
+            let shown = this.update(cx, |console, cx| {
+                let Some(slot) = progress(console, target) else {
+                    return false;
+                };
+                *slot = Some(Setup::Running(step));
+                cx.notify();
+                true
             });
-            if shown.is_err() {
+            if !matches!(shown, Ok(true)) {
                 return;
             }
             let (server, dir) = (server.clone(), dir.clone());
@@ -316,7 +414,9 @@ pub fn set_up(console: &mut Console, cx: &mut Context<Console>) {
                 .await;
             if let Err(error) = result {
                 let _ = this.update(cx, |console, cx| {
-                    console.station.setup = Some(Setup::Failed(error));
+                    if let Some(slot) = progress(console, target) {
+                        *slot = Some(Setup::Failed(error));
+                    }
                     console.station.look();
                     cx.notify();
                 });
@@ -324,9 +424,21 @@ pub fn set_up(console: &mut Console, cx: &mut Context<Console>) {
             }
         }
         let _ = this.update(cx, |console, cx| {
-            console.station.setup = None;
             console.station.look();
-            open(console, cx);
+            match target {
+                Target::Card => {
+                    console.station.setup = None;
+                    open(console, cx);
+                }
+                Target::Screen => {
+                    if let Some(local) = &mut console.station.local {
+                        local.fix = None;
+                        local.service = None;
+                        local.failures = 0;
+                        check(console, cx);
+                    }
+                }
+            }
         });
     })
     .detach();

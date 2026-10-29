@@ -8,8 +8,10 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 pub const LABEL: &str = "id.voltrus.scada.server";
-/// How long `start`, `stop` and `uninstall` wait for launchd.
+/// How long `stop` and `uninstall` wait for launchd.
 const WAIT: Duration = Duration::from_secs(20);
+/// How long `start` waits for the server to answer its health check.
+const READY_WAIT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(250);
 
 /// The LaunchAgent property list. `KeepAlive` restarts the server whenever it
@@ -166,22 +168,58 @@ pub(super) fn uninstall() -> Result<()> {
     }
 }
 
+/// Start the agent and return once the server answers `/api/v1/health`.
 pub(super) fn start(station: &Station) -> Result<()> {
+    station.ensure_initialized()?;
+    let port = crate::config::load_config(
+        station
+            .config
+            .to_str()
+            .context("Config path is not valid UTF-8")?,
+    )?
+    .server_port;
     let domain = domain()?;
     match status()? {
         Status::NotInstalled => {
             anyhow::bail!("The service is not installed. Run `voltrus service install` first.")
         }
-        Status::Running => return Ok(()),
-        Status::Stopped => {}
+        Status::Running => {}
+        Status::Stopped => match loaded_state(&domain)? {
+            // RunAtLoad starts it as it loads.
+            None => launchctl_ok(&["bootstrap", &domain, &plist_path()?.to_string_lossy()])?,
+            Some(_) => launchctl_ok(&["kickstart", "-k", &format!("{domain}/{LABEL}")])?,
+        },
     }
-    match loaded_state(&domain)? {
-        // RunAtLoad starts it as it loads.
-        None => launchctl_ok(&["bootstrap", &domain, &plist_path()?.to_string_lossy()])?,
-        Some(_) => launchctl_ok(&["kickstart", "-k", &format!("{domain}/{LABEL}")])?,
+    let deadline = Instant::now() + READY_WAIT;
+    while !healthy(port) {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "The service did not answer on 127.0.0.1:{port} within {}s; see {}",
+            READY_WAIT.as_secs(),
+            station.log_file.display()
+        );
+        std::thread::sleep(POLL);
     }
-    wait_until("start", || Ok(loaded_state(&domain)? == Some(true)))
-        .with_context(|| format!("See {} for the reason", station.log_file.display()))
+    Ok(())
+}
+
+/// `GET /api/v1/health` on 127.0.0.1:`port` answers 200.
+fn healthy(port: u16) -> bool {
+    use std::io::{Read, Write};
+    let addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port));
+    let Ok(mut stream) = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)) else {
+        return false;
+    };
+    let timeout = Some(Duration::from_secs(2));
+    if stream.set_read_timeout(timeout).is_err() || stream.set_write_timeout(timeout).is_err() {
+        return false;
+    }
+    let request = "GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut status_line = [0u8; 12];
+    stream.read_exact(&mut status_line).is_ok() && status_line == *b"HTTP/1.1 200"
 }
 
 pub(super) fn stop() -> Result<()> {
@@ -228,5 +266,32 @@ mod tests {
         assert!(plist.contains(&format!("<string>{dir}/logs/service.out.log</string>")));
         assert!(plist.contains(&format!("<string>{dir}/logs/service.err.log</string>")));
         assert!(!plist.contains("<&>"));
+    }
+
+    fn serve_once(response: &'static str) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 256];
+            let _ = stream.read(&mut request);
+            let _ = stream.write_all(response.as_bytes());
+        });
+        port
+    }
+
+    #[test]
+    fn health_probe_needs_a_200() {
+        assert!(healthy(serve_once(
+            "HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n"
+        )));
+        assert!(!healthy(serve_once(
+            "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 0\r\n\r\n"
+        )));
+        let closed = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = closed.local_addr().unwrap().port();
+        drop(closed);
+        assert!(!healthy(port));
     }
 }
