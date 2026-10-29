@@ -14,6 +14,15 @@ export function useSystemInfo(enabled: boolean) {
   })
 }
 
+/** The running server's version; it only changes when the server is replaced. */
+export function useServerVersion() {
+  return useQuery({
+    queryKey: queryKeys.serverVersion,
+    queryFn: async () => (await fetchJson<{ version: string }>('/api/v1/version')).version,
+    staleTime: Infinity,
+  })
+}
+
 /** Every tag's history, keyed by data source id (tag keys are not unique). */
 export function useHistory(range: string, screenId: string, enabled: boolean) {
   return useQuery({
