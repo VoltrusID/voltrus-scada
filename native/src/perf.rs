@@ -1009,6 +1009,11 @@ mod tests {
         .join()
         .unwrap();
         assert_eq!(worked, 499_500);
-        assert!(thread_cpu_ms().is_some_and(|ms| ms >= 0.0));
+        // Thread CPU time is read on unix only; elsewhere it is reported as unknown.
+        if cfg!(unix) {
+            assert!(thread_cpu_ms().is_some_and(|ms| ms >= 0.0));
+        } else {
+            assert_eq!(thread_cpu_ms(), None);
+        }
     }
 }

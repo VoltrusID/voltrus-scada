@@ -223,7 +223,11 @@ jobs:
         run: cargo clippy --locked --keep-going -p voltrus-scada-native --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --locked -p voltrus-scada-native
+        run: |
+          cargo test --locked --no-fail-fast -p voltrus-scada-native
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # The server's station and service code (paths, init, port probe).
+          cargo test --locked -p voltrus --lib -- station service
 
       - name: Build release
         env:
