@@ -157,7 +157,12 @@ impl WidgetRegistry {
         fs::create_dir_all(&widget_dir)?;
 
         for i in 0..archive.len() {
-            let mut file = archive.by_index(i)?;
+            let mut file = archive.by_index(i).map_err(|e| {
+                anyhow::anyhow!(
+                    "cannot read widget archive entry #{i}: {e} \
+                     (supported compression: stored, deflate, deflate64, bzip2, lzma, xz, ppmd; zstd is not supported)"
+                )
+            })?;
             let Some(rel_path) = file.enclosed_name() else {
                 continue;
             };
@@ -241,6 +246,42 @@ mod tests {
             .map(|(i, _)| i)
             .expect("needle present");
         haystack[pos..pos + needle.len()].copy_from_slice(replacement);
+    }
+
+    #[tokio::test]
+    async fn install_accepts_bzip2_and_xz_archives() {
+        for method in [zip::CompressionMethod::Bzip2, zip::CompressionMethod::Xz] {
+            let root = tempfile::tempdir().unwrap();
+            let registry = WidgetRegistry::new(root.path().join("widgets"));
+            let zip = build_zip(
+                &[
+                    ("manifest.json", MANIFEST.as_bytes()),
+                    ("widget.js", b"console.log('hi');"),
+                ],
+                method,
+            );
+            registry.install("demo", &zip).await.unwrap();
+            let js = fs::read_to_string(root.path().join("widgets/demo/widget.js")).unwrap();
+            assert_eq!(js, "console.log('hi');");
+        }
+    }
+
+    #[tokio::test]
+    async fn install_rejects_zstd_archive_with_clear_error() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = WidgetRegistry::new(root.path().join("widgets"));
+        let mut zip = build_zip(
+            &[("manifest.json", MANIFEST.as_bytes())],
+            zip::CompressionMethod::Stored,
+        );
+        // Method id 93 (zstd): local header at +8, central directory header at +10.
+        let local = zip.windows(4).position(|w| w == b"PK\x03\x04").unwrap();
+        zip[local + 8..local + 10].copy_from_slice(&93u16.to_le_bytes());
+        let central = zip.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
+        zip[central + 10..central + 12].copy_from_slice(&93u16.to_le_bytes());
+
+        let err = registry.install("demo", &zip).await.unwrap_err().to_string();
+        assert!(err.contains("zstd is not supported"), "unclear error: {err}");
     }
 
     #[tokio::test]

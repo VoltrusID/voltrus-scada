@@ -108,7 +108,7 @@ rumqttd = { version = "0.20", default-features = false, features = ["websocket"]
 
 rquickjs = { version = "0.12", features = ["bindgen"], optional = true }
 regex = "1"
-zip = { version = "9.1", default-features = false, features = ["deflate"] }
+zip = { version = "9.1", default-features = false, features = ["deflate", "deflate64", "bzip2", "lzma", "xz", "ppmd"] }
 calamine = "0.37"
 snmp = "0.2.2"
 mime_guess = "2"
@@ -124,4 +124,4 @@ tower = { version = "=0.5.3", features = ["util"] }
 # frame-pacing fixes, kept in the VoltrusID fork of muxy-app/gpui (Apache-2.0)
 # and pinned by commit. Shared with Voltrus Tools.
 [patch.crates-io]
-gpui = { git = "https://github.com/VoltrusID/gpui", rev = "6c718f33b99b8d27e5987b746fe4b00dc6051a7c" }
+gpui = { git = "https://github.com/VoltrusID/gpui", rev = "006435b1298bba807375568f8a75c1bcb025a8de" }
