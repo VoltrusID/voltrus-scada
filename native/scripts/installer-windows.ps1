@@ -40,8 +40,19 @@ function Find-Iscc {
     )
     foreach ($path in $candidates) {
         if ($path -and (Test-Path $path)) {
-            $info = (Get-Item $path).VersionInfo
-            $found = [version]::new($info.FileMajorPart, $info.FileMinorPart)
+            # ISCC.exe carries no version resource; its compiler DLL and IDE
+            # beside it do (a Chocolatey shim has neither and is skipped).
+            $dir = Split-Path $path
+            $found = [version] '0.0'
+            foreach ($file in 'ISCC.exe', 'ISCmplr.dll', 'Compil32.exe') {
+                $candidate = Join-Path $dir $file
+                if (-not (Test-Path $candidate)) { continue }
+                $info = (Get-Item $candidate).VersionInfo
+                if ($info.FileMajorPart -gt 0) {
+                    $found = [version]::new($info.FileMajorPart, $info.FileMinorPart)
+                    break
+                }
+            }
             if ($found -ge [version] '6.3') { return $path }
             Write-Host "ignoring Inno Setup $found at $path (6.3 or later is needed)"
         }

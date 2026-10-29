@@ -354,9 +354,21 @@ fn main() -> ExitCode {
             // `--window` resizes the window once open (below): a window
             // opened at a size that needs no fitting to the screen first
             // draws at the wrong scale on the CI runner's display.
-            let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
+            let default = size(px(1440.0), px(900.0));
+            let bounds = Bounds::centered(None, default, cx);
+            // A display smaller than that (a 1024 × 768 panel PC) opens the
+            // window maximized, so no part of it lands off screen.
+            let fits = wanted.is_some()
+                || cx.primary_display().is_none_or(|display| {
+                    let screen = display.bounds().size;
+                    screen.width >= default.width && screen.height >= default.height
+                });
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_bounds: Some(if fits {
+                    WindowBounds::Windowed(bounds)
+                } else {
+                    WindowBounds::Maximized(bounds)
+                }),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Voltrus SCADA".into()),
                     appears_transparent: true,
