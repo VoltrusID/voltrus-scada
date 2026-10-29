@@ -498,6 +498,65 @@ pub(super) fn run_migrations(conn: &Connection) {
         "CREATE INDEX IF NOT EXISTS idx_alarm_audit_created ON alarm_audit_log(created_at);
          CREATE INDEX IF NOT EXISTS idx_flow_runs_started ON flow_runs(started_at);",
     );
+
+    // Migration: retention before 0.49 compared second timestamps with millisecond
+    // cutoffs and wrote rollup rows whose bucket_start is in milliseconds, which no
+    // trend ever reaches. Move them to the second-based bucket they belong to.
+    for (table, width) in [("telemetry_hourly", 3600), ("telemetry_daily", 86_400)] {
+        match repair_millisecond_buckets(conn, table, width) {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::info!("Recovered {n} {table} rows stored with millisecond timestamps")
+            }
+            Err(e) => tracing::error!("Failed to repair {table} timestamps: {e}"),
+        }
+    }
+}
+
+/// Any second-based timestamp before the year 5138 is below this; a rollup
+/// bucket above it was written in milliseconds.
+const MILLIS_THRESHOLD: i64 = 100_000_000_000;
+
+/// Re-bucket `table` rows whose `bucket_start` is in milliseconds into
+/// `width`-second buckets, merging (count-weighted) with rows already there.
+/// Returns how many bad rows were repaired. A no-op once none are left.
+fn repair_millisecond_buckets(
+    conn: &Connection,
+    table: &str,
+    width: i64,
+) -> rusqlite::Result<usize> {
+    let bad: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM {table} WHERE bucket_start >= {MILLIS_THRESHOLD}"),
+        [],
+        |row| row.get(0),
+    )?;
+    if bad == 0 {
+        return Ok(0);
+    }
+    conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;
+         INSERT INTO {table} (device_id, metric, bucket_start, avg_value, min_value, max_value, sample_count)
+             SELECT device_id, metric, (bucket_start / 1000 / {width}) * {width} AS b,
+                    COALESCE(SUM(avg_value * sample_count) / NULLIF(SUM(sample_count), 0), AVG(avg_value)),
+                    MIN(min_value), MAX(max_value), SUM(sample_count)
+             FROM {table}
+             WHERE bucket_start >= {MILLIS_THRESHOLD}
+             GROUP BY device_id, metric, b
+         ON CONFLICT(device_id, metric, bucket_start) DO UPDATE SET
+             avg_value = COALESCE(
+                 ({table}.avg_value * {table}.sample_count + excluded.avg_value * excluded.sample_count)
+                     / NULLIF({table}.sample_count + excluded.sample_count, 0),
+                 excluded.avg_value),
+             min_value = MIN({table}.min_value, excluded.min_value),
+             max_value = MAX({table}.max_value, excluded.max_value),
+             sample_count = {table}.sample_count + excluded.sample_count;
+         DELETE FROM {table} WHERE bucket_start >= {MILLIS_THRESHOLD};
+         COMMIT;"
+    ))
+    .inspect_err(|_| {
+        let _ = conn.execute_batch("ROLLBACK;");
+    })?;
+    Ok(bad as usize)
 }
 
 /// Rebuild `alarm_audit_log` without its foreign key to `alarms` when the stored
@@ -748,6 +807,92 @@ fn rebuild_notification_settings(conn: &Connection) -> rusqlite::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hourly_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE telemetry_hourly (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                device_id TEXT NOT NULL, metric TEXT NOT NULL, bucket_start INTEGER NOT NULL,
+                avg_value REAL NOT NULL, min_value REAL NOT NULL, max_value REAL NOT NULL,
+                sample_count INTEGER NOT NULL,
+                UNIQUE(device_id, metric, bucket_start));",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn hourly_rows(conn: &Connection) -> Vec<(String, i64, f64, f64, f64, i64)> {
+        conn.prepare(
+            "SELECT metric, bucket_start, avg_value, min_value, max_value, sample_count
+             FROM telemetry_hourly ORDER BY metric, bucket_start",
+        )
+        .unwrap()
+        .query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })
+        .unwrap()
+        .map(Result::unwrap)
+        .collect()
+    }
+
+    #[test]
+    fn millisecond_rollups_move_to_their_hour_and_merge_count_weighted() {
+        let conn = hourly_db();
+        // 1_791_642_387 s is inside the hour starting 1_791_640_800.
+        let hour = 1_791_640_800_i64;
+        conn.execute_batch(&format!(
+            "INSERT INTO telemetry_hourly (device_id, metric, bucket_start, avg_value, min_value, max_value, sample_count) VALUES
+                ('d', 'flow', 1791642387600, 10.0, 5.0, 20.0, 100),
+                ('d', 'flow', 1791642400000,  20.0, 1.0, 30.0, 300),
+                ('d', 'flow', {hour},          0.0, 0.0,  0.0, 100),
+                ('d', 'level', {later},       50.0, 40.0, 60.0, 12);",
+            later = hour + 7200
+        ))
+        .unwrap();
+
+        assert_eq!(
+            repair_millisecond_buckets(&conn, "telemetry_hourly", 3600).unwrap(),
+            2
+        );
+        let rows = hourly_rows(&conn);
+        // Both millisecond rows and the existing row for that hour become one:
+        // (10*100 + 20*300 + 0*100) / 500 = 14.
+        assert_eq!(rows[0], ("flow".into(), hour, 14.0, 0.0, 30.0, 500));
+        // A correct row is left alone.
+        assert_eq!(rows[1], ("level".into(), hour + 7200, 50.0, 40.0, 60.0, 12));
+        assert_eq!(rows.len(), 2);
+
+        // Running again changes nothing.
+        assert_eq!(
+            repair_millisecond_buckets(&conn, "telemetry_hourly", 3600).unwrap(),
+            0
+        );
+        assert_eq!(hourly_rows(&conn), rows);
+    }
+
+    #[test]
+    fn millisecond_rollups_with_zero_counts_keep_a_finite_average() {
+        let conn = hourly_db();
+        conn.execute(
+            "INSERT INTO telemetry_hourly (device_id, metric, bucket_start, avg_value, min_value, max_value, sample_count)
+             VALUES ('d', 'm', 1791642387600, 7.0, 7.0, 7.0, 0)",
+            [],
+        )
+        .unwrap();
+        repair_millisecond_buckets(&conn, "telemetry_hourly", 3600).unwrap();
+        assert_eq!(
+            hourly_rows(&conn),
+            [("m".into(), 1_791_640_800, 7.0, 7.0, 7.0, 0)]
+        );
+    }
 
     const LEGACY: &str = "CREATE TABLE notification_settings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
