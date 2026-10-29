@@ -31,31 +31,17 @@ if (-not $Version) {
 if ($Version -notmatch '^(\d+)\.(\d+)\.(\d+)') { throw "version '$Version' is not x.y.z" }
 $numeric = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
 
+# The script itself refuses Inno Setup older than 6.3 (`#if Ver < ...`), so
+# the first compiler found is used; the real install wins over a shim.
 function Find-Iscc {
     $candidates = @(
-        (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
         (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
         (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
-        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+        (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source)
     )
     foreach ($path in $candidates) {
-        if ($path -and (Test-Path $path)) {
-            # ISCC.exe carries no version resource; its compiler DLL and IDE
-            # beside it do (a Chocolatey shim has neither and is skipped).
-            $dir = Split-Path $path
-            $found = [version] '0.0'
-            foreach ($file in 'ISCC.exe', 'ISCmplr.dll', 'Compil32.exe') {
-                $candidate = Join-Path $dir $file
-                if (-not (Test-Path $candidate)) { continue }
-                $info = (Get-Item $candidate).VersionInfo
-                if ($info.FileMajorPart -gt 0) {
-                    $found = [version]::new($info.FileMajorPart, $info.FileMinorPart)
-                    break
-                }
-            }
-            if ($found -ge [version] '6.3') { return $path }
-            Write-Host "ignoring Inno Setup $found at $path (6.3 or later is needed)"
-        }
+        if ($path -and (Test-Path $path)) { return $path }
     }
     return $null
 }
@@ -66,7 +52,7 @@ if (-not $iscc) {
     choco upgrade innosetup -y --no-progress | Out-Host
     if ($LASTEXITCODE -ne 0) { throw "choco upgrade innosetup failed ($LASTEXITCODE)" }
     $iscc = Find-Iscc
-    if (-not $iscc) { throw 'Inno Setup 6.3 or later is not installed' }
+    if (-not $iscc) { throw 'Inno Setup is not installed' }
 }
 Write-Host "Inno Setup: $iscc"
 
