@@ -370,6 +370,12 @@ username = "station"
 password = "<generated>"
 ```
 
+Every local account that can read `station.toml` (on Windows: every member
+of Users) signs in as that account, which `station init` creates as an
+admin so a new station can be engineered. On a production station give
+`station` a lower role under Users (Data Manager); `station init` keeps the
+role it finds.
+
 - **At launch**, without `--sign-in` or `--stress…`, a `station.toml` in the
   station directory puts the console in local station mode. Instead of the
   sign-in card it shows "Connecting to this station…", asks
