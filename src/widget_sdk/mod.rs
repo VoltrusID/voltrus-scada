@@ -280,8 +280,15 @@ mod tests {
         let central = zip.windows(4).position(|w| w == b"PK\x01\x02").unwrap();
         zip[central + 10..central + 12].copy_from_slice(&93u16.to_le_bytes());
 
-        let err = registry.install("demo", &zip).await.unwrap_err().to_string();
-        assert!(err.contains("zstd is not supported"), "unclear error: {err}");
+        let err = registry
+            .install("demo", &zip)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("zstd is not supported"),
+            "unclear error: {err}"
+        );
     }
 
     #[tokio::test]
