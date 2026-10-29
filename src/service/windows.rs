@@ -291,7 +291,9 @@ pub(super) fn install(station: &Station) -> Result<()> {
         account_password: None,
     };
     let manager = manager(ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE)?;
-    let access = ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG;
+    // Restart recovery actions need SERVICE_START on the handle as well
+    // (ChangeServiceConfig2, SERVICE_CONFIG_FAILURE_ACTIONS).
+    let access = ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG | ServiceAccess::START;
     let service = match manager.open_service(SERVICE_NAME, access) {
         Ok(service) => {
             service
