@@ -991,7 +991,7 @@ pub(super) fn read_series_thinned(
         Thin::Stride => {
             let k = n.div_ceil(cap);
             scan_series(conn, device_id, metric, from, to, |ts, v| {
-                if idx % k == 0 || idx + 1 == n {
+                if idx.is_multiple_of(k) || idx + 1 == n {
                     out.push((ts, v));
                 }
                 idx += 1;
@@ -1025,7 +1025,7 @@ pub(super) fn read_series_thinned(
                     hi = Some((idx, (ts, v)));
                 }
                 idx += 1;
-                if idx % k == 0 {
+                if idx.is_multiple_of(k) {
                     flush(&mut out, &mut lo, &mut hi);
                 }
                 true
