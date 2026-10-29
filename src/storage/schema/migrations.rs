@@ -1,4 +1,4 @@
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// Incremental schema migrations applied after initial table creation.
 /// Each migration is idempotent (uses `IF NOT EXISTS` / ignores errors on `ALTER TABLE`).
@@ -328,37 +328,11 @@ pub(super) fn run_migrations(conn: &Connection) {
          CREATE INDEX IF NOT EXISTS idx_audit_log_action_user_time ON audit_log(action, username, created_at);"
     );
 
-    // Migration: fix alarms CHECK constraint to allow 'info' severity
-    let _ = conn.execute_batch(
-        "PRAGMA foreign_keys = OFF;
-         DROP TABLE IF EXISTS alarms_new;
-         CREATE TABLE alarms_new (
-             id INTEGER PRIMARY KEY AUTOINCREMENT,
-             source_key TEXT NOT NULL,
-             severity TEXT NOT NULL CHECK(severity IN ('warning', 'critical', 'info')),
-             value REAL NOT NULL,
-             threshold REAL NOT NULL,
-             message TEXT NOT NULL,
-             triggered_at INTEGER NOT NULL,
-             resolved_at INTEGER,
-             acknowledged_at INTEGER,
-             acknowledged_by TEXT,
-             cooldown_until INTEGER,
-             priority TEXT NOT NULL DEFAULT 'warning',
-             shelved_until INTEGER,
-             shelved_by TEXT,
-             shelved_reason TEXT,
-             deadband REAL NOT NULL DEFAULT 0,
-             state TEXT NOT NULL DEFAULT 'active',
-             source_name TEXT NOT NULL DEFAULT ''
-         );
-         INSERT INTO alarms_new SELECT * FROM alarms;
-         DROP TABLE alarms;
-         ALTER TABLE alarms_new RENAME TO alarms;
-         CREATE INDEX IF NOT EXISTS idx_alarms_active ON alarms(source_key, severity, acknowledged_at);
-         CREATE INDEX IF NOT EXISTS idx_alarms_triggered ON alarms(triggered_at DESC);
-         PRAGMA foreign_keys = ON;"
-    );
+    // Migration: fix alarms CHECK constraint to allow 'info' severity. Only runs
+    // on a table whose CHECK still lacks it (see `rebuild_alarms_for_info_severity`).
+    if let Err(e) = rebuild_alarms_for_info_severity(conn) {
+        tracing::error!("Failed to migrate alarms: {e}");
+    }
 
     // Migration: v0.39.0 -- Data egress jobs for scheduled CSV/Parquet export
     let _ = conn.execute_batch(
@@ -552,6 +526,132 @@ fn detach_alarm_audit_from_alarms(conn: &Connection) -> rusqlite::Result<()> {
     .inspect_err(|_| {
         let _ = conn.execute_batch("ROLLBACK;");
     })
+}
+
+/// Every column of `alarms` in its current order. The rebuild below copies the
+/// ones the stored table already has and lets the rest take their defaults.
+const ALARM_COLUMNS: [&str; 19] = [
+    "id",
+    "source_key",
+    "severity",
+    "value",
+    "threshold",
+    "message",
+    "triggered_at",
+    "resolved_at",
+    "acknowledged_at",
+    "acknowledged_by",
+    "cooldown_until",
+    "priority",
+    "shelved_until",
+    "shelved_by",
+    "shelved_reason",
+    "deadband",
+    "state",
+    "source_name",
+    "alarm_type",
+];
+
+/// Puts `PRAGMA foreign_keys` back to its earlier value when dropped, whatever
+/// happened in between.
+struct ForeignKeysRestore<'a> {
+    conn: &'a Connection,
+    was_on: bool,
+}
+
+impl<'a> ForeignKeysRestore<'a> {
+    /// Turns foreign key enforcement off for a table rebuild (SQLite ignores the
+    /// pragma inside a transaction, so this must happen before `BEGIN`).
+    fn off(conn: &'a Connection) -> rusqlite::Result<Self> {
+        let was_on = conn.query_row("PRAGMA foreign_keys", [], |row| row.get::<_, i64>(0))? != 0;
+        if was_on {
+            conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+        }
+        Ok(Self { conn, was_on })
+    }
+}
+
+impl Drop for ForeignKeysRestore<'_> {
+    fn drop(&mut self) {
+        if self.was_on
+            && let Err(e) = self.conn.execute_batch("PRAGMA foreign_keys = ON")
+        {
+            tracing::error!("Failed to turn foreign key enforcement back on: {e}");
+        }
+    }
+}
+
+/// Rebuild `alarms` so its `severity` CHECK accepts `'info'`, when the stored
+/// table predates that (SQLite cannot alter a CHECK in place). Returns whether a
+/// rebuild ran.
+///
+/// This used to run on every start with `INSERT ... SELECT *` into an 18-column
+/// table, which fails once `alarm_type` exists: the batch aborted after
+/// `PRAGMA foreign_keys = OFF`, leaving enforcement off for the connection and a
+/// stray `alarms_new` table behind. Now it checks the stored definition first,
+/// copies named columns, runs in one transaction and always restores the pragma.
+/// A leftover `alarms_new` from the old behaviour is dropped.
+fn rebuild_alarms_for_info_severity(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.execute_batch("DROP TABLE IF EXISTS alarms_new")?;
+
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alarms'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if sql.is_none_or(|sql| sql.contains("'info'")) {
+        return Ok(false);
+    }
+
+    let existing: Vec<String> = conn
+        .prepare("SELECT name FROM pragma_table_info('alarms')")?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    let copied = ALARM_COLUMNS
+        .iter()
+        .filter(|column| existing.iter().any(|name| name == *column))
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let _restore = ForeignKeysRestore::off(conn)?;
+    let result = conn.execute_batch(&format!(
+        "BEGIN IMMEDIATE;
+         CREATE TABLE alarms_new (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             source_key TEXT NOT NULL,
+             severity TEXT NOT NULL CHECK(severity IN ('warning', 'critical', 'info')),
+             value REAL NOT NULL,
+             threshold REAL NOT NULL,
+             message TEXT NOT NULL,
+             triggered_at INTEGER NOT NULL,
+             resolved_at INTEGER,
+             acknowledged_at INTEGER,
+             acknowledged_by TEXT,
+             cooldown_until INTEGER,
+             priority TEXT NOT NULL DEFAULT 'warning',
+             shelved_until INTEGER,
+             shelved_by TEXT,
+             shelved_reason TEXT,
+             deadband REAL NOT NULL DEFAULT 0,
+             state TEXT NOT NULL DEFAULT 'active',
+             source_name TEXT NOT NULL DEFAULT '',
+             alarm_type TEXT NOT NULL DEFAULT 'high'
+         );
+         INSERT INTO alarms_new ({copied}) SELECT {copied} FROM alarms;
+         DROP TABLE alarms;
+         ALTER TABLE alarms_new RENAME TO alarms;
+         CREATE INDEX IF NOT EXISTS idx_alarms_active ON alarms(source_key, severity, acknowledged_at);
+         CREATE INDEX IF NOT EXISTS idx_alarms_triggered ON alarms(triggered_at DESC);
+         COMMIT;"
+    ));
+    if let Err(e) = result {
+        let _ = conn.execute_batch("ROLLBACK");
+        return Err(e);
+    }
+    Ok(true)
 }
 
 const NOTIFICATION_CHANNELS: &str = "'email', 'webhook', 'push', 'telegram', 'whatsapp'";
@@ -757,5 +857,274 @@ mod tests {
         assert_eq!((channel.as_str(), enabled), ("pager", 0));
         // Running again changes nothing and logs nothing.
         assert_eq!(rebuild_notification_settings(&conn).unwrap(), 0);
+    }
+
+    // ── alarms rebuild ──
+
+    fn foreign_keys(conn: &Connection) -> i64 {
+        conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// Every table, index and trigger definition, to compare runs.
+    fn schema_snapshot(conn: &Connection) -> Vec<(String, String, Option<String>)> {
+        conn.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    fn alarms_sql(conn: &Connection) -> String {
+        conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'alarms'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    const OLD_ALARMS: &str = "CREATE TABLE alarms (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_key TEXT NOT NULL,
+        severity TEXT NOT NULL CHECK(severity IN ('warning', 'critical')),
+        value REAL NOT NULL,
+        threshold REAL NOT NULL,
+        message TEXT NOT NULL,
+        triggered_at INTEGER NOT NULL,
+        resolved_at INTEGER,
+        acknowledged_at INTEGER,
+        acknowledged_by TEXT,
+        cooldown_until INTEGER
+    );
+    INSERT INTO alarms (id, source_key, severity, value, threshold, message, triggered_at, resolved_at, acknowledged_at, acknowledged_by, cooldown_until)
+        VALUES (3, 'tank', 'critical', 91.5, 90, 'Tank high', 1000, 1500, 1100, 'ann', 1200),
+               (9, 'pump', 'warning', 12, 10, 'Pump high', 2000, NULL, NULL, NULL, NULL);";
+
+    #[test]
+    fn running_migrations_twice_is_a_no_op_and_keeps_foreign_keys_on() {
+        let conn = Connection::open_in_memory().unwrap();
+        assert_eq!(
+            foreign_keys(&conn),
+            1,
+            "the build enforces foreign keys by default"
+        );
+
+        super::super::init_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO alarms (source_key, severity, value, threshold, message, triggered_at, alarm_type)
+             VALUES ('tank', 'info', 1, 2, 'm', 5, 'low')",
+            [],
+        )
+        .unwrap();
+        let alarm = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO alarm_journal (alarm_id, event, at) VALUES (?1, 'triggered', 5)",
+            [alarm],
+        )
+        .unwrap();
+        let first = schema_snapshot(&conn);
+        assert_eq!(foreign_keys(&conn), 1);
+
+        for run in 2..=3 {
+            super::super::init_schema(&conn).unwrap();
+            assert_eq!(foreign_keys(&conn), 1, "foreign keys on after run {run}");
+            assert_eq!(
+                schema_snapshot(&conn),
+                first,
+                "run {run} changed the schema"
+            );
+        }
+
+        let (kept, kind): (i64, String) = conn
+            .query_row("SELECT COUNT(*), MAX(alarm_type) FROM alarms", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((kept, kind.as_str()), (1, "low"));
+        // The journal still references the live alarms table: enforcement is on
+        // and the cascade fires.
+        conn.execute("DELETE FROM alarms WHERE id = ?1", [alarm])
+            .unwrap();
+        let journal: i64 = conn
+            .query_row("SELECT COUNT(*) FROM alarm_journal", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(journal, 0);
+    }
+
+    #[test]
+    fn an_old_alarms_table_is_upgraded_once_with_its_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(OLD_ALARMS).unwrap();
+        assert!(!alarms_sql(&conn).contains("'info'"));
+
+        super::super::init_schema(&conn).unwrap();
+
+        assert!(alarms_sql(&conn).contains("'info'"));
+        assert_eq!(foreign_keys(&conn), 1);
+        let stray: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'alarms_new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stray, 0);
+        let rows: Vec<(i64, String, f64, Option<i64>, Option<String>, String, String, String)> = conn
+            .prepare(
+                "SELECT id, severity, value, resolved_at, acknowledged_by, priority, state, alarm_type
+                 FROM alarms ORDER BY id",
+            )
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?,
+                ))
+            })
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (
+                    3,
+                    "critical".into(),
+                    91.5,
+                    Some(1500),
+                    Some("ann".into()),
+                    "warning".into(),
+                    "active".into(),
+                    "high".into()
+                ),
+                (
+                    9,
+                    "warning".into(),
+                    12.0,
+                    None,
+                    None,
+                    "warning".into(),
+                    "active".into(),
+                    "high".into()
+                ),
+            ]
+        );
+        // 'info' is accepted now, ids continue, indexes exist.
+        conn.execute(
+            "INSERT INTO alarms (source_key, severity, value, threshold, message, triggered_at)
+             VALUES ('x', 'info', 1, 1, 'm', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(conn.last_insert_rowid(), 10);
+        for index in ["idx_alarms_active", "idx_alarms_triggered"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                    [index],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{index}");
+        }
+
+        // The second start is a no-op.
+        let after_first = schema_snapshot(&conn);
+        super::super::init_schema(&conn).unwrap();
+        assert_eq!(schema_snapshot(&conn), after_first);
+        assert_eq!(foreign_keys(&conn), 1);
+    }
+
+    #[test]
+    fn an_old_table_that_already_has_alarm_type_keeps_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(OLD_ALARMS).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE alarms ADD COLUMN alarm_type TEXT NOT NULL DEFAULT 'high';
+             UPDATE alarms SET alarm_type = 'low' WHERE id = 9;",
+        )
+        .unwrap();
+
+        super::super::init_schema(&conn).unwrap();
+
+        let kinds: Vec<String> = conn
+            .prepare("SELECT alarm_type FROM alarms ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(kinds, ["high", "low"]);
+        assert!(alarms_sql(&conn).contains("'info'"));
+    }
+
+    #[test]
+    fn a_stray_alarms_new_from_the_old_behaviour_is_dropped() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::init_schema(&conn).unwrap();
+        conn.execute_batch("CREATE TABLE alarms_new (id INTEGER PRIMARY KEY)")
+            .unwrap();
+
+        super::super::init_schema(&conn).unwrap();
+
+        let stray: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'alarms_new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stray, 0);
+    }
+
+    #[test]
+    fn a_failed_rebuild_rolls_back_and_restores_foreign_keys() {
+        let conn = Connection::open_in_memory().unwrap();
+        // No `message` column, which the new table requires: the copy fails.
+        conn.execute_batch(
+            "CREATE TABLE alarms (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 source_key TEXT NOT NULL,
+                 severity TEXT NOT NULL CHECK(severity IN ('warning', 'critical')),
+                 value REAL NOT NULL,
+                 threshold REAL NOT NULL,
+                 triggered_at INTEGER NOT NULL
+             );
+             INSERT INTO alarms VALUES (1, 'a', 'warning', 1, 1, 1);",
+        )
+        .unwrap();
+
+        assert!(rebuild_alarms_for_info_severity(&conn).is_err());
+
+        assert_eq!(foreign_keys(&conn), 1);
+        let (rows, stray): (i64, i64) = (
+            conn.query_row("SELECT COUNT(*) FROM alarms", [], |r| r.get(0))
+                .unwrap(),
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'alarms_new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
+        );
+        assert_eq!((rows, stray), (1, 0), "the old table is untouched");
+        assert!(!alarms_sql(&conn).contains("'info'"));
+        assert!(conn.is_autocommit(), "no transaction left open");
+    }
+
+    #[test]
+    fn the_rebuild_leaves_foreign_keys_off_when_they_were_off() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(OLD_ALARMS).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = OFF").unwrap();
+
+        assert!(rebuild_alarms_for_info_severity(&conn).unwrap());
+
+        assert_eq!(
+            foreign_keys(&conn),
+            0,
+            "restored to what it was, not forced on"
+        );
     }
 }
