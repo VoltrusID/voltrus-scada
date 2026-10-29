@@ -4,10 +4,37 @@ use anyhow::Result;
 impl Storage {
     // ── Seed ──
 
+    /// Seed a fresh database: the `admin` user with a random password (logged
+    /// once, to be changed on first login), the default roles and the data
+    /// sources of the configured devices. Existing data is left alone.
     pub async fn seed_database(
         &self,
         device_configs: &[crate::models::DeviceConfig],
     ) -> Result<()> {
+        if let Some(password) = self.seed(device_configs).await? {
+            tracing::warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            tracing::warn!("  GENERATED ADMIN PASSWORD: {}", password);
+            tracing::warn!("  You will be required to change this on first login.");
+            tracing::warn!("  Save this password now — it will NOT be shown again.");
+            tracing::warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        }
+        Ok(())
+    }
+
+    /// [`Storage::seed_database`] without logging the generated `admin`
+    /// password, for setup tools whose output ends up in logs. Returns whether
+    /// `admin` was created.
+    pub async fn seed_database_quietly(
+        &self,
+        device_configs: &[crate::models::DeviceConfig],
+    ) -> Result<bool> {
+        Ok(self.seed(device_configs).await?.is_some())
+    }
+
+    /// The seed itself; returns the generated `admin` password when it created
+    /// the user.
+    async fn seed(&self, device_configs: &[crate::models::DeviceConfig]) -> Result<Option<String>> {
+        let mut generated = None;
         let existing = self.get_user_by_username("admin").await?;
         if existing.is_none() {
             use rand::Rng;
@@ -21,12 +48,7 @@ impl Storage {
             self.create_user("admin", &password_hash, "", "admin")
                 .await?;
             self.set_must_change_password("admin", true).await?;
-
-            tracing::warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            tracing::warn!("  GENERATED ADMIN PASSWORD: {}", password);
-            tracing::warn!("  You will be required to change this on first login.");
-            tracing::warn!("  Save this password now — it will NOT be shown again.");
-            tracing::warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            generated = Some(password);
         }
 
         // Seed default RBAC roles if none exist
@@ -40,7 +62,7 @@ impl Storage {
             self.seed_device_data_sources(device_configs).await?;
         }
 
-        Ok(())
+        Ok(generated)
     }
 
     /// Seed data sources for the devices defined in config.yaml.

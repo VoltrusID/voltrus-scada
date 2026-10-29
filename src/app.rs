@@ -102,7 +102,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     let config_path = args.get(1).map(|s| s.as_str()).unwrap_or("config.yaml");
     let shutdown = shutdown_signal();
-    serve(ext, config_path, shutdown).await
+    serve(ext, config_path, shutdown, None).await
 }
 
 /// Install the global tracing subscriber: stderr, or `log_file` (appended,
@@ -185,11 +185,13 @@ pub(crate) fn shutdown_signal() -> impl Future<Output = ()> + Send + 'static {
 const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Run the server from `config_path` until `shutdown` resolves, then stop
-/// accepting connections and give open ones up to 3 s to finish.
+/// accepting connections and give open ones up to 3 s to finish. `ready`, if
+/// given, fires once the listener is bound.
 pub(crate) async fn serve(
     ext: Arc<dyn Extension>,
     config_path: &str,
     shutdown: impl Future<Output = ()> + Send + 'static,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> anyhow::Result<()> {
     let app_config = config::load_config(config_path)?;
 
@@ -961,6 +963,9 @@ pub(crate) async fn serve(
     tracing::info!("Server listening on {addr}");
 
     let listener = bind_listener(&addr).await?;
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
 
     // Once `shutdown` resolves the server stops accepting; open connections
     // (live-data WebSockets never end on their own) get DRAIN_TIMEOUT to finish.

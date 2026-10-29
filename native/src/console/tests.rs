@@ -560,3 +560,132 @@ fn the_card_offers_a_station_only_where_there_is_one_or_a_server(cx: &mut TestAp
     assert!(h.cx.debug_bounds("station-return").is_none());
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A stand-in for the bundled server in `dir`: `station init` writes
+/// `station.toml`, `service status` exits with the code in `dir/code`,
+/// `service install` fails as Windows does unelevated when `dir/deny`
+/// exists, and every service step it runs is noted in `dir/ran`.
+#[cfg(unix)]
+fn fake_server(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let server = dir.join("voltrus");
+    std::fs::write(
+        &server,
+        r#"#!/bin/sh
+case "$1 $2" in
+"station init")
+  printf 'url = "http://127.0.0.1:3999"\nusername = "station"\npassword = "s3cret"\n' > "$4/station.toml"
+  exit 0;;
+"service status")
+  exit $(cat "$4/code");;
+"service install")
+  if [ -e "$4/deny" ]; then echo "OpenSCManager: Access is denied. (os error 5)" >&2; exit 1; fi;;
+esac
+echo "$2" >> "$4/ran"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+    server
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_failed_setup_keeps_its_error_and_its_button(cx: &mut TestAppContext) {
+    let dir = station_dir("setup-denied", false);
+    let server = fake_server(&dir);
+    std::fs::write(dir.join("deny"), "").unwrap();
+    let mut h = Harness::with(cx, |launch| {
+        launch.station_dir = Some(dir.clone());
+        launch.bundled_server = Some(server.clone());
+    });
+    h.update(|console, _, cx| super::station::set_up(console, cx));
+    h.draw();
+    h.update(|console, _, _| {
+        // `station init` made the credential, but the service is missing:
+        // the card keeps the error and the button, not "Use this station".
+        assert!(console.station.available);
+        assert!(console.station.local.is_none());
+        assert!(matches!(
+            &console.station.setup,
+            Some(super::station::Setup::Failed(error))
+                if error.starts_with("voltrus service install failed")
+                    && error.contains("Access is denied")
+        ));
+        assert!(console.station.offers_setup() && !console.station.offers_return());
+    });
+    assert!(h.cx.debug_bounds("station-setup-error").is_some());
+    assert!(h.cx.debug_bounds("station-return").is_none());
+    // Run again, elevated this time: it finishes and opens the station.
+    std::fs::remove_file(dir.join("deny")).unwrap();
+    h.update(|console, _, cx| super::station::set_up(console, cx));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ran")).unwrap(),
+        "install\nstart\n"
+    );
+    h.update(|console, _, _| {
+        assert_eq!(console.station.setup, None);
+        assert!(console.station.local.is_some());
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_station_that_does_not_answer_offers_to_finish_or_start_its_service(cx: &mut TestAppContext) {
+    use voltrus_scada_native::station::{Service, Step};
+    let dir = station_dir("service", true);
+    let server = fake_server(&dir);
+    let mut h = Harness::with(cx, |launch| {
+        launch.station_dir = Some(dir.clone());
+        launch.bundled_server = Some(server.clone());
+        launch.local_station = true;
+    });
+    let service = |h: &mut Harness| {
+        h.update(|console, _, _| {
+            console
+                .station
+                .local
+                .as_ref()
+                .and_then(|local| local.service.clone())
+        })
+    };
+    let unreachable = |h: &mut Harness, seq: i64| {
+        h.event(Event::PublicReply {
+            key: CallKey::new("station.health").with(seq),
+            reply: Reply::failed("Connection refused"),
+        });
+        h.draw();
+    };
+    // Not installed (a setup that stopped after `station init`): finish it.
+    std::fs::write(dir.join("code"), "4").unwrap();
+    unreachable(&mut h, 1);
+    assert_eq!(service(&mut h), Some(Ok(Service::NotInstalled)));
+    assert!(
+        h.cx.debug_bounds("station-fix: Finish setting up this station")
+            .is_some()
+    );
+    h.update(|console, _, cx| super::station::repair(console, Step::FINISH, cx));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ran")).unwrap(),
+        "install\nstart\n"
+    );
+    assert_eq!(service(&mut h), None);
+    assert_eq!(health_checks(&mut h), [2], "asks again at once");
+    // Stopped: start it.
+    std::fs::write(dir.join("code"), "3").unwrap();
+    unreachable(&mut h, 2);
+    assert_eq!(service(&mut h), Some(Ok(Service::Stopped)));
+    assert!(
+        h.cx.debug_bounds("station-fix: Start the station server")
+            .is_some()
+    );
+    // Running: nothing to fix, it keeps asking.
+    h.update(|console, _, cx| super::station::retry(console, cx));
+    assert_eq!(health_checks(&mut h), [3]);
+    std::fs::write(dir.join("code"), "0").unwrap();
+    unreachable(&mut h, 3);
+    assert_eq!(service(&mut h), Some(Ok(Service::Running)));
+    assert!(h.update(|console, _, _| console.station.local.as_ref().is_some_and(|l| l.idle())));
+    std::fs::remove_dir_all(&dir).unwrap();
+}

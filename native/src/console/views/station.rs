@@ -4,13 +4,14 @@
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, FontWeight, div, px};
+use voltrus_scada_native::station::{Service, Step};
 use vt_ui::Icon;
 use vt_ui::components::{Button, brand_mark};
 use vt_ui::theme::*;
 
 use super::window_controls;
 use crate::console::Console;
-use crate::console::station::{self, Setup, Status};
+use crate::console::station::{self, Local, Setup, Status};
 
 pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
@@ -26,6 +27,7 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     };
     let idle = local.idle();
     let signing_in = local.status == Status::SigningIn;
+    let fix = fix_row(local, &theme, cx);
 
     let card = div()
         .id("station")
@@ -97,6 +99,7 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                         .child(dir),
                 ),
         )
+        .children(fix)
         .child(
             div()
                 .flex()
@@ -208,6 +211,62 @@ pub fn card_row(console: &mut Console, cx: &mut Context<Console>) -> Option<AnyE
                     div()
                         .text_size(FONT_CAPTION)
                         .text_color(theme.danger)
+                        .debug_selector(|| "station-setup-error".into())
+                        .child(error),
+                )
+            })
+            .into_any_element(),
+    )
+}
+
+/// The station screen's way past a station that does not answer because
+/// its service is not installed (a setup that stopped after `station
+/// init`) or stopped, as the bundled server reported it; with the
+/// progress, or why the bundled server could not tell or do it.
+fn fix_row(local: &Local, theme: &Theme, cx: &mut Context<Console>) -> Option<AnyElement> {
+    let (label, steps): (&'static str, &'static [Step]) = match local.service.as_ref()? {
+        Ok(Service::Running) => return None,
+        Ok(Service::NotInstalled) => ("Finish setting up this station", Step::FINISH),
+        Ok(Service::Stopped) => ("Start the station server", Step::START),
+        Err(error) => {
+            return Some(
+                div()
+                    .text_size(FONT_CAPTION)
+                    .text_color(theme.danger)
+                    .debug_selector(|| "station-fix-error".into())
+                    .child(error.clone())
+                    .into_any_element(),
+            );
+        }
+    };
+    let running = match &local.fix {
+        Some(Setup::Running(step)) => Some(step.label()),
+        _ => None,
+    };
+    let failed = match &local.fix {
+        Some(Setup::Failed(error)) => Some(error.clone()),
+        _ => None,
+    };
+    Some(
+        div()
+            .flex()
+            .flex_col()
+            .gap(SPACE_3)
+            .debug_selector(move || format!("station-fix: {label}"))
+            .child(
+                Button::new("station-fix", running.unwrap_or(label))
+                    .icon(Icon::Server)
+                    .disabled(running.is_some())
+                    .on_click(cx.listener(move |console, _, _, cx| {
+                        station::repair(console, steps, cx);
+                    })),
+            )
+            .when_some(failed, |this, error| {
+                this.child(
+                    div()
+                        .text_size(FONT_CAPTION)
+                        .text_color(theme.danger)
+                        .debug_selector(|| "station-fix-error".into())
                         .child(error),
                 )
             })

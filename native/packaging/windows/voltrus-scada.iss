@@ -96,11 +96,9 @@ Filename: "{app}\voltrus-native.exe"; Description: "{cm:LaunchProgram,Voltrus SC
 
 [Code]
 const
-  { Well-known SIDs, so the grants hold on every Windows display language. }
-  SidSystem = '*S-1-5-18';
-  SidAdministrators = '*S-1-5-32-544';
-  SidUsers = '*S-1-5-32-545';
   StationFailedExitCode = 10;
+  { Lines of logs\setup.log copied into Setup's own log on a failure. }
+  StationLogTail = 40;
 
 var
   StationFailed: Boolean;
@@ -144,25 +142,6 @@ begin
   Result := RunLogged(Exe, Command + ' --dir ' + AddQuotes(StationDir));
 end;
 
-{ The station dir: SYSTEM and Administrators only, inherited by everything the
-  server writes there (data.db, logs); Users may open the folder itself and
-  read station.toml (the console's local sign-in); config.yaml (with the
-  session secret) keeps no inherited access at all. }
-function LockDownStation: Boolean;
-var
-  Icacls: String;
-begin
-  Icacls := ExpandConstant('{sys}\icacls.exe');
-  Result := False;
-  if not RunLogged(Icacls, AddQuotes(StationDir) + ' /inheritance:r /grant:r "' +
-    SidSystem + ':(OI)(CI)F" "' + SidAdministrators + ':(OI)(CI)F" "' + SidUsers + ':(RX)"') then
-    Exit;
-  if not RunLogged(Icacls, AddQuotes(StationDir + '\station.toml') + ' /grant "' + SidUsers + ':(R)"') then
-    Exit;
-  Result := RunLogged(Icacls, AddQuotes(StationDir + '\config.yaml') + ' /inheritance:r /grant:r "' +
-    SidSystem + ':F" "' + SidAdministrators + ':F"');
-end;
-
 { An upgrade replaces voltrus.exe, which the running service holds open. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
@@ -176,19 +155,28 @@ end;
 
 procedure ReportStationFailure(const Step: String);
 var
-  Output: AnsiString;
+  Lines: TArrayOfString;
+  First, I: Integer;
 begin
   StationFailed := True;
-  if LoadStringFromFile(StationLog, Output) then
-    Log('Station setup log:' + #13#10 + Output);
+  if LoadStringsFromFile(StationLog, Lines) then
+  begin
+    First := GetArrayLength(Lines) - StationLogTail;
+    if First < 0 then
+      First := 0;
+    Log('The end of ' + StationLog + ':');
+    for I := First to GetArrayLength(Lines) - 1 do
+      Log(Lines[I]);
+  end;
   SuppressibleMsgBox('Voltrus SCADA is installed, but this computer could not be set up as a station (' +
     Step + ' failed).' + #13#10#13#10 + 'Details are in ' + StationLog + '.' + #13#10#13#10 +
     'Fix the cause, then use "Set up this computer as a station" in the console, or run Setup again.',
     mbCriticalError, MB_OK, IDOK);
 end;
 
-{ After the files: the station (config, database, the console's credential),
-  its permissions, then the service, started. }
+{ After the files: the station (config, database, the console's credential;
+  station init also restricts the folder to SYSTEM and Administrators, with
+  station.toml readable by Users), then the service, started. }
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Exe: String;
@@ -198,8 +186,6 @@ begin
   Exe := ExpandConstant('{app}\voltrus.exe');
   if not RunVoltrus(Exe, 'station init') then
     ReportStationFailure('voltrus station init')
-  else if not LockDownStation then
-    ReportStationFailure('restricting access to ' + StationDir)
   else if not RunVoltrus(Exe, 'service install') then
     ReportStationFailure('voltrus service install')
   else if not RunVoltrus(Exe, 'service start') then

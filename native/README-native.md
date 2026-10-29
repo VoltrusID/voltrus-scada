@@ -392,9 +392,20 @@ password = "<generated>"
   Windows, `Contents/MacOS/voltrus` in the macOS app), the sign-in card
   offers to run the server's `station init`, `service install` and
   `service start` (each with `--dir <station directory>`, off the UI thread,
-  their errors shown on the card), then enters local station mode.
-  Installing a Windows service needs an administrator: the installer does
-  it; from a zip, run the console as administrator once.
+  their errors shown on the card), then enters local station mode. A setup
+  that fails keeps its error and the button on the card (run it again; each
+  step is idempotent), even when `station init` already wrote
+  `station.toml`. On Windows the station needs an administrator
+  (`station init` hardens the folder's permissions, `service install`
+  registers the service): the installer does it; from a zip, run the
+  console as administrator once.
+- **A station that does not answer** with the server beside the console is
+  asked about its service (`voltrus service status --dir <station
+  directory>`, off the UI thread). Not installed (a setup that stopped
+  after `station init`): the station screen offers **Finish setting up this
+  station** (`service install`, `service start`). Stopped: **Start the
+  station server** (`service start`). Running: it keeps asking. Errors show
+  with the command's output.
 
 ## Windows
 
@@ -428,8 +439,8 @@ command is in the palette and on its keys).
   `voltrus service install` and `voltrus service start` (each with
   `--dir "%ProgramData%\Voltrus SCADA"`, output in its `logs\setup.log`), so
   the server runs as the `VoltrusSCADA` service on 127.0.0.1 and the console
-  signs in to it by itself. `config.yaml` is then readable by SYSTEM and
-  Administrators only; Users may read `station.toml`. Uninstalling stops and
+  signs in to it by itself. `station init` leaves the station folder to
+  SYSTEM and Administrators; Users may read `station.toml`. Uninstalling stops and
   removes the service and keeps the plant data unless asked (`/REMOVEDATA`
   when silent). Unsigned: SmartScreen warns before it runs. The console's
   icon and version resource come from `native/build.rs`

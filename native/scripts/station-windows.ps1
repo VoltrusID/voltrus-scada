@@ -1,9 +1,12 @@
 # End-to-end check of the Windows installer as a local station, on a
 # disposable machine (the CI runner): installs silently, checks that the
 # VoltrusSCADA service runs and answers on 127.0.0.1 with the station's
-# credential, starts the installed console with no arguments (local station
+# credential, that the station folder is owned by Administrators and closed
+# to Users but for station.toml, and that a second `voltrus station init`
+# keeps both; starts the installed console with no arguments (local station
 # mode signs in by itself) and captures the screen, then uninstalls silently
-# and checks that the service is gone and the plant data kept.
+# and checks that the service is gone and the plant data kept. The station's
+# password is never printed (masked in GitHub Actions).
 # Usage: native/scripts/station-windows.ps1 -Installer <setup.exe> -Out <dir>
 param(
     [Parameter(Mandatory)] [string] $Installer,
@@ -75,16 +78,22 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "voltrus service status exited with code $LASTEXITCODE (0 is running)" }
     Write-Host "service $serviceName is running"
 
-    # The console's credential, and the server's config locked away from Users.
-    $credential = @{}
-    foreach ($line in Get-Content (Join-Path $station 'station.toml')) {
-        if ($line -match '^\s*(\w+)\s*=\s*"(.*)"\s*$') { $credential[$Matches[1]] = $Matches[2] }
+    # The console's credential, never printed (masked in the Actions log).
+    function Read-Credential {
+        $credential = @{}
+        foreach ($line in Get-Content (Join-Path $station 'station.toml')) {
+            if ($line -match '^\s*(\w+)\s*=\s*"(.*)"\s*$') { $credential[$Matches[1]] = $Matches[2] }
+        }
+        foreach ($key in 'url', 'username', 'password') {
+            if (-not $credential[$key]) { throw "station.toml has no $key" }
+        }
+        if ($env:GITHUB_ACTIONS) { Write-Host "::add-mask::$($credential.password)" }
+        $credential
     }
-    foreach ($key in 'url', 'username', 'password') {
-        if (-not $credential[$key]) { throw "station.toml has no $key" }
-    }
-    $url = $credential.url.TrimEnd('/')
-    if (([uri] $url).Host -ne '127.0.0.1') { throw "the station answers on $url, not on 127.0.0.1" }
+
+    # The folder as `voltrus station init` leaves it: owned by Administrators,
+    # closed to Users but for station.toml.
+    $administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
     $users = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
     function Test-UsersCanRead([string] $Path) {
         foreach ($rule in (Get-Acl $Path).Access) {
@@ -96,21 +105,49 @@ try {
         }
         return $false
     }
-    if (Test-UsersCanRead (Join-Path $station 'config.yaml')) { throw 'Users can read config.yaml' }
-    if (-not (Test-UsersCanRead (Join-Path $station 'station.toml'))) { throw 'Users cannot read station.toml' }
-    Write-Host 'config.yaml is closed to Users; station.toml is readable'
+    function Assert-StationAccess {
+        $owner = (Get-Acl $station).GetOwner([System.Security.Principal.SecurityIdentifier])
+        if ($owner -ne $administrators) { throw "the station folder is owned by $owner, not BUILTIN\Administrators" }
+        foreach ($closed in 'config.yaml', 'data.db') {
+            if (Test-UsersCanRead (Join-Path $station $closed)) { throw "Users can read $closed" }
+        }
+        if (-not (Test-UsersCanRead (Join-Path $station 'station.toml'))) { throw 'Users cannot read station.toml' }
+        Write-Host 'the station folder is owned by Administrators; config.yaml and data.db are closed to Users; station.toml is readable'
+    }
 
-    # The server: health, then the console's credential.
+    # The console's credential signs in to the server as an administrator.
+    function Assert-SignIn($Credential) {
+        $body = @{ username = $Credential.username; password = $Credential.password } | ConvertTo-Json
+        $login = Invoke-RestMethod -Method Post -Uri "$url/api/v1/auth/login" -ContentType 'application/json' -Body $body
+        if (-not $login.ok) { throw 'the station credential did not sign in' }
+        if ($login.role -ne 'admin') { throw "the station user's role is $($login.role), not admin" }
+        if ($login.must_change_password) { throw 'the station user must change its password' }
+        Write-Host "signed in to $url as $($Credential.username)"
+    }
+
+    $credential = Read-Credential
+    $url = $credential.url.TrimEnd('/')
+    if (([uri] $url).Host -ne '127.0.0.1') { throw "the station answers on $url, not on 127.0.0.1" }
+    Assert-StationAccess
+
+    # `service start` returns once the server listens; the poll is a safety net.
     Wait-Until {
         try { (Invoke-WebRequest -Uri "$url/api/v1/health" -TimeoutSec 5).StatusCode -eq 200 } catch { $false }
     } 60 "$url/api/v1/health"
     Write-Host "$url/api/v1/health answers"
-    $body = @{ username = $credential.username; password = $credential.password } | ConvertTo-Json
-    $login = Invoke-RestMethod -Method Post -Uri "$url/api/v1/auth/login" -ContentType 'application/json' -Body $body
-    if (-not $login.ok) { throw 'the station credential did not sign in' }
-    if ($login.role -ne 'admin') { throw "the station user's role is $($login.role), not admin" }
-    if ($login.must_change_password) { throw 'the station user must change its password' }
-    Write-Host "signed in to $url as $($credential.username)"
+    Assert-SignIn $credential
+
+    # Setting the station up again (as an upgrade does) keeps the credential
+    # and the folder's access.
+    & $voltrus station init --dir $station
+    if ($LASTEXITCODE -ne 0) { throw "a second voltrus station init exited with code $LASTEXITCODE" }
+    $again = Read-Credential
+    if ($again.url -ne $credential.url -or $again.username -ne $credential.username -or
+        $again.password -ne $credential.password) {
+        throw 'a second voltrus station init changed the console credential'
+    }
+    Assert-StationAccess
+    Assert-SignIn $again
 
     # The installed console with no arguments: local station mode signs in by
     # itself.

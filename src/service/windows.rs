@@ -5,6 +5,7 @@ use super::{Station, Status};
 use crate::edition::Extension;
 use anyhow::{Context, Result};
 use std::ffi::{OsStr, OsString};
+use std::panic::AssertUnwindSafe;
 use std::sync::{Arc, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 use windows_service::service::{
@@ -24,10 +25,12 @@ const DESCRIPTION: &str = "Voltrus SCADA local station server: device polling, a
                            history and writes for the console on this computer.";
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 /// How long `start`, `stop` and `uninstall` wait for the SCM.
-const WAIT: Duration = Duration::from_secs(30);
+const WAIT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(250);
-/// Stop wait hint: the server drains connections for up to 3 s.
-const STOP_WAIT_HINT: Duration = Duration::from_secs(10);
+/// Pending-state wait hint; the checkpoint is raised every PROGRESS while the
+/// server starts up or drains connections (up to 3 s).
+const PENDING_WAIT_HINT: Duration = Duration::from_secs(10);
+const PROGRESS: Duration = Duration::from_secs(2);
 
 const ERROR_SERVICE_ALREADY_RUNNING: i32 = 1056;
 const ERROR_SERVICE_DOES_NOT_EXIST: i32 = 1060;
@@ -74,7 +77,7 @@ pub(super) async fn run(ext: Arc<dyn Extension>, station: Station) -> Result<()>
         Ok(()) => Ok(()),
         Err(e) if os_error(&e) == Some(ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) => {
             tracing::info!("Not started by the Service Control Manager; running in the foreground");
-            crate::app::serve(ext, &config, crate::app::shutdown_signal()).await
+            crate::app::serve(ext, &config, crate::app::shutdown_signal(), None).await
         }
         Err(e) => Err(e).context("Cannot start the service dispatcher"),
     }
@@ -87,10 +90,15 @@ fn service_main(_arguments: Vec<OsString>) {
 }
 
 enum Event {
+    /// The server's listener is bound.
+    Ready,
     StopRequested,
     Finished(Result<()>),
 }
 
+/// Report StartPending until the server listens, then Running; StopPending
+/// while it drains; Stopped (with a service-specific exit code when the server
+/// failed or panicked, so the recovery actions fire) when it is done.
 fn run_service() -> Result<()> {
     let context = CONTEXT.get().context("Service context missing")?;
     let (events_tx, events) = mpsc::channel();
@@ -106,14 +114,12 @@ fn run_service() -> Result<()> {
             _ => ServiceControlHandlerResult::NotImplemented,
         })
         .context("Cannot register the service control handler")?;
-    set_status(
-        &status_handle,
-        ServiceState::Running,
-        ServiceExitCode::Win32(0),
-    )?;
+    let mut state = ServiceState::StartPending;
+    let mut checkpoint = 1;
+    set_status(&status_handle, state, ServiceExitCode::Win32(0), checkpoint)?;
 
     // The server runs on a thread of its own so this one stays free to report
-    // StopPending to the SCM when a stop arrives.
+    // progress to the SCM.
     let stop = Arc::new(tokio::sync::Notify::new());
     let server_stop = stop.clone();
     let runtime = context.runtime.clone();
@@ -122,25 +128,52 @@ fn run_service() -> Result<()> {
     std::thread::Builder::new()
         .name("voltrus-server".to_string())
         .spawn(move || {
+            let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+            let ready_events = events_tx.clone();
+            runtime.spawn(async move {
+                if ready_rx.await.is_ok() {
+                    let _ = ready_events.send(Event::Ready);
+                }
+            });
             let shutdown = async move { server_stop.notified().await };
-            let result = runtime.block_on(crate::app::serve(ext, &config, shutdown));
+            let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                runtime.block_on(crate::app::serve(ext, &config, shutdown, Some(ready_tx)))
+            }))
+            .unwrap_or_else(|panic| {
+                Err(anyhow::anyhow!(
+                    "The server panicked: {}",
+                    panic_message(panic.as_ref())
+                ))
+            });
             let _ = events_tx.send(Event::Finished(result));
         })
         .context("Cannot start the server thread")?;
 
     let result = loop {
-        match events.recv() {
+        match events.recv_timeout(PROGRESS) {
+            Ok(Event::Ready) => {
+                tracing::info!("Service running");
+                state = ServiceState::Running;
+                checkpoint = 0;
+                set_status(&status_handle, state, ServiceExitCode::Win32(0), checkpoint)?;
+            }
             Ok(Event::StopRequested) => {
                 tracing::info!("Stop requested by the Service Control Manager");
-                set_status(
-                    &status_handle,
-                    ServiceState::StopPending,
-                    ServiceExitCode::Win32(0),
-                )?;
+                state = ServiceState::StopPending;
+                checkpoint = 1;
+                set_status(&status_handle, state, ServiceExitCode::Win32(0), checkpoint)?;
                 stop.notify_one();
             }
             Ok(Event::Finished(result)) => break result,
-            Err(_) => break Err(anyhow::anyhow!("The server thread ended without a result")),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if state != ServiceState::Running {
+                    checkpoint += 1;
+                    set_status(&status_handle, state, ServiceExitCode::Win32(0), checkpoint)?;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                break Err(anyhow::anyhow!("The server thread ended without a result"));
+            }
         }
     };
     let exit_code = match &result {
@@ -150,20 +183,31 @@ fn run_service() -> Result<()> {
             ServiceExitCode::ServiceSpecific(1)
         }
     };
-    set_status(&status_handle, ServiceState::Stopped, exit_code)
+    set_status(&status_handle, ServiceState::Stopped, exit_code, 0)
+}
+
+fn panic_message(panic: &(dyn std::any::Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic")
 }
 
 fn set_status(
     handle: &ServiceStatusHandle,
     state: ServiceState,
     exit_code: ServiceExitCode,
+    checkpoint: u32,
 ) -> Result<()> {
     let (controls_accepted, wait_hint) = match state {
         ServiceState::Running => (
             ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
             Duration::default(),
         ),
-        ServiceState::StopPending => (ServiceControlAccept::empty(), STOP_WAIT_HINT),
+        ServiceState::StartPending | ServiceState::StopPending => {
+            (ServiceControlAccept::empty(), PENDING_WAIT_HINT)
+        }
         _ => (ServiceControlAccept::empty(), Duration::default()),
     };
     handle
@@ -172,7 +216,7 @@ fn set_status(
             current_state: state,
             controls_accepted,
             exit_code,
-            checkpoint: 0,
+            checkpoint,
             wait_hint,
             process_id: None,
         })
