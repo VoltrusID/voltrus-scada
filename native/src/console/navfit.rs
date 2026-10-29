@@ -78,6 +78,9 @@ pub struct Tab {
 pub struct Parts {
     /// Before the logo (the traffic lights on macOS).
     pub left: f32,
+    /// After the sign-out button's [`EDGE`] (the window's controls on
+    /// Windows and Linux).
+    pub right: f32,
     pub wordmark: f32,
     pub host: f32,
     /// The edition badge's text.
@@ -241,6 +244,7 @@ pub fn needed(parts: &Parts, fit: Fit) -> f32 {
         .last()
         .map_or(parts.left, |(_, _, end)| *end)
         + EDGE
+        + parts.right
 }
 
 /// The widest step whose parts fit `available` pixels; the narrowest when
@@ -261,6 +265,7 @@ mod tests {
         let label = |chars: usize| chars as f32 * 7.2;
         Parts {
             left: 78.0,
+            right: 0.0,
             wordmark: 96.0,
             host: 92.0,
             edition: Some(62.0),
@@ -368,5 +373,14 @@ mod tests {
                 .any(|(p, _, _)| *p == Part::SignOut)
         );
         assert!(needed(&kiosk, Fit::Full) < needed(&parts, Fit::Full));
+        // The window's controls (Windows, Linux) take their room.
+        let controls = Parts {
+            right: 138.0,
+            ..plant()
+        };
+        assert_eq!(
+            needed(&controls, Fit::Full),
+            needed(&parts, Fit::Full) + 138.0
+        );
     }
 }

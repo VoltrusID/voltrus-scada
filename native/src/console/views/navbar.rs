@@ -18,7 +18,7 @@ use vt_ui::Icon;
 use vt_ui::components::{IconButton, Tooltip, brand_mark, kbd, monogram};
 use vt_ui::theme::*;
 
-use super::{ListKeys, capitalized, focus_ring, host, keyboard_list};
+use super::{ListKeys, capitalized, focus_ring, host, keyboard_list, window_controls};
 use crate::console::keys::{
     AlarmsToggleMute, ShellOpenSettings, ShellToggleNotifications, ShowMore, ShowNavMenu,
     ToggleAppearance, TogglePalette, TogglePerfHud, display, hint, page_keys,
@@ -130,6 +130,13 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     } else {
         SPACE_6
     };
+    // Right of the sign-out button: the window's controls, where the
+    // console draws them.
+    let right = if window_controls::SHOWN {
+        window_controls::WIDTH
+    } else {
+        px(0.0)
+    };
     let (username, role) = console.user.clone().unwrap_or_default();
     let role = role_label(&role);
     let initials: String = username
@@ -163,6 +170,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     // What fits: every label measured as the navbar draws it.
     let parts = Parts {
         left: f32::from(left),
+        right: f32::from(right),
         wordmark: measure(
             window,
             "Voltrus SCADA",
@@ -379,7 +387,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .items_center()
         .gap(px(navfit::gap()))
         .pl(left)
-        .pr(px(navfit::EDGE))
+        .pr(px(navfit::EDGE) + right)
         .bg(theme.chrome)
         .border_b_1()
         .border_color(theme.border)
@@ -429,7 +437,24 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 .children(tabs)
                 .children(more_button),
         )
-        .child(div().flex_1().min_w(px(navfit::SPACER_MIN)))
+        .child({
+            // Where the window drags from (`window_controls`): the spacer
+            // and the gaps each side of it.
+            let gap = console.navbar_gap.clone();
+            div().flex_1().min_w(px(navfit::SPACER_MIN)).h_full().child(
+                canvas(
+                    move |bounds, _, _| {
+                        let margin = px(navfit::gap());
+                        gap.set(Some(gpui::Bounds::new(
+                            gpui::point(bounds.origin.x - margin, bounds.origin.y),
+                            gpui::size(bounds.size.width + margin * 2.0, bounds.size.height),
+                        )));
+                    },
+                    |_, (), _, _| {},
+                )
+                .size_full(),
+            )
+        })
         .child(
             div()
                 .flex_none()

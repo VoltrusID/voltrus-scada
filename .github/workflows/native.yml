@@ -1,7 +1,7 @@
 # The native operator console (native/): formatting, lints, tests, an
 # end-to-end run against a live server with the solar-farm simulators, an
-# unsigned macOS app bundle, and screenshots of every page. No secrets: safe
-# for forks.
+# unsigned macOS app bundle, and screenshots of every page; and the same
+# console built, tested and smoke-run on Windows. No secrets: safe for forks.
 name: Native console
 
 on:
@@ -101,8 +101,10 @@ jobs:
           VOLTRUS_E2E_EXPECT_UPDATES: "1"
         run: cargo test --locked -p voltrus-scada-native --test e2e_live -- --nocapture --test-threads=1
 
+      # With the server inside (Contents/MacOS/voltrus), as the release
+      # bundle carries it: both binaries signed ad hoc.
       - name: Bundle
-        run: native/scripts/bundle-macos.sh target/release/voltrus-native dist
+        run: SERVER=target/release/voltrus native/scripts/bundle-macos.sh target/release/voltrus-native dist
 
       # 20 s of the synthetic 10k-tag plant (no server) through the same
       # store path as the WebSocket, switching pages every 2 s; the report
@@ -180,3 +182,102 @@ jobs:
         with:
           name: voltrus-native-demo-plant-macos-arm64
           path: dist/voltrus-demo-plant.tar.gz
+
+  # The console on Windows (MSVC): lints and unit tests, a release build of
+  # the console and the server, then a smoke run on the runner's desktop: the
+  # sign-in window and the stress pass (no server needed), each captured.
+  # Then the installer (Inno Setup), installed on the runner as a local
+  # station: the VoltrusSCADA service, its API on 127.0.0.1 with the station's
+  # credential, the installed console signing in by itself (captured), and a
+  # silent uninstall.
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: native-windows-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            native-windows-${{ hashFiles('Cargo.lock') }}-
+            native-windows-
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup default stable
+          rustc --version
+
+      - name: Lint
+        run: cargo clippy --locked --keep-going -p voltrus-scada-native --all-targets -- -D warnings
+
+      - name: Test
+        run: |
+          cargo test --locked --no-fail-fast -p voltrus-scada-native
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # The server's station and service code (paths, init, port probe).
+          cargo test --locked -p voltrus --lib -- station service
+
+      - name: Build release
+        env:
+          VOLTRUS_SKIP_UI_EMBED: "1"
+        run: cargo build --locked --release --workspace --bin voltrus-native --bin voltrus --bin modbus-sim
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always()
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Smoke run
+        run: native/scripts/smoke-windows.ps1 -Exe target/release/voltrus-native.exe -Out dist/windows
+
+      - name: Check licence notices
+        shell: bash
+        run: native/scripts/check-notices.sh
+
+      # Built from this job's binaries (no web UI embedded in voltrus.exe; the
+      # release workflow's installer embeds it).
+      - name: Installer
+        run: native/scripts/installer-windows.ps1 -BinDir target/release -Out dist/installer
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: voltrus-scada-windows-x86_64-setup
+          path: dist/installer/voltrus-scada-windows-x86_64-setup.exe
+          if-no-files-found: error
+
+      - name: Local station end to end
+        run: native/scripts/station-windows.ps1 -Installer dist/installer/voltrus-scada-windows-x86_64-setup.exe -Out dist/windows
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: voltrus-native-windows-smoke
+          path: dist/windows
+          if-no-files-found: ignore
+
+      - name: Pack
+        run: |
+          New-Item -ItemType Directory -Force dist/pack | Out-Null
+          Copy-Item target/release/voltrus-native.exe, target/release/voltrus.exe, target/release/modbus-sim.exe dist/pack/
+          Compress-Archive -Path dist/pack/* -DestinationPath dist/Voltrus-SCADA-Console-windows-x86_64.zip
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: voltrus-native-windows-x86_64
+          path: dist/Voltrus-SCADA-Console-windows-x86_64.zip

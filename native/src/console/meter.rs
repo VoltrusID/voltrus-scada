@@ -739,6 +739,12 @@ mod tests {
         frame(&mut meter, &mut at, "tags", 0.1, 60);
         frame(&mut meter, &mut at, "tags", 0.1, 5);
         let (count, longest) = meter.stalls();
+        // A stall needs the thread's CPU time, which is read on unix only;
+        // elsewhere no frame is called one.
+        if !cfg!(unix) {
+            assert_eq!((count, longest), (0, 0.0));
+            return;
+        }
         assert_eq!(count, 1);
         assert!(longest > 50.0 && longest <= 60.0, "{longest}");
         let slowest = &meter.slowest()[0];

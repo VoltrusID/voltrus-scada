@@ -78,13 +78,18 @@ fn run_watchdog() {
 /// The `voltrus` binary passes [`crate::edition::Community`]. Call this from
 /// your own `main` to run the core with an add-on edition.
 pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
-        )
-        .init();
-
     let args: Vec<String> = std::env::args().collect();
+
+    // `voltrus service run` logs to the station's log file, so it sets up
+    // tracing itself.
+    if args.get(1).map(String::as_str) == Some("service")
+        && args.get(2).map(String::as_str) == Some("run")
+    {
+        let dir = crate::station::dir_arg(&args[3..])?;
+        return crate::service::run(ext, &dir).await;
+    }
+
+    init_tracing(None)?;
 
     if args.contains(&"--watchdog".to_string()) {
         run_watchdog();
@@ -96,6 +101,98 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     }
 
     let config_path = args.get(1).map(|s| s.as_str()).unwrap_or("config.yaml");
+    let shutdown = shutdown_signal();
+    serve(ext, config_path, shutdown, None).await
+}
+
+/// Install the global tracing subscriber: stderr, or `log_file` (appended,
+/// without colours) when the server runs as a service.
+pub(crate) fn init_tracing(log_file: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let filter = tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?);
+    match log_file {
+        None => tracing_subscriber::fmt().with_env_filter(filter).init(),
+        Some(path) => {
+            let file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .map_err(|e| anyhow::anyhow!("Cannot open log file {}: {e}", path.display()))?;
+            tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+                .init();
+        }
+    }
+    Ok(())
+}
+
+/// Resolves on the first request to stop the process: SIGTERM or Ctrl-C on
+/// unix; Ctrl-C, Ctrl-Break, console close or system shutdown on Windows.
+///
+/// The listeners are registered when this is called, not when the future is
+/// first polled, so a stop request during server startup is not lost (and on
+/// unix does not kill the process outright).
+pub(crate) fn shutdown_signal() -> impl Future<Output = ()> + Send + 'static {
+    // Each signal has its own listener type in tokio; all have `recv`.
+    macro_rules! listen {
+        ($name:literal, $listener:expr) => {{
+            let listener = $listener;
+            async move {
+                match listener {
+                    Ok(mut listener) => {
+                        listener.recv().await;
+                    }
+                    Err(e) => {
+                        tracing::warn!("Cannot listen for {}: {e}", $name);
+                        std::future::pending::<()>().await;
+                    }
+                }
+            }
+        }};
+    }
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        let terminate = listen!("SIGTERM", signal(SignalKind::terminate()));
+        let interrupt = listen!("Ctrl-C", signal(SignalKind::interrupt()));
+        async move {
+            tokio::select! {
+                () = terminate => tracing::info!("Received SIGTERM"),
+                () = interrupt => tracing::info!("Received Ctrl-C"),
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        use tokio::signal::windows;
+        let ctrl_c = listen!("Ctrl-C", windows::ctrl_c());
+        let ctrl_break = listen!("Ctrl-Break", windows::ctrl_break());
+        let close = listen!("console close", windows::ctrl_close());
+        let shutdown = listen!("system shutdown", windows::ctrl_shutdown());
+        async move {
+            tokio::select! {
+                () = ctrl_c => tracing::info!("Received Ctrl-C"),
+                () = ctrl_break => tracing::info!("Received Ctrl-Break"),
+                () = close => tracing::info!("Console closed"),
+                () = shutdown => tracing::info!("System shutting down"),
+            }
+        }
+    }
+}
+
+/// How long connections get to finish after a shutdown request.
+const DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Run the server from `config_path` until `shutdown` resolves, then stop
+/// accepting connections and give open ones up to 3 s to finish. `ready`, if
+/// given, fires once the listener is bound.
+pub(crate) async fn serve(
+    ext: Arc<dyn Extension>,
+    config_path: &str,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+    ready: Option<tokio::sync::oneshot::Sender<()>>,
+) -> anyhow::Result<()> {
     let app_config = config::load_config(config_path)?;
 
     tracing::info!(
@@ -866,17 +963,23 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     tracing::info!("Server listening on {addr}");
 
     let listener = bind_listener(&addr).await?;
+    if let Some(ready) = ready {
+        let _ = ready.send(());
+    }
 
-    let shutdown = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install Ctrl+C handler");
-        tracing::info!("Received shutdown signal, draining connections...");
-
-        // Give connections 3s to drain, then force quit
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        tracing::info!("Drain timeout, forcing shutdown");
-        std::process::exit(0);
+    // Once `shutdown` resolves the server stops accepting; open connections
+    // (live-data WebSockets never end on their own) get DRAIN_TIMEOUT to finish.
+    let (draining_tx, draining_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = async move {
+        shutdown.await;
+        tracing::info!("Shutting down, draining connections...");
+        let _ = draining_tx.send(());
+    };
+    let drain_deadline = async move {
+        match draining_rx.await {
+            Ok(()) => tokio::time::sleep(DRAIN_TIMEOUT).await,
+            Err(_) => std::future::pending().await,
+        }
     };
 
     // `serve(listener, router)` runs `Router::clone().with_state(())` for every accepted
@@ -884,12 +987,16 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     // and its `AppState`): ~14 MB held for as long as the connection stays open.
     // The make-service form hands each connection a cheap `Arc` clone of the router,
     // and records the peer address as `ConnectInfo` for `security::client_ip`.
-    axum::serve(
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown)
-    .await?;
+    .into_future();
+    tokio::select! {
+        result = server => result?,
+        () = drain_deadline => tracing::info!("Drain timeout, closing remaining connections"),
+    }
 
     tracing::info!("Server shutdown complete");
     Ok(())

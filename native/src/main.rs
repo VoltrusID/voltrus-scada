@@ -1,5 +1,9 @@
 //! voltrus-native: the GPUI operator console for the Voltrus SCADA server.
 
+// A release build is a window, not a console program: no console window
+// opens beside it on Windows (redirected output still reaches its files).
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod console;
 
 use std::path::PathBuf;
@@ -11,6 +15,7 @@ use gpui::{
     App, AppContext as _, Application, Bounds, TitlebarOptions, WindowBounds, WindowOptions, point,
     px, size,
 };
+use voltrus_scada_native::station::{self, Start};
 use voltrus_scada_native::zone::LocalZone;
 use vt_ui::theme::{self, ThemeCatalog};
 
@@ -288,6 +293,11 @@ fn main() -> ExitCode {
     } else {
         None
     };
+    let station_dir = station::dir();
+    let local_station = station::start(
+        sign_in.is_some() || options.stress.is_some(),
+        station_dir.as_deref(),
+    ) == Start::Station;
     let launch = Launch {
         sign_in,
         page: options.page,
@@ -302,6 +312,9 @@ fn main() -> ExitCode {
         zone: LocalZone::system(),
         appearance: options.dark,
         keys: options.keys,
+        station_dir,
+        bundled_server: station::bundled_server(),
+        local_station,
     };
     let appearance = options.dark;
     let wanted = options
@@ -341,9 +354,23 @@ fn main() -> ExitCode {
             // `--window` resizes the window once open (below): a window
             // opened at a size that needs no fitting to the screen first
             // draws at the wrong scale on the CI runner's display.
-            let bounds = Bounds::centered(None, size(px(1440.0), px(900.0)), cx);
+            let default = size(px(1440.0), px(900.0));
+            let bounds = Bounds::centered(None, default, cx);
+            // On Windows and Linux a display smaller than that (a 1024 × 768
+            // panel PC) opens the window maximized, so no part of it lands
+            // off screen; macOS fits a window to its screen itself.
+            let fits = cfg!(target_os = "macos")
+                || wanted.is_some()
+                || cx.primary_display().is_none_or(|display| {
+                    let screen = display.bounds().size;
+                    screen.width >= default.width && screen.height >= default.height
+                });
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_bounds: Some(if fits {
+                    WindowBounds::Windowed(bounds)
+                } else {
+                    WindowBounds::Maximized(bounds)
+                }),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Voltrus SCADA".into()),
                     appears_transparent: true,

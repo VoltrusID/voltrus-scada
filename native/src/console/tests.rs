@@ -2,10 +2,11 @@
 //! the keymap and the routing of REST answers.
 
 use std::path::Path;
+use std::time::Duration;
 
 use gpui::{Action, AppContext as _, Bounds, Pixels, TestAppContext, px, size};
 use voltrus_scada_native::api::Alarm;
-use voltrus_scada_native::runtime::{Command, Event, Link};
+use voltrus_scada_native::runtime::{CallKey, Command, Event, Link, Reply};
 
 use super::audio::Annunciator;
 use super::keys::{
@@ -14,6 +15,7 @@ use super::keys::{
 };
 use super::navfit::Fit;
 use super::shell::Shell;
+use super::station::Status;
 use super::testing::Harness;
 use super::text_area::TextArea;
 use super::{Phase, pages, views};
@@ -189,6 +191,8 @@ fn every_call_key_scope_has_an_owner() {
         let scope = parts.next().unwrap_or_default();
         let owned = match scope {
             "shell" => true,
+            // The local station's health checks (`console::station`).
+            "station" => true,
             "data" => parts.next().is_some_and(|section| {
                 views::data_manager::SECTIONS
                     .iter()
@@ -257,10 +261,16 @@ fn the_navbar_steps_down_to_fit_every_window_width(cx: &mut TestAppContext) {
                 "{width} ({fit:?}): {a} {a_at:?} runs into {b} {b_at:?}"
             );
         }
-        // The avatar and sign-out whole, clear of the window's edge.
+        // The avatar and sign-out whole, clear of the window's edge (and
+        // of its controls, where the console draws them).
+        let controls = if views::window_controls::SHOWN {
+            f32::from(views::window_controls::WIDTH)
+        } else {
+            0.0
+        };
         for (name, at) in &parts[parts.len() - 2..] {
             assert!(
-                at.right() <= px(width - 12.0 + 0.5),
+                at.right() <= px(width - 12.0 - controls + 0.5),
                 "{width} ({fit:?}): {name} {at:?} is clipped"
             );
             assert!(at.size.width >= px(22.0), "{width}: {name} {at:?} squeezed");
@@ -331,4 +341,351 @@ fn menus_and_popovers_open_inside_a_small_window(cx: &mut TestAppContext) {
     h.draw();
     h.keys("down enter");
     assert!(h.update(|console, _, _| console.overlay_is("settings")));
+}
+
+/// A station directory of its own, with a `station.toml` if `credential`.
+fn station_dir(name: &str, credential: bool) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "voltrus-native-console-station-{name}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    if credential {
+        std::fs::write(
+            dir.join("station.toml"),
+            "url = \"http://127.0.0.1:3999\"\nusername = \"station\"\npassword = \"s3cret\"\n",
+        )
+        .unwrap();
+    }
+    dir
+}
+
+/// A console launched in local station mode on `dir`.
+fn at_station(cx: &mut TestAppContext, dir: &Path) -> Harness {
+    let dir = dir.to_owned();
+    let mut h = Harness::with(cx, move |launch| {
+        launch.station_dir = Some(dir);
+        launch.local_station = true;
+    });
+    h.draw();
+    h
+}
+
+/// The health checks sent since the last look, by their sequence.
+fn health_checks(h: &mut Harness) -> Vec<i64> {
+    h.commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::Public { key, .. } if key.name == "station.health" => Some(key.arg),
+            _ => None,
+        })
+        .collect()
+}
+
+fn station_status(h: &mut Harness) -> Option<Status> {
+    h.update(|console, _, _| {
+        console
+            .station
+            .local
+            .as_ref()
+            .map(|local| local.status.clone())
+    })
+}
+
+#[gpui::test]
+fn a_local_station_shows_its_state_and_signs_in_by_itself(cx: &mut TestAppContext) {
+    let dir = station_dir("connect", true);
+    let mut h = at_station(cx, &dir);
+    assert_eq!(station_status(&mut h), Some(Status::Connecting));
+    assert!(h.cx.debug_bounds("station-dir").is_some());
+    assert!(
+        h.cx.debug_bounds("sign-in-card").is_none(),
+        "the station's state stands in for the sign-in card"
+    );
+    // The server is up: the console signs in with the station's account.
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(1),
+        reply: Reply::ok(()),
+    });
+    let sign_in = h.commands().into_iter().find_map(|command| match command {
+        Command::SignIn {
+            url,
+            username,
+            password,
+        } => Some((url, username, password)),
+        _ => None,
+    });
+    assert_eq!(
+        sign_in,
+        Some((
+            "http://127.0.0.1:3999".to_owned(),
+            "station".to_owned(),
+            "s3cret".to_owned()
+        ))
+    );
+    assert_eq!(station_status(&mut h), Some(Status::SigningIn));
+    h.sign_in("admin");
+    assert_eq!(station_status(&mut h), Some(Status::Live));
+    // The session ends: it signs in again, without the card.
+    h.event(Event::Link(Link::Failed("Not authorised".into())));
+    assert_eq!(health_checks(&mut h), [2]);
+    assert_eq!(station_status(&mut h), Some(Status::Connecting));
+    // Once: refused again, it waits for the operator.
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(2),
+        reply: Reply::ok(()),
+    });
+    h.commands();
+    h.event(Event::SignInFailed {
+        message: "Invalid credentials".into(),
+        refused: true,
+    });
+    assert!(matches!(station_status(&mut h), Some(Status::Refused(_))));
+    h.cx.executor().advance_clock(Duration::from_secs(60));
+    h.cx.run_until_parked();
+    assert!(health_checks(&mut h).is_empty());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui::test]
+fn an_unreachable_station_waits_and_asks_again(cx: &mut TestAppContext) {
+    let dir = station_dir("unreachable", true);
+    let mut h = at_station(cx, &dir);
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(1),
+        reply: Reply::failed("connection refused"),
+    });
+    h.draw();
+    assert!(matches!(
+        station_status(&mut h),
+        Some(Status::Unreachable(reason)) if reason.contains("connection refused")
+    ));
+    assert!(h.cx.debug_bounds("station-reason").is_some());
+    assert!(h.cx.debug_bounds("sign-in-card").is_none());
+    assert!(health_checks(&mut h).is_empty(), "not before the back-off");
+    h.cx.executor().advance_clock(Duration::from_secs(1));
+    h.cx.run_until_parked();
+    assert_eq!(health_checks(&mut h), [2], "after a second");
+    // A sign-in that did not reach the server is tried again too, never
+    // shown on the card.
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(2),
+        reply: Reply::ok(()),
+    });
+    h.commands();
+    h.event(Event::SignInFailed {
+        message: "error sending request".into(),
+        refused: false,
+    });
+    h.draw();
+    h.update(|console, _, _| {
+        assert_eq!(console.phase, Phase::SignIn);
+        assert_eq!(console.error, None);
+        assert!(!console.busy);
+        assert!(console.station.local.as_ref().is_some_and(|l| l.idle()));
+    });
+    assert!(h.cx.debug_bounds("sign-in-card").is_none());
+    h.cx.executor().advance_clock(Duration::from_secs(2));
+    h.cx.run_until_parked();
+    assert_eq!(health_checks(&mut h), [3], "after the back-off");
+    // A refused one is not: it counts towards locking the account. The
+    // station screen says why and waits for Retry.
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(3),
+        reply: Reply::ok(()),
+    });
+    h.commands();
+    h.event(Event::SignInFailed {
+        message: "Invalid credentials".into(),
+        refused: true,
+    });
+    h.draw();
+    assert!(matches!(
+        station_status(&mut h),
+        Some(Status::Refused(reason)) if reason.contains("Invalid credentials")
+    ));
+    assert!(h.update(|console, _, _| !console.busy && console.error.is_none()));
+    h.cx.executor().advance_clock(Duration::from_secs(60));
+    h.cx.run_until_parked();
+    assert!(health_checks(&mut h).is_empty(), "no retry by itself");
+    // Retry asks once, at once.
+    h.update(|console, _, cx| super::station::retry(console, cx));
+    assert_eq!(health_checks(&mut h), [4]);
+    assert_eq!(station_status(&mut h), Some(Status::Connecting));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui::test]
+fn signing_out_of_the_station_offers_it_again(cx: &mut TestAppContext) {
+    let dir = station_dir("sign-out", true);
+    let mut h = at_station(cx, &dir);
+    h.sign_in("admin");
+    h.update(|console, window, cx| console.sign_out(window, cx));
+    h.draw();
+    assert!(h.update(|console, _, _| console.station.local.is_none()));
+    assert!(h.cx.debug_bounds("sign-in-card").is_some());
+    assert!(h.cx.debug_bounds("station-return").is_some());
+    assert!(h.cx.debug_bounds("station-setup").is_none());
+    h.update(|console, _, cx| super::station::open(console, cx));
+    assert_eq!(health_checks(&mut h), [1]);
+    // (Drawn bounds outlive their element, so the card's cannot tell.)
+    assert_eq!(station_status(&mut h), Some(Status::Connecting));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui::test]
+fn the_card_offers_a_station_only_where_there_is_one_or_a_server(cx: &mut TestAppContext) {
+    // No station dir: nothing.
+    let mut h = Harness::new(cx);
+    h.draw();
+    assert!(h.cx.debug_bounds("station-return").is_none());
+    assert!(h.cx.debug_bounds("station-setup").is_none());
+    // A station with a credential, launched with `--sign-in` or a saved
+    // server: the card, with the way back to the station.
+    let dir = station_dir("card", true);
+    let mut h = Harness::with(cx, |launch| launch.station_dir = Some(dir.clone()));
+    h.draw();
+    assert!(h.cx.debug_bounds("sign-in-card").is_some());
+    assert!(h.cx.debug_bounds("station-return").is_some());
+    std::fs::remove_dir_all(&dir).unwrap();
+    // No station yet, but the server beside the console: set one up.
+    let dir = station_dir("setup", false);
+    let mut h = Harness::with(cx, |launch| {
+        launch.station_dir = Some(dir.clone());
+        launch.bundled_server = Some(dir.join("voltrus"));
+    });
+    h.draw();
+    assert!(h.cx.debug_bounds("station-setup").is_some());
+    assert!(h.cx.debug_bounds("station-return").is_none());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A stand-in for the bundled server in `dir`: `station init` writes
+/// `station.toml`, `service status` exits with the code in `dir/code`,
+/// `service install` fails as Windows does unelevated when `dir/deny`
+/// exists, and every service step it runs is noted in `dir/ran`.
+#[cfg(unix)]
+fn fake_server(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let server = dir.join("voltrus");
+    std::fs::write(
+        &server,
+        r#"#!/bin/sh
+case "$1 $2" in
+"station init")
+  printf 'url = "http://127.0.0.1:3999"\nusername = "station"\npassword = "s3cret"\n' > "$4/station.toml"
+  exit 0;;
+"service status")
+  exit $(cat "$4/code");;
+"service install")
+  if [ -e "$4/deny" ]; then echo "OpenSCManager: Access is denied. (os error 5)" >&2; exit 1; fi;;
+esac
+echo "$2" >> "$4/ran"
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&server, std::fs::Permissions::from_mode(0o755)).unwrap();
+    server
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_failed_setup_keeps_its_error_and_its_button(cx: &mut TestAppContext) {
+    let dir = station_dir("setup-denied", false);
+    let server = fake_server(&dir);
+    std::fs::write(dir.join("deny"), "").unwrap();
+    let mut h = Harness::with(cx, |launch| {
+        launch.station_dir = Some(dir.clone());
+        launch.bundled_server = Some(server.clone());
+    });
+    h.update(|console, _, cx| super::station::set_up(console, cx));
+    h.draw();
+    h.update(|console, _, _| {
+        // `station init` made the credential, but the service is missing:
+        // the card keeps the error and the button, not "Use this station".
+        assert!(console.station.available);
+        assert!(console.station.local.is_none());
+        assert!(matches!(
+            &console.station.setup,
+            Some(super::station::Setup::Failed(error))
+                if error.starts_with("voltrus service install failed")
+                    && error.contains("Access is denied")
+        ));
+        assert!(console.station.offers_setup() && !console.station.offers_return());
+    });
+    assert!(h.cx.debug_bounds("station-setup-error").is_some());
+    assert!(h.cx.debug_bounds("station-return").is_none());
+    // Run again, elevated this time: it finishes and opens the station.
+    std::fs::remove_file(dir.join("deny")).unwrap();
+    h.update(|console, _, cx| super::station::set_up(console, cx));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ran")).unwrap(),
+        "install\nstart\n"
+    );
+    h.update(|console, _, _| {
+        assert_eq!(console.station.setup, None);
+        assert!(console.station.local.is_some());
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[cfg(unix)]
+#[gpui::test]
+fn a_station_that_does_not_answer_offers_to_finish_or_start_its_service(cx: &mut TestAppContext) {
+    use voltrus_scada_native::station::{Service, Step};
+    let dir = station_dir("service", true);
+    let server = fake_server(&dir);
+    let mut h = Harness::with(cx, |launch| {
+        launch.station_dir = Some(dir.clone());
+        launch.bundled_server = Some(server.clone());
+        launch.local_station = true;
+    });
+    let service = |h: &mut Harness| {
+        h.update(|console, _, _| {
+            console
+                .station
+                .local
+                .as_ref()
+                .and_then(|local| local.service.clone())
+        })
+    };
+    let unreachable = |h: &mut Harness, seq: i64| {
+        h.event(Event::PublicReply {
+            key: CallKey::new("station.health").with(seq),
+            reply: Reply::failed("Connection refused"),
+        });
+        h.draw();
+    };
+    // Not installed (a setup that stopped after `station init`): finish it.
+    std::fs::write(dir.join("code"), "4").unwrap();
+    unreachable(&mut h, 1);
+    assert_eq!(service(&mut h), Some(Ok(Service::NotInstalled)));
+    assert!(
+        h.cx.debug_bounds("station-fix: Finish setting up this station")
+            .is_some()
+    );
+    h.update(|console, _, cx| super::station::repair(console, Step::FINISH, cx));
+    assert_eq!(
+        std::fs::read_to_string(dir.join("ran")).unwrap(),
+        "install\nstart\n"
+    );
+    assert_eq!(service(&mut h), None);
+    assert_eq!(health_checks(&mut h), [2], "asks again at once");
+    // Stopped: start it.
+    std::fs::write(dir.join("code"), "3").unwrap();
+    unreachable(&mut h, 2);
+    assert_eq!(service(&mut h), Some(Ok(Service::Stopped)));
+    assert!(
+        h.cx.debug_bounds("station-fix: Start the station server")
+            .is_some()
+    );
+    // Running: nothing to fix, it keeps asking.
+    h.update(|console, _, cx| super::station::retry(console, cx));
+    assert_eq!(health_checks(&mut h), [3]);
+    std::fs::write(dir.join("code"), "0").unwrap();
+    unreachable(&mut h, 3);
+    assert_eq!(service(&mut h), Some(Ok(Service::Running)));
+    assert!(h.update(|console, _, _| console.station.local.as_ref().is_some_and(|l| l.idle())));
+    std::fs::remove_dir_all(&dir).unwrap();
 }
