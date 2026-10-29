@@ -8,6 +8,7 @@ export const queryKeys = {
   navShortcuts:  ['navShortcuts'] as const,
   history:       (range: string, screenId: string) => ['history', range, screenId] as const,
   systemInfo:    ['systemInfo'] as const,
+  serverVersion: ['serverVersion'] as const,
   alarms:        (status: string) => ['alarms', status] as const,
   alarmSummary:  ['alarmSummary'] as const,
   alarmAudit:    (alarmId?: number) => ['alarmAudit', alarmId] as const,

@@ -3,6 +3,7 @@ import { useWsConnected, useLiveTransport } from '../store/dashboardStore'
 import type { Screen } from '../types'
 import { useLicense } from '../LicenseContext'
 import { siteLabel, supportLabel, supportState } from '../edition/license'
+import { useServerVersion } from '../queries/system'
 
 interface Props {
   activeAlarmCount: number
@@ -24,6 +25,7 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
   const license = useLicense()
   const site = siteLabel(license)
   const support = supportLabel(license)
+  const { data: version } = useServerVersion()
   const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
@@ -115,7 +117,7 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         <span style={{ color: 'var(--text-dim)' }}>{dateStr} {timeStr}</span>
         <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
-        <span style={{ opacity: 0.5 }}>Voltrus v0.47.0</span>
+        <span style={{ opacity: 0.5 }}>{version ? `Voltrus v${version}` : 'Voltrus'}</span>
       </div>
     </div>
   )
