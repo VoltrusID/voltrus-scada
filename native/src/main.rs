@@ -356,9 +356,11 @@ fn main() -> ExitCode {
             // draws at the wrong scale on the CI runner's display.
             let default = size(px(1440.0), px(900.0));
             let bounds = Bounds::centered(None, default, cx);
-            // A display smaller than that (a 1024 × 768 panel PC) opens the
-            // window maximized, so no part of it lands off screen.
-            let fits = wanted.is_some()
+            // On Windows and Linux a display smaller than that (a 1024 × 768
+            // panel PC) opens the window maximized, so no part of it lands
+            // off screen; macOS fits a window to its screen itself.
+            let fits = cfg!(target_os = "macos")
+                || wanted.is_some()
                 || cx.primary_display().is_none_or(|display| {
                     let screen = display.bounds().size;
                     screen.width >= default.width && screen.height >= default.height
