@@ -9,7 +9,7 @@ opt-level = 3
 
 [package]
 name = "voltrus"
-version = "0.49.2"
+version = "0.50.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 publish = false
