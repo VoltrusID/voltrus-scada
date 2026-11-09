@@ -5,8 +5,11 @@ React web client. Poll PLCs and meters, keep the history in SQLite, build
 dashboards and run alarms, on your own hardware and with no cloud account.
 
 This repository is the open-source **Core**, licensed under
-[AGPL-3.0-or-later](LICENSE). A separate closed-source **Enterprise add-on**
-(single sign-on, 21 CFR Part 11, hot standby and more) is sold per site.
+[AGPL-3.0-or-later](LICENSE). A separate **Enterprise add-on** (single sign-on,
+21 CFR Part 11, hot standby and more) is sold per site. Its source is available
+to read in
+[VoltrusID/voltrus-scada-enterprise](https://github.com/VoltrusID/voltrus-scada-enterprise)
+under the Voltrus Enterprise License, which is not an open-source licence.
 See [Core vs Enterprise](#core-vs-enterprise).
 
 Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
@@ -18,34 +21,59 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   BACnet/IP, and an embedded MQTT broker. SNMP network scan for asset discovery.
   Device templates for Modbus and BACnet: built-in, saved from your own
   devices, or imported from a public catalog.
-  Each protocol is a Cargo feature, all on by default.
+  Each protocol is a Cargo feature, all on by default. The drivers are not
+  equally mature; see [Project status](#project-status).
 * **Dashboards:** responsive grid, free-form canvas, 3D digital twin and a 2D
   SCADA diagram editor, with per-screen layouts.
 * **Alarms:** warning and critical thresholds, priorities, shelving, deadband,
   on and off delay, acknowledgement, alarm analytics, email, webhook and push
   notifications.
-* **Historian:** full-resolution samples packed into compressed blocks
+* **Historian:** a sample of every tag each persistence interval
+  (`persist_interval_secs`, default 5 s) packed into compressed blocks
   (delta-of-delta timestamps, XOR floats, run-length digitals), per-tag
   deadband, hourly and daily tiers with automatic downsampling and CSV archive,
   trends, SPC charts, annotations, CSV and Excel import and export. See
   [docs/historian.md](docs/historian.md).
 * **Automation:** visual flow engine, JavaScript scripts (QuickJS), recipes,
-  a command queue with write read-back, simulation mode.
+  a command queue with retries and expiry, simulation mode.
 * **API:** REST with an OpenAPI document and an interactive API reference at
   `/api/docs` (sign in first), live data over WebSocket (MessagePack) with a
   server-sent-events fallback at `/api/v1/stream`, plus TypeScript and Python
-  SDKs in [`sdks/`](sdks) (MIT licensed). Tag writes from REST and WebSocket go
+  SDKs in [`sdks/`](sdks) (MIT licensed; they cover the main endpoints and
+  can lag the server version). Tag writes from REST, WebSocket and MCP go
   through the same command queue, write policy and audit trail
-  ([docs/live-stream.md](docs/live-stream.md)).
+  ([docs/live-stream.md](docs/live-stream.md)), and so do flow `WriteOut`
+  nodes and recipes. Prometheus metrics at `/metrics` need an API key
+  (`X-API-Key` header or `?api_key=`).
 * **AI agents (MCP):** a Model Context Protocol server built into the server at
   `/mcp`, so Claude and other MCP clients can read values, manage devices and
   tags, and acknowledge alarms with an API key. See [docs/mcp.md](docs/mcp.md).
 * **Operations:** OEE and downtime, shift handover, asset inventory with NIS2
   export, config snapshots, backup and restore, whole-configuration YAML
   projects (`voltrus project export|import|validate`).
-* **Security:** local accounts with Argon2, role-based access control, API
-  keys, rate limiting, CSRF protection, intrusion detection, audit log.
+* **Security:** local accounts with Argon2, admin and read-only users, API
+  keys, rate limiting, SameSite=Strict session cookies, security
+  headers, intrusion detection, audit log.
 * **No limits and no licence key:** unlimited devices, tags and retention.
+
+## Project status
+
+Voltrus is young and built by a small team. Not every part is at the same
+level, and this table says where each one stands so you can plan around it.
+
+| Area | Status |
+|---|---|
+| Modbus TCP | Production for reads: batching, timeouts, reconnect with backoff, all data types. Queued writes go to 16-bit holding registers only for now |
+| OPC UA | Reads through subscriptions. Writes are not implemented yet. Server certificates are not verified yet |
+| Siemens S7, EtherNet/IP | Reads work against common devices; queued writes do not yet use the tag's data type |
+| DNP3, BACnet/IP | Experimental: not yet conformant enough for field devices |
+| Device start-up | Modbus and OPC UA devices start polling at boot; S7, EtherNet/IP, DNP3 and BACnet devices are started from the UI after a restart |
+| Command queue | Retries with backoff; a write not delivered within 30 minutes expires instead of landing late. No read-back verification yet: a write counts as applied when the device acknowledges it |
+| Data quality | One online/offline state per device; per-value quality codes (good, bad, stale) are not tracked yet |
+| Alarms | Thresholds, deadband, on/off delay, acknowledgement and shelving. Not the full ISA-18.2 state model yet |
+| Native console ([`native/`](native/README-native.md)) | Experimental, macOS first |
+
+Help with any of these is welcome; see [Contributing](#contributing).
 
 ## Core vs Enterprise
 
@@ -65,7 +93,7 @@ licence key; a lapsed or missing key never limits Core.
 | RTSP video cameras | | | yes |
 | Support | community | standard | priority SLA |
 
-Integrator and Enterprise are sold as a lifetime licence or monthly, per site. A per-site key can also carry an annual support contract; a lapsed contract never limits Core or anything already licensed (plan: [docs/licensing-per-site-plan.md](docs/licensing-per-site-plan.md)).
+Integrator and Enterprise are sold as a lifetime licence or monthly, per site. A per-site key can also carry an annual support contract; a lapsed contract never limits Core or anything already licensed.
 Current prices: <https://voltrus.id/voltrus-scada>. Official Voltrus binaries
 are Core plus the add-on. Details of the split and how it is built:
 [docs/open-core.md](docs/open-core.md).
@@ -200,7 +228,7 @@ The server is a library plus the `voltrus` binary in one crate. The
 src/            Rust server (api/, storage/, protocol drivers, flow engine, ...)
 client/         React web client (src/edition/ is the add-on seam)
 sdks/           TypeScript and Python SDKs (MIT)
-native/         experimental native operator console (GPUI)
+native/         experimental native operator console (GPUI), see native/README-native.md
 scenarios/      simulated plants for testing
 deploy/         example systemd unit
 docs/           open-core split, MCP server, live stream, notes

@@ -23,8 +23,10 @@ ship a fix before details are made public.
 ## Scope
 
 In scope: the Core server, the web client, the SDKs and the default
-configuration in this repository. The Enterprise add-on is closed source;
-report problems in it through the same channels.
+configuration in this repository. The Enterprise add-on
+([VoltrusID/voltrus-scada-enterprise](https://github.com/VoltrusID/voltrus-scada-enterprise),
+source available) is in scope too; report problems in it through the same
+channels.
 
 Out of scope: findings that need an already compromised host, social
 engineering, denial of service by sending very large traffic volumes, and
