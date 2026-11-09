@@ -3,6 +3,7 @@ import { useRecipes, useCreateRecipe, useDeleteRecipe, useLoadRecipe, useUpdateR
 import { useModbusDevices } from './queries/modbus';
 import { RecipeLoadStatus } from './components/RecipeLoadStatus';
 import { btnStyle } from './styles';
+import { toast } from './components/Toast';
 
 export function RecipeManager() {
   const { data: devices } = useModbusDevices();
@@ -68,6 +69,13 @@ export function RecipeManager() {
         setConfirmLoadId(null);
         if (data.command_ids && data.command_ids.length > 0) {
           setLoadCommandIds(data.command_ids);
+        }
+        if (data.refused && data.refused.length > 0) {
+          toast.error(
+            `Not sent (write policy): ${data.refused
+              .map((r) => `${r.register}: ${r.error}`)
+              .join('; ')}`,
+          );
         }
       },
     });

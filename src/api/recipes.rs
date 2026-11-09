@@ -1,11 +1,11 @@
 use axum::{
     Json,
-    extract::{Path, Query, State},
+    extract::{Extension, Path, Query, State},
     http::StatusCode,
 };
 use serde::Deserialize;
 
-use crate::api::{AppError, AppState};
+use crate::api::{AppError, AppState, AuthUser};
 use crate::models::{CreateRecipeRequest, Recipe};
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -178,6 +178,7 @@ pub async fn delete_recipe(
 )]
 pub async fn load_recipe(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
     Path(id): Path<i64>,
 ) -> Result<Json<serde_json::Value>, AppError> {
     let recipe = state
@@ -186,11 +187,23 @@ pub async fn load_recipe(
         .await?
         .ok_or_else(|| AppError(anyhow::anyhow!("Recipe not found")))?;
 
-    let command_ids = crate::recipe::load_recipe_to_plc(&recipe, &state.storage).await?;
+    let load =
+        crate::recipe::load_recipe_to_plc(&recipe, &state.storage, &state.cache, &user.username)
+            .await?;
+    let refused: Vec<_> = load
+        .refused
+        .iter()
+        .map(|(register, error)| serde_json::json!({"register": register, "error": error}))
+        .collect();
 
     Ok(Json(serde_json::json!({
-        "ok": true,
-        "command_ids": command_ids,
-        "message": format!("Recipe load queued: {} commands", command_ids.len()),
+        "ok": refused.is_empty(),
+        "command_ids": load.command_ids,
+        "refused": refused,
+        "message": format!(
+            "Recipe load queued: {} commands, {} refused by the write policy",
+            load.command_ids.len(),
+            refused.len()
+        ),
     })))
 }
