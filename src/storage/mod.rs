@@ -237,7 +237,12 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap_or_else(|e| { tracing::error!("Storage mutex poisoned: {e}"); e.into_inner() });
             let tx = conn.unchecked_transaction().context("Begin tx failed")?;
-            for (device_id, timestamp, metric, value) in &records {
+            // A failed read is cached as NaN. It is a gap in the history, not a
+            // sample: storing it would hit the NOT NULL column and roll back the
+            // whole batch, every device's samples with it.
+            for (device_id, timestamp, metric, value) in
+                records.iter().filter(|(_, _, _, v)| !v.is_nan())
+            {
                 tx.execute(
                     "INSERT INTO telemetry (device_id, timestamp, metric, value) VALUES (?1, ?2, ?3, ?4)",
                     rusqlite::params![device_id, timestamp, metric, value],
