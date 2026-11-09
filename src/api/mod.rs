@@ -667,12 +667,6 @@ pub fn create_router(state: AppState) -> Router {
     // Public routes (no auth required)
     let public = Router::new()
         .route("/api/v1/health", get(system::get_health))
-        // Prometheus metrics endpoint (no auth, tier-gated internally)
-        .route("/metrics", get(integration::prometheus_metrics))
-        .route(
-            "/api/v1/networks",
-            get(crate::network::handle_list_networks),
-        )
         .route("/api/v1/health/detailed", get(crate::health::health_check))
         .route(
             "/api/v1/auth/login",
@@ -701,6 +695,14 @@ pub fn create_router(state: AppState) -> Router {
 
     // Protected routes (any authenticated user — read-only for non-admins)
     let protected = Router::new()
+        // Prometheus metrics carry every live tag value, so a scraper signs in
+        // with an API key (`X-API-Key` header or `?api_key=`).
+        .route("/metrics", get(integration::prometheus_metrics))
+        // The server's network interfaces and addresses.
+        .route(
+            "/api/v1/networks",
+            get(crate::network::handle_list_networks),
+        )
         .route("/api/v1/live", get(system::get_live))
         // Live data as server-sent events: the fallback for networks that block WebSocket
         .route("/api/v1/stream", get(sse::sse_handler))
@@ -715,14 +717,6 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/widgets/{id}/asset/{filename}",
             get(crate::widget_sdk::widget_api::get_widget_asset),
-        )
-        .route(
-            "/api/v1/widgets/{id}/install",
-            post(crate::widget_sdk::widget_api::install_widget),
-        )
-        .route(
-            "/api/v1/widgets/{id}/uninstall",
-            delete(crate::widget_sdk::widget_api::delete_widget),
         )
         .route("/api/v1/system", get(system::get_system))
         .route("/api/v1/system/memory", get(compression::get_system_memory))
@@ -1332,6 +1326,16 @@ pub fn create_router(state: AppState) -> Router {
     // Strictly admin-only routes (users, roles, API keys, security, compliance)
     // Demo users CANNOT access these.
     let admin_protected = Router::new()
+        // Widgets run their JavaScript in every operator's session, so only an
+        // admin may install or remove one.
+        .route(
+            "/api/v1/widgets/{id}/install",
+            post(crate::widget_sdk::widget_api::install_widget),
+        )
+        .route(
+            "/api/v1/widgets/{id}/uninstall",
+            delete(crate::widget_sdk::widget_api::delete_widget),
+        )
         .route("/api/v1/seed", post(auth::seed))
         .route("/api/v1/project/export", get(project::export_project))
         .route(
