@@ -40,6 +40,12 @@ impl CommandQueue {
     }
 }
 
+/// True once a command due at `due_at` (Unix seconds) has waited longer than
+/// the expiry window.
+fn is_expired(due_at: i64, now: i64) -> bool {
+    due_at + COMMAND_EXPIRY_SECS < now
+}
+
 impl CommandQueue {
     /// Attach a WsManager so that command status changes are broadcast over WebSocket.
     pub fn with_ws_manager(mut self, ws_manager: Arc<WsManager>) -> Self {
@@ -86,13 +92,21 @@ impl CommandQueue {
             );
 
             // -- Expiry check --
-            if cmd.status == "queued" && (cmd.created_at + COMMAND_EXPIRY_SECS) < now {
+            // A command that has not reached the device within the expiry window
+            // is dropped, whether it is still pending (the device was offline)
+            // or queued for a retry: a setpoint must never land hours late. A
+            // scheduled command's window starts at its scheduled time.
+            let due_at = cmd
+                .scheduled_at
+                .unwrap_or(cmd.created_at)
+                .max(cmd.created_at);
+            if matches!(cmd.status.as_str(), "pending" | "queued") && is_expired(due_at, now) {
                 self.publish_status_event(&cmd.id, "expired", None);
                 self.storage
                     .update_command_status(
                         &cmd.id,
                         "expired",
-                        Some("Command expired (30 min timeout)"),
+                        Some("Command expired: not delivered within 30 minutes"),
                         "system",
                         Some("auto-expired"),
                     )
@@ -233,5 +247,19 @@ impl CommandQueue {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands_expire_after_the_window_from_when_they_were_due() {
+        let now = 1_000_000;
+        assert!(!is_expired(now - COMMAND_EXPIRY_SECS, now));
+        assert!(is_expired(now - COMMAND_EXPIRY_SECS - 1, now));
+        // A command scheduled in the future is not expired.
+        assert!(!is_expired(now + 60, now));
     }
 }
