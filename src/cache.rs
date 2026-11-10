@@ -376,22 +376,6 @@ impl DeviceCache {
         self.intervals.read().await.get(device_id).copied()
     }
 
-    /// Update a single metric value within an existing device snapshot and broadcast the change.
-    /// If the device or metric doesn't exist yet, this is a no-op.
-    pub async fn set_metric_value(&self, device_id: &str, metric_key: &str, value: f64) {
-        let snapshot = {
-            let mut devices = self.devices.write().await;
-            let Some(entry) = devices.get_mut(device_id) else {
-                return;
-            };
-            entry.metrics.insert(metric_key.to_string(), value);
-            entry.timestamp = crate::timeutil::now_secs();
-            entry.clone()
-        };
-        let _ = self.snapshot_tx.send(snapshot);
-        let _ = self.trigger.send(true);
-    }
-
     /// Drop a device from the cache entirely. Called when a device is deleted:
     /// without this the device keeps appearing as online in `/api/v1/live`
     /// until process restart.
