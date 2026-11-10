@@ -89,6 +89,8 @@ hmac = "=0.12.1"
 sha2 = "=0.10.9"
 hex = "=0.4.3"
 base64 = "=0.22.1"
+# HKDF + AES-256-GCM for secrets stored in SQLite; already in the tree via rustls.
+ring = "=0.17.14"
 argon2 = "=0.5.3"
 password-hash = "=0.5.0"
 rand = "=0.9.4"

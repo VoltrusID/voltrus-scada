@@ -341,37 +341,6 @@ pub async fn auth_me(State(state): State<AppState>, jar: CookieJar) -> impl Into
 }
 
 #[utoipa::path(
-    get,
-    path = "/api/v1/auth/csrf-token",
-    responses(
-        (status = 200, body = serde_json::Value),
-        (status = 401),
-    ),
-    tag = "Auth",
-)]
-pub async fn get_csrf_token(State(state): State<AppState>, jar: CookieJar) -> impl IntoResponse {
-    let token = jar.get("voltrus_token").map(|c| c.value()).unwrap_or("");
-    if token.is_empty() {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "unauthorized"})),
-        )
-            .into_response();
-    }
-    match verify_token(token, &state.auth_secret) {
-        Some(_claims) => {
-            let csrf = crate::security::generate_csrf_token();
-            Json(json!({"csrf_token": csrf})).into_response()
-        }
-        None => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({"error": "unauthorized"})),
-        )
-            .into_response(),
-    }
-}
-
-#[utoipa::path(
     post,
     path = "/api/v1/auth/refresh",
     responses(
@@ -532,5 +501,8 @@ pub async fn change_password(
 
     let hash = hash_password(&body.new_password);
     state.storage.update_user_password(user.id, &hash).await?;
+    if user.username == "admin" {
+        crate::storage::remove_initial_admin_password(state.storage.db_path());
+    }
     Ok(Json(json!({"ok": true})).into_response())
 }

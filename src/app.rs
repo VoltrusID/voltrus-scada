@@ -685,6 +685,12 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         }
     };
 
+    match crate::ai_copilot::key_store::migrate_plaintext(&storage, &auth_secret).await {
+        Ok(true) => tracing::info!("Encrypted the stored AI copilot API key"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("Could not encrypt the stored AI copilot API key: {e}"),
+    }
+
     let login_rate_limiter = crate::security::LoginRateLimiter::new();
     let global_rate_limiter = crate::security::GlobalRateLimiter::new();
     let intrusion_detector = crate::security::IntrusionDetector::new();
@@ -703,27 +709,8 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         });
     }
 
-    let (audit_logger, mut audit_rx) = crate::security::AuditLogger::new();
-
-    // Spawn audit log consumer
-    {
-        let storage = storage.clone();
-        tokio::spawn(async move {
-            while let Some(event) = audit_rx.recv().await {
-                if let Err(e) = storage
-                    .log_audit_event(
-                        &event.action,
-                        &event.username,
-                        &event.resource,
-                        event.details.as_deref(),
-                    )
-                    .await
-                {
-                    tracing::warn!("Failed to write audit log: {}", e);
-                }
-            }
-        });
-    }
+    let (audit_logger, audit_rx) = crate::security::AuditLogger::new();
+    crate::security::AuditLogger::spawn_writer(storage.clone(), audit_rx);
 
     // Initialize MQTT broker
     #[cfg(feature = "mqtt-broker")]
@@ -842,6 +829,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         login_rate_limiter,
         global_rate_limiter,
         audit_logger,
+        mcp_guard: Arc::new(crate::security::McpGuard::new(app_config.mcp.clone())),
         intrusion_detector,
         license_status,
         ext: ext.clone(),

@@ -478,6 +478,7 @@ pub async fn get_write_policy(
 )]
 pub async fn update_write_policy(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
     Path(data_source_id): Path<i64>,
     Json(body): Json<WritePolicyUpdate>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -485,5 +486,12 @@ pub async fn update_write_policy(
         .storage
         .update_write_policy(data_source_id, &body)
         .await?;
+    // The write policy is the guard on setpoint writes; who loosened it matters.
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: "update_write_policy".to_string(),
+        username: user.username.clone(),
+        resource: format!("data_source:{data_source_id}"),
+        details: serde_json::to_string(&body).ok(),
+    });
     Ok(Json(json!({"ok": true})))
 }

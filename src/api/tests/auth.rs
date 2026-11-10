@@ -70,6 +70,7 @@ async fn test_login_with_seeded_user() {
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
         global_rate_limiter: crate::security::GlobalRateLimiter::new(),
         audit_logger: crate::security::AuditLogger::new().0,
+        mcp_guard: Default::default(),
         intrusion_detector: crate::security::IntrusionDetector::new(),
         license_status: std::sync::Arc::new(std::sync::RwLock::new(
             crate::license::LicenseStatus::Community,
@@ -146,6 +147,7 @@ async fn test_login_invalid_credentials() {
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
         global_rate_limiter: crate::security::GlobalRateLimiter::new(),
         audit_logger: crate::security::AuditLogger::new().0,
+        mcp_guard: Default::default(),
         intrusion_detector: crate::security::IntrusionDetector::new(),
         license_status: std::sync::Arc::new(std::sync::RwLock::new(
             crate::license::LicenseStatus::Community,
@@ -226,6 +228,7 @@ async fn test_full_auth_flow() {
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
         global_rate_limiter: crate::security::GlobalRateLimiter::new(),
         audit_logger: crate::security::AuditLogger::new().0,
+        mcp_guard: Default::default(),
         intrusion_detector: crate::security::IntrusionDetector::new(),
         license_status: std::sync::Arc::new(std::sync::RwLock::new(
             crate::license::LicenseStatus::Community,

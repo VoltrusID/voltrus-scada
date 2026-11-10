@@ -31,6 +31,7 @@ async fn test_api_key_crud() {
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
         global_rate_limiter: crate::security::GlobalRateLimiter::new(),
         audit_logger: crate::security::AuditLogger::new().0,
+        mcp_guard: Default::default(),
         intrusion_detector: crate::security::IntrusionDetector::new(),
         license_status: std::sync::Arc::new(std::sync::RwLock::new(
             crate::license::LicenseStatus::Community,
@@ -128,12 +129,30 @@ async fn test_api_key_crud() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Use API key via query parameter
+    // A key in the URL ends up in proxy logs: refused on a normal route, with
+    // a pointer to the header...
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .uri(&format!("/api/v1/system?api_key={}", plain_key))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("X-API-Key"));
+
+    // ...but still accepted where clients cannot set headers (Prometheus, EventSource).
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&format!("/metrics?api_key={}", plain_key))
                 .body(Body::empty())
                 .unwrap(),
         )

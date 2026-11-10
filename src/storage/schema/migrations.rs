@@ -511,6 +511,11 @@ pub(super) fn run_migrations(conn: &Connection) {
             Err(e) => tracing::error!("Failed to repair {table} timestamps: {e}"),
         }
     }
+
+    // Migration: hash chain on the audit log (tamper evidence). Older rows keep
+    // NULL and are reported as pre-chain by verify_audit_chain.
+    let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT");
+    let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN hash TEXT");
 }
 
 /// Any second-based timestamp before the year 5138 is below this; a rollup

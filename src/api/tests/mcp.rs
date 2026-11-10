@@ -50,6 +50,7 @@ const ADMIN_TOOLS: &[&str] = &[
 /// Admin-only tools that change state (the others only read).
 const ADMIN_WRITE_TOOLS: &[&str] = &["import_catalog_template", "project_apply_import"];
 
+#[derive(Clone, Copy)]
 enum Auth<'a> {
     None,
     XApiKey(&'a str),
@@ -100,8 +101,9 @@ async fn rpc(app: &Router, auth: Auth<'_>, method: &str, params: Value) -> (Stat
     (status, json)
 }
 
-/// Call a tool and return the JSON-RPC response.
-async fn call(app: &Router, auth: Auth<'_>, tool: &str, args: Value) -> Value {
+/// Call a tool once and return the JSON-RPC response (a proposal, for the
+/// tools that ask for confirmation).
+async fn call_once(app: &Router, auth: Auth<'_>, tool: &str, args: Value) -> Value {
     let (status, resp) = rpc(
         app,
         auth,
@@ -110,6 +112,20 @@ async fn call(app: &Router, auth: Auth<'_>, tool: &str, args: Value) -> Value {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{resp}");
+    resp
+}
+
+/// Call a tool and return the JSON-RPC response, confirming a proposal as a
+/// user would (the confirmation flow has its own tests).
+async fn call(app: &Router, auth: Auth<'_>, tool: &str, args: Value) -> Value {
+    let resp = call_once(app, auth, tool, args).await;
+    if resp["result"]["structuredContent"]["status"] == "confirmation_required" {
+        let token = resp["result"]["structuredContent"]["confirmation_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        return call_once(app, auth, "confirm_action", json!({"token": token})).await;
+    }
     resp
 }
 
@@ -164,7 +180,13 @@ impl Fixture {
 }
 
 async fn fixture() -> Fixture {
-    let state = seeded_admin_app_state().await;
+    let mut state = seeded_admin_app_state().await;
+    // The functional tests make many calls; rate limits have their own test.
+    state.mcp_guard = Arc::new(crate::security::McpGuard::new(crate::models::McpConfig {
+        calls_per_minute: 0,
+        writes_per_minute: 0,
+        ..Default::default()
+    }));
     let storage = state.storage.clone();
     let app = create_router(state);
     let cookie = admin_cookie(&app).await;
@@ -377,9 +399,10 @@ async fn mcp_tools_list_has_every_tool_with_a_schema() {
             "missing tool {expected}: {names:?}"
         );
     }
+    assert!(names.contains(&"confirm_action"), "{names:?}");
     assert_eq!(
         names.len(),
-        READ_TOOLS.len() + WRITE_TOOLS.len() + ADMIN_TOOLS.len(),
+        READ_TOOLS.len() + WRITE_TOOLS.len() + ADMIN_TOOLS.len() + 1,
         "{names:?}"
     );
     // Users, roles, API keys, licence and security have no tool; the admin tools
@@ -395,7 +418,9 @@ async fn mcp_tools_list_has_every_tool_with_a_schema() {
         assert!(tool["inputSchema"]["properties"].is_object(), "{name}");
         assert_eq!(tool["inputSchema"]["additionalProperties"], false, "{name}");
         assert!(tool["description"].as_str().unwrap().len() > 40, "{name}");
-        let writes = WRITE_TOOLS.contains(&name) || ADMIN_WRITE_TOOLS.contains(&name);
+        let writes = WRITE_TOOLS.contains(&name)
+            || ADMIN_WRITE_TOOLS.contains(&name)
+            || name == "confirm_action";
         assert_eq!(tool["annotations"]["readOnlyHint"], !writes, "{name}");
     }
     // required[] names only declared properties.
@@ -1772,4 +1797,347 @@ async fn mcp_admin_tool_calls_are_audit_logged() {
     }
     // A dry run is not an import.
     assert!(!events.iter().any(|e| e.action == "project_import"));
+}
+
+// ── Guardrails: read-only mode, confirmation, rate limits ──
+
+async fn guarded_fixture(config: crate::models::McpConfig) -> Fixture {
+    let mut state = seeded_admin_app_state().await;
+    state.mcp_guard = Arc::new(crate::security::McpGuard::new(config));
+    let storage = state.storage.clone();
+    let app = create_router(state);
+    let cookie = admin_cookie(&app).await;
+    let (_, api_key) = make_key(&app, &cookie, "api").await;
+    let (_, integration_key) = make_key(&app, &cookie, "integration").await;
+    Fixture {
+        app,
+        storage,
+        api_key,
+        integration_key,
+        cookie,
+    }
+}
+
+fn unlimited() -> crate::models::McpConfig {
+    crate::models::McpConfig {
+        calls_per_minute: 0,
+        writes_per_minute: 0,
+        ..Default::default()
+    }
+}
+
+async fn tool_names(f: &Fixture) -> Vec<String> {
+    let (_, resp) = rpc(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "tools/list",
+        json!({}),
+    )
+    .await;
+    resp["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn set_mcp_read_only(f: &Fixture, read_only: bool) -> StatusCode {
+    send_request(
+        &f.app,
+        "PUT",
+        "/api/v1/settings/mcp",
+        None,
+        Some(&f.admin_cookie()),
+        Some(json!({"read_only": read_only})),
+    )
+    .await
+    .0
+}
+
+#[tokio::test]
+async fn mcp_read_only_mode_hides_and_refuses_writes() {
+    let f = guarded_fixture(crate::models::McpConfig {
+        read_only: true,
+        ..unlimited()
+    })
+    .await;
+    let names = tool_names(&f).await;
+    for w in WRITE_TOOLS.iter().chain(ADMIN_WRITE_TOOLS) {
+        assert!(
+            !names.iter().any(|n| n == w),
+            "{w} offered in read-only mode"
+        );
+    }
+    assert!(!names.iter().any(|n| n == "confirm_action"));
+    assert!(names.iter().any(|n| n == "list_tags"));
+
+    for (tool, args) in [
+        (
+            "create_tag",
+            json!({"key": "k", "source_type": "modbus", "device_id": "d"}),
+        ),
+        ("write_tag", json!({"tag_id": 1, "value": 1})),
+    ] {
+        let (_, resp) = rpc(
+            &f.app,
+            Auth::Bearer(&f.integration_key),
+            "tools/call",
+            json!({"name": tool, "arguments": args}),
+        )
+        .await;
+        assert_eq!(resp["error"]["code"], -32003, "{tool}: {resp}");
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("read-only")
+        );
+    }
+    ok(&f.app, Auth::Bearer(&f.api_key), "list_tags", json!({})).await;
+
+    // The config wins over the admin switch.
+    assert_eq!(set_mcp_read_only(&f, false).await, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn mcp_read_only_switch_is_admin_runtime_setting() {
+    let f = guarded_fixture(unlimited()).await;
+    let create = json!({"key": "k1", "source_type": "modbus", "device_id": "d"});
+    assert_eq!(set_mcp_read_only(&f, true).await, StatusCode::OK);
+    let (_, resp) = rpc(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "tools/call",
+        json!({"name": "create_tag", "arguments": create.clone()}),
+    )
+    .await;
+    assert_eq!(resp["error"]["code"], -32003, "{resp}");
+    assert!(!tool_names(&f).await.iter().any(|n| n == "create_tag"));
+
+    assert_eq!(set_mcp_read_only(&f, false).await, StatusCode::OK);
+    ok(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "create_tag",
+        create,
+    )
+    .await;
+
+    // Only an admin may flip it.
+    let (status, _) = send_request(
+        &f.app,
+        "PUT",
+        "/api/v1/settings/mcp",
+        Some(&f.integration_key),
+        None,
+        Some(json!({"read_only": false})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn mcp_write_tag_needs_confirmation() {
+    let f = guarded_fixture(unlimited()).await;
+    let key = &f.integration_key;
+    let created = ok(
+        &f.app,
+        Auth::Bearer(key),
+        "create_tag",
+        json!({"key": "valve", "name": "Valve 1", "source_type": "modbus", "device_id": "plc_1"}),
+    )
+    .await;
+    let id = created["tag"]["id"].as_i64().unwrap();
+    let (status, _) = send_request(
+        &f.app,
+        "PATCH",
+        &format!("/api/v1/data-sources/{id}/write-policy"),
+        None,
+        Some(&f.admin_cookie()),
+        Some(json!({"writable": true, "write_min": 0, "write_max": 100})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let args = json!({"tag_id": id, "value": 42});
+    let proposal = call_once(&f.app, Auth::Bearer(key), "write_tag", args.clone()).await;
+    let content = &proposal["result"]["structuredContent"];
+    assert_eq!(content["status"], "confirmation_required", "{proposal}");
+    assert_eq!(proposal["result"]["isError"], false);
+    let summary = content["summary"].as_str().unwrap();
+    assert!(
+        summary.contains("value = 42") && summary.contains("Valve 1"),
+        "{summary}"
+    );
+    let token = content["confirmation_token"].as_str().unwrap().to_string();
+    let commands = f
+        .storage
+        .list_commands(&crate::models::CommandQuery::default())
+        .await
+        .unwrap();
+    assert!(commands.is_empty(), "a proposal changes nothing");
+
+    // Another credential cannot use the token.
+    let (_, other_key) = make_key(&f.app, &f.cookie, "integration").await;
+    let e = tool_err(
+        &f.app,
+        Auth::Bearer(&other_key),
+        "confirm_action",
+        json!({"token": token}),
+    )
+    .await;
+    assert!(e.contains("another credential"), "{e}");
+
+    // The owner confirms; the token is then spent.
+    let done = ok(
+        &f.app,
+        Auth::Bearer(key),
+        "confirm_action",
+        json!({"token": token}),
+    )
+    .await;
+    assert!(
+        done["command_id"].is_string() || done.to_string().contains("pending"),
+        "{done}"
+    );
+    let e = tool_err(
+        &f.app,
+        Auth::Bearer(key),
+        "confirm_action",
+        json!({"token": token}),
+    )
+    .await;
+    assert!(e.contains("already used"), "{e}");
+
+    // Repeating the call with the token also works, but only for the same call.
+    let proposal = call_once(
+        &f.app,
+        Auth::Bearer(key),
+        "write_tag",
+        json!({"tag_id": id, "value": 50}),
+    )
+    .await;
+    let token = proposal["result"]["structuredContent"]["confirmation_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let e = tool_err(
+        &f.app,
+        Auth::Bearer(key),
+        "write_tag",
+        json!({"tag_id": id, "value": 99, "confirmation_token": token}),
+    )
+    .await;
+    assert!(e.contains("different call"), "{e}");
+    let proposal = call_once(
+        &f.app,
+        Auth::Bearer(key),
+        "write_tag",
+        json!({"tag_id": id, "value": 50}),
+    )
+    .await;
+    let token = proposal["result"]["structuredContent"]["confirmation_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(
+        &f.app,
+        Auth::Bearer(key),
+        "write_tag",
+        json!({"tag_id": id, "value": 50, "confirmation_token": token}),
+    )
+    .await;
+    let commands = f
+        .storage
+        .list_commands(&crate::models::CommandQuery::default())
+        .await
+        .unwrap();
+    assert_eq!(commands.len(), 2);
+
+    // Deletions ask too; creating does not (default mode).
+    let proposal = call_once(&f.app, Auth::Bearer(key), "delete_tag", json!({"id": id})).await;
+    assert_eq!(
+        proposal["result"]["structuredContent"]["status"],
+        "confirmation_required"
+    );
+    assert!(f.storage.get_data_source_by_id(id).await.unwrap().is_some());
+
+    // The schema advertises the token so strict clients may send it.
+    let (_, list) = rpc(&f.app, Auth::Bearer(key), "tools/list", json!({})).await;
+    let write_tag = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "write_tag")
+        .unwrap()
+        .clone();
+    assert!(write_tag["inputSchema"]["properties"]["confirmation_token"].is_object());
+    assert_eq!(write_tag["annotations"]["destructiveHint"], false);
+}
+
+#[tokio::test]
+async fn mcp_confirmation_can_be_switched_off() {
+    let f = guarded_fixture(crate::models::McpConfig {
+        require_confirmation: crate::models::ConfirmationMode::Off,
+        ..unlimited()
+    })
+    .await;
+    let created = ok(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "create_tag",
+        json!({"key": "k", "source_type": "modbus", "device_id": "d"}),
+    )
+    .await;
+    let id = created["tag"]["id"].as_i64().unwrap();
+    let resp = call_once(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "delete_tag",
+        json!({"id": id}),
+    )
+    .await;
+    assert_ne!(
+        resp["result"]["structuredContent"]["status"],
+        "confirmation_required"
+    );
+    assert!(f.storage.get_data_source_by_id(id).await.unwrap().is_none());
+    assert!(!tool_names(&f).await.iter().any(|n| n == "confirm_action"));
+}
+
+#[tokio::test]
+async fn mcp_calls_are_rate_limited_per_credential() {
+    let f = guarded_fixture(crate::models::McpConfig {
+        calls_per_minute: 4,
+        writes_per_minute: 2,
+        require_confirmation: crate::models::ConfirmationMode::Off,
+        ..Default::default()
+    })
+    .await;
+    let key = &f.integration_key;
+    for n in 0..2 {
+        ok(
+            &f.app,
+            Auth::Bearer(key),
+            "create_tag",
+            json!({"key": format!("k{n}"), "source_type": "modbus", "device_id": "d"}),
+        )
+        .await;
+    }
+    let e = tool_err(
+        &f.app,
+        Auth::Bearer(key),
+        "create_tag",
+        json!({"key": "k3", "source_type": "modbus", "device_id": "d"}),
+    )
+    .await;
+    assert!(e.contains("rate limit") && e.contains("retry in"), "{e}");
+    // Reads have the larger budget: two left of four.
+    ok(&f.app, Auth::Bearer(key), "list_tags", json!({})).await;
+    ok(&f.app, Auth::Bearer(key), "list_tags", json!({})).await;
+    let e = tool_err(&f.app, Auth::Bearer(key), "list_tags", json!({})).await;
+    assert!(e.contains("rate limit"), "{e}");
+    // Another key has its own budget.
+    ok(&f.app, Auth::Bearer(&f.api_key), "list_tags", json!({})).await;
 }

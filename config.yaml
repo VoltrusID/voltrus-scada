@@ -145,3 +145,11 @@ devices:
 # device_templates:
 #   catalog_url: "https://raw.githubusercontent.com/VoltrusID/voltrus-device-templates/main/index.json"
 
+
+# MCP endpoint guardrails (optional; see docs/mcp.md)
+# mcp:
+#   read_only: false                  # true hides and refuses every write tool
+#   require_confirmation: true        # true = write_tag + destructive tools, "all", or false
+#   confirmation_ttl_secs: 300
+#   calls_per_minute: 60              # per API key / user; 0 = unlimited
+#   writes_per_minute: 10

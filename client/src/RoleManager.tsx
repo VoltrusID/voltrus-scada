@@ -64,6 +64,10 @@ export function RoleManager({ onClose, embedded }: { onClose: () => void; embedd
 
         {/* Content */}
         <div style={{ flex: 1, overflow: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <p role="note" style={{ fontSize: 13, color: 'var(--muted)', margin: 0 }}>
+            Custom roles are labels only and are not enforced. What a person can do is set by
+            their built-in role (admin, demo, operator, user, viewer) in User Management.
+          </p>
           {/* Section header */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0 }}>
             <h3 style={{

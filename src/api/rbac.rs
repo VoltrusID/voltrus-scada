@@ -7,6 +7,10 @@ use serde_json::json;
 use super::{AppError, AppState};
 use crate::models::*;
 
+/// Said in every answer that creates, changes or assigns a custom role, so
+/// nobody mistakes a catalogue entry for an access rule.
+const LABEL_NOTE: &str = "Custom roles are labels only: they are not enforced. Access is decided by the user's built-in role (admin, demo, operator, user, viewer) and by API key role and scopes.";
+
 // ── Permission check helper ──
 
 /// Check if an auth user has a specific permission.
@@ -103,7 +107,7 @@ pub async fn create_role(
         details: Some(format!("id={}, permissions={}", id, body.permissions)),
     });
 
-    Ok(Json(json!({"ok": true, "id": id})).into_response())
+    Ok(Json(json!({"ok": true, "id": id, "enforced": false, "note": LABEL_NOTE})).into_response())
 }
 
 // ── Update role ──
@@ -164,7 +168,7 @@ pub async fn update_role(
         details: None,
     });
 
-    Ok(Json(json!({"ok": true})).into_response())
+    Ok(Json(json!({"ok": true, "enforced": false, "note": LABEL_NOTE})).into_response())
 }
 
 // ── Delete role ──
@@ -265,7 +269,7 @@ pub async fn assign_user_role(
         details: Some(format!("role_id={}", body.role_id)),
     });
 
-    Ok(Json(json!({"ok": true})).into_response())
+    Ok(Json(json!({"ok": true, "enforced": false, "note": LABEL_NOTE})).into_response())
 }
 
 // ── Read a user's assigned role ──
