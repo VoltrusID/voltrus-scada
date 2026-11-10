@@ -8,6 +8,9 @@ pub mod objects;
 pub mod outstation;
 pub mod transport;
 
+#[cfg(test)]
+mod integration_tests;
+
 use std::collections::HashMap;
 use std::time::Duration;
 
