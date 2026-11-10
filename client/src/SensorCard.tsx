@@ -5,6 +5,7 @@ import { stColor } from './styles'
 import { parseConfig } from './styles'
 import { useSensorCurrentValue, useChartValues } from './store/dashboardStore'
 import { useRemoveSensorFromScreen } from './queries'
+import { qualityFamily, qualityLabel, qualityMarker } from './quality'
 
 const useIsSmallScreen = () => {
   const [small, setSmall] = useState(window.innerWidth <= 480)
@@ -51,8 +52,16 @@ export const SensorCard = React.memo(function SensorCard({
   const hideStatus = ct === 'image' || ct === 'text';
   const isCompact = isSmall && !hideStatus;
 
-  const formattedValue = st === 'offline' ? 'OFFLINE' : cv ? cv.value.toFixed(s.decimals) : s.base_val.toFixed(s.decimals);
-  const cardAriaLabel = `${s.name}: ${formattedValue} ${s.unit || ''}`;
+  // No reading yet shows a dash, never a stand-in number.
+  const formattedValue = st === 'offline' ? 'OFFLINE' : cv && Number.isFinite(cv.value) ? cv.value.toFixed(s.decimals) : '—';
+  // A value that is not good stays visible for context but greyed, with a marker.
+  const qFamily = qualityFamily(cv?.quality);
+  const qLabel = qualityLabel(cv?.quality);
+  const cardAriaLabel = `${s.name}: ${formattedValue} ${s.unit || ''}${qLabel ? ` (${qLabel})` : ''}`;
+  const valueColor = qFamily !== 'good' ? 'var(--muted)' : st === 'normal' ? s.color : stColor(st);
+  const qualityMark = qFamily !== 'good' && st !== 'offline'
+    ? <span title={qLabel} aria-hidden="true" style={{ fontSize: '0.5em', marginLeft: 4, verticalAlign: 'super', color: qFamily === 'bad' ? 'var(--crit)' : 'var(--warn)' }}>{qualityMarker(cv?.quality)}</span>
+    : null;
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -99,7 +108,7 @@ export const SensorCard = React.memo(function SensorCard({
             background: st === 'critical' ? 'rgba(239,68,68,.15)' : st === 'warning' ? 'rgba(234,179,8,.15)' : st === 'offline' ? 'rgba(100,100,100,.15)' : 'rgba(34,197,94,.15)', color: stColor(st) }}>{st}</div>
         </div>
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 28, fontWeight: 700, lineHeight: 1.2 }}>
-          <span style={{ color: st === 'normal' ? s.color : stColor(st) }}>{st === 'offline' ? 'OFFLINE' : cv ? cv.value.toFixed(s.decimals) : s.base_val.toFixed(s.decimals)}</span>
+          <span title={qLabel || undefined} style={{ color: valueColor, opacity: qFamily === 'good' ? 1 : 0.7 }}>{formattedValue}</span>{qualityMark}
           <span style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 400, marginLeft: 4 }}>{s.unit}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 10, color: 'var(--muted)' }}>
@@ -186,7 +195,7 @@ export const SensorCard = React.memo(function SensorCard({
       )}
       {!hideStatus && (
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 24, fontWeight: 700, padding: '0 14px', lineHeight: 1.3 }}>
-          <span style={{ color: st === 'normal' ? s.color : stColor(st) }}>{st === 'offline' ? 'OFFLINE' : cv ? cv.value.toFixed(s.decimals) : s.base_val.toFixed(s.decimals)}</span>
+          <span title={qLabel || undefined} style={{ color: valueColor, opacity: qFamily === 'good' ? 1 : 0.7 }}>{formattedValue}</span>{qualityMark}
           <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 500, marginLeft: 4 }}>{s.unit}</span>
         </div>
       )}

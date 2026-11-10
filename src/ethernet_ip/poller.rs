@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 
 use crate::cache::DeviceCache;
 use crate::models::{DeviceStatus, WriteResult};
+use crate::quality::Quality;
 
 use super::client::EthernetIpClient;
 use super::types::*;
@@ -72,25 +73,53 @@ async fn try_connect_and_poll(config: &EnipDeviceRuntimeConfig, cache: &DeviceCa
 
     loop {
         let mut metrics = HashMap::new();
+        let mut quality = HashMap::new();
+        let mut failures = 0;
 
         for tag in &config.tags {
-            match client.read_tag(&tag.tag_name).await {
-                Ok(value) => {
-                    if let Some(fv) = value.to_f64() {
-                        metrics.insert(tag.name.clone(), fv);
-                    }
-                }
-                Err(e) => {
-                    tracing::warn!("EtherNet/IP tag read '{}' failed: {}", tag.tag_name, e);
-                }
+            let result = client.read_tag(&tag.tag_name).await;
+            if let Err(e) = &result {
+                tracing::warn!("EtherNet/IP tag read '{}' failed: {}", tag.tag_name, e);
+                failures += 1;
             }
+            record_read(&mut metrics, &mut quality, &tag.name, result);
+        }
+
+        // Every tag failing is the connection, not the tags: reconnect, which
+        // marks the device offline meanwhile.
+        if failures > 0 && failures == config.tags.len() {
+            anyhow::bail!("every tag read failed");
         }
 
         if !metrics.is_empty() {
-            cache.update(&config.id, metrics, false).await;
+            cache
+                .update_with_quality(&config.id, metrics, quality, false)
+                .await;
         }
 
         tokio::time::sleep(Duration::from_millis(config.interval_ms)).await;
+    }
+}
+
+/// Record one tag read. A failed read is NaN and bad rather than missing, so
+/// the tag does not vanish from the device; a value that is not a number
+/// (a string, a structure) is left out as before.
+fn record_read(
+    metrics: &mut HashMap<String, f64>,
+    quality: &mut HashMap<String, Quality>,
+    name: &str,
+    result: Result<CipValue>,
+) {
+    match result {
+        Ok(value) => {
+            if let Some(v) = value.to_f64() {
+                metrics.insert(name.to_string(), v);
+            }
+        }
+        Err(_) => {
+            metrics.insert(name.to_string(), f64::NAN);
+            quality.insert(name.to_string(), Quality::BadDeviceError);
+        }
     }
 }
 
@@ -213,4 +242,26 @@ pub fn validate_tag_name(name: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::*;
+
+    #[test]
+    fn a_failed_tag_read_is_nan_and_bad() {
+        let mut metrics = HashMap::new();
+        let mut quality = HashMap::new();
+        record_read(&mut metrics, &mut quality, "ok", Ok(CipValue::Dint(4)));
+        record_read(
+            &mut metrics,
+            &mut quality,
+            "broken",
+            Err(anyhow::anyhow!("path destination unknown")),
+        );
+        assert_eq!(metrics["ok"], 4.0);
+        assert!(!quality.contains_key("ok"));
+        assert!(metrics["broken"].is_nan());
+        assert_eq!(quality["broken"], Quality::BadDeviceError);
+    }
 }

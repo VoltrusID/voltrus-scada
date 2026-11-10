@@ -6,6 +6,7 @@ use tokio_modbus::prelude::*;
 
 use crate::cache::DeviceCache;
 use crate::models::*;
+use crate::quality::Quality;
 
 use super::batch::{ReadBatch, ReadKind, plan_batches, sort_registers};
 use super::pool::ModbusPool;
@@ -70,6 +71,7 @@ async fn try_poll(
             .context("Modbus connection failed")?;
 
         let mut metrics = HashMap::new();
+        let mut quality = HashMap::new();
 
         // Sort registers by area then address, then read each group of neighbours
         // in as few requests as the protocol limits allow.
@@ -89,9 +91,7 @@ async fn try_poll(
                         batch.start,
                         code
                     );
-                    for reg in group {
-                        metrics.insert(reg.name.clone(), f64::NAN);
-                    }
+                    mark_bad(&mut metrics, &mut quality, group, Quality::BadDeviceError);
                     continue;
                 }
                 Ok(Err(e)) => {
@@ -110,7 +110,12 @@ async fn try_poll(
                 let offset = (reg.protocol_address() - batch.start) as usize;
                 let count = batch.kind.width(reg) as usize;
                 if offset + count > response.len() {
-                    metrics.insert(reg.name.clone(), f64::NAN);
+                    mark_bad(
+                        &mut metrics,
+                        &mut quality,
+                        std::slice::from_ref(reg),
+                        Quality::BadDeviceError,
+                    );
                     continue;
                 }
                 let raw = match batch.kind {
@@ -126,11 +131,27 @@ async fn try_poll(
             }
         }
 
-        cache.update(&config.id, metrics, false).await;
+        cache
+            .update_with_quality(&config.id, metrics, quality, false)
+            .await;
         tracing::debug!("Device {} polled successfully", config.id);
 
         pool.return_connection(&config.id, ctx).await;
         tokio::time::sleep(std::time::Duration::from_millis(config.interval_ms)).await;
+    }
+}
+
+/// Record `regs` as unreadable: NaN, so history and old clients keep seeing
+/// a gap, and the reason as their quality.
+fn mark_bad(
+    metrics: &mut HashMap<String, f64>,
+    quality: &mut HashMap<String, Quality>,
+    regs: &[&RegisterConfig],
+    reason: Quality,
+) {
+    for reg in regs {
+        metrics.insert(reg.name.clone(), f64::NAN);
+        quality.insert(reg.name.clone(), reason);
     }
 }
 
@@ -166,4 +187,24 @@ async fn read_batch(ctx: &mut tokio_modbus::client::Context, batch: &ReadBatch) 
 
 fn bits_to_words(bits: Vec<bool>) -> Vec<u16> {
     bits.into_iter().map(u16::from).collect()
+}
+
+#[cfg(test)]
+mod quality_tests {
+    use super::*;
+
+    #[test]
+    fn an_exception_marks_the_whole_group_bad_with_nan() {
+        let regs: Vec<RegisterConfig> = ["a", "b"]
+            .iter()
+            .map(|n| serde_json::from_value(serde_json::json!({"name": n, "address": 0})).unwrap())
+            .collect();
+        let group: Vec<&RegisterConfig> = regs.iter().collect();
+        let mut metrics = HashMap::new();
+        let mut quality = HashMap::new();
+        mark_bad(&mut metrics, &mut quality, &group, Quality::BadDeviceError);
+        assert!(metrics["a"].is_nan() && metrics["b"].is_nan());
+        assert_eq!(quality["a"], Quality::BadDeviceError);
+        assert_eq!(quality["b"], Quality::BadDeviceError);
+    }
 }

@@ -7,12 +7,13 @@ use anyhow::{Context, Result};
 use opcua::client::{ClientBuilder, DataChangeCallback, IdentityToken, MonitoredItem};
 use opcua::types::{
     AttributeId, DataValue, MessageSecurityMode, MonitoringMode, MonitoringParameters, NodeId,
-    NumericRange, ReadValueId, TimestampsToReturn, UserTokenPolicy, Variant,
+    NumericRange, ReadValueId, StatusCode, TimestampsToReturn, UserTokenPolicy, Variant,
 };
 use tokio::sync::mpsc;
 
 use crate::cache::DeviceCache;
 use crate::models::*;
+use crate::quality::Quality;
 
 /// Main entry point for OPC-UA device polling.
 ///
@@ -231,7 +232,7 @@ fn create_data_change_callback(
     // Bounded channel: 1024 slots is generous for a single device.
     // If the consumer falls behind, the oldest updates are simply dropped
     // (the next update will overwrite the same metric anyway).
-    let (tx, mut rx) = mpsc::channel::<(String, f64)>(1024);
+    let (tx, mut rx) = mpsc::channel::<(String, f64, Quality)>(1024);
 
     // Single consumer task batches per-value updates into cache writes.
     {
@@ -240,11 +241,13 @@ fn create_data_change_callback(
         tokio::spawn(async move {
             // Accumulate metrics between drain cycles.
             let mut batch: HashMap<String, f64> = HashMap::new();
+            let mut quality: HashMap<String, Quality> = HashMap::new();
 
             loop {
                 // Block until at least one update arrives.
                 match rx.recv().await {
-                    Some((name, value)) => {
+                    Some((name, value, q)) => {
+                        quality.insert(name.clone(), q);
                         batch.insert(name, value);
                     }
                     None => break, // channel closed — subscription gone
@@ -253,12 +256,16 @@ fn create_data_change_callback(
                 // Drain everything that is already buffered so we can
                 // collapse multiple updates to the same tag into one
                 // cache write.
-                while let Ok((name, value)) = rx.try_recv() {
+                while let Ok((name, value, q)) = rx.try_recv() {
+                    quality.insert(name.clone(), q);
                     batch.insert(name, value);
                 }
 
                 let metrics = std::mem::take(&mut batch);
-                cache.update(&device_id, metrics, false).await;
+                let quality = std::mem::take(&mut quality);
+                // A subscription only reports changes: merge, so the tags
+                // that did not change keep their value.
+                cache.merge_with_quality(&device_id, metrics, quality).await;
             }
         });
     }
@@ -270,18 +277,64 @@ fn create_data_change_callback(
             .cloned()
             .unwrap_or_else(|| node_id_str.clone());
 
-        let Some(ref variant) = data_value.value else {
+        let Some((value, quality)) = reading_of(&data_value) else {
             return;
-        };
-
-        let value = match variant_to_f64(variant) {
-            Some(v) => v,
-            None => return,
         };
 
         // Non-blocking send; if the channel is full the update is dropped
         // (the next publish cycle will deliver a fresher value anyway).
-        let _ = tx.try_send((node_name, value));
+        let _ = tx.try_send((node_name, value, quality));
+    }
+}
+
+/// The value and quality a data change carries. A bad status yields NaN
+/// whatever value came with it (servers often repeat the last one); a value
+/// we cannot turn into a number is skipped unless the status already says bad.
+fn reading_of(data_value: &DataValue) -> Option<(f64, Quality)> {
+    let quality = data_value
+        .status
+        .map(status_quality)
+        .unwrap_or(Quality::Good);
+    if quality.is_bad() {
+        return Some((f64::NAN, quality));
+    }
+    let value = data_value.value.as_ref().and_then(variant_to_f64)?;
+    Some((value, quality))
+}
+
+/// Map an OPC UA status code to our quality, keeping the reasons we act on.
+fn status_quality(status: StatusCode) -> Quality {
+    if status.is_good() {
+        return Quality::Good;
+    }
+    if status.is_uncertain() {
+        return if status.sub_code() == StatusCode::UncertainLastUsableValue.sub_code() {
+            Quality::UncertainStale
+        } else {
+            Quality::Uncertain
+        };
+    }
+    let sub = status.sub_code();
+    let is = |code: StatusCode| sub == code.sub_code();
+    if is(StatusCode::BadCommunicationError)
+        || is(StatusCode::BadNoCommunication)
+        || is(StatusCode::BadTimeout)
+        || is(StatusCode::BadServerNotConnected)
+        || is(StatusCode::BadWaitingForInitialData)
+    {
+        Quality::BadCommFailure
+    } else if is(StatusCode::BadConfigurationError)
+        || is(StatusCode::BadNodeIdUnknown)
+        || is(StatusCode::BadNotConnected)
+    {
+        Quality::BadConfigError
+    } else if is(StatusCode::BadDeviceFailure)
+        || is(StatusCode::BadSensorFailure)
+        || is(StatusCode::BadOutOfService)
+    {
+        Quality::BadDeviceError
+    } else {
+        Quality::Bad
     }
 }
 
@@ -416,6 +469,66 @@ mod tests {
     #[test]
     fn test_variant_to_f64_empty_skipped() {
         assert_eq!(variant_to_f64(&Variant::Empty), None);
+    }
+
+    fn data_value(value: Option<Variant>, status: Option<StatusCode>) -> DataValue {
+        DataValue {
+            value,
+            status,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn status_codes_map_to_quality() {
+        assert_eq!(status_quality(StatusCode::Good), Quality::Good);
+        assert_eq!(status_quality(StatusCode::Uncertain), Quality::Uncertain);
+        assert_eq!(
+            status_quality(StatusCode::UncertainLastUsableValue),
+            Quality::UncertainStale
+        );
+        assert_eq!(
+            status_quality(StatusCode::BadCommunicationError),
+            Quality::BadCommFailure
+        );
+        assert_eq!(
+            status_quality(StatusCode::BadNodeIdUnknown),
+            Quality::BadConfigError
+        );
+        assert_eq!(
+            status_quality(StatusCode::BadSensorFailure),
+            Quality::BadDeviceError
+        );
+        assert_eq!(status_quality(StatusCode::BadUnexpectedError), Quality::Bad);
+    }
+
+    #[test]
+    fn a_bad_data_change_is_nan_whatever_value_it_carries() {
+        let (v, q) = reading_of(&data_value(
+            Some(Variant::Double(12.0)),
+            Some(StatusCode::BadSensorFailure),
+        ))
+        .unwrap();
+        assert!(v.is_nan());
+        assert_eq!(q, Quality::BadDeviceError);
+        // Bad with no value at all still reaches the cache.
+        assert!(reading_of(&data_value(None, Some(StatusCode::BadTimeout))).is_some());
+    }
+
+    #[test]
+    fn good_and_uncertain_data_changes_keep_their_value() {
+        assert_eq!(
+            reading_of(&data_value(Some(Variant::Int32(7)), None)),
+            Some((7.0, Quality::Good))
+        );
+        assert_eq!(
+            reading_of(&data_value(
+                Some(Variant::Float(1.5)),
+                Some(StatusCode::Uncertain)
+            )),
+            Some((1.5, Quality::Uncertain))
+        );
+        assert_eq!(reading_of(&data_value(None, None)), None);
     }
 
     #[test]

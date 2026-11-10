@@ -331,3 +331,90 @@ fn test_encode_value_bool_bit_offset() {
     let bytes = S7Client::encode_value(&S7Value::Bool(true), &tag);
     assert_eq!(bytes, vec![0x08]); // 1 << 3
 }
+
+fn word_tag(name: &str, offset: u16) -> S7Tag {
+    S7Tag {
+        area: S7Area::DB,
+        db_number: 1,
+        offset,
+        bit_offset: 0,
+        data_type: S7DataType::Word,
+        length: 1,
+        name: Some(name.to_string()),
+    }
+}
+
+/// An Ack-Data frame (as `read_s7_response` hands it over, after TPKT and
+/// COTP) around the given data area.
+fn ack_data_frame(item_count: u8, data: &[u8]) -> Vec<u8> {
+    let params = [0x04, item_count];
+    let mut frame = vec![0x32, 0x03, 0x00, 0x00, 0x00, 0x01];
+    frame.extend_from_slice(&(params.len() as u16).to_be_bytes());
+    frame.extend_from_slice(&(data.len() as u16).to_be_bytes());
+    frame.extend_from_slice(&[0x00, 0x00]);
+    frame.extend_from_slice(&params);
+    frame.extend_from_slice(data);
+    frame
+}
+
+#[test]
+fn read_answer_items_keep_their_errors() {
+    let tags = [word_tag("a", 0), word_tag("b", 2), word_tag("c", 4)];
+    let data = [
+        // a: ok, transport 0x04 (length in bits), 16 bits = 0x0102
+        0xFF, 0x04, 0x00, 0x10, 0x01, 0x02, //
+        // b: address out of range
+        0x05, 0x00, 0x00, 0x00, //
+        // c: ok
+        0xFF, 0x04, 0x00, 0x10, 0x00, 0x2A,
+    ];
+    let frame = ack_data_frame(3, &data);
+    let items = S7Client::new("127.0.0.1:102", 0, 1)
+        .parse_read_var_response(&frame, &tags)
+        .unwrap();
+    assert_eq!(items[0], Ok(S7Value::Word(0x0102)));
+    assert_eq!(items[1], Err(0x05));
+    assert_eq!(items[2], Ok(S7Value::Word(42)));
+}
+
+#[test]
+fn read_answer_skips_the_fill_byte_after_an_odd_item() {
+    let mut byte_tag = word_tag("a", 0);
+    byte_tag.data_type = S7DataType::Byte;
+    let tags = [byte_tag, word_tag("b", 2)];
+    let data = [
+        0xFF, 0x04, 0x00, 0x08, 0x07, 0x00, // one byte + fill byte
+        0xFF, 0x04, 0x00, 0x10, 0x00, 0x09,
+    ];
+    let items = parse_read_items(&data, &tags);
+    assert_eq!(items, vec![Ok(S7Value::Byte(7)), Ok(S7Value::Word(9))]);
+}
+
+#[test]
+fn read_answer_cut_short_marks_the_missing_items() {
+    let tags = [word_tag("a", 0), word_tag("b", 2)];
+    let data = [0xFF, 0x04, 0x00, 0x10, 0x00, 0x01];
+    let items = parse_read_items(&data, &tags);
+    assert_eq!(items, vec![Ok(S7Value::Word(1)), Err(0x00)]);
+}
+
+#[test]
+fn item_errors_map_to_bad_quality() {
+    use crate::quality::Quality;
+    assert_eq!(item_error_quality(0x05), Quality::BadConfigError);
+    assert_eq!(item_error_quality(0x0A), Quality::BadConfigError);
+    assert_eq!(item_error_quality(0x01), Quality::BadDeviceError);
+    assert_eq!(item_error_quality(0x03), Quality::BadDeviceError);
+    assert_eq!(item_error_quality(0x00), Quality::BadCommFailure);
+}
+
+#[test]
+fn a_refused_item_is_nan_and_bad_not_zero() {
+    use crate::quality::Quality;
+    let tags = [word_tag("ok", 0), word_tag("broken", 2)];
+    let (metrics, quality) = items_to_metrics(&tags, vec![Ok(S7Value::Word(5)), Err(0x0A)]);
+    assert_eq!(metrics["ok"], 5.0);
+    assert!(metrics["broken"].is_nan());
+    assert_eq!(quality.get("ok"), None);
+    assert_eq!(quality["broken"], Quality::BadConfigError);
+}

@@ -3,9 +3,14 @@ import { encode, decode } from '@msgpack/msgpack';
 export interface TagUpdate {
   tag_id: string;
   value: number;
+  /** The tag's status (normal/warning/critical/offline), despite the name. */
   quality: string;
   ts: number;
   simulated: boolean;
+  /** Per-value data quality; absent from older servers. */
+  data_quality?: string;
+  /** When the value was read from the device, Unix ms. */
+  ts_ms?: number;
 }
 
 export interface TagUpdateBatch {

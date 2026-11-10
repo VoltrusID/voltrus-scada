@@ -3,7 +3,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::cache::DeviceCache;
-use crate::health::readback::ReadbackTracker;
 #[cfg(feature = "modbus")]
 use crate::modbus::ModbusPool;
 use crate::storage::Storage;
@@ -17,7 +16,9 @@ pub struct CommandQueue {
     pub(super) cache: DeviceCache,
     pub(super) in_flight: Arc<RwLock<HashSet<i64>>>,
     pub(super) ws_manager: Option<Arc<WsManager>>,
-    pub(super) readback_trackers: Arc<RwLock<std::collections::HashMap<String, ReadbackTracker>>>,
+    /// Acknowledged writes waiting for a poll to read them back, by command id.
+    pub(super) readback_trackers:
+        Arc<RwLock<std::collections::HashMap<String, super::readback::PendingReadback>>>,
     #[cfg(feature = "modbus")]
     pub(super) modbus_pool: Arc<ModbusPool>,
     /// Embedded MQTT broker handle for MQTT command writes (publish). Shared
