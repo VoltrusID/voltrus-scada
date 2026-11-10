@@ -4,6 +4,7 @@ import { SOURCE_TYPES, CHART_TYPES, SOURCE_CATEGORY, SIMULATE_TYPES } from './ty
 import { inputStyle, monoInputStyle, labelStyle, labelTextStyle, tabStyle, parseConfig, normalizeKeyEvent, displayShortcut } from './styles';
 import { SourceConfigFields } from './SourceConfigFields';
 import { HistoryDeadbandFields } from './components/HistoryDeadbandFields';
+import { highLimits } from './quality';
 
 export function EditPanel({ sensor, activeScreen, onSave, onDelete, onClose, shortcuts }: { sensor: SensorConfig; activeScreen: string; onSave: (s: SensorConfig, shortcut?: string | null) => void; onDelete: (id: number) => void; onClose: () => void; shortcuts: Record<number, string> }) {
   const [form, setForm] = useState(sensor);
@@ -68,6 +69,15 @@ export function EditPanel({ sensor, activeScreen, onSave, onDelete, onClose, sho
                   <label style={labelStyle}><span style={labelTextStyle}>low warn</span><input type="number" step="any" value={srcConfig.low_warn ?? ''} onChange={e => setSrcConfig(c => { const n = { ...c }; const v = e.target.value === '' ? NaN : parseFloat(e.target.value); if (isNaN(v)) delete n.low_warn; else n.low_warn = v; return n; })} placeholder="—" style={monoInputStyle} /></label>
                   <label style={labelStyle}><span style={labelTextStyle}>low crit</span><input type="number" step="any" value={srcConfig.low_crit ?? ''} onChange={e => setSrcConfig(c => { const n = { ...c }; const v = e.target.value === '' ? NaN : parseFloat(e.target.value); if (isNaN(v)) delete n.low_crit; else n.low_crit = v; return n; })} placeholder="—" style={monoInputStyle} /></label>
                   <label style={labelStyle}><span style={labelTextStyle}>deadband</span><input type="number" step="any" min="0" value={srcConfig.deadband ?? 0} onChange={e => setSrcConfig(c => ({ ...c, deadband: parseFloat(e.target.value) || 0 }))} placeholder="0" style={monoInputStyle} /></label>
+                </div>
+                {/* Explicit switches let a high limit of 0 or below count; without them 0 means "not set". */}
+                <div style={{ display: 'flex', gap: 16, marginTop: 8, fontSize: 12 }}>
+                  {(['warn', 'crit'] as const).map(level => (
+                    <label key={level} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <input type="checkbox" checked={highLimits(form, srcConfig)[level] != null} onChange={e => setSrcConfig(c => ({ ...c, [`${level}_enabled`]: e.target.checked }))} />
+                      <span style={labelTextStyle}>high {level} limit on</span>
+                    </label>
+                  ))}
                 </div>
               </div>
             )}

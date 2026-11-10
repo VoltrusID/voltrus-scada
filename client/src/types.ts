@@ -13,6 +13,10 @@ export interface SensorConfig {
 
 export interface SensorData {
   id: number; key: string; value: number; warn: number; crit: number; source_type: string; status: string; simulated?: boolean;
+  /** Data quality (see quality.ts); absent means good. */
+  quality?: string;
+  /** When the value was read from the device, Unix ms. */
+  ts_ms?: number;
 }
 
 export interface SystemInfo {
@@ -336,6 +340,8 @@ export interface WsTagUpdate {
   quality: string
   ts: number
   simulated: boolean
+  data_quality?: string
+  ts_ms?: number
 }
 
 export interface WsCommandAck {

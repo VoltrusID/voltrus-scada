@@ -1,4 +1,5 @@
 import type { DataPoint, SensorConfig } from './types'
+import { highLimits } from './quality.ts'
 
 /**
  * Expand compact history data from the server into a map of DataPoint arrays.
@@ -28,25 +29,26 @@ export function expandCompactData(raw: Record<string, any>): Record<string, Data
 
 // ── Alarm status from tag limits ──
 
-const lowLimits = new WeakMap<SensorConfig, { lw?: number; lc?: number }>()
+const limitCache = new WeakMap<SensorConfig, { hw: number | null; hc: number | null; lw?: number; lc?: number }>()
 
 /**
  * Alarm level of a value against its tag's limits, mirroring the server's alarm engine:
- * high limits fire at value >= limit (0 = not set); low limits live in source_config.low_warn / low_crit.
+ * high limits fire at value >= limit (see highLimits for when one is set); low limits live in
+ * source_config.low_warn / low_crit.
  */
 export function alarmStatus(sensor: SensorConfig, value: number): 'crit' | 'warn' | 'normal' {
-  let lows = lowLimits.get(sensor)
+  let lows = limitCache.get(sensor)
   if (!lows) {
-    lows = {}
-    try {
-      const cfg = JSON.parse(sensor.source_config || '{}')
-      if (typeof cfg.low_warn === 'number') lows.lw = cfg.low_warn
-      if (typeof cfg.low_crit === 'number') lows.lc = cfg.low_crit
-    } catch { /* not JSON: no low limits */ }
-    lowLimits.set(sensor, lows)
+    let cfg: Record<string, unknown> = {}
+    try { cfg = JSON.parse(sensor.source_config || '{}') } catch { /* not JSON: no flags, no low limits */ }
+    const high = highLimits(sensor, cfg)
+    lows = { hw: high.warn, hc: high.crit }
+    if (typeof cfg.low_warn === 'number') lows.lw = cfg.low_warn
+    if (typeof cfg.low_crit === 'number') lows.lc = cfg.low_crit
+    limitCache.set(sensor, lows)
   }
-  if (sensor.crit_val > 0 && value >= sensor.crit_val) return 'crit'
-  if (sensor.warn_val > 0 && value >= sensor.warn_val) return 'warn'
+  if (lows.hc != null && value >= lows.hc) return 'crit'
+  if (lows.hw != null && value >= lows.hw) return 'warn'
   if (lows.lc != null && value <= lows.lc) return 'crit'
   if (lows.lw != null && value <= lows.lw) return 'warn'
   return 'normal'

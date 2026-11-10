@@ -3,6 +3,7 @@ import type { SensorConfig, SensorData } from '../types'
 import { type TagUpdate, onWsReady } from '../api/websocket'
 import { useDashboardStoreActions } from '../store/dashboardStore'
 import { alarmStatus } from '../utils'
+import { qualityFamily } from '../quality'
 
 const LIVE_PTS = 300
 
@@ -32,6 +33,9 @@ export function useWSData(authed: boolean, sensors: SensorConfig[]) {
       const k = String(sensor.id)
       const ts = u.ts && u.ts > 1e12 ? u.ts : u.ts ? u.ts * 1000 : Date.now()
       const isOffline = u.value == null || Number.isNaN(u.value)
+      // A stale or bad value repeats the last reading; it is shown, greyed,
+      // but not added to the trend as if it were a new sample.
+      const fresh = !isOffline && qualityFamily(u.data_quality) !== 'bad' && u.data_quality !== 'uncertain_stale'
       const value: SensorData = {
         id: sensor.id,
         key: sensor.key,
@@ -41,10 +45,12 @@ export function useWSData(authed: boolean, sensors: SensorConfig[]) {
         source_type: sensor.source_type,
         // WS quality is comm quality (always good/normal); widgets read status as the alarm level.
         status: isOffline ? (u.quality || 'normal') : alarmStatus(sensor, u.value),
+        quality: u.data_quality,
+        ts_ms: u.ts_ms,
       }
 
       const prevArr = dataUpdates.has(k) ? dataUpdates.get(k)!.points : (state.dataMap[k] ?? [])
-      const appended = isOffline ? prevArr : [...prevArr, { value: u.value, ts }]
+      const appended = fresh ? [...prevArr, { value: u.value, ts }] : prevArr
       const trimmed = appended.length > LIVE_PTS ? appended.slice(-LIVE_PTS) : appended
       dataUpdates.set(k, { id: k, points: trimmed, value })
     }
