@@ -236,7 +236,7 @@ impl Storage {
                 "INSERT OR IGNORE INTO data_sources (key, name, unit, color, min_val, max_val, warn_val, crit_val,
                  base_val, sort_order, decimals, source_type, source_config, device_id, chart_type)
                  VALUES (?1, ?2, '', '#3b82f6', 0, 0, 0, 0, 0, 0, 1, 's7', '{}', ?3, 'sparkline')",
-                rusqlite::params![source_key, ds_name, device_name],
+                rusqlite::params![source_key, ds_name, device_id.to_string()],
             );
 
             Ok(conn.last_insert_rowid())

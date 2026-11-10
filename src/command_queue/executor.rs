@@ -25,7 +25,8 @@ impl CommandQueue {
             #[cfg(feature = "opcua")]
             "opcua" => self.execute_opcua_write(cmd, value).await,
             #[cfg(feature = "ethernet-ip")]
-            "ethernet_ip" => self.execute_enip_write(cmd, value).await,
+            // Tags created on an EtherNet/IP device have source type "enip".
+            "ethernet_ip" | "enip" => self.execute_enip_write(cmd, value).await,
             // MQTT is fire-and-forget publish, not request/response. Publish to
             // the topic in source_config via the embedded broker (see
             // execute_mqtt_write); without the broker feature it fails explicitly.
