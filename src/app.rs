@@ -703,27 +703,8 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         });
     }
 
-    let (audit_logger, mut audit_rx) = crate::security::AuditLogger::new();
-
-    // Spawn audit log consumer
-    {
-        let storage = storage.clone();
-        tokio::spawn(async move {
-            while let Some(event) = audit_rx.recv().await {
-                if let Err(e) = storage
-                    .log_audit_event(
-                        &event.action,
-                        &event.username,
-                        &event.resource,
-                        event.details.as_deref(),
-                    )
-                    .await
-                {
-                    tracing::warn!("Failed to write audit log: {}", e);
-                }
-            }
-        });
-    }
+    let (audit_logger, audit_rx) = crate::security::AuditLogger::new();
+    crate::security::AuditLogger::spawn_writer(storage.clone(), audit_rx);
 
     // Initialize MQTT broker
     #[cfg(feature = "mqtt-broker")]

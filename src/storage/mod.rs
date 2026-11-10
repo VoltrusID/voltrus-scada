@@ -48,6 +48,7 @@ mod settings_shortcuts;
 #[cfg(test)]
 mod tests;
 mod users;
+pub use settings_audit::AuditChainReport;
 pub use users::DELETED_USER;
 mod voltrus_plc_storage;
 

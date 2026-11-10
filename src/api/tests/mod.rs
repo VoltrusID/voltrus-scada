@@ -3,6 +3,7 @@ mod analytics;
 mod api_docs;
 mod api_keys;
 mod audit_log;
+mod audit_trail;
 mod auth;
 mod auth_sessions;
 mod command_device;

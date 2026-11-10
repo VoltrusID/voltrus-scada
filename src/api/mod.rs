@@ -569,10 +569,15 @@ fn mqtt_broker_admin_routes() -> Router<AppState> {
             "/api/v1/mqtt-broker/messages",
             get(mqtt_broker::get_messages),
         )
-        .route(
-            "/api/v1/mqtt-broker/publish",
-            post(mqtt_broker::publish_message),
-        )
+}
+
+/// Audited in the handler, with the topic.
+#[cfg(feature = "mqtt-broker")]
+fn mqtt_broker_publish_route() -> Router<AppState> {
+    Router::new().route(
+        "/api/v1/mqtt-broker/publish",
+        post(mqtt_broker::publish_message),
+    )
 }
 
 #[cfg(feature = "snmp_scan")]
@@ -997,43 +1002,6 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/screens/{id}/data-sources/{data_source_id}",
             put(screens::update_screen_sensor).delete(screens::remove_screen_sensor),
         )
-        .route("/api/v1/screens/{id}/layouts", put(layouts::save_layouts))
-        .route(
-            "/api/v1/screens/{id}/twin-layouts",
-            put(layouts::save_twin_layouts),
-        )
-        .route(
-            "/api/v1/screens/{id}/twin-connections",
-            put(layouts::save_twin_connections),
-        )
-        .route(
-            "/api/v1/screens/{id}/twin-camera",
-            put(layouts::save_twin_camera),
-        )
-        .route(
-            "/api/v1/screens/{id}/canvas-layouts",
-            put(layouts::save_canvas_layouts),
-        )
-        .route(
-            "/api/v1/screens/{id}/scada-equipment",
-            put(layouts::save_scada_equipment),
-        )
-        .route(
-            "/api/v1/screens/{id}/scada-connections",
-            put(layouts::save_scada_connections),
-        )
-        .route(
-            "/api/v1/data-sources",
-            post(data_sources::create_data_source),
-        )
-        .route(
-            "/api/v1/data-sources/reorder",
-            patch(data_sources::reorder_data_sources),
-        )
-        .route(
-            "/api/v1/data-sources/{id}",
-            put(data_sources::update_data_source).delete(data_sources::delete_data_source),
-        )
         .route(
             "/api/v1/flows",
             get(flows::list_flows).post(flows::create_flow),
@@ -1156,54 +1124,10 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/data-sources/{id}/write-policy",
             get(commands::get_write_policy).patch(commands::update_write_policy),
         )
-        // Simulation routes
-        .route(
-            "/api/v1/sim-profiles",
-            get(simulation::list_sim_profiles).post(simulation::create_sim_profile),
-        )
-        .route(
-            "/api/v1/sim-profiles/{id}",
-            put(simulation::update_sim_profile).delete(simulation::delete_sim_profile),
-        )
-        .route(
-            "/api/v1/devices/{id}/simulate",
-            get(simulation::get_simulation).post(simulation::toggle_simulation),
-        )
-        .route(
-            "/api/v1/devices/{id}/go-live",
-            get(simulation::get_go_live_status).post(simulation::go_live),
-        )
-        .route(
-            "/api/v1/devices/{id}/go-live/rollback",
-            post(simulation::rollback_go_live),
-        )
-        .route(
-            "/api/v1/settings/go-live",
-            get(simulation::get_go_live_settings).put(simulation::update_go_live_settings),
-        )
-        // The wizard creates devices and tags in one go.
-        .route("/api/v1/wizard/create", post(wizard::wizard_create))
         // Node-RED import
         .route(
             "/api/v1/import/node-red",
             post(import_nodered::import_node_red),
-        )
-        // Config snapshot routes
-        .route(
-            "/api/v1/config/snapshots",
-            get(config_snapshots::list_snapshots).post(config_snapshots::create_snapshot),
-        )
-        .route(
-            "/api/v1/config/snapshots/{id}",
-            get(config_snapshots::get_snapshot).delete(config_snapshots::delete_snapshot),
-        )
-        .route(
-            "/api/v1/config/snapshots/{from_id}/diff/{to_id}",
-            get(config_snapshots::diff_snapshots),
-        )
-        .route(
-            "/api/v1/config/snapshots/{id}/rollback",
-            post(config_snapshots::rollback),
         )
         // AI Copilot: these call the configured LLM and spend its credit.
         .route("/api/v1/ai/settings", put(ai_copilot::update_ai_settings))
@@ -1298,6 +1222,94 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/templates/{id}/instantiate",
             post(vertical_templates::instantiate_template),
         );
+    // Operator routes whose handlers write no audit entry of their own: the
+    // middleware records who changed what (see audit_writes_middleware).
+    let audited = middleware::from_fn_with_state(state.clone(), audit_log::audit_writes_middleware);
+    let demo_protected = demo_protected.merge(
+        Router::new()
+            .route("/api/v1/screens/{id}/layouts", put(layouts::save_layouts))
+            .route(
+                "/api/v1/screens/{id}/twin-layouts",
+                put(layouts::save_twin_layouts),
+            )
+            .route(
+                "/api/v1/screens/{id}/twin-connections",
+                put(layouts::save_twin_connections),
+            )
+            .route(
+                "/api/v1/screens/{id}/twin-camera",
+                put(layouts::save_twin_camera),
+            )
+            .route(
+                "/api/v1/screens/{id}/canvas-layouts",
+                put(layouts::save_canvas_layouts),
+            )
+            .route(
+                "/api/v1/screens/{id}/scada-equipment",
+                put(layouts::save_scada_equipment),
+            )
+            .route(
+                "/api/v1/screens/{id}/scada-connections",
+                put(layouts::save_scada_connections),
+            )
+            .route(
+                "/api/v1/data-sources",
+                post(data_sources::create_data_source),
+            )
+            .route(
+                "/api/v1/data-sources/reorder",
+                patch(data_sources::reorder_data_sources),
+            )
+            .route(
+                "/api/v1/data-sources/{id}",
+                put(data_sources::update_data_source).delete(data_sources::delete_data_source),
+            )
+            // Simulation routes
+            .route(
+                "/api/v1/sim-profiles",
+                get(simulation::list_sim_profiles).post(simulation::create_sim_profile),
+            )
+            .route(
+                "/api/v1/sim-profiles/{id}",
+                put(simulation::update_sim_profile).delete(simulation::delete_sim_profile),
+            )
+            .route(
+                "/api/v1/devices/{id}/simulate",
+                get(simulation::get_simulation).post(simulation::toggle_simulation),
+            )
+            .route(
+                "/api/v1/devices/{id}/go-live",
+                get(simulation::get_go_live_status).post(simulation::go_live),
+            )
+            .route(
+                "/api/v1/devices/{id}/go-live/rollback",
+                post(simulation::rollback_go_live),
+            )
+            .route(
+                "/api/v1/settings/go-live",
+                get(simulation::get_go_live_settings).put(simulation::update_go_live_settings),
+            )
+            // The wizard creates devices and tags in one go.
+            .route("/api/v1/wizard/create", post(wizard::wizard_create))
+            // Config snapshot routes
+            .route(
+                "/api/v1/config/snapshots",
+                get(config_snapshots::list_snapshots).post(config_snapshots::create_snapshot),
+            )
+            .route(
+                "/api/v1/config/snapshots/{id}",
+                get(config_snapshots::get_snapshot).delete(config_snapshots::delete_snapshot),
+            )
+            .route(
+                "/api/v1/config/snapshots/{from_id}/diff/{to_id}",
+                get(config_snapshots::diff_snapshots),
+            )
+            .route(
+                "/api/v1/config/snapshots/{id}/rollback",
+                post(config_snapshots::rollback),
+            )
+            .route_layer(audited.clone()),
+    );
     // Merge protocol-specific demo-allowed routes
     #[cfg(feature = "modbus")]
     let demo_protected = demo_protected.merge(modbus_admin_routes());
@@ -1312,11 +1324,13 @@ pub fn create_router(state: AppState) -> Router {
     #[cfg(feature = "bacnet")]
     let demo_protected = demo_protected.merge(bacnet_admin_routes());
     #[cfg(feature = "mqtt-broker")]
-    let demo_protected = demo_protected.merge(mqtt_broker_admin_routes());
+    let demo_protected = demo_protected
+        .merge(mqtt_broker_admin_routes().route_layer(audited.clone()))
+        .merge(mqtt_broker_publish_route());
     #[cfg(feature = "snmp_scan")]
     let demo_protected = demo_protected.merge(snmp_scan_admin_routes());
     #[cfg(feature = "scripts")]
-    let demo_protected = demo_protected.merge(scripts_admin_routes());
+    let demo_protected = demo_protected.merge(scripts_admin_routes().route_layer(audited.clone()));
     let demo_protected = demo_protected.merge(voltrus_plc_admin_routes());
     let demo_protected = demo_protected.merge(ext_routes.operator);
 
@@ -1330,16 +1344,7 @@ pub fn create_router(state: AppState) -> Router {
     // Strictly admin-only routes (users, roles, API keys, security, compliance)
     // Demo users CANNOT access these.
     let admin_protected = Router::new()
-        // Widgets run their JavaScript in every operator's session, so only an
-        // admin may install or remove one.
-        .route(
-            "/api/v1/widgets/{id}/install",
-            post(crate::widget_sdk::widget_api::install_widget),
-        )
-        .route(
-            "/api/v1/widgets/{id}/uninstall",
-            delete(crate::widget_sdk::widget_api::delete_widget),
-        )
+        .route("/api/v1/audit/verify", get(audit_log::verify_audit_chain))
         .route("/api/v1/seed", post(auth::seed))
         .route("/api/v1/project/export", get(project::export_project))
         .route(
@@ -1378,7 +1383,22 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/api/v1/api-keys/{id}", delete(api_keys::revoke_api_key));
 
-    let admin_protected = admin_protected.merge(ext_routes.admin);
+    let admin_protected = admin_protected
+        .merge(
+            Router::new()
+                // Widgets run their JavaScript in every operator's session, so only an
+                // admin may install or remove one.
+                .route(
+                    "/api/v1/widgets/{id}/install",
+                    post(crate::widget_sdk::widget_api::install_widget),
+                )
+                .route(
+                    "/api/v1/widgets/{id}/uninstall",
+                    delete(crate::widget_sdk::widget_api::delete_widget),
+                )
+                .route_layer(audited.clone()),
+        )
+        .merge(ext_routes.admin);
 
     let admin_protected = admin_protected
         .layer(middleware::from_fn(admin_only_middleware))
