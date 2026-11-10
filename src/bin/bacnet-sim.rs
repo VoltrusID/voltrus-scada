@@ -434,7 +434,11 @@ fn write_property(
             let bytes: [u8; 8] = value_data[1..9].try_into().unwrap();
             f64::from_be_bytes(bytes)
         }
-        0x21 if value_data.len() >= 2 => value_data[1] as f64,
+        0x21..=0x24 if value_data.len() > (tag & 0x07) as usize => {
+            value_data[1..=(tag & 0x07) as usize]
+                .iter()
+                .fold(0u32, |acc, b| (acc << 8) | u32::from(*b)) as f64
+        }
         0x91 if value_data.len() >= 2 => value_data[1] as f64,
         _ => return false,
     };

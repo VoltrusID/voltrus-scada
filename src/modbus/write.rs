@@ -1,6 +1,6 @@
 use tokio_modbus::prelude::*;
 
-use super::types::value_to_words;
+use super::types::encode_register;
 use crate::models::*;
 
 pub async fn write_tag(
@@ -26,7 +26,23 @@ pub async fn write_tag(
         }
     };
 
-    // Coil writes
+    let fail = |error: String| WriteResult {
+        success: false,
+        device_response: None,
+        error: Some(error),
+        latency_ms: start.elapsed().as_millis() as u64,
+    };
+
+    match register.register_area.as_str() {
+        "input" | "discrete" => {
+            return fail(format!(
+                "Register '{}' is in the read-only {} area",
+                register.name, register.register_area
+            ));
+        }
+        _ => {}
+    }
+
     if register.register_area == "coil" {
         return write_coil(
             pool,
@@ -40,7 +56,10 @@ pub async fn write_tag(
         .await;
     }
 
-    let words = value_to_words(value, &register.reg_type, &config.endianness);
+    let words = match encode_register(value, register, &config.endianness) {
+        Ok(words) => words,
+        Err(e) => return fail(e),
+    };
 
     let ctx_result = pool
         .get_or_connect(&config.id, socket_addr, config.unit_id, None)

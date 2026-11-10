@@ -29,6 +29,7 @@ pub(crate) const CIP_TYPE_REAL: u8 = 0xCA;
 pub(crate) const CIP_TYPE_STRING: u8 = 0xD0;
 pub(crate) const CIP_TYPE_DWORD: u8 = 0xD3;
 pub(crate) const CIP_TYPE_LINT: u8 = 0xC5;
+pub(crate) const CIP_TYPE_LREAL: u8 = 0xCB;
 
 // ── CIP status codes ──
 
@@ -55,6 +56,7 @@ pub enum CipDataType {
     String,
     Dword,
     Lint,
+    Lreal,
 }
 
 impl CipDataType {
@@ -68,6 +70,7 @@ impl CipDataType {
             CIP_TYPE_STRING => Some(Self::String),
             CIP_TYPE_DWORD => Some(Self::Dword),
             CIP_TYPE_LINT => Some(Self::Lint),
+            CIP_TYPE_LREAL => Some(Self::Lreal),
             _ => None,
         }
     }
@@ -82,6 +85,7 @@ impl CipDataType {
             Self::String => CIP_TYPE_STRING,
             Self::Dword => CIP_TYPE_DWORD,
             Self::Lint => CIP_TYPE_LINT,
+            Self::Lreal => CIP_TYPE_LREAL,
         }
     }
 
@@ -93,9 +97,78 @@ impl CipDataType {
             Self::Dint => 4,
             Self::Real => 4,
             Self::Dword => 4,
-            Self::Lint => 8,
+            Self::Lint | Self::Lreal => 8,
             Self::String => 88, // CIP STRING struct: 4 bytes len + 82 bytes data + 2 pad
         }
+    }
+
+    /// A configured type name (`REAL`, `dint`, ...), as `as_str` spells them.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_uppercase().as_str() {
+            "BOOL" => Some(Self::Bool),
+            "SINT" => Some(Self::Sint),
+            "INT" => Some(Self::Int),
+            "DINT" => Some(Self::Dint),
+            "REAL" => Some(Self::Real),
+            "STRING" => Some(Self::String),
+            "DWORD" => Some(Self::Dword),
+            "LINT" => Some(Self::Lint),
+            "LREAL" => Some(Self::Lreal),
+            _ => None,
+        }
+    }
+
+    /// The type of a value the PLC returned, when it names one unambiguously.
+    pub fn of_value(value: &CipValue) -> Option<Self> {
+        match value {
+            CipValue::Bool(_) => Some(Self::Bool),
+            CipValue::Sint(_) => Some(Self::Sint),
+            CipValue::Int(_) => Some(Self::Int),
+            CipValue::Dint(_) => Some(Self::Dint),
+            CipValue::Real(_) => Some(Self::Real),
+            CipValue::String(_) => Some(Self::String),
+            CipValue::Dword(_) => Some(Self::Dword),
+            CipValue::Lint(_) => Some(Self::Lint),
+            CipValue::Lreal(_) => Some(Self::Lreal),
+            // Unknown types decode to raw bytes.
+            CipValue::Bytes(_) => None,
+        }
+    }
+
+    /// The value to write for an engineering value, refusing one the type
+    /// cannot hold rather than wrapping it.
+    pub fn value_for(&self, value: f64) -> Result<CipValue, String> {
+        if !value.is_finite() {
+            return Err(format!("Value {value} is not a finite number"));
+        }
+        let integer = |min: f64, max: f64| -> Result<f64, String> {
+            let rounded = value.round();
+            if rounded < min || rounded > max {
+                Err(format!(
+                    "Value {value} is outside the {} range {min}..={max}",
+                    self.as_str()
+                ))
+            } else {
+                Ok(rounded)
+            }
+        };
+        Ok(match self {
+            Self::Bool => CipValue::Bool(value != 0.0),
+            Self::Sint => CipValue::Sint(integer(i8::MIN as f64, i8::MAX as f64)? as i8),
+            Self::Int => CipValue::Int(integer(i16::MIN as f64, i16::MAX as f64)? as i16),
+            Self::Dint => CipValue::Dint(integer(i32::MIN as f64, i32::MAX as f64)? as i32),
+            Self::Real => {
+                if value.abs() > f32::MAX as f64 {
+                    return Err(format!("Value {value} is outside the REAL range"));
+                }
+                CipValue::Real(value as f32)
+            }
+            Self::Dword => CipValue::Dword(integer(0.0, u32::MAX as f64)? as u32),
+            // i64::MAX is not exact in f64; the bound is the largest f64 below 2^63.
+            Self::Lint => CipValue::Lint(integer(-(2f64.powi(63)), 2f64.powi(63) - 1024.0)? as i64),
+            Self::Lreal => CipValue::Lreal(value),
+            Self::String => CipValue::String(value.to_string()),
+        })
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -108,6 +181,7 @@ impl CipDataType {
             Self::String => "STRING",
             Self::Dword => "DWORD",
             Self::Lint => "LINT",
+            Self::Lreal => "LREAL",
         }
     }
 }
@@ -119,6 +193,9 @@ pub enum CipValue {
     Int(i16),
     Dint(i32),
     Real(f32),
+    Dword(u32),
+    Lint(i64),
+    Lreal(f64),
     String(String),
     Bytes(Vec<u8>),
 }
@@ -132,6 +209,9 @@ impl CipValue {
             Self::Int(v) => Some(*v as f64),
             Self::Dint(v) => Some(*v as f64),
             Self::Real(v) => Some(*v as f64),
+            Self::Dword(v) => Some(*v as f64),
+            Self::Lint(v) => Some(*v as f64),
+            Self::Lreal(v) => Some(*v),
             Self::Bytes(_) => None,
             Self::String(_) => None,
         }
@@ -145,6 +225,9 @@ impl CipValue {
             Self::Int(v) => v.to_string(),
             Self::Dint(v) => v.to_string(),
             Self::Real(v) => format!("{:.4}", v),
+            Self::Dword(v) => v.to_string(),
+            Self::Lint(v) => v.to_string(),
+            Self::Lreal(v) => format!("{:.4}", v),
             Self::String(s) => s.clone(),
             Self::Bytes(b) => format!("{:02x?}", b),
         }

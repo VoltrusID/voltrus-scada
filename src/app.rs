@@ -188,30 +188,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         network::NetworkManager::new(app_config.networks.clone()),
     );
     if crate::node_role::polls_devices() {
-        #[cfg(feature = "modbus")]
-        {
-            let device_configs = storage.get_all_device_configs().await?;
-            for config in &device_configs {
-                poller_manager.start(config.clone()).await;
-                tracing::info!("Started poller for device {}", config.id);
-            }
-        }
-
-        // Start OPC-UA pollers
-        #[cfg(feature = "opcua")]
-        match storage.get_all_opcua_device_configs().await {
-            Ok(opcua_configs) => {
-                for config in &opcua_configs {
-                    poller_manager.start_opcua(config.clone()).await;
-                    tracing::info!("Started OPC-UA poller for device {}", config.id);
-                }
-                if !opcua_configs.is_empty() {
-                    tracing::info!("Started {} OPC-UA device(s)", opcua_configs.len());
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load OPC-UA device configs: {}", e);
-            }
+        match poller_manager.start_all_enabled().await {
+            Ok(started) => tracing::info!("Started {started} device poller(s)"),
+            Err(e) => tracing::warn!("Failed to start device pollers: {e:#}"),
         }
     } else {
         tracing::info!("Passive node: device pollers start when this node takes over");
