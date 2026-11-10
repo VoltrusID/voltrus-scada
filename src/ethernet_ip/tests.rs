@@ -120,6 +120,7 @@ fn test_cip_data_type_code_roundtrip() {
         CipDataType::String,
         CipDataType::Dword,
         CipDataType::Lint,
+        CipDataType::Lreal,
     ] {
         assert_eq!(CipDataType::from_code(dt.code()), Some(dt.clone()));
     }
@@ -379,7 +380,8 @@ fn test_parse_symbol_instance_empty() {
 fn test_type_from_name() {
     assert_eq!(CipDataType::from_name("real"), Some(CipDataType::Real));
     assert_eq!(CipDataType::from_name(" DINT "), Some(CipDataType::Dint));
-    assert_eq!(CipDataType::from_name("lreal"), None);
+    assert_eq!(CipDataType::from_name("lreal"), Some(CipDataType::Lreal));
+    assert_eq!(CipDataType::from_name("udt"), None);
 }
 
 #[test]
@@ -410,9 +412,17 @@ fn test_value_for_each_type() {
     );
     assert_eq!(
         CipDataType::Dword.value_for(0x0102_0304 as f64).unwrap(),
-        CipValue::Bytes(vec![0x04, 0x03, 0x02, 0x01])
+        CipValue::Dword(0x0102_0304)
     );
-    assert!(CipDataType::Lint.value_for(1.0).is_err());
+    assert_eq!(
+        CipDataType::Lint.value_for(-5e12).unwrap(),
+        CipValue::Lint(-5_000_000_000_000)
+    );
+    assert_eq!(
+        CipDataType::Lreal.value_for(0.1).unwrap(),
+        CipValue::Lreal(0.1)
+    );
+    assert!(CipDataType::Lint.value_for(1e19).is_err());
 }
 
 #[test]
@@ -439,4 +449,64 @@ fn test_type_of_read_value() {
         Some(CipDataType::Real)
     );
     assert_eq!(CipDataType::of_value(&CipValue::Bytes(vec![0; 4])), None);
+}
+
+#[test]
+fn test_encoded_size_matches_the_type() {
+    let cases = [
+        (CipDataType::Bool, 1.0, CIP_TYPE_BOOL, vec![0xFF]),
+        (CipDataType::Bool, 0.0, CIP_TYPE_BOOL, vec![0x00]),
+        (CipDataType::Sint, -2.0, CIP_TYPE_SINT, vec![0xFE]),
+        (CipDataType::Int, -2.0, CIP_TYPE_INT, vec![0xFE, 0xFF]),
+        (
+            CipDataType::Dint,
+            258.0,
+            CIP_TYPE_DINT,
+            vec![0x02, 0x01, 0x00, 0x00],
+        ),
+        (
+            CipDataType::Real,
+            1.0,
+            CIP_TYPE_REAL,
+            vec![0x00, 0x00, 0x80, 0x3F],
+        ),
+        (
+            CipDataType::Dword,
+            1.0,
+            CIP_TYPE_DWORD,
+            vec![0x01, 0x00, 0x00, 0x00],
+        ),
+        (CipDataType::Lint, -1.0, CIP_TYPE_LINT, vec![0xFF; 8]),
+        (
+            CipDataType::Lreal,
+            1.0,
+            CIP_TYPE_LREAL,
+            vec![0, 0, 0, 0, 0, 0, 0xF0, 0x3F],
+        ),
+    ];
+    for (t, v, code, bytes) in cases {
+        let (c, data) = encode_cip_value(&t.value_for(v).unwrap());
+        assert_eq!((c, data), (code, bytes), "{}", t.as_str());
+    }
+}
+
+#[test]
+fn test_write_request_carries_one_element_of_the_type() {
+    let req = build_write_tag_request("B", &CipValue::Bool(true));
+    // service, path size, path ("B" padded), type, element count, 1 data byte
+    assert_eq!(req[req.len() - 5..], [0xC1, 0x00, 0x01, 0x00, 0xFF]);
+}
+
+#[test]
+fn test_wide_types_round_trip() {
+    for value in [
+        CipValue::Lint(-42),
+        CipValue::Lreal(2.5),
+        CipValue::Dword(7),
+    ] {
+        let (code, data) = encode_cip_value(&value);
+        assert_eq!(decode_cip_value(code, &data).unwrap(), value);
+    }
+    assert_eq!(CipValue::Lreal(2.5).to_f64(), Some(2.5));
+    assert_eq!(CipValue::Dword(7).to_f64(), Some(7.0));
 }
