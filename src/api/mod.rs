@@ -844,15 +844,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/analytics/run-chart", get(analytics::get_run_chart))
         .route(
             "/api/v1/analytics/custom-metrics",
-            get(analytics::list_custom_metrics).post(analytics::create_custom_metric),
+            get(analytics::list_custom_metrics),
         )
         .route(
             "/api/v1/analytics/custom-metrics/evaluate",
             get(analytics::evaluate_all_custom_metrics),
-        )
-        .route(
-            "/api/v1/analytics/custom-metrics/{id}",
-            put(analytics::update_custom_metric).delete(analytics::delete_custom_metric),
         )
         .route(
             "/api/v1/settings/ui-theme",
@@ -962,6 +958,15 @@ pub fn create_router(state: AppState) -> Router {
     // Demo-allowed routes (authenticated + admin or demo role required)
     // These are operational routes that demo users should be able to use.
     let demo_protected = Router::new()
+        // Changing a custom metric changes what operators see: operator tier.
+        .route(
+            "/api/v1/analytics/custom-metrics",
+            post(analytics::create_custom_metric),
+        )
+        .route(
+            "/api/v1/analytics/custom-metrics/{id}",
+            put(analytics::update_custom_metric).delete(analytics::delete_custom_metric),
+        )
         .route(
             "/api/v1/settings/smtp",
             get(smtp_settings::get_smtp_config).put(smtp_settings::update_smtp_config),

@@ -978,7 +978,9 @@ mod tests {
         };
         let poller = tokio::spawn(poll_opcua_device(config, DeviceCache::new()));
 
-        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        // The in-process server and the client handshake share the test runner's
+        // threads with ~1000 other tests, so allow a slow first connect.
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
         while !SESSIONS.lock().unwrap().contains_key(&device_id) {
             assert!(
                 std::time::Instant::now() < deadline,
