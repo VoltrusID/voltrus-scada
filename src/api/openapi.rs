@@ -16,7 +16,6 @@ use utoipa::{Modify, OpenApi};
         crate::api::auth::refresh_token,
         crate::api::auth::logout,
         crate::api::auth::auth_me,
-        crate::api::auth::get_csrf_token,
         crate::api::auth::list_auth_providers,
         crate::api::auth::change_password,
         crate::api::auth::seed,

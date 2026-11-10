@@ -28,6 +28,7 @@ mod project;
 mod protocol_routes;
 mod scan_network;
 mod scripts;
+mod security_rules;
 mod shift_report;
 mod shortcuts;
 mod status_codes;

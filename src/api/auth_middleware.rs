@@ -25,7 +25,8 @@ pub async fn admin_only_middleware(
 
 /// Roles that may use the operational write routes: admin, demo, and the
 /// write-capable "integration" API key role. Plain "api" keys stay read-only.
-/// The MCP endpoint applies the same rule to its write tools.
+/// REST, MCP and WebSocket tag writes all ask this one question, so the three
+/// cannot drift apart.
 pub fn role_allows_operational_writes(role: &str) -> bool {
     matches!(role, "admin" | "demo" | "integration")
 }
@@ -50,6 +51,102 @@ pub async fn demo_allowed_middleware(
     next.run(req).await
 }
 
+/// For the few protected routes a signed-in read-only person may use but a
+/// read-only API key may not (acknowledging an alarm: an operator at the screen
+/// acknowledges, ISA-18.2 style; an unattended read-only integration must not).
+pub async fn deny_read_only_keys_middleware(req: Request, next: Next) -> axum::response::Response {
+    if let Some(key) = req.extensions().get::<ApiKeyAuth>()
+        && !role_allows_operational_writes(&key.role)
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "read-only API keys cannot do this; use an integration key"})),
+        )
+            .into_response();
+    }
+    next.run(req).await
+}
+
+/// Scopes an API key may list in `permissions`. `read` and `data:read` add
+/// nothing (every key reads); `write`/`data:write` are needed, on an
+/// integration key, for the operational write routes. There is no admin scope:
+/// a key never reaches the admin routes.
+pub const KEY_SCOPES: &[&str] = &["read", "write", "data:read", "data:write"];
+
+/// The scopes a key's `permissions` text declares, or `None` when it declares
+/// none (empty list, or legacy free text that is not a JSON list), in which
+/// case the key role alone decides.
+pub fn parse_key_scopes(permissions: &str) -> Option<Vec<String>> {
+    let scopes: Vec<String> = serde_json::from_str(permissions.trim()).ok()?;
+    (!scopes.is_empty()).then_some(scopes)
+}
+
+/// Check the `permissions` of a key being created: a JSON list of strings.
+/// Other scope names than [`KEY_SCOPES`] are kept (older clients send e.g.
+/// `data:export`) but grant nothing. A write scope needs the integration role,
+/// otherwise the key would look write-capable and be refused everywhere.
+pub fn validate_key_scopes(permissions: &str, role: &str) -> Result<(), String> {
+    let trimmed = permissions.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+    let scopes: Vec<String> = serde_json::from_str(trimmed).map_err(|_| {
+        format!(
+            "permissions must be a JSON list of scopes ({})",
+            KEY_SCOPES.join(", ")
+        )
+    })?;
+    for scope in &scopes {
+        if scope == "admin" {
+            return Err("API keys cannot hold the admin scope".to_string());
+        }
+        if scope_allows_write(scope) && role != "integration" {
+            return Err(format!(
+                "scope {scope:?} needs the integration role; this key's role is {role:?}"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn scope_allows_write(scope: &str) -> bool {
+    matches!(scope, "write" | "data:write")
+}
+
+/// The role a key acts with. Fails closed: only an "integration" key is
+/// write-capable, and only when its scopes, if it lists any, include a write
+/// scope. Unknown or legacy role values behave like the read-only "api" role.
+pub fn effective_key_role(key_role: &str, permissions: &str) -> &'static str {
+    if key_role != "integration" {
+        return "api";
+    }
+    match parse_key_scopes(permissions) {
+        None => "integration",
+        Some(scopes) if scopes.iter().any(|s| scope_allows_write(s)) => "integration",
+        Some(_) => "api",
+    }
+}
+
+/// Look an API key up and build the principal it authenticates as.
+pub(crate) async fn authenticate_api_key(
+    state: &AppState,
+    key: &str,
+) -> Option<(AuthUser, ApiKeyAuth)> {
+    let (id, permissions, key_role) = state.storage.validate_api_key(key).await.ok()??;
+    let role = effective_key_role(&key_role, &permissions).to_string();
+    Some((
+        AuthUser {
+            username: format!("api_key:{id}"),
+            role: role.clone(),
+        },
+        ApiKeyAuth {
+            id,
+            permissions,
+            role,
+        },
+    ))
+}
+
 #[derive(Clone)]
 pub struct AuthUser {
     pub username: String,
@@ -65,30 +162,26 @@ pub async fn cookie_auth_middleware(
 
     let mut req = req;
 
-    // 1. Try API key authentication (X-API-Key header or ?api_key= query param)
-    if let Some(api_key) = extract_api_key(&req) {
-        match state.storage.validate_api_key(&api_key).await {
-            Ok(Some((id, permissions, key_role))) => {
-                // Fail closed: only "integration" is privileged. Unknown or
-                // legacy role values behave exactly like the read-only "api"
-                // role and can never escalate to admin/demo.
-                let role = if key_role == "integration" {
-                    "integration"
-                } else {
-                    "api"
-                };
-                req.extensions_mut().insert(AuthUser {
-                    username: format!("api_key:{}", id),
-                    role: role.to_string(),
-                });
-                req.extensions_mut().insert(ApiKeyAuth {
-                    id,
-                    permissions,
-                    role: role.to_string(),
-                });
+    // 1. Try API key authentication (X-API-Key header, or ?api_key= where a
+    //    client cannot set headers).
+    let query_key = query_api_key(&req);
+    if query_key.is_some() && !query_key_allowed(&req) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "API keys in the URL (?api_key=) are accepted only on GET /metrics and GET /api/v1/stream, because URLs end up in proxy and server logs. Send the key in the X-API-Key header."
+            })),
+        )
+            .into_response();
+    }
+    if let Some(api_key) = header_api_key(&req).or(query_key) {
+        match authenticate_api_key(&state, &api_key).await {
+            Some((user, key)) => {
+                req.extensions_mut().insert(user);
+                req.extensions_mut().insert(key);
                 return next.run(req).await;
             }
-            _ => {
+            None => {
                 // Failed API key auth — record intrusion and reject immediately.
                 // If an API key was explicitly provided, it must be the sole auth method;
                 // do not fall through to cookie/JWT auth.
@@ -175,11 +268,10 @@ pub(crate) async fn verify_session(
 }
 
 /// API key authentication info, inserted for requests authenticated via
-/// X-API-Key / ?api_key=.
-/// Note: the permissions text is stored and listed but not enforced; `role`
-/// decides access.
-/// `role` is the key's effective role ("api" = read-only, "integration" =
-/// also allowed on demo-allowed operational write routes).
+/// X-API-Key (or `?api_key=` on the two routes that allow it).
+/// `role` is the key's effective role ([`effective_key_role`]): "api" =
+/// read-only, "integration" = also allowed on demo-allowed operational write
+/// routes.
 #[derive(Clone, Debug)]
 pub struct ApiKeyAuth {
     pub id: i64,
@@ -187,24 +279,26 @@ pub struct ApiKeyAuth {
     pub role: String,
 }
 
-/// Extract API key from X-API-Key header or ?api_key= query parameter.
-fn extract_api_key(req: &Request) -> Option<String> {
-    // Check X-API-Key header first
-    if let Some(header) = req.headers().get("X-API-Key")
-        && let Ok(key) = header.to_str()
-        && !key.is_empty()
-    {
-        return Some(key.to_string());
-    }
-    // Fall back to query parameter
-    if let Some(query) = req.uri().query() {
-        for pair in query.split('&') {
-            if let Some(key) = pair.strip_prefix("api_key=")
-                && !key.is_empty()
-            {
-                return Some(key.to_string());
-            }
-        }
-    }
-    None
+fn header_api_key(req: &Request) -> Option<String> {
+    req.headers()
+        .get("X-API-Key")
+        .and_then(|h| h.to_str().ok())
+        .filter(|k| !k.is_empty())
+        .map(str::to_string)
+}
+
+fn query_api_key(req: &Request) -> Option<String> {
+    req.uri()
+        .query()?
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("api_key="))
+        .filter(|k| !k.is_empty())
+        .map(str::to_string)
+}
+
+/// Prometheus scrapers and browser `EventSource` cannot always send headers;
+/// those two read-only endpoints keep the query parameter for compatibility.
+fn query_key_allowed(req: &Request) -> bool {
+    req.method() == axum::http::Method::GET
+        && matches!(req.uri().path(), "/metrics" | "/api/v1/stream")
 }

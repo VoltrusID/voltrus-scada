@@ -1,5 +1,4 @@
 pub mod audit;
-pub mod csrf;
 pub mod headers;
 pub mod intrusion;
 pub mod rate_limiter;
@@ -10,7 +9,6 @@ pub mod signing;
 
 // Re-export all public items for backward compatibility
 pub use audit::*;
-pub use csrf::*;
 pub use headers::*;
 pub use intrusion::*;
 pub use rate_limiter::*;
@@ -55,14 +53,6 @@ mod tests {
         let long = "a".repeat(MAX_BRAND_LENGTH + 100);
         let result = sanitize_brand_input(&long);
         assert_eq!(result.len(), MAX_BRAND_LENGTH);
-    }
-
-    #[test]
-    fn test_generate_csrf_token() {
-        let t1 = generate_csrf_token();
-        let t2 = generate_csrf_token();
-        assert_eq!(t1.len(), CSRF_TOKEN_LENGTH);
-        assert_ne!(t1, t2);
     }
 
     fn req_from(peer: &str, headers: &[(&str, &str)]) -> axum::extract::Request {

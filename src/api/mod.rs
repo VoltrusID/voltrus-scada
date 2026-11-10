@@ -678,7 +678,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/auth/refresh", post(auth::refresh_token))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::auth_me))
-        .route("/api/v1/auth/csrf-token", get(auth::get_csrf_token))
         .route("/api/v1/auth/providers", get(auth::list_auth_providers))
         .route(
             "/api/v1/settings/alarm-cooldown",
@@ -785,17 +784,21 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/nav-shortcuts",
             get(shortcuts::get_nav_shortcuts).put(shortcuts::save_nav_shortcuts),
         )
-        .route(
-            "/api/v1/alarms",
-            get(alarms::list_alarms).post(alarms::acknowledge_all),
-        )
+        .route("/api/v1/alarms", get(alarms::list_alarms))
         .route(
             "/api/v1/alarms/active/count",
             get(alarms::active_alarm_count),
         )
-        .route(
-            "/api/v1/alarms/{id}/acknowledge",
-            post(alarms::acknowledge_alarm),
+        // Any signed-in person may acknowledge (operators acknowledge alarms,
+        // ISA-18.2 practice); a read-only API key may not.
+        .merge(
+            Router::new()
+                .route("/api/v1/alarms", post(alarms::acknowledge_all))
+                .route(
+                    "/api/v1/alarms/{id}/acknowledge",
+                    post(alarms::acknowledge_alarm),
+                )
+                .route_layer(middleware::from_fn(deny_read_only_keys_middleware)),
         )
         .route(
             "/api/v1/notifications/settings",
@@ -894,37 +897,9 @@ pub fn create_router(state: AppState) -> Router {
         )
         // AI Copilot routes (any authenticated user)
         .route("/api/v1/ai/settings", get(ai_copilot::get_ai_settings))
-        .route(
-            "/api/v1/ai/settings/test",
-            post(ai_copilot::test_ai_settings),
-        )
         .route("/api/v1/ai/proposals", get(ai_copilot::list_proposals))
         .route("/api/v1/ai/proposals/{id}", get(ai_copilot::get_proposal))
-        .route(
-            "/api/v1/ai/generate/register-map",
-            post(ai_copilot::generate_register_map),
-        )
-        .route(
-            "/api/v1/ai/generate/dashboard-layout",
-            post(ai_copilot::generate_dashboard_layout),
-        )
-        .route(
-            "/api/v1/ai/generate/alarm-thresholds",
-            post(ai_copilot::generate_alarm_thresholds),
-        )
-        .route(
-            "/api/v1/ai/generate/tag-rename",
-            post(ai_copilot::generate_tag_rename),
-        )
-        .route(
-            "/api/v1/ai/generate/flow-rule",
-            post(ai_copilot::generate_flow_rule),
-        )
         .route("/api/v1/ai/templates", get(ai_copilot::list_templates))
-        .route(
-            "/api/v1/ai/generate/from-template",
-            post(ai_copilot::generate_from_template),
-        )
         .route("/api/v1/templates", get(vertical_templates::list_templates))
         .route(
             "/api/v1/templates/preview",
@@ -946,7 +921,6 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/device-templates/{id}/export",
             get(device_templates::export_template),
         )
-        .route("/api/v1/wizard/create", post(wizard::wizard_create))
         .route(
             "/api/v1/wizard/health-check",
             get(wizard::wizard_health_check),
@@ -1207,6 +1181,8 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/settings/go-live",
             get(simulation::get_go_live_settings).put(simulation::update_go_live_settings),
         )
+        // The wizard creates devices and tags in one go.
+        .route("/api/v1/wizard/create", post(wizard::wizard_create))
         // Node-RED import
         .route(
             "/api/v1/import/node-red",
@@ -1229,8 +1205,36 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/config/snapshots/{id}/rollback",
             post(config_snapshots::rollback),
         )
-        // AI Copilot admin routes
+        // AI Copilot: these call the configured LLM and spend its credit.
         .route("/api/v1/ai/settings", put(ai_copilot::update_ai_settings))
+        .route(
+            "/api/v1/ai/settings/test",
+            post(ai_copilot::test_ai_settings),
+        )
+        .route(
+            "/api/v1/ai/generate/register-map",
+            post(ai_copilot::generate_register_map),
+        )
+        .route(
+            "/api/v1/ai/generate/dashboard-layout",
+            post(ai_copilot::generate_dashboard_layout),
+        )
+        .route(
+            "/api/v1/ai/generate/alarm-thresholds",
+            post(ai_copilot::generate_alarm_thresholds),
+        )
+        .route(
+            "/api/v1/ai/generate/tag-rename",
+            post(ai_copilot::generate_tag_rename),
+        )
+        .route(
+            "/api/v1/ai/generate/flow-rule",
+            post(ai_copilot::generate_flow_rule),
+        )
+        .route(
+            "/api/v1/ai/generate/from-template",
+            post(ai_copilot::generate_from_template),
+        )
         // Integration admin routes
         .route(
             "/api/v1/egress/jobs",
@@ -1464,8 +1468,8 @@ pub fn create_router(state: AppState) -> Router {
 
 // Middleware types re-exported from middleware module
 pub use auth_middleware::{
-    AuthUser, admin_only_middleware, cookie_auth_middleware, demo_allowed_middleware,
-    role_allows_operational_writes,
+    ApiKeyAuth, AuthUser, admin_only_middleware, cookie_auth_middleware, demo_allowed_middleware,
+    deny_read_only_keys_middleware, effective_key_role, role_allows_operational_writes,
 };
 
 #[cfg(test)]
