@@ -60,8 +60,15 @@ pub async fn poll_enip_device(config: EnipDeviceRuntimeConfig, cache: DeviceCach
     }
 }
 
+/// Polling cycles in a row in which every tag fails before the device is
+/// marked offline and reconnected. A lost connection does so at once.
+const MAX_FAILED_CYCLES: u32 = 3;
+
 /// Connect once, then poll in a loop until an error occurs.
-async fn try_connect_and_poll(config: &EnipDeviceRuntimeConfig, cache: &DeviceCache) -> Result<()> {
+pub(super) async fn try_connect_and_poll(
+    config: &EnipDeviceRuntimeConfig,
+    cache: &DeviceCache,
+) -> Result<()> {
     let mut client = EthernetIpClient::new(&config.url);
     client
         .connect()
@@ -70,8 +77,10 @@ async fn try_connect_and_poll(config: &EnipDeviceRuntimeConfig, cache: &DeviceCa
 
     cache.set_status(&config.id, DeviceStatus::Online).await;
 
+    let mut failed_cycles = 0;
     loop {
         let mut metrics = HashMap::new();
+        let mut failures = 0;
 
         for tag in &config.tags {
             match client.read_tag(&tag.tag_name).await {
@@ -81,9 +90,24 @@ async fn try_connect_and_poll(config: &EnipDeviceRuntimeConfig, cache: &DeviceCa
                     }
                 }
                 Err(e) => {
+                    if !client.is_connected() {
+                        anyhow::bail!("EtherNet/IP tag read '{}' failed: {e}", tag.tag_name);
+                    }
                     tracing::warn!("EtherNet/IP tag read '{}' failed: {}", tag.tag_name, e);
+                    failures += 1;
+                    // A gap, as a Modbus exception gives, not the last value.
+                    metrics.insert(tag.name.clone(), f64::NAN);
                 }
             }
+        }
+
+        if !config.tags.is_empty() && failures == config.tags.len() {
+            failed_cycles += 1;
+            if failed_cycles >= MAX_FAILED_CYCLES {
+                anyhow::bail!("every tag read failed {failed_cycles} cycles in a row");
+            }
+        } else {
+            failed_cycles = 0;
         }
 
         if !metrics.is_empty() {

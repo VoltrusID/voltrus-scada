@@ -510,3 +510,105 @@ fn test_wide_types_round_trip() {
     assert_eq!(CipValue::Lreal(2.5).to_f64(), Some(2.5));
     assert_eq!(CipValue::Dword(7).to_f64(), Some(7.0));
 }
+
+// ── Timeouts and offline detection ──
+
+/// How the stand-in controller answers SendRRData requests.
+#[derive(Clone, Copy)]
+enum Answer {
+    /// Never: the request hangs.
+    Nothing,
+    /// A CIP Read Tag reply with general status 0x05 (path destination unknown).
+    UnknownTag,
+}
+
+/// A controller that registers sessions and answers reads as `answer` says.
+async fn controller(answer: Answer) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                loop {
+                    let mut header = [0u8; ENIP_HEADER_SIZE];
+                    if s.read_exact(&mut header).await.is_err() {
+                        return;
+                    }
+                    let len = u16::from_le_bytes([header[2], header[3]]) as usize;
+                    let mut body = vec![0u8; len];
+                    if s.read_exact(&mut body).await.is_err() {
+                        return;
+                    }
+                    let command = u16::from_le_bytes([header[0], header[1]]);
+                    let reply_body = if command == CMD_REGISTER_SESSION {
+                        body
+                    } else {
+                        match answer {
+                            Answer::Nothing => continue,
+                            Answer::UnknownTag => {
+                                let cip = [CIP_READ_TAG | 0x80, 0x00, 0x05, 0x00];
+                                let mut rr = vec![0u8; 6];
+                                rr.extend_from_slice(&2u16.to_le_bytes());
+                                rr.extend_from_slice(&[0, 0, 0, 0, 0xB2, 0x00]);
+                                rr.extend_from_slice(&(cip.len() as u16).to_le_bytes());
+                                rr.extend_from_slice(&cip);
+                                rr
+                            }
+                        }
+                    };
+                    let mut reply = build_enip_header(command, 0x1234, 0, &reply_body);
+                    reply[4..8].copy_from_slice(&0x1234u32.to_le_bytes());
+                    if s.write_all(&reply).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    addr.to_string()
+}
+
+#[tokio::test]
+async fn test_read_times_out_and_drops_the_connection() {
+    let url = controller(Answer::Nothing).await;
+    let mut client =
+        EthernetIpClient::new(&url).with_timeout(std::time::Duration::from_millis(200));
+    client.connect().await.unwrap();
+    assert!(client.is_connected());
+
+    let started = std::time::Instant::now();
+    let err = client.read_tag("Speed").await.unwrap_err();
+    assert!(err.to_string().contains("timed out"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(
+        !client.is_connected(),
+        "a late reply must not answer the next request"
+    );
+}
+
+#[tokio::test]
+async fn test_device_goes_offline_when_every_read_keeps_failing() {
+    let url = controller(Answer::UnknownTag).await;
+    let config = EnipDeviceRuntimeConfig {
+        id: "enip_test".into(),
+        url,
+        slot: 0,
+        interval_ms: 10,
+        tags: vec![EnipTagConfig {
+            tag_name: "Missing".into(),
+            name: "missing".into(),
+            ..Default::default()
+        }],
+    };
+    let cache = crate::cache::DeviceCache::new();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        super::poller::try_connect_and_poll(&config, &cache),
+    )
+    .await
+    .expect("the poller gives up instead of polling forever");
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("cycles in a row"), "{err}");
+}
