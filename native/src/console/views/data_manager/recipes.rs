@@ -337,10 +337,21 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             Ok((recipe, device, load)) => {
                 let queued = load.command_ids.len();
                 state.confirm_load = None;
+                // Values the write policy refused are never sent; say which and why.
+                let message = if load.refused.is_empty() {
+                    load.message
+                } else {
+                    let refused: Vec<String> = load
+                        .refused
+                        .iter()
+                        .map(|r| format!("{}: {}", r.register, r.error))
+                        .collect();
+                    format!("{} Not sent: {}.", load.message, refused.join("; "))
+                };
                 state.load = Some(LoadRun {
                     recipe,
                     device,
-                    message: load.message,
+                    message,
                     ids: load.command_ids,
                     commands: HashMap::new(),
                     seq: 0,
@@ -2070,6 +2081,7 @@ mod tests {
                 RecipeLoad {
                     ok: true,
                     command_ids: vec!["cmd_a".into(), "cmd_b".into()],
+                    refused: Vec::new(),
                     message: "Recipe load queued: 2 commands".into(),
                 },
             )),

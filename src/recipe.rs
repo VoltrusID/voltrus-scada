@@ -27,7 +27,8 @@ fn random_command_suffix() -> String {
 /// Load a recipe's values to the target PLC/device by creating real commands
 /// in the command queue. Returns a list of created command IDs.
 /// Every value goes through the tag's write policy, like a write from the API;
-/// values the policy refuses are reported in `RecipeLoad::refused` and not sent.
+/// values the policy refuses, and values with no matching tag, are reported in
+/// `RecipeLoad::refused` and not sent.
 pub async fn load_recipe_to_plc(
     recipe: &Recipe,
     storage: &Storage,
@@ -61,6 +62,10 @@ pub async fn load_recipe_to_plc(
                     recipe.device_id,
                     register_name,
                 );
+                load.refused.push((
+                    register_name.clone(),
+                    format!("no tag '{register_name}' on device '{}'", recipe.device_id),
+                ));
                 continue;
             }
             Err(e) => {
@@ -69,6 +74,8 @@ pub async fn load_recipe_to_plc(
                     register_name,
                     e,
                 );
+                load.refused
+                    .push((register_name.clone(), "tag lookup failed".to_string()));
                 continue;
             }
         };

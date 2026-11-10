@@ -201,7 +201,7 @@ pub async fn load_recipe(
         "command_ids": load.command_ids,
         "refused": refused,
         "message": format!(
-            "Recipe load queued: {} commands, {} refused by the write policy",
+            "Recipe load queued: {} commands, {} not sent",
             load.command_ids.len(),
             refused.len()
         ),
