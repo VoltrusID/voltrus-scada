@@ -264,7 +264,7 @@ fn apply_snapshot(tx: &rusqlite::Transaction<'_>, snapshot_data: &str) -> Result
             };
 
             // Delete all existing rows
-            let _ = tx.execute(&format!("DELETE FROM {}", table), []).ok(); // table may not exist
+            let _ = tx.execute(&format!("DELETE FROM \"{}\"", table), []).ok(); // table may not exist
 
             if arr.is_empty() {
                 continue;
@@ -275,10 +275,15 @@ fn apply_snapshot(tx: &rusqlite::Transaction<'_>, snapshot_data: &str) -> Result
                 let col_names: Vec<&str> = first_row.keys().map(|s| s.as_str()).collect();
                 let placeholders: Vec<String> =
                     (1..=col_names.len()).map(|i| format!("?{}", i)).collect();
+                // Quote the names: `recipes.values` is an SQL keyword.
+                let quoted: Vec<String> = col_names
+                    .iter()
+                    .map(|c| format!("\"{}\"", c.replace('"', "\"\"")))
+                    .collect();
                 let insert_sql = format!(
-                    "INSERT INTO {} ({}) VALUES ({})",
+                    "INSERT INTO \"{}\" ({}) VALUES ({})",
                     table,
-                    col_names.join(", "),
+                    quoted.join(", "),
                     placeholders.join(", "),
                 );
 

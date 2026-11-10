@@ -96,11 +96,10 @@ pub async fn rollback(
         )
         .await;
 
-    let rolled_back = state
-        .storage
-        .rollback_to_snapshot(id)
-        .await
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let rolled_back = state.storage.rollback_to_snapshot(id).await.map_err(|e| {
+        tracing::error!("Rollback to config snapshot #{id} failed: {e:#}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     if rolled_back {
         Ok(StatusCode::NO_CONTENT)
     } else {
