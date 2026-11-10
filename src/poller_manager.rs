@@ -282,14 +282,27 @@ impl PollerManager {
         }
     }
 
-    /// Start the pollers this node owns from the stored device configuration.
+    /// Start a poller for every enabled device of every protocol, as a node
+    /// that polls does at boot. Returns how many pollers were started.
+    pub async fn start_all_enabled(&self) -> anyhow::Result<usize> {
+        self.start_enabled(None).await
+    }
+
+    /// Start the pollers this node owns from the stored device configuration,
+    /// when it takes the devices over from its peer.
     ///
-    /// Every enabled Modbus and OPC-UA device starts, which is what a fresh
-    /// process starts at boot. S7, EtherNet/IP, Voltrus PLC, DNP3 and BACnet
-    /// devices are started by an operator, so they start only when their poller
-    /// id is in `also_running`: the set the previous owner of the devices was
-    /// running. Returns how many pollers were started.
+    /// Every enabled Modbus and OPC-UA device starts. Devices of the other
+    /// protocols start only when their poller id is in `also_running`, the set
+    /// the previous owner was running, so one an operator stopped stays
+    /// stopped. Returns how many pollers were started.
     pub async fn start_configured(&self, also_running: &HashSet<String>) -> anyhow::Result<usize> {
+        self.start_enabled(Some(also_running)).await
+    }
+
+    /// Start enabled devices; with `only`, devices other than Modbus and
+    /// OPC-UA start only when their poller id is in it.
+    async fn start_enabled(&self, only: Option<&HashSet<String>>) -> anyhow::Result<usize> {
+        let wanted = |id: &str| only.is_none_or(|ids| ids.contains(id));
         let mut started = 0usize;
         #[cfg(feature = "modbus")]
         for config in self.storage.get_all_device_configs().await? {
@@ -303,27 +316,27 @@ impl PollerManager {
         }
         #[cfg(feature = "s7")]
         for config in self.storage.get_all_s7_device_configs().await? {
-            if also_running.contains(&config.id) {
+            if wanted(&config.id) {
                 self.start_s7(config).await;
                 started += 1;
             }
         }
         #[cfg(feature = "ethernet-ip")]
         for config in self.storage.get_all_enip_device_configs().await? {
-            if also_running.contains(&config.id) {
+            if wanted(&config.id) {
                 self.start_ethernet_ip(config).await;
                 started += 1;
             }
         }
         for config in self.storage.get_all_voltrus_plc_device_configs().await? {
-            if also_running.contains(&config.id) {
+            if wanted(&config.id) {
                 self.start_voltrus_plc(config).await;
                 started += 1;
             }
         }
         #[cfg(feature = "dnp3")]
         for device in self.storage.list_dnp3_devices().await? {
-            if !device.enabled || !also_running.contains(&format!("dnp3_{}", device.id)) {
+            if !device.enabled || !wanted(&format!("dnp3_{}", device.id)) {
                 continue;
             }
             let points = self.storage.list_dnp3_points(device.id).await?;
@@ -335,7 +348,7 @@ impl PollerManager {
         }
         #[cfg(feature = "bacnet")]
         for device in self.storage.list_bacnet_devices().await? {
-            if !device.enabled || !also_running.contains(&format!("bacnet_{}", device.id)) {
+            if !device.enabled || !wanted(&format!("bacnet_{}", device.id)) {
                 continue;
             }
             let objects = self.storage.list_bacnet_objects(device.id).await?;
@@ -347,7 +360,58 @@ impl PollerManager {
                 started += 1;
             }
         }
-        let _ = also_running;
+        let _ = wanted;
         Ok(started)
+    }
+}
+
+#[cfg(all(test, feature = "s7", feature = "ethernet-ip"))]
+mod tests {
+    use super::*;
+
+    async fn manager_with_devices() -> PollerManager {
+        let storage = Storage::new_in_memory().unwrap();
+        // Port 1 refuses connections; the pollers only retry in the background.
+        storage
+            .create_s7_device("on", "127.0.0.1:1", 0, 1, 1000, true)
+            .await
+            .unwrap();
+        storage
+            .create_s7_device("off", "127.0.0.1:1", 0, 1, 1000, false)
+            .await
+            .unwrap();
+        storage
+            .create_enip_device("line", "127.0.0.1:1", 0, 1000, true, 0)
+            .await
+            .unwrap();
+        PollerManager::new(
+            DeviceCache::new(),
+            storage,
+            crate::network::NetworkManager::new(Vec::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn boot_starts_every_enabled_device() {
+        let manager = manager_with_devices().await;
+        manager.start_all_enabled().await.unwrap();
+        let running = manager.running_ids().await;
+        assert!(running.contains(&"s7_1".to_string()), "{running:?}");
+        assert!(running.contains(&"enip_1".to_string()), "{running:?}");
+        assert!(
+            !running.contains(&"s7_2".to_string()),
+            "disabled: {running:?}"
+        );
+        manager.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn takeover_keeps_operator_stopped_devices_stopped() {
+        let manager = manager_with_devices().await;
+        let previously_running = HashSet::from(["enip_1".to_string()]);
+        manager.start_configured(&previously_running).await.unwrap();
+        let running = manager.running_ids().await;
+        assert_eq!(running, vec!["enip_1".to_string()]);
+        manager.stop_all().await;
     }
 }
