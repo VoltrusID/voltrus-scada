@@ -105,6 +105,9 @@ impl PollerManager {
     pub async fn start(&self, config: DeviceConfig) {
         let device_id = config.id.clone();
         self.cache.register_protocol(&device_id, "modbus").await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
+            .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;
         }
@@ -142,6 +145,9 @@ impl PollerManager {
     pub async fn start_s7(&self, config: S7DeviceConfig) {
         let device_id = config.id.clone();
         self.cache.register_protocol(&device_id, "s7").await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
+            .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;
         }
@@ -157,6 +163,9 @@ impl PollerManager {
         let device_id = config.id.clone();
         self.cache
             .register_protocol(&device_id, "ethernet_ip")
+            .await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
             .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;
@@ -196,6 +205,9 @@ impl PollerManager {
     pub async fn start_bacnet(&self, config: crate::models::BacnetDeviceConfig) {
         let device_id = config.id.clone();
         self.cache.register_protocol(&device_id, "bacnet").await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
+            .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;
         }
@@ -210,6 +222,9 @@ impl PollerManager {
         let device_id = config.id.clone();
         self.cache
             .register_protocol(&device_id, "voltrus_plc")
+            .await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
             .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;

@@ -80,11 +80,12 @@ impl S7Client {
         values
             .into_iter()
             .next()
-            .context("No value returned for tag")
+            .context("No value returned for tag")?
+            .map_err(|code| anyhow::anyhow!("S7 item error 0x{code:02X}"))
     }
 
-    /// Read multiple tags in one S7 request.
-    pub async fn read_tags(&mut self, tags: &[S7Tag]) -> Result<Vec<S7Value>> {
+    /// Read multiple tags in one S7 request: one item per tag, in order.
+    pub async fn read_tags(&mut self, tags: &[S7Tag]) -> Result<Vec<S7ReadItem>> {
         if tags.is_empty() {
             return Ok(Vec::new());
         }
@@ -451,7 +452,11 @@ impl S7Client {
         Ok(s7)
     }
 
-    fn parse_read_var_response(&self, data: &[u8], tags: &[S7Tag]) -> Result<Vec<S7Value>> {
+    pub(crate) fn parse_read_var_response(
+        &self,
+        data: &[u8],
+        tags: &[S7Tag],
+    ) -> Result<Vec<S7ReadItem>> {
         if data.len() < 17 {
             anyhow::bail!("S7 Read Var response too short");
         }
@@ -466,61 +471,15 @@ impl S7Client {
         }
 
         let param_len = u16::from_be_bytes([data[6], data[7]]) as usize;
-        let data_start = 10 + param_len; // after header(10) + params
+        // An Ack-Data header is 12 bytes: the 10 of a job plus the error class
+        // and code read above.
+        let data_start = 12 + param_len;
 
         if data.len() < data_start + 1 {
             anyhow::bail!("S7 Read Var response data area too short");
         }
 
-        let mut values = Vec::new();
-        let mut offset = data_start;
-
-        for tag in tags {
-            if offset >= data.len() {
-                values.push(S7Value::Byte(0));
-                continue;
-            }
-
-            // Read return code
-            let return_code = data[offset];
-            offset += 1;
-
-            if return_code != 0xFF {
-                // Error reading this item
-                values.push(S7Value::Byte(0));
-                // Skip transport size and data length
-                if offset + 3 <= data.len() {
-                    offset += 1; // transport size
-                    let item_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
-                    offset += 2;
-                    offset += item_len;
-                }
-                continue;
-            }
-
-            // Transport size
-            if offset + 2 > data.len() {
-                values.push(S7Value::Byte(0));
-                break;
-            }
-            offset += 1; // transport size
-
-            let item_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
-            offset += 2;
-
-            if offset + item_len > data.len() {
-                values.push(S7Value::Byte(0));
-                break;
-            }
-
-            let item_data = &data[offset..offset + item_len];
-            let value = Self::decode_value(item_data, tag);
-            values.push(value);
-
-            offset += item_len;
-        }
-
-        Ok(values)
+        Ok(parse_read_items(&data[data_start..], tags))
     }
 
     pub fn decode_value(data: &[u8], tag: &S7Tag) -> S7Value {
@@ -728,5 +687,78 @@ impl S7Client {
         }
 
         Ok(payload[3..].to_vec())
+    }
+}
+
+/// One item of a Read Var answer: the value, or the item's return code when
+/// the PLC refused it (`0x00` when the answer was cut short before it).
+pub type S7ReadItem = std::result::Result<S7Value, u8>;
+
+/// Return code of an item the PLC read.
+const ITEM_OK: u8 = 0xFF;
+
+/// Decode the data area of a Read Var answer into one item per tag. A failed
+/// item yields its return code rather than a value: a 0 would be
+/// indistinguishable from a real reading.
+pub(crate) fn parse_read_items(data: &[u8], tags: &[S7Tag]) -> Vec<S7ReadItem> {
+    let mut items = Vec::with_capacity(tags.len());
+    let mut offset = 0;
+    for (i, tag) in tags.iter().enumerate() {
+        let last = i + 1 == tags.len();
+        let Some(&return_code) = data.get(offset) else {
+            items.push(Err(0x00));
+            continue;
+        };
+        if return_code != ITEM_OK {
+            items.push(Err(return_code));
+            // A refused item normally carries no data, but skip what it says it has.
+            let len = data
+                .get(offset + 2..offset + 4)
+                .map(|b| item_byte_len(data[offset + 1], u16::from_be_bytes([b[0], b[1]]) as usize))
+                .unwrap_or(0);
+            offset += 4 + len + usize::from(!last && len % 2 == 1);
+            continue;
+        }
+        let (Some(&transport), Some(len_bytes)) =
+            (data.get(offset + 1), data.get(offset + 2..offset + 4))
+        else {
+            items.push(Err(0x00));
+            offset = data.len();
+            continue;
+        };
+        let raw_len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+        let byte_len = item_byte_len(transport, raw_len);
+        let start = offset + 4;
+        let Some(item_data) = data.get(start..start + byte_len) else {
+            items.push(Err(0x00));
+            offset = data.len();
+            continue;
+        };
+        items.push(Ok(S7Client::decode_value(item_data, tag)));
+        // Every item but the last is padded to an even length.
+        offset = start + byte_len + usize::from(!last && byte_len % 2 == 1);
+    }
+    items
+}
+
+/// Bytes of an item's data. For the bit and byte/word/integer transport sizes
+/// the length field counts bits; for real and octet string it counts bytes.
+fn item_byte_len(transport: u8, raw_len: usize) -> usize {
+    match transport {
+        0x03..=0x05 => raw_len.div_ceil(8),
+        _ => raw_len,
+    }
+}
+
+/// The quality of a value whose item came back with `return_code`.
+pub(crate) fn item_error_quality(return_code: u8) -> crate::quality::Quality {
+    use crate::quality::Quality;
+    match return_code {
+        // Address out of range, data type not supported or inconsistent,
+        // object does not exist: the tag is configured wrong.
+        0x05..=0x07 | 0x0A => Quality::BadConfigError,
+        // The answer was cut short: a communication fault, not the item.
+        0x00 => Quality::BadCommFailure,
+        _ => Quality::BadDeviceError,
     }
 }

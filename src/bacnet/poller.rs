@@ -177,6 +177,13 @@ async fn try_poll_cycle(config: &BacnetDeviceConfig) -> Result<HashMap<String, f
             pos += 1;
         }
 
+        // Objects the answer held no value for (an error result, or a type
+        // the scan does not decode) are NaN, which the cache marks bad,
+        // instead of disappearing from the device.
+        for (name, _, _, _) in &objects[obj_idx..] {
+            result.insert(name.clone(), f64::NAN);
+        }
+
         Ok(result)
     })
     .await

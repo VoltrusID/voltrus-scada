@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::cache::DeviceCache;
 use crate::models::{DeviceStatus, WriteResult};
+use crate::quality::Quality;
 
 use super::client::S7Client;
 use super::types::*;
@@ -35,23 +36,11 @@ pub async fn poll_s7_device(config: S7DeviceConfig, cache: DeviceCache) {
 
                 loop {
                     match client.read_tags(&config.tags).await {
-                        Ok(values) => {
-                            let mut metrics = HashMap::new();
-                            for (i, value) in values.iter().enumerate() {
-                                let tag_name = if i < config.tags.len() {
-                                    config.tags[i].name.clone().unwrap_or_else(|| {
-                                        format!(
-                                            "{}_{}",
-                                            config.tags[i].area.to_string().to_lowercase(),
-                                            config.tags[i].offset
-                                        )
-                                    })
-                                } else {
-                                    format!("tag_{}", i)
-                                };
-                                metrics.insert(tag_name, value.to_f64());
-                            }
-                            cache.update(&device_id, metrics, false).await;
+                        Ok(items) => {
+                            let (metrics, quality) = items_to_metrics(&config.tags, items);
+                            cache
+                                .update_with_quality(&device_id, metrics, quality, false)
+                                .await;
                         }
                         Err(e) => {
                             tracing::warn!("S7 device {} read error: {}", device_id, e);
@@ -79,6 +68,36 @@ pub async fn poll_s7_device(config: S7DeviceConfig, cache: DeviceCache) {
         let delay = backoff.next();
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
+}
+
+/// The cache name of a tag: its configured name, or area and offset.
+fn tag_name(tag: &S7Tag) -> String {
+    tag.name
+        .clone()
+        .unwrap_or_else(|| format!("{}_{}", tag.area.to_string().to_lowercase(), tag.offset))
+}
+
+/// Metrics and their quality from one Read Var answer. A refused item is
+/// NaN and bad, never a 0 that would read like a real value.
+pub(super) fn items_to_metrics(
+    tags: &[S7Tag],
+    items: Vec<super::client::S7ReadItem>,
+) -> (HashMap<String, f64>, HashMap<String, Quality>) {
+    let mut metrics = HashMap::new();
+    let mut quality = HashMap::new();
+    for (tag, item) in tags.iter().zip(items) {
+        let name = tag_name(tag);
+        match item {
+            Ok(value) => {
+                metrics.insert(name, value.to_f64());
+            }
+            Err(code) => {
+                quality.insert(name.clone(), super::client::item_error_quality(code));
+                metrics.insert(name, f64::NAN);
+            }
+        }
+    }
+    (metrics, quality)
 }
 
 // ── One-shot write function ──
