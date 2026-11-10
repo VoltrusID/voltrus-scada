@@ -25,9 +25,10 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   equally mature; see [Project status](#project-status).
 * **Dashboards:** responsive grid, free-form canvas, 3D digital twin and a 2D
   SCADA diagram editor, with per-screen layouts.
-* **Alarms:** warning and critical thresholds, priorities, shelving, deadband,
-  on and off delay, acknowledgement, alarm analytics, email, webhook and push
-  notifications.
+* **Alarms:** warning and critical thresholds (zero and negative limits too),
+  priorities, shelving, deadband, on and off delay, acknowledgement, alarm
+  analytics, email, webhook and push notifications. Alarms are evaluated only
+  on values of good quality.
 * **Historian:** a sample of every tag each persistence interval
   (`persist_interval_secs`, default 5 s) packed into compressed blocks
   (delta-of-delta timestamps, XOR floats, run-length digitals), per-tag
@@ -35,7 +36,7 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   trends, SPC charts, annotations, CSV and Excel import and export. See
   [docs/historian.md](docs/historian.md).
 * **Automation:** visual flow engine, JavaScript scripts (QuickJS), recipes,
-  a command queue with retries and expiry, simulation mode.
+  a command queue with retries, expiry and write read-back, simulation mode.
 * **API:** REST with an OpenAPI document and an interactive API reference at
   `/api/docs` (sign in first), live data over WebSocket (MessagePack) with a
   server-sent-events fallback at `/api/v1/stream`, plus TypeScript and Python
@@ -43,17 +44,24 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   can lag the server version). Tag writes from REST, WebSocket and MCP go
   through the same command queue, write policy and audit trail
   ([docs/live-stream.md](docs/live-stream.md)), and so do flow `WriteOut`
-  nodes and recipes. Prometheus metrics at `/metrics` need an API key
-  (`X-API-Key` header or `?api_key=`).
+  nodes and recipes. Every live value carries a quality (good, uncertain,
+  stale, bad) and a millisecond timestamp. API keys go in the `X-API-Key`
+  header; `?api_key=` is accepted only on `/metrics` (Prometheus) and
+  `/api/v1/stream`.
 * **AI agents (MCP):** a Model Context Protocol server built into the server at
   `/mcp`, so Claude and other MCP clients can read values, manage devices and
-  tags, and acknowledge alarms with an API key. See [docs/mcp.md](docs/mcp.md).
+  tags, and acknowledge alarms with an API key. Writes and deletions need a
+  second confirming call by default, calls are rate limited per key, and
+  `mcp.read_only: true` turns every write tool off. See
+  [docs/mcp.md](docs/mcp.md).
 * **Operations:** OEE and downtime, shift handover, asset inventory with NIS2
   export, config snapshots, backup and restore, whole-configuration YAML
   projects (`voltrus project export|import|validate`).
-* **Security:** local accounts with Argon2, admin and read-only users, API
-  keys, rate limiting, SameSite=Strict session cookies, security
-  headers, intrusion detection, audit log.
+* **Security:** local accounts with Argon2; admin, operator (demo) and
+  read-only users; API keys whose permissions can narrow, never widen, their
+  role; rate limiting, SameSite=Strict session cookies, security headers,
+  intrusion detection; a hash-chained audit log (`GET /api/v1/audit/verify`);
+  the AI provider key encrypted at rest. Custom roles are labels only for now.
 * **No limits and no licence key:** unlimited devices, tags and retention.
 
 ## Project status
@@ -63,14 +71,16 @@ level, and this table says where each one stands so you can plan around it.
 
 | Area | Status |
 |---|---|
-| Modbus TCP | Production for reads: batching, timeouts, reconnect with backoff, all data types. Queued writes go to 16-bit holding registers only for now |
-| OPC UA | Reads through subscriptions. Writes are not implemented yet. Server certificates are not verified yet |
-| Siemens S7, EtherNet/IP | Reads work against common devices; queued writes do not yet use the tag's data type |
-| DNP3, BACnet/IP | Experimental: not yet conformant enough for field devices |
-| Device start-up | Modbus and OPC UA devices start polling at boot; S7, EtherNet/IP, DNP3 and BACnet devices are started from the UI after a restart |
-| Command queue | Retries with backoff; a write not delivered within 30 minutes expires instead of landing late. No read-back verification yet: a write counts as applied when the device acknowledges it |
-| Data quality | One online/offline state per device; per-value quality codes (good, bad, stale) are not tracked yet |
-| Alarms | Thresholds, deadband, on/off delay, acknowledgement and shelving. Not the full ISA-18.2 state model yet |
+| Modbus TCP | Production: batched reads, timeouts, reconnect with backoff; queued writes in the register's type, scale, area and word order, coils included |
+| OPC UA | Reads through subscriptions; writes through the live session in the node's data type. Secure modes need the server certificate in `pki/trusted` |
+| Siemens S7 | Reads split to the negotiated PDU size; writes in the tag's type (BOOL to REAL, INT/DINT). Tested against the bundled simulator, not yet a real PLC |
+| EtherNet/IP | Reads and writes in the tag's CIP type (BOOL to LREAL), 5 s timeouts. Unconnected messaging only; not yet tested on a real controller |
+| DNP3 | Beta: own IEEE 1815 master (integrity and event polls, unsolicited responses, select-before-operate and direct operate, time sync). Tested only against the bundled outstation simulator |
+| BACnet/IP | Experimental: ReadPropertyMultiple polling; WriteProperty in the object's type with priority (default 8). No COV or segmentation yet |
+| Device start-up | Every enabled device starts polling at boot |
+| Command queue | Retries with backoff; a write not delivered within 30 minutes expires instead of landing late; acknowledged writes are verified by read-back (confirmed, mismatch or timeout) |
+| Data quality | Every value is good, uncertain, stale or bad (with a reason) and has a millisecond timestamp; bad and stale values stay out of the historian |
+| Alarms | Thresholds (zero and negative too), deadband, on/off delay, acknowledgement and shelving, evaluated on good values only. Not the full ISA-18.2 state model yet |
 | Native console ([`native/`](native/README-native.md)) | Experimental, macOS first |
 
 Help with any of these is welcome; see [Contributing](#contributing).
@@ -138,8 +148,12 @@ reverse proxy or tunnel on the same machine that sends `X-Forwarded-Proto: https
 `false` in the config forces either; the default is `auto`.
 
 Open <http://localhost:3000>. The first start generates a random admin
-password and prints it once to the server log (look for
-`GENERATED ADMIN PASSWORD`). Change it after the first sign-in.
+password and writes it to `initial-admin-password` next to the database
+(readable by the owner only); the log shows the path, never the password.
+Sign in as `admin`, change the password, and the file is deleted.
+
+Set `auth_secret` in the config. Without it a new secret is generated at every
+start, which signs everyone out and makes a stored AI provider key unreadable.
 
 Prebuilt Core binaries for Linux (x86_64, aarch64), Windows (x86_64) and macOS
 are attached to each [release](https://github.com/VoltrusID/voltrus-scada/releases).
