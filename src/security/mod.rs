@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod headers;
 pub mod intrusion;
+pub mod mcp_guard;
 pub mod rate_limiter;
 pub mod request_filters;
 pub mod request_id;
@@ -12,6 +13,7 @@ pub mod signing;
 pub use audit::*;
 pub use headers::*;
 pub use intrusion::*;
+pub use mcp_guard::McpGuard;
 pub use rate_limiter::*;
 pub use request_filters::*;
 pub use request_id::*;

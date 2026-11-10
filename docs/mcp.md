@@ -31,7 +31,9 @@ curl -s -X POST http://localhost:3000/api/v1/api-keys \
 ```
 
 The key is shown once. Roles: `api` is read-only, `integration` may also call
-write tools. Admin and demo logins work too (cookie), but an agent should hold a
+write tools. A key's `permissions` can narrow it further: an integration key
+created with `"permissions": "[\"read\"]"` stays read-only; leave it empty
+(`[]`) or include `"write"` for an agent that changes things. Admin and demo logins work too (cookie), but an agent should hold a
 key of its own so its actions are attributable and revocable.
 
 ### 2. Add the server to the client
@@ -116,6 +118,7 @@ saying so.
 | `start_flow` / `stop_flow` | write | Enable or disable a flow. |
 | `write_tag` | write | Queue a setpoint write through the tag's write policy. |
 | `get_command_status` | read | Outcome of a queued write. |
+| `confirm_action` | write | Carry out a call another tool proposed, given its confirmation token. |
 | `list_device_templates` | read | Search the device template library (`q`, `manufacturer`, `protocol`, `source`). |
 | `get_device_template` | read | One template in full: defaults, registers or objects, quirks. |
 | `instantiate_device_template` | write | Create a device from a template (name, ip, optional overrides) and start polling it. BACnet needs an admin login, as on the BACnet routes. |
@@ -125,6 +128,10 @@ saying so.
 | `project_export_yaml` | **admin** | The whole configuration as one `voltrus-project/1` YAML document (secrets as `${ENV}` references). |
 | `project_plan_import` | **admin** | Dry run of a project import: what would be created, updated and deleted. Writes nothing. |
 | `project_apply_import` | **admin** | Import a project (`mode` merge or replace) in one transaction, after a rollback snapshot. |
+
+`write_tag`, `delete_device`, `delete_tag` and `project_apply_import` ask for
+confirmation first (see [Guardrails](#guardrails)), and `confirm_action` carries
+out what they proposed.
 
 Every tool publishes a JSON Schema (`inputSchema`) with `additionalProperties:
 false`, and returns structured JSON (`structuredContent`, mirrored as text).
@@ -158,6 +165,63 @@ The agent calls `create_modbus_device`, `create_tag` (`warn_val: 240`),
 `create_screen`, `add_tag_to_screen`, then `read_live_values` to confirm the
 value arrives.
 
+## Guardrails
+
+Set in the `mcp:` section of `config.yaml`; every setting is optional.
+
+```yaml
+mcp:
+  read_only: false               # true: hide and refuse every write tool
+  require_confirmation: true     # true (default): write_tag + destructive tools; "all"; false
+  confirmation_ttl_secs: 300
+  calls_per_minute: 60           # per credential; 0 = unlimited
+  writes_per_minute: 10
+```
+
+**Read-only mode.** With `read_only: true`, `tools/list` offers only the read
+tools and any write or admin-write call (and `confirm_action`) is refused with
+JSON-RPC error `-32003`. An admin can also switch it at runtime without a
+restart:
+
+```bash
+curl -s -X PUT http://localhost:3000/api/v1/settings/mcp -b "voltrus_token=<admin session>" \
+  -H "Content-Type: application/json" -d '{"read_only": true}'
+curl -s http://localhost:3000/api/v1/settings/mcp -b "voltrus_token=<admin session>"
+```
+
+When the config file sets it, the runtime switch cannot turn it off (409).
+
+**Two-step confirmation.** By default `write_tag` and the tools that delete or
+overwrite configuration (`delete_device`, `delete_tag`, `project_apply_import`)
+do nothing on the first call. They return a normal result (`isError: false`)
+whose `structuredContent` is a proposal:
+
+```json
+{
+  "status": "confirmation_required",
+  "tool": "write_tag",
+  "arguments": {"tag_id": 12, "value": 42},
+  "summary": "Write value to a tag: tag_id = 12, value = 42 (tag \"Valve 1\", key valve)",
+  "confirmation_token": "Q3n...",
+  "expires_in_secs": 300
+}
+```
+
+The agent shows the summary to the user and, once they agree, calls
+`confirm_action` with `{"token": "..."}`, or repeats the identical call with
+`confirmation_token` added (the schemas of these tools list that property).
+Tokens are single use, expire after `confirmation_ttl_secs`, and only the
+credential that received one can redeem it; the role is checked again when it
+is redeemed. `require_confirmation: "all"` extends this to every write tool;
+`false` turns it off. Proposals are audit-logged as `mcp:<tool>:proposed`.
+
+**Rate limits.** Each credential (API key or user) has a token bucket of
+`calls_per_minute` tool calls, and of those at most `writes_per_minute` calls
+that change something (a proposal counts as a call, its confirmation as a
+write). Over the limit, the call returns `isError: true` with
+"rate limit reached ... retry in N s". Refused calls do not use up the budget.
+These limits are on top of the server's global per-IP rate limiter.
+
 ## Security
 
 - **Same authentication as REST.** `X-API-Key`, `Authorization: Bearer <api key>`
@@ -184,8 +248,9 @@ value arrives.
   handlers add their own entries as for REST. Argument values are not logged.
 - **Prompt injection.** Tag names, alarm messages and device names are data an
   attacker with write access could shape. An agent that can write should be
-  supervised: prefer clients that ask for confirmation per tool call, and use a
-  read-only key for unattended analysis.
+  supervised: keep `require_confirmation` on so setpoint writes and deletions
+  need the user's agreement, prefer clients that also ask per tool call, and use
+  a read-only key or `read_only: true` for unattended analysis.
 - **Browsers.** A request with an `Origin` header must come from the server's own
   host or a configured `cors_origin`, otherwise 403 (DNS-rebinding protection the
   MCP transport requires), and POST bodies must be `Content-Type:

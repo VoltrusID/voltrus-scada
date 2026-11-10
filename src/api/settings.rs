@@ -166,3 +166,77 @@ pub async fn update_ui_lang(
     });
     Ok(Json(json!({ "ok": true, "lang": lang })).into_response())
 }
+
+/// Setting an admin flips to put the MCP endpoint in read-only mode at runtime.
+const MCP_READ_ONLY_SETTING: &str = "mcp_read_only";
+
+/// Whether the MCP endpoint refuses every write tool: `mcp.read_only` in the
+/// config, or the admin's runtime switch. Fails closed: a storage error reads
+/// as read-only.
+pub async fn mcp_read_only(state: &AppState) -> bool {
+    if state.mcp_guard.config().read_only {
+        return true;
+    }
+    match state.storage.get_settings(&[MCP_READ_ONLY_SETTING]).await {
+        Ok(settings) => settings.iter().any(|s| s.value == "true"),
+        Err(e) => {
+            tracing::warn!("MCP read-only setting unreadable, treating MCP as read-only: {e}");
+            true
+        }
+    }
+}
+
+async fn mcp_settings_body(state: &AppState) -> serde_json::Value {
+    let config = state.mcp_guard.config();
+    json!({
+        "read_only": mcp_read_only(state).await,
+        "read_only_locked_by_config": config.read_only,
+        "require_confirmation": match config.require_confirmation {
+            crate::models::ConfirmationMode::Off => "off",
+            crate::models::ConfirmationMode::Destructive => "write_tag_and_destructive",
+            crate::models::ConfirmationMode::All => "all",
+        },
+        "confirmation_ttl_secs": config.confirmation_ttl_secs,
+        "calls_per_minute": config.calls_per_minute,
+        "writes_per_minute": config.writes_per_minute,
+    })
+}
+
+/// GET /api/v1/settings/mcp — the MCP guardrails in force
+pub async fn get_mcp_settings(State(state): State<AppState>) -> impl IntoResponse {
+    Json(mcp_settings_body(&state).await)
+}
+
+#[derive(serde::Deserialize)]
+pub struct McpSettingsUpdate {
+    pub read_only: bool,
+}
+
+/// PUT /api/v1/settings/mcp — switch MCP read-only mode at runtime
+pub async fn update_mcp_settings(
+    State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    Json(body): Json<McpSettingsUpdate>,
+) -> Result<Response, AppError> {
+    if !body.read_only && state.mcp_guard.config().read_only {
+        return Ok((
+            StatusCode::CONFLICT,
+            Json(json!({"error": "mcp.read_only is set in the config file; change it there"})),
+        )
+            .into_response());
+    }
+    state
+        .storage
+        .upsert_setting(
+            MCP_READ_ONLY_SETTING,
+            if body.read_only { "true" } else { "false" },
+        )
+        .await?;
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: "update_mcp_settings".to_string(),
+        username: auth.username.clone(),
+        resource: "mcp".to_string(),
+        details: Some(format!("read_only={}", body.read_only)),
+    });
+    Ok(Json(mcp_settings_body(&state).await).into_response())
+}

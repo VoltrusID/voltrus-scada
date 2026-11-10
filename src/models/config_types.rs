@@ -53,6 +53,87 @@ pub struct AppConfig {
     pub networks: Vec<NetworkConfig>,
     #[serde(default)]
     pub device_templates: DeviceTemplatesConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+/// `mcp:` in the config file: guardrails on the MCP endpoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpConfig {
+    /// Hide and refuse every tool that changes something. An admin can also
+    /// switch this on at runtime (`PUT /api/v1/settings/mcp`); the config value
+    /// cannot be overridden from there.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Which write tools answer with a proposal and a confirmation token
+    /// instead of acting: `true` (default) = write_tag and the destructive
+    /// tools, `all` = every write tool, `false` = none.
+    #[serde(default)]
+    pub require_confirmation: ConfirmationMode,
+    /// Seconds a confirmation token stays valid.
+    #[serde(default = "default_mcp_confirmation_ttl")]
+    pub confirmation_ttl_secs: u64,
+    /// Tool calls per minute per credential (0 = unlimited).
+    #[serde(default = "default_mcp_calls_per_minute")]
+    pub calls_per_minute: u32,
+    /// Of those, calls that change something (0 = unlimited).
+    #[serde(default = "default_mcp_writes_per_minute")]
+    pub writes_per_minute: u32,
+}
+
+fn default_mcp_confirmation_ttl() -> u64 {
+    300
+}
+fn default_mcp_calls_per_minute() -> u32 {
+    60
+}
+fn default_mcp_writes_per_minute() -> u32 {
+    10
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            read_only: false,
+            require_confirmation: ConfirmationMode::default(),
+            confirmation_ttl_secs: default_mcp_confirmation_ttl(),
+            calls_per_minute: default_mcp_calls_per_minute(),
+            writes_per_minute: default_mcp_writes_per_minute(),
+        }
+    }
+}
+
+/// `mcp.require_confirmation`: a boolean or `"all"`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConfirmationMode {
+    Off,
+    /// write_tag and the tools flagged destructive.
+    #[default]
+    Destructive,
+    All,
+}
+
+impl<'de> Deserialize<'de> for ConfirmationMode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Bool(true) => Ok(Self::Destructive),
+            Raw::Bool(false) => Ok(Self::Off),
+            Raw::Text(t) => match t.to_ascii_lowercase().as_str() {
+                "all" => Ok(Self::All),
+                "true" | "destructive" => Ok(Self::Destructive),
+                "false" | "off" | "none" => Ok(Self::Off),
+                other => Err(serde::de::Error::custom(format!(
+                    "mcp.require_confirmation must be true, false or \"all\", not {other:?}"
+                ))),
+            },
+        }
+    }
 }
 
 /// `device_templates:` in the config file.

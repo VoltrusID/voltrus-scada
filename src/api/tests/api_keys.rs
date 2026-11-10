@@ -31,6 +31,7 @@ async fn test_api_key_crud() {
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
         global_rate_limiter: crate::security::GlobalRateLimiter::new(),
         audit_logger: crate::security::AuditLogger::new().0,
+        mcp_guard: Default::default(),
         intrusion_detector: crate::security::IntrusionDetector::new(),
         license_status: std::sync::Arc::new(std::sync::RwLock::new(
             crate::license::LicenseStatus::Community,

@@ -829,6 +829,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         login_rate_limiter,
         global_rate_limiter,
         audit_logger,
+        mcp_guard: Arc::new(crate::security::McpGuard::new(app_config.mcp.clone())),
         intrusion_detector,
         license_status,
         ext: ext.clone(),

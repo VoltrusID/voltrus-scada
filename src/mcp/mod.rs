@@ -16,6 +16,11 @@
 //! whole-project export/import and the catalog import are the exceptions, and
 //! only a signed-in admin may call them (`Access::AdminRead`/`AdminWrite`).
 //!
+//! Guardrails (`mcp:` in the config, state in [`crate::security::McpGuard`]):
+//! a read-only mode that hides and refuses write tools, a two-step
+//! confirmation for `write_tag` and destructive tools (`confirm_action`), and
+//! per-credential rate limits. See `docs/mcp.md`.
+//!
 //! Add a tool by creating a module under `tools/` that returns a `Vec<Tool>`
 //! and listing it in [`tools::registry`].
 

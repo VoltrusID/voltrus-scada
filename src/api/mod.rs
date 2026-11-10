@@ -52,7 +52,7 @@ mod s7_devices;
 pub(crate) mod screens;
 #[cfg(feature = "scripts")]
 mod scripts;
-mod settings;
+pub(crate) mod settings;
 mod shift_handover;
 mod shortcuts;
 mod simulation;
@@ -108,6 +108,8 @@ pub struct AppState {
     pub login_rate_limiter: crate::security::LoginRateLimiter,
     pub global_rate_limiter: crate::security::GlobalRateLimiter,
     pub audit_logger: crate::security::AuditLogger,
+    /// MCP rate limits and pending write confirmations.
+    pub mcp_guard: Arc<crate::security::McpGuard>,
     pub intrusion_detector: crate::security::IntrusionDetector,
     pub license_status: Arc<std::sync::RwLock<crate::license::LicenseStatus>>,
     /// Add-on edition hooks. [`crate::edition::Community`] in the open core.
@@ -1345,6 +1347,10 @@ pub fn create_router(state: AppState) -> Router {
     // Demo users CANNOT access these.
     let admin_protected = Router::new()
         .route("/api/v1/audit/verify", get(audit_log::verify_audit_chain))
+        .route(
+            "/api/v1/settings/mcp",
+            get(settings::get_mcp_settings).put(settings::update_mcp_settings),
+        )
         .route("/api/v1/seed", post(auth::seed))
         .route("/api/v1/project/export", get(project::export_project))
         .route(
