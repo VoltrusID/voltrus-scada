@@ -77,23 +77,31 @@ impl S7Client {
     /// Read a single tag from the PLC.
     pub async fn read_tag(&mut self, tag: &S7Tag) -> Result<S7Value> {
         let values = self.read_tags(&[tag.clone()]).await?;
-        values
-            .into_iter()
-            .next()
-            .context("No value returned for tag")
+        match values.into_iter().next() {
+            Some(Ok(v)) => Ok(v),
+            Some(Err(code)) => anyhow::bail!("S7 read item error: 0x{code:02X}"),
+            None => anyhow::bail!("No value returned for tag"),
+        }
     }
 
-    /// Read multiple tags in one S7 request.
-    pub async fn read_tags(&mut self, tags: &[S7Tag]) -> Result<Vec<S7Value>> {
-        if tags.is_empty() {
-            return Ok(Vec::new());
+    /// The negotiated PDU size (bytes of S7 header, parameters and data).
+    pub fn pdu_size(&self) -> u16 {
+        self.pdu_size
+    }
+
+    /// Read tags in as few ReadVar requests as the negotiated PDU size and
+    /// the item limit allow. One value per tag, in order; an item the PLC
+    /// refused is `Err(return code)`.
+    pub async fn read_tags(&mut self, tags: &[S7Tag]) -> Result<Vec<Result<S7Value, u8>>> {
+        let mut values = Vec::with_capacity(tags.len());
+        for range in plan_read_requests(tags, self.pdu_size) {
+            let batch = &tags[range];
+            let request = self.build_read_var_request(batch)?;
+            self.send_s7(&request).await?;
+            let response = self.read_s7_response().await?;
+            values.extend(Self::parse_read_var_response(&response, batch)?);
         }
-
-        let request = self.build_read_var_request(tags)?;
-        self.send_s7(&request).await?;
-
-        let response = self.read_s7_response().await?;
-        self.parse_read_var_response(&response, tags)
+        Ok(values)
     }
 
     /// Write a single tag to the PLC.
@@ -338,8 +346,8 @@ impl S7Client {
         let mut params = Vec::new();
         params.push(S7_SETUP_COMM); // function code
         params.push(0x00); // reserved
-        params.extend_from_slice(&MAX_PDU_SIZE.to_be_bytes()); // max AMQ calling
-        params.extend_from_slice(&MAX_PDU_SIZE.to_be_bytes()); // max AMQ called
+        params.extend_from_slice(&1u16.to_be_bytes()); // parallel jobs, calling
+        params.extend_from_slice(&1u16.to_be_bytes()); // parallel jobs, called
         params.extend_from_slice(&DEFAULT_PDU_SIZE.to_be_bytes()); // PDU size
 
         let mut s7 = Vec::new();
@@ -371,153 +379,129 @@ impl S7Client {
             anyhow::bail!("S7 Setup Communication error: 0x{:04X}", error_code);
         }
 
-        // Parse negotiated PDU size from data area
-        if data.len() >= 27 {
-            let negotiated_pdu = u16::from_be_bytes([data[25], data[26]]);
-            if negotiated_pdu > 0 {
-                self.pdu_size = negotiated_pdu.min(MAX_PDU_SIZE);
-            }
-        }
-
+        self.pdu_size = Self::negotiated_pdu_size(data)?;
         Ok(())
     }
 
+    /// The PDU size in a Setup Communication ack: the 12-byte ack header, then
+    /// function, reserved, parallel jobs calling, parallel jobs called and the
+    /// PDU size at bytes 18-19.
+    pub fn negotiated_pdu_size(data: &[u8]) -> Result<u16> {
+        if data.len() < 20 || data[12] != S7_SETUP_COMM {
+            anyhow::bail!("S7 Setup Communication ack without a PDU size");
+        }
+        let pdu = u16::from_be_bytes([data[18], data[19]]);
+        if pdu < MIN_PDU_SIZE {
+            anyhow::bail!("S7 PLC negotiated an unusable PDU size of {pdu}");
+        }
+        Ok(pdu.min(MAX_PDU_SIZE))
+    }
+
+    /// A ReadVar job: the 10-byte header and the parameters; a read request
+    /// has no data part.
     pub fn build_read_var_request(&mut self, tags: &[S7Tag]) -> Result<Vec<u8>> {
+        if tags.len() > MAX_READ_ITEMS {
+            anyhow::bail!(
+                "{} items in one S7 ReadVar (max {MAX_READ_ITEMS})",
+                tags.len()
+            );
+        }
         let pdu_ref = self.next_pdu_ref();
 
-        // Build parameter area: function code + item count + items
-        let mut params = Vec::new();
+        let mut params = Vec::with_capacity(2 + 12 * tags.len());
         params.push(S7_READ_VAR);
-        params.push(tags.len() as u8); // item count
-
-        // Calculate total data size for the data header
-        let mut total_data_size: u16 = 0;
-        let mut items = Vec::new();
+        params.push(tags.len() as u8);
 
         for tag in tags {
-            let transport_size = tag.data_type.transport_size();
-            let byte_count = if tag.data_type == S7DataType::Bool {
-                1
-            } else {
-                tag.data_type.byte_size() * tag.length
-            };
-            total_data_size += byte_count;
-
-            // S7 Item specification (12 bytes)
-            let mut item = Vec::with_capacity(12);
-            item.push(0x12); // variable specification: address
-            item.push(0x0A); // length of following address specification
-            item.push(0x10); // syntax ID: S7 any
-            item.push(transport_size);
+            params.push(0x12); // variable specification
+            params.push(0x0A); // length of the address specification
+            params.push(0x10); // syntax ID: S7ANY
+            params.push(tag.data_type.transport_size());
             let num_elements = if tag.data_type == S7DataType::Bool {
                 1u16
             } else {
                 tag.length
             };
-            item.extend_from_slice(&num_elements.to_be_bytes());
-            item.push(tag.db_number.to_be_bytes()[0]);
-            item.push(tag.db_number.to_be_bytes()[1]);
-            item.push(tag.area.code());
-            // Offset: 3 bytes (offset * 8 + bit_offset for bits, offset * 8 for others)
+            params.extend_from_slice(&num_elements.to_be_bytes());
+            params.extend_from_slice(&tag.db_number.to_be_bytes());
+            params.push(tag.area.code());
             let offset_bits = (tag.offset as u32) * 8 + (tag.bit_offset as u32);
-            item.push(((offset_bits >> 16) & 0xFF) as u8);
-            item.push(((offset_bits >> 8) & 0xFF) as u8);
-            item.push((offset_bits & 0xFF) as u8);
-
-            items.extend_from_slice(&item);
+            params.extend_from_slice(&offset_bits.to_be_bytes()[1..]);
         }
 
-        params.extend_from_slice(&items);
-
-        // Build data area: data header + data
-        let mut data = Vec::new();
-        data.push(0x00); // return code
-        data.push(0xFF); // transport size: byte/word/dword
-        let data_values = vec![0x00u8; total_data_size as usize];
-        data.extend_from_slice(&total_data_size.to_be_bytes());
-        data.extend_from_slice(&data_values);
-
-        // Build S7 header + params + data
-        let mut s7 = Vec::new();
+        let mut s7 = Vec::with_capacity(10 + params.len());
         s7.push(S7_PROTOCOL_ID);
         s7.push(S7_MSG_TYPE_JOB);
         s7.extend_from_slice(&0x0000u16.to_be_bytes());
         s7.extend_from_slice(&pdu_ref.to_be_bytes());
         s7.extend_from_slice(&(params.len() as u16).to_be_bytes());
-        s7.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        s7.extend_from_slice(&0x0000u16.to_be_bytes());
         s7.extend_from_slice(&params);
-        s7.extend_from_slice(&data);
 
         Ok(s7)
     }
 
-    fn parse_read_var_response(&self, data: &[u8], tags: &[S7Tag]) -> Result<Vec<S7Value>> {
-        if data.len() < 17 {
+    /// Decode a ReadVar ack (12-byte header, function and item count, then one
+    /// data item per tag: return code, transport size, length, data, and a fill
+    /// byte after odd-length data except the last).
+    pub fn parse_read_var_response(
+        data: &[u8],
+        tags: &[S7Tag],
+    ) -> Result<Vec<Result<S7Value, u8>>> {
+        if data.len() < 14 {
             anyhow::bail!("S7 Read Var response too short");
         }
-
         if data[0] != S7_PROTOCOL_ID {
             anyhow::bail!("Invalid S7 protocol ID: 0x{:02X}", data[0]);
         }
-
         let error_code = u16::from_be_bytes([data[10], data[11]]);
         if error_code != S7_ERR_NONE {
             anyhow::bail!("S7 Read Var error: 0x{:04X}", error_code);
         }
 
         let param_len = u16::from_be_bytes([data[6], data[7]]) as usize;
-        let data_start = 10 + param_len; // after header(10) + params
-
-        if data.len() < data_start + 1 {
-            anyhow::bail!("S7 Read Var response data area too short");
+        let data_len = u16::from_be_bytes([data[8], data[9]]) as usize;
+        let data_start = 12 + param_len;
+        if param_len < 2 || data.len() < data_start + data_len || data[12] != S7_READ_VAR {
+            anyhow::bail!("Malformed S7 Read Var response");
+        }
+        let item_count = data[13] as usize;
+        if item_count != tags.len() {
+            anyhow::bail!(
+                "S7 Read Var answered {item_count} items for {} requested",
+                tags.len()
+            );
         }
 
-        let mut values = Vec::new();
-        let mut offset = data_start;
-
-        for tag in tags {
-            if offset >= data.len() {
-                values.push(S7Value::Byte(0));
+        let area = &data[data_start..data_start + data_len];
+        let mut values = Vec::with_capacity(tags.len());
+        let mut pos = 0;
+        for (i, tag) in tags.iter().enumerate() {
+            let header = area
+                .get(pos..pos + 4)
+                .context("S7 Read Var response ends inside an item header")?;
+            let (return_code, transport, length) = (
+                header[0],
+                header[1],
+                u16::from_be_bytes([header[2], header[3]]),
+            );
+            pos += 4;
+            if return_code != ITEM_OK {
+                values.push(Err(return_code));
                 continue;
             }
-
-            // Read return code
-            let return_code = data[offset];
-            offset += 1;
-
-            if return_code != 0xFF {
-                // Error reading this item
-                values.push(S7Value::Byte(0));
-                // Skip transport size and data length
-                if offset + 3 <= data.len() {
-                    offset += 1; // transport size
-                    let item_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
-                    offset += 2;
-                    offset += item_len;
-                }
-                continue;
+            let byte_len = match transport {
+                DATA_TS_BIT | DATA_TS_BYTE | DATA_TS_INT => (length as usize).div_ceil(8),
+                _ => length as usize,
+            };
+            let item = area
+                .get(pos..pos + byte_len)
+                .context("S7 Read Var response ends inside an item")?;
+            values.push(Ok(Self::decode_value(item, tag)));
+            pos += byte_len;
+            if byte_len % 2 == 1 && i + 1 < tags.len() {
+                pos += 1;
             }
-
-            // Transport size
-            if offset + 2 > data.len() {
-                values.push(S7Value::Byte(0));
-                break;
-            }
-            offset += 1; // transport size
-
-            let item_len = u16::from_be_bytes([data[offset], data[offset + 1]]) as usize;
-            offset += 2;
-
-            if offset + item_len > data.len() {
-                values.push(S7Value::Byte(0));
-                break;
-            }
-
-            let item_data = &data[offset..offset + item_len];
-            let value = Self::decode_value(item_data, tag);
-            values.push(value);
-
-            offset += item_len;
         }
 
         Ok(values)
@@ -525,13 +509,9 @@ impl S7Client {
 
     pub fn decode_value(data: &[u8], tag: &S7Tag) -> S7Value {
         match tag.data_type {
-            S7DataType::Bool => {
-                if data.is_empty() {
-                    S7Value::Bool(false)
-                } else {
-                    S7Value::Bool((data[0] & (1 << tag.bit_offset)) != 0)
-                }
-            }
+            // The item addresses the bit itself; the PLC answers its state in
+            // bit 0 of the only data byte.
+            S7DataType::Bool => S7Value::Bool(data.first().is_some_and(|b| b & 1 == 1)),
             S7DataType::Byte => S7Value::Byte(data.first().copied().unwrap_or(0)),
             S7DataType::Word => {
                 if data.len() >= 2 {
@@ -765,4 +745,43 @@ impl S7Client {
 
         Ok(payload[3..].to_vec())
     }
+}
+
+/// Most items one ReadVar may carry (Snap7's limit, which every S7 CPU accepts).
+pub const MAX_READ_ITEMS: usize = 20;
+
+/// Bytes a tag's item takes in a ReadVar request and in its ack (data header,
+/// value and fill byte).
+fn item_sizes(tag: &S7Tag) -> (usize, usize) {
+    let bytes = if tag.data_type == S7DataType::Bool {
+        1
+    } else {
+        tag.data_type.byte_size() as usize * tag.length as usize
+    };
+    (12, 4 + bytes + bytes % 2)
+}
+
+/// Split `tags` into consecutive runs, each fitting one ReadVar request and
+/// its ack into `pdu_size` bytes with at most [`MAX_READ_ITEMS`] items. A tag
+/// too large for any PDU goes alone, and the PLC answers it with an error.
+pub fn plan_read_requests(tags: &[S7Tag], pdu_size: u16) -> Vec<std::ops::Range<usize>> {
+    let pdu = pdu_size as usize;
+    let mut plans = Vec::new();
+    let mut start = 0;
+    let (mut request, mut response) = (12usize, 14usize);
+    for (i, tag) in tags.iter().enumerate() {
+        let (req, resp) = item_sizes(tag);
+        let full = i - start == MAX_READ_ITEMS || request + req > pdu || response + resp > pdu;
+        if i > start && full {
+            plans.push(start..i);
+            start = i;
+            (request, response) = (12, 14);
+        }
+        request += req;
+        response += resp;
+    }
+    if start < tags.len() {
+        plans.push(start..tags.len());
+    }
+    plans
 }

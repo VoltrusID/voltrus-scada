@@ -49,7 +49,20 @@ pub async fn poll_s7_device(config: S7DeviceConfig, cache: DeviceCache) {
                                 } else {
                                     format!("tag_{}", i)
                                 };
-                                metrics.insert(tag_name, value.to_f64());
+                                // A refused item is a gap, as a Modbus exception is.
+                                let value = match value {
+                                    Ok(v) => v.to_f64(),
+                                    Err(code) => {
+                                        tracing::debug!(
+                                            "S7 device {} tag {}: item error 0x{:02X}",
+                                            device_id,
+                                            tag_name,
+                                            code
+                                        );
+                                        f64::NAN
+                                    }
+                                };
+                                metrics.insert(tag_name, value);
                             }
                             cache.update(&device_id, metrics, false).await;
                         }

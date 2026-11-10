@@ -34,6 +34,7 @@ pub(crate) const TS_REAL: u8 = 0x08;
 // bits, REAL and octet-string lengths count bytes.
 pub(crate) const DATA_TS_BIT: u8 = 0x03;
 pub(crate) const DATA_TS_BYTE: u8 = 0x04;
+pub(crate) const DATA_TS_INT: u8 = 0x05;
 pub(crate) const DATA_TS_REAL: u8 = 0x07;
 pub(crate) const DATA_TS_OCTET: u8 = 0x09;
 
@@ -46,6 +47,8 @@ pub(crate) const S7_ERR_NONE: u16 = 0x0000;
 // Default PDU size
 pub(crate) const DEFAULT_PDU_SIZE: u16 = 480;
 pub(crate) const MAX_PDU_SIZE: u16 = 960;
+/// Smallest PDU a ReadVar of one item fits in; S7 CPUs offer 240 or more.
+pub(crate) const MIN_PDU_SIZE: u16 = 64;
 
 // ── S7 Data Types ──
 
