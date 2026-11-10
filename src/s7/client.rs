@@ -540,11 +540,25 @@ impl S7Client {
                     S7Value::Word(0)
                 }
             }
+            S7DataType::Int => {
+                if data.len() >= 2 {
+                    S7Value::Int(i16::from_be_bytes([data[0], data[1]]))
+                } else {
+                    S7Value::Int(0)
+                }
+            }
             S7DataType::DWord => {
                 if data.len() >= 4 {
                     S7Value::DWord(u32::from_be_bytes([data[0], data[1], data[2], data[3]]))
                 } else {
                     S7Value::DWord(0)
+                }
+            }
+            S7DataType::DInt => {
+                if data.len() >= 4 {
+                    S7Value::DInt(i32::from_be_bytes([data[0], data[1], data[2], data[3]]))
+                } else {
+                    S7Value::DInt(0)
                 }
             }
             S7DataType::Real => {
@@ -604,12 +618,12 @@ impl S7Client {
 
         params.extend_from_slice(&item);
 
-        // Build data: data header + value
         let value_bytes = Self::encode_value(value, tag);
+        let (data_transport, data_length) = Self::data_item_header(tag, value_bytes.len());
         let mut data = Vec::new();
-        data.push(0x00); // return code (success)
-        data.push(0x00); // transport size
-        data.extend_from_slice(&(value_bytes.len() as u16).to_be_bytes());
+        data.push(0x00); // reserved (return code in responses)
+        data.push(data_transport);
+        data.extend_from_slice(&data_length.to_be_bytes());
         data.extend_from_slice(&value_bytes);
 
         // Build S7 header + params + data
@@ -626,15 +640,28 @@ impl S7Client {
         Ok(s7)
     }
 
+    /// The transport size and length of a written data item. A PLC rejects a
+    /// write whose header does not match the item (Snap7 `WriteArea` layout):
+    /// bits and integers give their length in bits, REAL and strings in bytes.
+    pub fn data_item_header(tag: &S7Tag, byte_len: usize) -> (u8, u16) {
+        match tag.data_type {
+            S7DataType::Bool => (DATA_TS_BIT, 1),
+            S7DataType::Real => (DATA_TS_REAL, byte_len as u16),
+            S7DataType::String => (DATA_TS_OCTET, byte_len as u16),
+            _ => (DATA_TS_BYTE, (byte_len * 8) as u16),
+        }
+    }
+
     pub fn encode_value(value: &S7Value, tag: &S7Tag) -> Vec<u8> {
         match value {
-            S7Value::Bool(v) => {
-                let byte = if *v { 1u8 << tag.bit_offset } else { 0u8 };
-                vec![byte]
-            }
+            // The bit is addressed by the item's bit offset; the data byte
+            // carries only its new state.
+            S7Value::Bool(v) => vec![u8::from(*v)],
             S7Value::Byte(v) => vec![*v],
             S7Value::Word(v) => v.to_be_bytes().to_vec(),
+            S7Value::Int(v) => v.to_be_bytes().to_vec(),
             S7Value::DWord(v) => v.to_be_bytes().to_vec(),
+            S7Value::DInt(v) => v.to_be_bytes().to_vec(),
             S7Value::Real(v) => v.to_be_bytes().to_vec(),
             S7Value::String(s) => {
                 let mut bytes = Vec::new();
@@ -658,6 +685,15 @@ impl S7Client {
         let error_code = u16::from_be_bytes([data[10], data[11]]);
         if error_code != S7_ERR_NONE {
             anyhow::bail!("S7 Write Var error: 0x{:04X}", error_code);
+        }
+
+        // A job can succeed while the item fails (wrong address, type or
+        // length); the first data byte after the parameters is its return code.
+        let param_len = u16::from_be_bytes([data[6], data[7]]) as usize;
+        if let Some(&code) = data.get(12 + param_len)
+            && code != ITEM_OK
+        {
+            anyhow::bail!("S7 Write Var item error: 0x{:02X}", code);
         }
 
         Ok(())

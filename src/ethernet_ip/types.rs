@@ -98,6 +98,73 @@ impl CipDataType {
         }
     }
 
+    /// A configured type name (`REAL`, `dint`, ...), as `as_str` spells them.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_uppercase().as_str() {
+            "BOOL" => Some(Self::Bool),
+            "SINT" => Some(Self::Sint),
+            "INT" => Some(Self::Int),
+            "DINT" => Some(Self::Dint),
+            "REAL" => Some(Self::Real),
+            "STRING" => Some(Self::String),
+            "DWORD" => Some(Self::Dword),
+            "LINT" => Some(Self::Lint),
+            _ => None,
+        }
+    }
+
+    /// The type of a value the PLC returned, when it names one unambiguously.
+    pub fn of_value(value: &CipValue) -> Option<Self> {
+        match value {
+            CipValue::Bool(_) => Some(Self::Bool),
+            CipValue::Sint(_) => Some(Self::Sint),
+            CipValue::Int(_) => Some(Self::Int),
+            CipValue::Dint(_) => Some(Self::Dint),
+            CipValue::Real(_) => Some(Self::Real),
+            CipValue::String(_) => Some(Self::String),
+            // DWORD, LINT and unknown types all decode to raw bytes.
+            CipValue::Bytes(_) => None,
+        }
+    }
+
+    /// The value to write for an engineering value, refusing one the type
+    /// cannot hold rather than wrapping it.
+    pub fn value_for(&self, value: f64) -> Result<CipValue, String> {
+        if !value.is_finite() {
+            return Err(format!("Value {value} is not a finite number"));
+        }
+        let integer = |min: f64, max: f64| -> Result<f64, String> {
+            let rounded = value.round();
+            if rounded < min || rounded > max {
+                Err(format!(
+                    "Value {value} is outside the {} range {min}..={max}",
+                    self.as_str()
+                ))
+            } else {
+                Ok(rounded)
+            }
+        };
+        Ok(match self {
+            Self::Bool => CipValue::Bool(value != 0.0),
+            Self::Sint => CipValue::Sint(integer(i8::MIN as f64, i8::MAX as f64)? as i8),
+            Self::Int => CipValue::Int(integer(i16::MIN as f64, i16::MAX as f64)? as i16),
+            Self::Dint => CipValue::Dint(integer(i32::MIN as f64, i32::MAX as f64)? as i32),
+            Self::Real => {
+                if value.abs() > f32::MAX as f64 {
+                    return Err(format!("Value {value} is outside the REAL range"));
+                }
+                CipValue::Real(value as f32)
+            }
+            Self::Dword => CipValue::Bytes(
+                (integer(0.0, u32::MAX as f64)? as u32)
+                    .to_le_bytes()
+                    .to_vec(),
+            ),
+            Self::String => CipValue::String(value.to_string()),
+            Self::Lint => return Err("Writing a LINT tag is not supported".into()),
+        })
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Bool => "BOOL",

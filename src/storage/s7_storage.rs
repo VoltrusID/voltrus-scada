@@ -318,7 +318,18 @@ impl Storage {
             let device_key = format!("s7_{}", device.id);
             let mut s7_tags = Vec::new();
             for tag_row in &tags {
-                match crate::s7::S7Client::parse_tag_address(&tag_row.tag_address) {
+                // Queued writes resolve the tag the same way, so a value is
+                // written in the type it is read in.
+                let resolved = crate::s7::S7Tag::resolve(&tag_row.tag_address, &tag_row.data_type)
+                    .or_else(|e| {
+                        tracing::warn!(
+                            "S7 tag '{}' on device '{}': {e}; reading it by its address type",
+                            tag_row.name,
+                            device.name
+                        );
+                        crate::s7::S7Client::parse_tag_address(&tag_row.tag_address)
+                    });
+                match resolved {
                     Ok(s7_tag) => s7_tags.push(s7_tag),
                     Err(e) => {
                         tracing::warn!(

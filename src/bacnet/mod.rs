@@ -16,4 +16,4 @@ pub use discovery::discover_devices;
 #[allow(unused_imports)]
 pub use poller::poll_bacnet_device;
 #[allow(unused_imports)]
-pub use write::write_property;
+pub use write::{DEFAULT_WRITE_PRIORITY, check_priority, write_property};

@@ -372,3 +372,71 @@ fn test_parse_symbol_instance_empty() {
     assert!(parse_symbol_instance(&[]).is_none());
     assert!(parse_symbol_instance(&[0, 0, 0, 0]).is_none());
 }
+
+// ── Typed writes ──
+
+#[test]
+fn test_type_from_name() {
+    assert_eq!(CipDataType::from_name("real"), Some(CipDataType::Real));
+    assert_eq!(CipDataType::from_name(" DINT "), Some(CipDataType::Dint));
+    assert_eq!(CipDataType::from_name("lreal"), None);
+}
+
+#[test]
+fn test_value_for_each_type() {
+    assert_eq!(
+        CipDataType::Bool.value_for(2.0).unwrap(),
+        CipValue::Bool(true)
+    );
+    assert_eq!(
+        CipDataType::Bool.value_for(0.0).unwrap(),
+        CipValue::Bool(false)
+    );
+    assert_eq!(
+        CipDataType::Sint.value_for(-5.0).unwrap(),
+        CipValue::Sint(-5)
+    );
+    assert_eq!(
+        CipDataType::Int.value_for(1234.4).unwrap(),
+        CipValue::Int(1234)
+    );
+    assert_eq!(
+        CipDataType::Dint.value_for(-100_000.0).unwrap(),
+        CipValue::Dint(-100_000)
+    );
+    assert_eq!(
+        CipDataType::Real.value_for(12.5).unwrap(),
+        CipValue::Real(12.5)
+    );
+    assert_eq!(
+        CipDataType::Dword.value_for(0x0102_0304 as f64).unwrap(),
+        CipValue::Bytes(vec![0x04, 0x03, 0x02, 0x01])
+    );
+    assert!(CipDataType::Lint.value_for(1.0).is_err());
+}
+
+#[test]
+fn test_value_for_refuses_out_of_range() {
+    assert!(CipDataType::Sint.value_for(128.0).is_err());
+    assert!(CipDataType::Int.value_for(-32_769.0).is_err());
+    assert!(CipDataType::Dword.value_for(-1.0).is_err());
+    assert!(CipDataType::Real.value_for(f64::NAN).is_err());
+}
+
+#[test]
+fn test_typed_value_encodes_with_its_type_code() {
+    let (code, data) = encode_cip_value(&CipDataType::Real.value_for(12.5).unwrap());
+    assert_eq!(code, CIP_TYPE_REAL);
+    assert_eq!(data, 12.5f32.to_le_bytes().to_vec());
+    let (code, _) = encode_cip_value(&CipDataType::Dword.value_for(1.0).unwrap());
+    assert_eq!(code, CIP_TYPE_DWORD);
+}
+
+#[test]
+fn test_type_of_read_value() {
+    assert_eq!(
+        CipDataType::of_value(&CipValue::Real(1.0)),
+        Some(CipDataType::Real)
+    );
+    assert_eq!(CipDataType::of_value(&CipValue::Bytes(vec![0; 4])), None);
+}

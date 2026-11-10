@@ -93,6 +93,25 @@ impl DataStore {
         }
     }
 
+    /// Apply one written item: a bit item sets or clears its one bit, any
+    /// other item replaces bytes.
+    fn write_item(&mut self, item: &WriteItem) -> bool {
+        if item.data_transport != 0x03 {
+            return self.write_bytes(item.area_code, item.db_number, item.byte_offset, &item.data);
+        }
+        let Some(current) = self.read_bytes(item.area_code, item.db_number, item.byte_offset, 1)
+        else {
+            return false;
+        };
+        let mask = 1u8 << item.bit_offset;
+        let byte = if item.data.first().copied().unwrap_or(0) & 1 == 1 {
+            current[0] | mask
+        } else {
+            current[0] & !mask
+        };
+        self.write_bytes(item.area_code, item.db_number, item.byte_offset, &[byte])
+    }
+
     fn write_bytes(&mut self, area_code: u8, db_number: u16, offset: u16, data: &[u8]) -> bool {
         let area = match area_code {
             AREA_DB if db_number == 1 => &mut self.db1,
@@ -439,8 +458,19 @@ fn parse_read_var_items(s7: &[u8]) -> Option<(u8, Vec<(u8, u16, u16, u8, u16)>)>
     Some((item_count, items))
 }
 
-/// Parse a write var request. Returns (item_count, vec of (transport_size, num_elements, db_number, area_code, byte_offset, data_bytes))
-fn parse_write_var_items(s7: &[u8]) -> Option<(u8, Vec<(u8, u16, u16, u8, u16, Vec<u8>)>)> {
+/// One item of a Write Var request.
+struct WriteItem {
+    db_number: u16,
+    area_code: u8,
+    byte_offset: u16,
+    bit_offset: u8,
+    /// Data transport size: 0x03 bit, 0x04 byte/word/dword, 0x07 real, 0x09 octets.
+    data_transport: u8,
+    data: Vec<u8>,
+}
+
+/// Parse a write var request. Returns (item_count, items).
+fn parse_write_var_items(s7: &[u8]) -> Option<(u8, Vec<WriteItem>)> {
     if s7.len() < 12 {
         return None;
     }
@@ -469,21 +499,14 @@ fn parse_write_var_items(s7: &[u8]) -> Option<(u8, Vec<(u8, u16, u16, u8, u16, V
         if pos + 12 > params_start + param_len {
             break;
         }
-        let transport_size = s7[pos + 3];
-        let num_elements = u16::from_be_bytes([s7[pos + 4], s7[pos + 5]]);
         let db_number = u16::from_be_bytes([s7[pos + 6], s7[pos + 7]]);
         let area_code = s7[pos + 8];
         let offset_bits =
             ((s7[pos + 9] as u32) << 16) | ((s7[pos + 10] as u32) << 8) | (s7[pos + 11] as u32);
         let byte_offset = (offset_bits / 8) as u16;
+        let bit_offset = (offset_bits % 8) as u8;
 
-        param_items.push((
-            transport_size,
-            num_elements,
-            db_number,
-            area_code,
-            byte_offset,
-        ));
+        param_items.push((db_number, area_code, byte_offset, bit_offset));
         pos += 12;
     }
 
@@ -491,13 +514,18 @@ fn parse_write_var_items(s7: &[u8]) -> Option<(u8, Vec<(u8, u16, u16, u8, u16, V
     let mut results = Vec::new();
     let mut data_pos = data_start;
 
-    for (transport_size, num_elements, db_number, area_code, byte_offset) in param_items {
+    for (db_number, area_code, byte_offset, bit_offset) in param_items {
         if data_pos + 4 > s7.len() {
             break;
         }
         let _return_code = s7[data_pos];
-        let _ts = s7[data_pos + 1];
-        let write_data_len = u16::from_be_bytes([s7[data_pos + 2], s7[data_pos + 3]]) as usize;
+        let data_transport = s7[data_pos + 1];
+        let length = u16::from_be_bytes([s7[data_pos + 2], s7[data_pos + 3]]) as usize;
+        // Bit and byte/word/dword lengths count bits; real and octets count bytes.
+        let write_data_len = match data_transport {
+            0x03..=0x05 => length.div_ceil(8),
+            _ => length,
+        };
         data_pos += 4;
 
         if data_pos + write_data_len > s7.len() {
@@ -506,14 +534,18 @@ fn parse_write_var_items(s7: &[u8]) -> Option<(u8, Vec<(u8, u16, u16, u8, u16, V
         let data_bytes = s7[data_pos..data_pos + write_data_len].to_vec();
         data_pos += write_data_len;
 
-        results.push((
-            transport_size,
-            num_elements,
+        results.push(WriteItem {
             db_number,
             area_code,
             byte_offset,
-            data_bytes,
-        ));
+            bit_offset,
+            data_transport,
+            data: data_bytes,
+        });
+        // Items are padded to an even length, except the last.
+        if write_data_len % 2 == 1 {
+            data_pos += 1;
+        }
     }
 
     Some((item_count, results))
@@ -653,10 +685,8 @@ async fn handle_connection(
                 tracing::debug!("S7 Write Var from {addr} (pdu_ref={pdu_ref})");
                 if let Some((item_count, items)) = parse_write_var_items(s7_frame) {
                     let mut meter = meter_data.lock().unwrap();
-                    for (_ts, _ne, db_number, area_code, byte_offset, data_bytes) in &items {
-                        meter
-                            .store
-                            .write_bytes(*area_code, *db_number, *byte_offset, data_bytes);
+                    for item in &items {
+                        meter.store.write_item(item);
                     }
                     drop(meter);
                     build_s7_write_var_response(pdu_ref, item_count)
