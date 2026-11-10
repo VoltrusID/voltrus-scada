@@ -1,40 +1,75 @@
-#![allow(dead_code)]
-#![allow(clippy::ptr_arg)]
-/// DNP3 transport header (1 byte: FIR | FIN | SEQUENCE).
-#[derive(Debug, Clone, PartialEq)]
+//! DNP3 transport function (IEEE 1815-2012 clause 8): one header octet per
+//! link frame, FIN (bit 7) | FIR (bit 6) | SEQ (6 bits).
+
+use crate::dnp3::datalink::MAX_USER_DATA;
+
+/// Application octets per segment: one link frame minus the transport header.
+pub const MAX_SEGMENT_PAYLOAD: usize = MAX_USER_DATA - 1;
+
+/// Upper bound on a reassembled fragment. The spec lets devices choose; 2048
+/// is the common default and this leaves room for larger outstations.
+pub const MAX_FRAGMENT: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportHeader {
-    pub fir: bool,
     pub fin: bool,
-    pub sequence: u8,
+    pub fir: bool,
+    pub seq: u8,
 }
 
 impl TransportHeader {
-    pub fn to_byte(&self) -> u8 {
-        let fir = if self.fir { 0x80 } else { 0x00 };
-        let fin = if self.fin { 0x40 } else { 0x00 };
-        fir | fin | (self.sequence & 0x3F)
+    pub fn to_byte(self) -> u8 {
+        (if self.fin { 0x80 } else { 0 }) | (if self.fir { 0x40 } else { 0 }) | (self.seq & 0x3F)
     }
 
-    pub fn from_byte(byte: u8) -> Self {
+    pub fn from_byte(b: u8) -> Self {
         Self {
-            fir: byte & 0x80 != 0,
-            fin: byte & 0x40 != 0,
-            sequence: byte & 0x3F,
+            fin: b & 0x80 != 0,
+            fir: b & 0x40 != 0,
+            seq: b & 0x3F,
         }
     }
 }
 
-/// A single transport segment extracted from a data link frame.
-#[derive(Debug, Clone)]
-pub struct TransportSegment {
-    pub fir: bool,
-    pub fin: bool,
-    pub sequence: u8,
-    pub data: Vec<u8>,
+/// Split an APDU into transport segments (header octet + payload), numbering
+/// them from `seq`. Returns the segments and the next sequence to use.
+pub fn segment(apdu: &[u8], seq: u8) -> (Vec<Vec<u8>>, u8) {
+    let mut seq = seq & 0x3F;
+    let chunks: Vec<&[u8]> = if apdu.is_empty() {
+        vec![&[][..]]
+    } else {
+        apdu.chunks(MAX_SEGMENT_PAYLOAD).collect()
+    };
+    let n = chunks.len();
+    let mut out = Vec::with_capacity(n);
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let h = TransportHeader {
+            fin: i + 1 == n,
+            fir: i == 0,
+            seq,
+        };
+        let mut s = Vec::with_capacity(chunk.len() + 1);
+        s.push(h.to_byte());
+        s.extend_from_slice(chunk);
+        out.push(s);
+        seq = (seq + 1) & 0x3F;
+    }
+    (out, seq)
 }
 
-/// Reassembles multi-segment ASDUs from transport segments.
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SegmentResult {
+    /// A whole APDU is ready.
+    Complete(Vec<u8>),
+    /// More segments are expected.
+    Pending,
+    /// The segment was dropped (spec 8.2.1.2: discard non-FIR segments when
+    /// idle, and abandon the fragment on a sequence gap).
+    Discarded(&'static str),
+}
+
+/// Rebuilds APDUs from the transport segments of consecutive link frames.
+#[derive(Debug, Default)]
 pub struct TransportReassembler {
     buffer: Vec<u8>,
     expected_seq: u8,
@@ -43,47 +78,42 @@ pub struct TransportReassembler {
 
 impl TransportReassembler {
     pub fn new() -> Self {
-        Self {
-            buffer: Vec::new(),
-            expected_seq: 0,
-            active: false,
+        Self::default()
+    }
+
+    pub fn push(&mut self, segment: &[u8]) -> SegmentResult {
+        let Some((&hdr, payload)) = segment.split_first() else {
+            return SegmentResult::Discarded("empty segment");
+        };
+        let h = TransportHeader::from_byte(hdr);
+        if h.fir {
+            // A new FIR always starts over, even mid-fragment: the sender has
+            // given up on the old one.
+            self.buffer.clear();
+            self.active = true;
+        } else if !self.active {
+            return SegmentResult::Discarded("segment without FIR while idle");
+        } else if h.seq != self.expected_seq {
+            self.reset();
+            return SegmentResult::Discarded("transport sequence gap");
+        }
+        if self.buffer.len() + payload.len() > MAX_FRAGMENT {
+            self.reset();
+            return SegmentResult::Discarded("fragment too large");
+        }
+        self.buffer.extend_from_slice(payload);
+        self.expected_seq = (h.seq + 1) & 0x3F;
+        if h.fin {
+            self.active = false;
+            SegmentResult::Complete(std::mem::take(&mut self.buffer))
+        } else {
+            SegmentResult::Pending
         }
     }
 
-    /// Process a transport segment. Returns complete ASDU data when FIN=true.
-    pub fn process(&mut self, segment: TransportSegment) -> Option<Vec<u8>> {
-        if segment.fir {
-            self.buffer.clear();
-            self.active = true;
-            self.expected_seq = segment.sequence;
-        }
-
-        if !self.active {
-            return None;
-        }
-
-        if segment.sequence != self.expected_seq {
-            tracing::warn!(
-                "Transport sequence mismatch: expected {}, got {}",
-                self.expected_seq,
-                segment.sequence
-            );
-            self.buffer.clear();
-            self.active = false;
-            return None;
-        }
-
-        self.buffer.extend_from_slice(&segment.data);
-        self.expected_seq = (self.expected_seq + 1) & 0x3F;
-
-        if segment.fin {
-            let result = self.buffer.clone();
-            self.buffer.clear();
-            self.active = false;
-            return Some(result);
-        }
-
-        None
+    fn reset(&mut self) {
+        self.buffer.clear();
+        self.active = false;
     }
 }
 
@@ -92,106 +122,93 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_single_segment() {
-        let mut reassembler = TransportReassembler::new();
-        let segment = TransportSegment {
-            fir: true,
+    fn header_bits_follow_the_spec() {
+        let h = TransportHeader {
             fin: true,
-            sequence: 0,
-            data: vec![0x01, 0x02, 0x03],
+            fir: true,
+            seq: 3,
         };
-        let result = reassembler.process(segment);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), vec![0x01, 0x02, 0x03]);
+        assert_eq!(h.to_byte(), 0xC3);
+        assert_eq!(
+            TransportHeader::from_byte(0x40),
+            TransportHeader {
+                fin: false,
+                fir: true,
+                seq: 0
+            }
+        );
+        assert_eq!(
+            TransportHeader::from_byte(0x85),
+            TransportHeader {
+                fin: true,
+                fir: false,
+                seq: 5
+            }
+        );
     }
 
     #[test]
-    fn test_two_segments() {
-        let mut reassembler = TransportReassembler::new();
-        let seg1 = TransportSegment {
-            fir: true,
-            fin: false,
-            sequence: 0,
-            data: vec![0x01, 0x02],
-        };
-        let seg2 = TransportSegment {
-            fir: false,
-            fin: true,
-            sequence: 1,
-            data: vec![0x03, 0x04],
-        };
-        assert!(reassembler.process(seg1).is_none());
-        let result = reassembler.process(seg2);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), vec![0x01, 0x02, 0x03, 0x04]);
+    fn single_segment_round_trip() {
+        let (segs, next) = segment(&[0xC0, 0x01], 63);
+        assert_eq!(segs, vec![vec![0xFF, 0xC0, 0x01]]);
+        assert_eq!(next, 0);
+        let mut r = TransportReassembler::new();
+        assert_eq!(r.push(&segs[0]), SegmentResult::Complete(vec![0xC0, 0x01]));
     }
 
     #[test]
-    fn test_three_segments() {
-        let mut reassembler = TransportReassembler::new();
-        let seg1 = TransportSegment {
-            fir: true,
-            fin: false,
-            sequence: 0,
-            data: vec![0x01],
-        };
-        let seg2 = TransportSegment {
-            fir: false,
-            fin: false,
-            sequence: 1,
-            data: vec![0x02],
-        };
-        let seg3 = TransportSegment {
-            fir: false,
-            fin: true,
-            sequence: 2,
-            data: vec![0x03],
-        };
-        assert!(reassembler.process(seg1).is_none());
-        assert!(reassembler.process(seg2).is_none());
-        let result = reassembler.process(seg3);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), vec![0x01, 0x02, 0x03]);
+    fn multi_frame_reassembly() {
+        let apdu: Vec<u8> = (0..600u32).map(|i| i as u8).collect();
+        let (segs, next) = segment(&apdu, 62);
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[0][0], 0x40 | 62);
+        assert_eq!(segs[1][0], 63);
+        assert_eq!(segs[2][0], 0x80);
+        assert_eq!(next, 1);
+        let mut r = TransportReassembler::new();
+        assert_eq!(r.push(&segs[0]), SegmentResult::Pending);
+        assert_eq!(r.push(&segs[1]), SegmentResult::Pending);
+        assert_eq!(r.push(&segs[2]), SegmentResult::Complete(apdu));
     }
 
     #[test]
-    fn test_new_first_segment_resets() {
-        let mut reassembler = TransportReassembler::new();
-        let seg1 = TransportSegment {
-            fir: true,
-            fin: false,
-            sequence: 0,
-            data: vec![0x01],
-        };
-        reassembler.process(seg1);
-        let seg_new = TransportSegment {
-            fir: true,
-            fin: true,
-            sequence: 5,
-            data: vec![0x99],
-        };
-        let result = reassembler.process(seg_new);
-        assert!(result.is_some());
-        assert_eq!(result.unwrap(), vec![0x99]);
+    fn out_of_sequence_segment_abandons_the_fragment() {
+        let apdu = vec![7u8; 600];
+        let (segs, _) = segment(&apdu, 0);
+        let mut r = TransportReassembler::new();
+        assert_eq!(r.push(&segs[0]), SegmentResult::Pending);
+        assert!(matches!(r.push(&segs[2]), SegmentResult::Discarded(_)));
+        // The rest of the old fragment is now noise.
+        assert!(matches!(r.push(&segs[1]), SegmentResult::Discarded(_)));
+        // A fresh FIR recovers.
+        let (again, _) = segment(&[1, 2], 9);
+        assert_eq!(r.push(&again[0]), SegmentResult::Complete(vec![1, 2]));
     }
 
     #[test]
-    fn test_transport_header_encode() {
-        let header = TransportHeader {
-            fir: true,
-            fin: true,
-            sequence: 3,
-        };
-        let byte = header.to_byte();
-        assert_eq!(byte, 0xC3); // FIR=1 (0x80), FIN=1 (0x40), SEQ=3 -> 0xC3
+    fn repeated_segment_is_rejected() {
+        let (segs, _) = segment(&[3u8; 300], 4);
+        let mut r = TransportReassembler::new();
+        assert_eq!(r.push(&segs[0]), SegmentResult::Pending);
+        assert!(matches!(r.push(&segs[0][..]), SegmentResult::Pending));
+        // A duplicated FIR restarts; a duplicated middle segment is a gap.
+        let mut r = TransportReassembler::new();
+        let (three, _) = segment(&[3u8; 600], 4);
+        r.push(&three[0]);
+        r.push(&three[1]);
+        assert!(matches!(r.push(&three[1]), SegmentResult::Discarded(_)));
     }
 
     #[test]
-    fn test_transport_header_decode() {
-        let header = TransportHeader::from_byte(0x43);
-        // 0x43 = 0b01000011 -> FIR=0, FIN=1, SEQ=3
-        assert!(!header.fir);
-        assert!(header.fin);
-        assert_eq!(header.sequence, 3);
+    fn non_fir_while_idle_is_discarded() {
+        let mut r = TransportReassembler::new();
+        assert!(matches!(r.push(&[0x81, 1]), SegmentResult::Discarded(_)));
+    }
+
+    #[test]
+    fn new_fir_restarts_mid_fragment() {
+        let mut r = TransportReassembler::new();
+        assert_eq!(r.push(&[0x40, 1]), SegmentResult::Pending);
+        assert_eq!(r.push(&[0xC5, 9]), SegmentResult::Complete(vec![9]));
     }
 }

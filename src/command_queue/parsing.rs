@@ -92,21 +92,6 @@ impl CommandQueue {
         (ip, port)
     }
 
-    #[cfg(feature = "dnp3")]
-    pub(super) fn parse_dnp3_point_index(source_config: &str) -> Option<u16> {
-        let config: serde_json::Value = serde_json::from_str(source_config).ok()?;
-        config
-            .get("point_index")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u16)
-            .or_else(|| {
-                config
-                    .get("index")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| v as u16)
-            })
-    }
-
     #[cfg(feature = "bacnet")]
     pub(super) fn parse_bacnet_object_info(source_config: &str) -> Option<(String, u32, String)> {
         let config: serde_json::Value = serde_json::from_str(source_config).ok()?;

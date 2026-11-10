@@ -287,17 +287,24 @@ impl CommandQueue {
             }
         };
 
-        let point_index = match Self::parse_dnp3_point_index(&ds.source_config) {
-            Some(idx) => idx,
-            None => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some("Could not parse DNP3 point index from source_config".to_string()),
-                    latency_ms: 0,
-                };
-            }
-        };
+        let (control, mode) =
+            match crate::dnp3::commands::parse_write_target(&ds.source_config, value) {
+                Ok(t) => t,
+                Err(e) => {
+                    return WriteResult {
+                        success: false,
+                        device_response: None,
+                        error: Some(e.to_string()),
+                        latency_ms: 0,
+                    };
+                }
+            };
+
+        // The poller's own session first: outstations often take one master.
+        let key = format!("dnp3_{}", cmd.device_id);
+        if let Some(r) = crate::dnp3::commands::operate_via_poller(&key, control, mode).await {
+            return r;
+        }
 
         let device = match self.storage.get_dnp3_device(cmd.device_id).await {
             Ok(Some(d)) => d,
@@ -311,7 +318,6 @@ impl CommandQueue {
             }
         };
 
-        let on = value != 0.0;
         match Dnp3MasterSession::connect(
             &device.ip,
             device.port,
@@ -320,15 +326,17 @@ impl CommandQueue {
         )
         .await
         {
-            Ok(mut session) => session
-                .direct_operate_binary(point_index, on)
-                .await
-                .unwrap_or_else(|e| WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some(format!("DNP3 write failed: {e}")),
-                    latency_ms: 0,
-                }),
+            Ok(mut session) => {
+                session
+                    .operate(control, mode)
+                    .await
+                    .unwrap_or_else(|e| WriteResult {
+                        success: false,
+                        device_response: None,
+                        error: Some(format!("DNP3 write failed: {e}")),
+                        latency_ms: 0,
+                    })
+            }
             Err(e) => WriteResult {
                 success: false,
                 device_response: None,
