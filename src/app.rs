@@ -685,6 +685,12 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         }
     };
 
+    match crate::ai_copilot::key_store::migrate_plaintext(&storage, &auth_secret).await {
+        Ok(true) => tracing::info!("Encrypted the stored AI copilot API key"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("Could not encrypt the stored AI copilot API key: {e}"),
+    }
+
     let login_rate_limiter = crate::security::LoginRateLimiter::new();
     let global_rate_limiter = crate::security::GlobalRateLimiter::new();
     let intrusion_detector = crate::security::IntrusionDetector::new();

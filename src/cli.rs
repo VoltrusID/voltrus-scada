@@ -221,6 +221,8 @@ async fn handle_reset_admin_password(args: &[String]) -> bool {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
+            // The first-start password file is stale now.
+            crate::storage::remove_initial_admin_password(&db_path);
             println!("Admin password reset successfully.");
             println!("New password: {}", password);
             println!("You will be required to change this on next login.");

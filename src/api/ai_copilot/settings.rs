@@ -5,7 +5,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::super::{AppError, AppState, AuthUser};
-use crate::ai_copilot::{AiProviderType, AiRequest, resolve_provider};
+use crate::ai_copilot::{AiProviderType, AiRequest, key_store, resolve_provider};
 use crate::models;
 
 // ── Settings ──
@@ -23,21 +23,21 @@ pub async fn get_ai_settings(State(state): State<AppState>) -> Result<impl IntoR
         .get_ai_setting("provider")
         .await?
         .unwrap_or_else(|| "byok_openai".into());
-    let api_key = state.storage.get_ai_setting("api_key").await?;
     let default_model = state.storage.get_ai_setting("default_model").await?;
 
-    let api_key_preview = match &api_key {
-        Some(key) if key.len() > 8 => {
-            let last4 = &key[key.len() - 4..];
-            format!("****{}", last4)
-        }
-        Some(_) => "****".into(),
-        None => "".into(),
-    };
+    // Never the key itself: a masked hint, so the admin can tell which key is set.
+    let (api_key_set, api_key_preview) =
+        match key_store::load(&state.storage, &state.auth_secret).await? {
+            key_store::StoredKey::None => (false, String::new()),
+            key_store::StoredKey::Readable(key) => (true, key_store::masked_hint(&key)),
+            key_store::StoredKey::Unreadable => {
+                (false, "stored key unreadable: enter it again".to_string())
+            }
+        };
 
     Ok(Json(models::AiSettingsResponse {
         provider,
-        api_key_set: api_key.is_some(),
+        api_key_set,
         api_key_preview,
         default_model,
     }))
@@ -74,7 +74,7 @@ pub async fn update_ai_settings(
     if let Some(api_key) = &body.api_key
         && !api_key.is_empty()
     {
-        state.storage.set_ai_setting("api_key", api_key).await?;
+        key_store::save(&state.storage, &state.auth_secret, api_key).await?;
     }
 
     if let Some(model) = &body.default_model {

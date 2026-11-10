@@ -501,5 +501,8 @@ pub async fn change_password(
 
     let hash = hash_password(&body.new_password);
     state.storage.update_user_password(user.id, &hash).await?;
+    if user.username == "admin" {
+        crate::storage::remove_initial_admin_password(state.storage.db_path());
+    }
     Ok(Json(json!({"ok": true})).into_response())
 }

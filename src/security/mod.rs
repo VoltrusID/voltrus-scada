@@ -5,6 +5,7 @@ pub mod rate_limiter;
 pub mod request_filters;
 pub mod request_id;
 pub mod sanitization;
+pub mod secrets;
 pub mod signing;
 
 // Re-export all public items for backward compatibility

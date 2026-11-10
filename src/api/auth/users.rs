@@ -193,6 +193,9 @@ pub async fn update_user_handler(
     if let Some(password) = body.password {
         let hash = hash_password(&password);
         state.storage.update_user_password(id, &hash).await?;
+        if user.username == "admin" {
+            crate::storage::remove_initial_admin_password(state.storage.db_path());
+        }
         details.push("password_changed".to_string());
     }
     if let Some(disabled) = body.disabled
