@@ -40,6 +40,12 @@ impl CommandQueue {
     }
 }
 
+/// True once a command due at `due_at` (Unix seconds) has waited longer than
+/// the expiry window.
+fn is_expired(due_at: i64, now: i64) -> bool {
+    due_at + COMMAND_EXPIRY_SECS < now
+}
+
 impl CommandQueue {
     /// Attach a WsManager so that command status changes are broadcast over WebSocket.
     pub fn with_ws_manager(mut self, ws_manager: Arc<WsManager>) -> Self {
@@ -64,6 +70,7 @@ impl CommandQueue {
             if !crate::node_role::is_active() {
                 continue;
             }
+            self.check_readbacks().await;
             if let Err(e) = self.process_queue().await {
                 tracing::warn!("Command queue processor error: {}", e);
             }
@@ -86,13 +93,21 @@ impl CommandQueue {
             );
 
             // -- Expiry check --
-            if cmd.status == "queued" && (cmd.created_at + COMMAND_EXPIRY_SECS) < now {
+            // A command that has not reached the device within the expiry window
+            // is dropped, whether it is still pending (the device was offline)
+            // or queued for a retry: a setpoint must never land hours late. A
+            // scheduled command's window starts at its scheduled time.
+            let due_at = cmd
+                .scheduled_at
+                .unwrap_or(cmd.created_at)
+                .max(cmd.created_at);
+            if matches!(cmd.status.as_str(), "pending" | "queued") && is_expired(due_at, now) {
                 self.publish_status_event(&cmd.id, "expired", None);
                 self.storage
                     .update_command_status(
                         &cmd.id,
                         "expired",
-                        Some("Command expired (30 min timeout)"),
+                        Some("Command expired: not delivered within 30 minutes"),
                         "system",
                         Some("auto-expired"),
                     )
@@ -187,13 +202,13 @@ impl CommandQueue {
                         .update_command_status(&cmd.id, "acked", None, "system", None)
                         .await?;
 
-                    // Update the cache so the new value is visible immediately
+                    // The cache keeps showing what the device last reported:
+                    // an ack says the device took the write, not that the
+                    // value is in effect. The next poll confirms it.
                     if let Some(ds) = ds
                         && let Ok(value) = cmd.value.parse::<f64>()
                     {
-                        self.cache
-                            .set_metric_value(&cache_device_id, &ds.key, value)
-                            .await;
+                        self.start_readback(cmd, &ds, &cache_device_id, value).await;
                     }
                 }
                 false => {
@@ -233,5 +248,202 @@ impl CommandQueue {
         }
 
         Ok(())
+    }
+}
+
+impl CommandQueue {
+    /// Wait for a poll to read back the value an acknowledged write set.
+    async fn start_readback(
+        &self,
+        cmd: &crate::models::Command,
+        ds: &crate::models::DataSource,
+        cache_device_id: &str,
+        value: f64,
+    ) {
+        let deadband = self
+            .storage
+            .get_write_policy(ds.id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|p| p.write_deadband);
+        let interval = self.cache.poll_interval(cache_device_id).await;
+        let tracker = readback::PendingReadback::new(
+            cmd.id.clone(),
+            cache_device_id.to_string(),
+            crate::api::data::metric_name(&ds.key, &ds.device_id).to_string(),
+            value,
+            readback::tolerance(value, deadband),
+            crate::timeutil::now_millis(),
+            readback::timeout_ms(interval),
+        );
+        self.readback_trackers
+            .write()
+            .await
+            .insert(cmd.id.clone(), tracker);
+    }
+
+    /// Compare every pending read-back with the cache; record and announce
+    /// the ones that are decided. Reads the cache only, so the queue loop
+    /// never waits on a device here.
+    async fn check_readbacks(&self) {
+        let now_ms = crate::timeutil::now_millis();
+        let mut decided = Vec::new();
+        {
+            let mut trackers = self.readback_trackers.write().await;
+            if trackers.is_empty() {
+                return;
+            }
+            for tracker in trackers.values_mut() {
+                let reading = self
+                    .cache
+                    .get_reading(&tracker.device_id, &tracker.metric)
+                    .await;
+                if let Some(outcome) = tracker.check(reading, now_ms) {
+                    decided.push((tracker.command_id.clone(), tracker.attempts, outcome));
+                }
+            }
+            for (id, _, _) in &decided {
+                trackers.remove(id);
+            }
+        }
+        for (command_id, attempts, outcome) in decided {
+            let (value, ts) = match outcome {
+                readback::Outcome::Confirmed { value, ts_ms }
+                | readback::Outcome::Mismatch { value, ts_ms } => {
+                    (Some(value), Some(iso_millis(ts_ms)))
+                }
+                readback::Outcome::Timeout => (None, None),
+            };
+            if !matches!(outcome, readback::Outcome::Confirmed { .. }) {
+                tracing::warn!(
+                    "Command {command_id}: write read-back {} (read {value:?})",
+                    outcome.status()
+                );
+            }
+            if let Err(e) = self
+                .storage
+                .update_command_readback(&command_id, outcome.status(), value, attempts, ts)
+                .await
+            {
+                tracing::warn!("Failed to record read-back of command {command_id}: {e}");
+            }
+            self.publish_readback_event(&command_id, &outcome);
+        }
+    }
+}
+
+/// Unix milliseconds as ISO 8601.
+fn iso_millis(ts_ms: i64) -> String {
+    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ts_ms) * 1_000_000)
+        .ok()
+        .and_then(|t| {
+            t.format(&time::format_description::well_known::Iso8601::DEFAULT)
+                .ok()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands_expire_after_the_window_from_when_they_were_due() {
+        let now = 1_000_000;
+        assert!(!is_expired(now - COMMAND_EXPIRY_SECS, now));
+        assert!(is_expired(now - COMMAND_EXPIRY_SECS - 1, now));
+        // A command scheduled in the future is not expired.
+        assert!(!is_expired(now + 60, now));
+    }
+
+    fn queue(storage: Storage, cache: DeviceCache) -> CommandQueue {
+        #[cfg(feature = "modbus")]
+        return CommandQueue::new(storage, cache, Arc::new(ModbusPool::new()));
+        #[cfg(not(feature = "modbus"))]
+        return CommandQueue::new(storage, cache);
+    }
+
+    async fn acked_command(storage: &Storage, id: &str) {
+        let cmd = crate::models::Command {
+            id: id.into(),
+            data_source_id: 1,
+            device_id: 0,
+            protocol: "modbus".into(),
+            value: "42".into(),
+            status: "acked".into(),
+            policy: "immediate".into(),
+            scheduled_at: None,
+            retry_count: 0,
+            max_retries: 3,
+            error_message: None,
+            created_at: 1,
+            sent_at: None,
+            acked_at: None,
+            resolved_at: None,
+            created_by: "admin".into(),
+            device_ref: "plc".into(),
+            readback_status: None,
+            readback_value: None,
+            readback_attempts: 0,
+            readback_ts: None,
+        };
+        storage.insert_command(&cmd).await.unwrap();
+    }
+
+    async fn track(q: &CommandQueue, id: &str, acked_at_ms: i64) {
+        let tracker = readback::PendingReadback::new(
+            id.into(),
+            "plc".into(),
+            "sp".into(),
+            42.0,
+            readback::tolerance(42.0, None),
+            acked_at_ms,
+            readback::timeout_ms(None),
+        );
+        q.readback_trackers.write().await.insert(id.into(), tracker);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_poll_confirms_the_write_and_is_recorded() {
+        let storage = Storage::new_in_memory().unwrap();
+        let cache = DeviceCache::new();
+        let q = queue(storage.clone(), cache.clone());
+        acked_command(&storage, "c1").await;
+        let now = crate::timeutil::now_millis();
+        track(&q, "c1", now - 1_000).await;
+
+        // Nothing read yet: still waiting.
+        q.check_readbacks().await;
+        assert_eq!(q.readback_trackers.read().await.len(), 1);
+
+        cache
+            .update(
+                "plc",
+                std::collections::HashMap::from([("sp".into(), 42.0)]),
+                false,
+            )
+            .await;
+        q.check_readbacks().await;
+        assert!(q.readback_trackers.read().await.is_empty());
+        let cmd = storage.get_command("c1").await.unwrap().unwrap();
+        assert_eq!(cmd.readback_status.as_deref(), Some("confirmed"));
+        assert_eq!(cmd.readback_value, Some(42.0));
+        assert_eq!(cmd.readback_attempts, 1);
+        assert!(cmd.readback_ts.unwrap().starts_with("20"));
+    }
+
+    #[tokio::test]
+    async fn no_poll_before_the_deadline_is_a_timeout() {
+        let storage = Storage::new_in_memory().unwrap();
+        let cache = DeviceCache::new();
+        let q = queue(storage.clone(), cache.clone());
+        acked_command(&storage, "c2").await;
+        // Acked long enough ago that the 10 s window is over.
+        track(&q, "c2", crate::timeutil::now_millis() - 60_000).await;
+        q.check_readbacks().await;
+        let cmd = storage.get_command("c2").await.unwrap().unwrap();
+        assert_eq!(cmd.readback_status.as_deref(), Some("timeout"));
+        assert_eq!(cmd.readback_value, None);
     }
 }

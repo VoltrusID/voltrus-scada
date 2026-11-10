@@ -1,8 +1,11 @@
 # Open core: what is free and what is paid
 
 Voltrus SCADA is open core. This repository is the **Core**, licensed under
-[AGPL-3.0-or-later](../LICENSE). A separate, closed-source **Enterprise add-on**
-adds features that integrators and regulated sites pay for. Official Voltrus
+[AGPL-3.0-or-later](../LICENSE). A separate **Enterprise add-on** adds features
+that integrators and regulated sites pay for. Its source is published in
+[VoltrusID/voltrus-scada-enterprise](https://github.com/VoltrusID/voltrus-scada-enterprise)
+under the Voltrus Enterprise License: you can read, build and evaluate it, but
+production use needs a licence key. Official Voltrus
 binaries are Core plus the add-on.
 
 Pricing and plans: <https://voltrus.id/voltrus-scada>.
@@ -19,10 +22,10 @@ licence key and no calls to Voltrus servers:
 | HMI | Grid, canvas, 3D digital twin and 2D SCADA editor dashboards, widgets, screens and layouts |
 | Alarms | Priorities, shelving, deadband, on/off delay, acknowledgement, analytics |
 | Data | Historian and trends, SPC (control, histogram, run charts), annotations, CSV and Excel import and export |
-| Automation | Flow engine, scripts, recipes, command queue with read-back, simulation mode |
+| Automation | Flow engine, scripts, recipes, command queue with retries and expiry, simulation mode |
 | Integration | REST API (OpenAPI), Python and TypeScript SDKs, Prometheus, Grafana and BI endpoints, outbound webhooks, scheduled data egress |
 | Operations | OEE and downtime, shift handover, asset inventory with NIS2 export, EDR and hardware compatibility tools, AI copilot (bring your own key) |
-| Security | Local accounts (Argon2), role-based access control, API keys, rate limiting, audit log, CSRF and security headers |
+| Security | Local accounts (Argon2), admin and read-only users, API keys, rate limiting, audit log, SameSite=Strict session cookies and security headers |
 
 ## What the Enterprise add-on adds
 
@@ -45,8 +48,7 @@ keeps its features for a 7 day grace period and then the install falls back to
 Core. **An invalid, expired or missing licence never limits Core.**
 A per-site key may also carry the site it is issued for and an annual support
 contract (`site`, `support_until`, derived `support`: `active`, `lapsed`, `none`
-on `/api/license/status`); a lapsed contract is informational only. See
-[licensing-per-site-plan.md](licensing-per-site-plan.md).
+on `/api/license/status`); a lapsed contract is informational only.
 
 ## How the split is built
 
@@ -66,7 +68,9 @@ so every session has the same cookies and lifetime. The `voltrus` binary in this
 runs with `edition::Community`: no add-on, no licence, nothing gated.
 
 The Enterprise add-on is a separate crate that depends on this one and calls
-`voltrus::run` with its own extension. It is not in this repository.
+`voltrus::run` with its own extension. It lives in
+[VoltrusID/voltrus-scada-enterprise](https://github.com/VoltrusID/voltrus-scada-enterprise),
+which pulls this repository in as a git submodule.
 
 An extension can also run the process as one node of a redundant pair. It decides
 the starting role in `Extension::resolve_node_role` and flips `node_role::set`

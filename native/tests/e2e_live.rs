@@ -3020,7 +3020,15 @@ async fn live_data_manager_insights() {
         .send_empty(Method::POST, &insights::load_path(created.id))
         .await
         .expect("POST /recipes/{id}/load");
-    assert!(load.ok);
+    // Every value is either queued or refused by its tag's write policy (the
+    // plant's tags are read-only unless made writable), never dropped.
+    assert_eq!(
+        load.command_ids.len() + load.refused.len(),
+        created.values().len(),
+        "{load:?}"
+    );
+    assert_eq!(load.ok, load.refused.is_empty(), "{load:?}");
+    assert!(load.refused.iter().all(|r| !r.error.is_empty()), "{load:?}");
     for id in &load.command_ids {
         let command: QueuedCommand = api
             .get_json(&insights::command_path(id))

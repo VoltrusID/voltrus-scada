@@ -44,10 +44,6 @@ export class AuthApi {
     return this.http.get('/api/v1/auth/providers');
   }
 
-  async getCsrfToken(): Promise<{ csrf_token: string }> {
-    return this.http.get('/api/v1/auth/csrf-token');
-  }
-
   async changePassword(oldPassword: string, newPassword: string): Promise<{ ok: boolean }> {
     const body: ChangePasswordRequest = { old_password: oldPassword, new_password: newPassword };
     return this.http.post('/api/v1/auth/change-password', body);

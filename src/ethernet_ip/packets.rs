@@ -131,14 +131,16 @@ pub fn build_symbolic_path(tag_name: &str) -> Vec<u8> {
 /// Encode a CipValue to (type_code, data bytes).
 pub fn encode_cip_value(value: &CipValue) -> (u8, Vec<u8>) {
     match value {
-        CipValue::Bool(b) => (
-            CIP_TYPE_BOOL,
-            vec![if *b { 0xFF } else { 0x00 }, 0x00, 0x00, 0x00],
-        ),
-        CipValue::Sint(v) => (CIP_TYPE_SINT, vec![*v as u8, 0x00, 0x00, 0x00]),
+        // One element of each type, in its own size: a controller refuses a
+        // write whose data is longer than the tag.
+        CipValue::Bool(b) => (CIP_TYPE_BOOL, vec![if *b { 0xFF } else { 0x00 }]),
+        CipValue::Sint(v) => (CIP_TYPE_SINT, vec![*v as u8]),
         CipValue::Int(v) => (CIP_TYPE_INT, v.to_le_bytes().to_vec()),
         CipValue::Dint(v) => (CIP_TYPE_DINT, v.to_le_bytes().to_vec()),
         CipValue::Real(v) => (CIP_TYPE_REAL, v.to_le_bytes().to_vec()),
+        CipValue::Dword(v) => (CIP_TYPE_DWORD, v.to_le_bytes().to_vec()),
+        CipValue::Lint(v) => (CIP_TYPE_LINT, v.to_le_bytes().to_vec()),
+        CipValue::Lreal(v) => (CIP_TYPE_LREAL, v.to_le_bytes().to_vec()),
         CipValue::String(s) => {
             let bytes = s.as_bytes();
             let mut data = Vec::with_capacity(88);
@@ -279,14 +281,25 @@ pub fn decode_cip_value(type_code: u8, data: &[u8]) -> Result<CipValue> {
             if data.len() < 4 {
                 anyhow::bail!("Not enough data for DWORD");
             }
-            Ok(CipValue::Bytes(data[0..4].to_vec()))
+            Ok(CipValue::Dword(u32::from_le_bytes(
+                data[0..4].try_into().unwrap(),
+            )))
         }
         CIP_TYPE_LINT => {
             if data.len() < 8 {
                 anyhow::bail!("Not enough data for LINT");
             }
-            // Store as bytes since we don't have a Lint variant in CipValue
-            Ok(CipValue::Bytes(data[0..8].to_vec()))
+            Ok(CipValue::Lint(i64::from_le_bytes(
+                data[0..8].try_into().unwrap(),
+            )))
+        }
+        CIP_TYPE_LREAL => {
+            if data.len() < 8 {
+                anyhow::bail!("Not enough data for LREAL");
+            }
+            Ok(CipValue::Lreal(f64::from_le_bytes(
+                data[0..8].try_into().unwrap(),
+            )))
         }
         _ => {
             // Unknown type — return raw bytes

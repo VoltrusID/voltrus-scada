@@ -135,6 +135,13 @@ pub struct DataSourceData {
     pub crit: f64,
     pub source_type: String,
     pub status: String,
+    /// Data quality of the value: `good`, `uncertain`, `uncertain_stale`,
+    /// `bad`, `bad_comm_failure`, `bad_device_error` or `bad_config_error`.
+    pub quality: crate::quality::Quality,
+    /// When the value was read from the device (Unix ms); absent for
+    /// generated values.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts_ms: Option<i64>,
 }
 
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]

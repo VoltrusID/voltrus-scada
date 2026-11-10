@@ -17,11 +17,19 @@ pub(crate) async fn load_ai_settings(state: &AppState) -> Result<AiSettings, App
         })?;
     let provider = AiProviderType::from_str(&provider_str)
         .ok_or_else(|| AppError(anyhow::anyhow!("Invalid AI provider: {}", provider_str)))?;
-    let api_key = state
-        .storage
-        .get_ai_setting("api_key")
+    let api_key = match crate::ai_copilot::key_store::load(&state.storage, &state.auth_secret)
         .await?
-        .ok_or_else(|| AppError(anyhow::anyhow!("API key not configured")))?;
+    {
+        crate::ai_copilot::key_store::StoredKey::Readable(key) => key,
+        crate::ai_copilot::key_store::StoredKey::None => {
+            return Err(AppError(anyhow::anyhow!("API key not configured")));
+        }
+        crate::ai_copilot::key_store::StoredKey::Unreadable => {
+            return Err(AppError(anyhow::anyhow!(
+                "The stored API key cannot be decrypted (auth_secret changed?); enter it again in the AI settings"
+            )));
+        }
+    };
     let default_model = state.storage.get_ai_setting("default_model").await?;
 
     Ok(AiSettings {

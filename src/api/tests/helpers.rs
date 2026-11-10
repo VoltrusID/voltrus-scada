@@ -25,6 +25,7 @@ pub fn test_app() -> Router {
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
         global_rate_limiter: crate::security::GlobalRateLimiter::new(),
         audit_logger: crate::security::AuditLogger::new().0,
+        mcp_guard: Default::default(),
         intrusion_detector: crate::security::IntrusionDetector::new(),
         license_status: std::sync::Arc::new(std::sync::RwLock::new(
             crate::license::LicenseStatus::Community,
@@ -157,6 +158,7 @@ pub async fn seeded_admin_app_state() -> AppState {
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
         global_rate_limiter: crate::security::GlobalRateLimiter::new(),
         audit_logger: crate::security::AuditLogger::new().0,
+        mcp_guard: Default::default(),
         intrusion_detector: crate::security::IntrusionDetector::new(),
         license_status: std::sync::Arc::new(std::sync::RwLock::new(
             crate::license::LicenseStatus::Community,
@@ -252,6 +254,7 @@ pub fn test_app_with_license_status(license_status: crate::license::LicenseStatu
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
         global_rate_limiter: crate::security::GlobalRateLimiter::new(),
         audit_logger: crate::security::AuditLogger::new().0,
+        mcp_guard: Default::default(),
         intrusion_detector: crate::security::IntrusionDetector::new(),
         license_status: std::sync::Arc::new(std::sync::RwLock::new(license_status)),
         ext: std::sync::Arc::new(crate::edition::Community),

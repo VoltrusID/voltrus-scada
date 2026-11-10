@@ -5,8 +5,11 @@ React web client. Poll PLCs and meters, keep the history in SQLite, build
 dashboards and run alarms, on your own hardware and with no cloud account.
 
 This repository is the open-source **Core**, licensed under
-[AGPL-3.0-or-later](LICENSE). A separate closed-source **Enterprise add-on**
-(single sign-on, 21 CFR Part 11, hot standby and more) is sold per site.
+[AGPL-3.0-or-later](LICENSE). A separate **Enterprise add-on** (single sign-on,
+21 CFR Part 11, hot standby and more) is sold per site. Its source is available
+to read in
+[VoltrusID/voltrus-scada-enterprise](https://github.com/VoltrusID/voltrus-scada-enterprise)
+under the Voltrus Enterprise License, which is not an open-source licence.
 See [Core vs Enterprise](#core-vs-enterprise).
 
 Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
@@ -18,34 +21,69 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   BACnet/IP, and an embedded MQTT broker. SNMP network scan for asset discovery.
   Device templates for Modbus and BACnet: built-in, saved from your own
   devices, or imported from a public catalog.
-  Each protocol is a Cargo feature, all on by default.
+  Each protocol is a Cargo feature, all on by default. The drivers are not
+  equally mature; see [Project status](#project-status).
 * **Dashboards:** responsive grid, free-form canvas, 3D digital twin and a 2D
   SCADA diagram editor, with per-screen layouts.
-* **Alarms:** warning and critical thresholds, priorities, shelving, deadband,
-  on and off delay, acknowledgement, alarm analytics, email, webhook and push
-  notifications.
-* **Historian:** full-resolution samples packed into compressed blocks
+* **Alarms:** warning and critical thresholds (zero and negative limits too),
+  priorities, shelving, deadband, on and off delay, acknowledgement, alarm
+  analytics, email, webhook and push notifications. Alarms are evaluated only
+  on values of good quality.
+* **Historian:** a sample of every tag each persistence interval
+  (`persist_interval_secs`, default 5 s) packed into compressed blocks
   (delta-of-delta timestamps, XOR floats, run-length digitals), per-tag
   deadband, hourly and daily tiers with automatic downsampling and CSV archive,
   trends, SPC charts, annotations, CSV and Excel import and export. See
   [docs/historian.md](docs/historian.md).
 * **Automation:** visual flow engine, JavaScript scripts (QuickJS), recipes,
-  a command queue with write read-back, simulation mode.
+  a command queue with retries, expiry and write read-back, simulation mode.
 * **API:** REST with an OpenAPI document and an interactive API reference at
   `/api/docs` (sign in first), live data over WebSocket (MessagePack) with a
   server-sent-events fallback at `/api/v1/stream`, plus TypeScript and Python
-  SDKs in [`sdks/`](sdks) (MIT licensed). Tag writes from REST and WebSocket go
+  SDKs in [`sdks/`](sdks) (MIT licensed; they cover the main endpoints and
+  can lag the server version). Tag writes from REST, WebSocket and MCP go
   through the same command queue, write policy and audit trail
-  ([docs/live-stream.md](docs/live-stream.md)).
+  ([docs/live-stream.md](docs/live-stream.md)), and so do flow `WriteOut`
+  nodes and recipes. Every live value carries a quality (good, uncertain,
+  stale, bad) and a millisecond timestamp. API keys go in the `X-API-Key`
+  header; `?api_key=` is accepted only on `/metrics` (Prometheus) and
+  `/api/v1/stream`.
 * **AI agents (MCP):** a Model Context Protocol server built into the server at
   `/mcp`, so Claude and other MCP clients can read values, manage devices and
-  tags, and acknowledge alarms with an API key. See [docs/mcp.md](docs/mcp.md).
+  tags, and acknowledge alarms with an API key. Writes and deletions need a
+  second confirming call by default, calls are rate limited per key, and
+  `mcp.read_only: true` turns every write tool off. See
+  [docs/mcp.md](docs/mcp.md).
 * **Operations:** OEE and downtime, shift handover, asset inventory with NIS2
   export, config snapshots, backup and restore, whole-configuration YAML
   projects (`voltrus project export|import|validate`).
-* **Security:** local accounts with Argon2, role-based access control, API
-  keys, rate limiting, CSRF protection, intrusion detection, audit log.
+* **Security:** local accounts with Argon2; admin, operator (demo) and
+  read-only users; API keys whose permissions can narrow, never widen, their
+  role; rate limiting, SameSite=Strict session cookies, security headers,
+  intrusion detection; a hash-chained audit log (`GET /api/v1/audit/verify`);
+  the AI provider key encrypted at rest. Custom roles are labels only for now.
 * **No limits and no licence key:** unlimited devices, tags and retention.
+
+## Project status
+
+Voltrus is young and built by a small team. Not every part is at the same
+level, and this table says where each one stands so you can plan around it.
+
+| Area | Status |
+|---|---|
+| Modbus TCP | Production: batched reads, timeouts, reconnect with backoff; queued writes in the register's type, scale, area and word order, coils included |
+| OPC UA | Reads through subscriptions; writes through the live session in the node's data type. Secure modes need the server certificate in `pki/trusted` |
+| Siemens S7 | Reads split to the negotiated PDU size; writes in the tag's type (BOOL to REAL, INT/DINT). Tested against the bundled simulator, not yet a real PLC |
+| EtherNet/IP | Reads and writes in the tag's CIP type (BOOL to LREAL), 5 s timeouts. Unconnected messaging only; not yet tested on a real controller |
+| DNP3 | Beta: own IEEE 1815 master (integrity and event polls, unsolicited responses, select-before-operate and direct operate, time sync). Tested only against the bundled outstation simulator |
+| BACnet/IP | Experimental: ReadPropertyMultiple polling; WriteProperty in the object's type with priority (default 8). No COV or segmentation yet |
+| Device start-up | Every enabled device starts polling at boot |
+| Command queue | Retries with backoff; a write not delivered within 30 minutes expires instead of landing late; acknowledged writes are verified by read-back (confirmed, mismatch or timeout) |
+| Data quality | Every value is good, uncertain, stale or bad (with a reason) and has a millisecond timestamp; bad and stale values stay out of the historian |
+| Alarms | Thresholds (zero and negative too), deadband, on/off delay, acknowledgement and shelving, evaluated on good values only. Not the full ISA-18.2 state model yet |
+| Native console ([`native/`](native/README-native.md)) | Experimental, macOS first |
+
+Help with any of these is welcome; see [Contributing](#contributing).
 
 ## Core vs Enterprise
 
@@ -65,7 +103,7 @@ licence key; a lapsed or missing key never limits Core.
 | RTSP video cameras | | | yes |
 | Support | community | standard | priority SLA |
 
-Integrator and Enterprise are sold as a lifetime licence or monthly, per site. A per-site key can also carry an annual support contract; a lapsed contract never limits Core or anything already licensed (plan: [docs/licensing-per-site-plan.md](docs/licensing-per-site-plan.md)).
+Integrator and Enterprise are sold as a lifetime licence or monthly, per site. A per-site key can also carry an annual support contract; a lapsed contract never limits Core or anything already licensed.
 Current prices: <https://voltrus.id/voltrus-scada>. Official Voltrus binaries
 are Core plus the add-on. Details of the split and how it is built:
 [docs/open-core.md](docs/open-core.md).
@@ -110,8 +148,12 @@ reverse proxy or tunnel on the same machine that sends `X-Forwarded-Proto: https
 `false` in the config forces either; the default is `auto`.
 
 Open <http://localhost:3000>. The first start generates a random admin
-password and prints it once to the server log (look for
-`GENERATED ADMIN PASSWORD`). Change it after the first sign-in.
+password and writes it to `initial-admin-password` next to the database
+(readable by the owner only); the log shows the path, never the password.
+Sign in as `admin`, change the password, and the file is deleted.
+
+Set `auth_secret` in the config. Without it a new secret is generated at every
+start, which signs everyone out and makes a stored AI provider key unreadable.
 
 Prebuilt Core binaries for Linux (x86_64, aarch64), Windows (x86_64) and macOS
 are attached to each [release](https://github.com/VoltrusID/voltrus-scada/releases).
@@ -200,7 +242,7 @@ The server is a library plus the `voltrus` binary in one crate. The
 src/            Rust server (api/, storage/, protocol drivers, flow engine, ...)
 client/         React web client (src/edition/ is the add-on seam)
 sdks/           TypeScript and Python SDKs (MIT)
-native/         experimental native operator console (GPUI)
+native/         experimental native operator console (GPUI), see native/README-native.md
 scenarios/      simulated plants for testing
 deploy/         example systemd unit
 docs/           open-core split, MCP server, live stream, notes

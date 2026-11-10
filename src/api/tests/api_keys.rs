@@ -31,6 +31,7 @@ async fn test_api_key_crud() {
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
         global_rate_limiter: crate::security::GlobalRateLimiter::new(),
         audit_logger: crate::security::AuditLogger::new().0,
+        mcp_guard: Default::default(),
         intrusion_detector: crate::security::IntrusionDetector::new(),
         license_status: std::sync::Arc::new(std::sync::RwLock::new(
             crate::license::LicenseStatus::Community,
@@ -128,12 +129,30 @@ async fn test_api_key_crud() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Use API key via query parameter
+    // A key in the URL ends up in proxy logs: refused on a normal route, with
+    // a pointer to the header...
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .uri(&format!("/api/v1/system?api_key={}", plain_key))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&body).contains("X-API-Key"));
+
+    // ...but still accepted where clients cannot set headers (Prometheus, EventSource).
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&format!("/metrics?api_key={}", plain_key))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -336,4 +355,41 @@ async fn test_api_key_create_rejects_privileged_and_unknown_roles() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(json["keys"].as_array().unwrap().len(), 0);
+}
+
+/// Custom metrics change what every operator sees, so a read-only key may list
+/// them but not create, change or delete one.
+#[tokio::test]
+async fn read_only_key_cannot_change_custom_metrics() {
+    let app = test_app_with_seeded_admin().await;
+    let cookie = admin_cookie(&app).await;
+    let (_, json) = create_key(&app, &cookie, serde_json::json!({"name": "ro"})).await;
+    let key = json["key"].as_str().unwrap().to_string();
+
+    let (status, _) = send_request(
+        &app,
+        "GET",
+        "/api/v1/analytics/custom-metrics",
+        Some(&key),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for (method, uri) in [
+        ("POST", "/api/v1/analytics/custom-metrics"),
+        ("PUT", "/api/v1/analytics/custom-metrics/1"),
+        ("DELETE", "/api/v1/analytics/custom-metrics/1"),
+    ] {
+        let (status, _) = send_request(
+            &app,
+            method,
+            uri,
+            Some(&key),
+            None,
+            Some(serde_json::json!({"name": "x", "formula": "1"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+    }
 }

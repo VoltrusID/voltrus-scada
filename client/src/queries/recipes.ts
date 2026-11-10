@@ -86,7 +86,12 @@ export function useLoadRecipe() {
   return useMutation({
     mutationFn: async (id: number) => {
       const r = await fetchOk(`/api/v1/recipes/${id}/load`, { method: 'POST' })
-      return r.json() as Promise<{ ok: boolean; command_ids: string[]; message: string }>
+      return r.json() as Promise<{
+        ok: boolean
+        command_ids: string[]
+        refused?: { register: string; error: string }[]
+        message: string
+      }>
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['recipes'] })

@@ -6,9 +6,7 @@ use std::collections::HashMap;
 use super::message::Message;
 use super::state::FlowState;
 use crate::cache::DeviceCache;
-use crate::models::Command;
 use crate::storage::Storage;
-use rand::Rng;
 
 fn default_flow_policy() -> String {
     "immediate".to_string()
@@ -299,54 +297,31 @@ impl NodeConfig {
                     })?
                 };
 
-                // 2. Look up the target device and enqueue the command.
-                let ds_id = *data_source_id;
-                match storage.get_data_source_device_id(ds_id).await {
-                    Ok(Some(target)) => {
-                        let command_id: String = rand::rng()
-                            .sample_iter(&rand::distr::Alphanumeric)
-                            .take(21)
-                            .map(char::from)
-                            .collect::<String>()
-                            .to_lowercase();
-                        let now = crate::timeutil::now_secs();
-                        let cmd = Command {
-                            id: format!("cmd_{}", command_id),
-                            data_source_id: ds_id,
-                            device_id: target.device_id,
-                            protocol: target.protocol,
-                            value: value_str,
-                            status: "pending".to_string(),
-                            policy: policy.clone(),
-                            scheduled_at: None,
-                            retry_count: 0,
-                            max_retries: 3,
-                            error_message: None,
-                            created_at: now,
-                            sent_at: None,
-                            acked_at: None,
-                            resolved_at: None,
-                            created_by: reason.clone(),
-                            device_ref: target.device_ref,
-                            readback_status: None,
-                            readback_value: None,
-                            readback_attempts: 0,
-                            readback_ts: None,
-                        };
-                        if let Err(e) = storage.insert_command(&cmd).await {
-                            return Err(format!("WriteOut failed to insert command: {}", e));
-                        }
-                    }
-                    Ok(None) => {
-                        return Err(format!(
-                            "WriteOut: device not found for data_source_id {}",
-                            ds_id
-                        ));
-                    }
-                    Err(e) => {
-                        return Err(format!("WriteOut: error looking up device: {}", e));
-                    }
-                }
+                // 2. Enqueue through the tag's write policy (writable, range,
+                //    deadband, rate limit, reason), like a write from the API.
+                let value: f64 = value_str
+                    .trim()
+                    .parse()
+                    .map_err(|_| format!("WriteOut: value {value_str:?} is not a number"))?;
+                let reason = reason.trim();
+                let submission = crate::api::commands::TagWriteSubmission {
+                    tag_id: *data_source_id,
+                    value,
+                    policy: policy.clone(),
+                    scheduled_at: None,
+                    reason: Some(if reason.is_empty() || reason == "flow:unknown" {
+                        format!("flow {flow_id}")
+                    } else {
+                        reason.to_string()
+                    }),
+                    command_id: None,
+                };
+                let username = format!("flow:{flow_id}");
+                crate::api::commands::enqueue_checked_write(
+                    &storage, &cache, &username, submission,
+                )
+                .await
+                .map_err(|e| format!("WriteOut refused: {}", e.message()))?;
                 Ok(NodeResult::Continue(msg))
             }
             NodeConfig::Script {
@@ -515,4 +490,71 @@ fn rule_matches(value: f64, rule: &ThresholdRule) -> bool {
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod write_out_tests {
+    use super::*;
+    use crate::models::WritePolicyUpdate;
+
+    async fn context_with_tag(writable: bool, write_max: Option<f64>) -> (NodeContext, i64) {
+        let storage = Storage::new_in_memory().unwrap();
+        storage.create_device("plc-1", "PLC 1", 0).await.unwrap();
+        let id = storage
+            .create_data_source(
+                "setpoint", "setpoint", "", "", 0.0, 100.0, 0.0, 0.0, 0.0, 0, 2, "modbus", "{}",
+                "plc-1", None, "line",
+            )
+            .await
+            .unwrap();
+        storage
+            .update_write_policy(
+                id,
+                &WritePolicyUpdate {
+                    writable: Some(writable),
+                    write_min: None,
+                    write_max: Some(write_max),
+                    write_max_rate: None,
+                    write_requires_reason: None,
+                    write_deadband: None,
+                },
+            )
+            .await
+            .unwrap();
+        let ctx = NodeContext {
+            flow_id: "f1".into(),
+            node_id: "n1".into(),
+            state: crate::flow_engine::state::FlowState::new(),
+            storage,
+            cache: DeviceCache::new(),
+        };
+        (ctx, id)
+    }
+
+    fn write_node(data_source_id: i64) -> NodeConfig {
+        serde_json::from_value(serde_json::json!({
+            "type": "write_out", "id": "w", "data_source_id": data_source_id,
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn write_out_obeys_the_tag_write_policy() {
+        let msg = || Message::new(serde_json::json!({"v": 50.0}));
+
+        let (ctx, id) = context_with_tag(false, None).await;
+        let err = write_node(id).process(msg(), &ctx).await.unwrap_err();
+        assert!(err.contains("not writable"), "{err}");
+        assert!(ctx.storage.get_queued_commands().await.unwrap().is_empty());
+
+        let (ctx, id) = context_with_tag(true, Some(10.0)).await;
+        let err = write_node(id).process(msg(), &ctx).await.unwrap_err();
+        assert!(err.contains("above maximum"), "{err}");
+
+        let (ctx, id) = context_with_tag(true, Some(100.0)).await;
+        write_node(id).process(msg(), &ctx).await.unwrap();
+        let queued = ctx.storage.get_queued_commands().await.unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].created_by, "flow:f1");
+    }
 }

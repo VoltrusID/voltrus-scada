@@ -25,7 +25,8 @@ impl CommandQueue {
             #[cfg(feature = "opcua")]
             "opcua" => self.execute_opcua_write(cmd, value).await,
             #[cfg(feature = "ethernet-ip")]
-            "ethernet_ip" => self.execute_enip_write(cmd, value).await,
+            // Tags created on an EtherNet/IP device have source type "enip".
+            "ethernet_ip" | "enip" => self.execute_enip_write(cmd, value).await,
             // MQTT is fire-and-forget publish, not request/response. Publish to
             // the topic in source_config via the embedded broker (see
             // execute_mqtt_write); without the broker feature it fails explicitly.
@@ -44,6 +45,28 @@ impl CommandQueue {
     }
 }
 
+fn failed(error: impl Into<String>) -> WriteResult {
+    WriteResult {
+        success: false,
+        device_response: None,
+        error: Some(error.into()),
+        latency_ms: 0,
+    }
+}
+
+impl CommandQueue {
+    async fn command_data_source(
+        &self,
+        cmd: &crate::models::Command,
+    ) -> Result<crate::models::DataSource, WriteResult> {
+        match self.storage.get_data_source_by_id(cmd.data_source_id).await {
+            Ok(Some(ds)) => Ok(ds),
+            Ok(None) => Err(failed("Data source not found")),
+            Err(e) => Err(failed(format!("Data source lookup failed: {e}"))),
+        }
+    }
+}
+
 #[cfg(feature = "modbus")]
 impl CommandQueue {
     pub(super) async fn execute_modbus_write(
@@ -51,70 +74,30 @@ impl CommandQueue {
         cmd: &crate::models::Command,
         value: f64,
     ) -> WriteResult {
-        // Look up the data source to get source_config (register address) and device_id
-        let ds = match self.storage.get_data_source_by_id(cmd.data_source_id).await {
-            Ok(Some(ds)) => ds,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some("Data source not found".to_string()),
-                    latency_ms: 0,
-                };
-            }
+        let ds = match self.command_data_source(cmd).await {
+            Ok(ds) => ds,
+            Err(r) => return r,
         };
 
-        // Parse register address from source_config JSON
-        let address = match Self::parse_modbus_address(&ds.source_config) {
-            Some(addr) => addr,
-            None => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some(
-                        "Could not determine register address from source_config".to_string(),
-                    ),
-                    latency_ms: 0,
-                };
-            }
-        };
-
-        // Look up the Modbus device by its string id
         let device = match self.storage.get_modbus_device(&ds.device_id).await {
             Ok(Some(d)) => d,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some(format!("Modbus device '{}' not found", ds.device_id)),
-                    latency_ms: 0,
-                };
-            }
+            _ => return failed(format!("Modbus device '{}' not found", ds.device_id)),
         };
-
-        let config = crate::models::DeviceConfig {
-            id: device.id.clone(),
-            ip: device.ip.clone(),
-            port: device.port,
-            unit_id: device.unit_id,
-            interval_ms: device.interval_ms,
-            endianness: match device.endianness.as_str() {
-                "little" => crate::models::Endianness::Little,
-                "swapped" => crate::models::Endianness::Swapped,
-                _ => crate::models::Endianness::Big,
-            },
-            registers: vec![],
-            readback: None,
-            network: None,
+        let registers = match self.storage.list_modbus_registers(&device.id).await {
+            Ok(r) => r,
+            Err(e) => return failed(format!("Modbus registers of '{}': {e}", device.id)),
         };
+        // The same register config the poller reads with.
+        let config = device.to_device_config(&registers);
 
-        let register = crate::models::RegisterConfig {
-            name: "command".into(),
-            address,
-            reg_type: crate::models::RegisterType::Uint16,
-            scale: 1.0,
-            register_area: "holding".into(),
-            zero_based: false,
+        let register = match super::resolve::modbus_register(
+            &ds.key,
+            &ds.device_id,
+            &ds.source_config,
+            &config.registers,
+        ) {
+            Ok(r) => r,
+            Err(e) => return failed(e),
         };
         crate::modbus::write_tag(&self.modbus_pool, &config, &register, value).await
     }
@@ -127,46 +110,26 @@ impl CommandQueue {
         cmd: &crate::models::Command,
         value: f64,
     ) -> WriteResult {
-        let ds = match self.storage.get_data_source_by_id(cmd.data_source_id).await {
-            Ok(Some(ds)) => ds,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some("Data source not found".to_string()),
-                    latency_ms: 0,
-                };
-            }
+        let ds = match self.command_data_source(cmd).await {
+            Ok(ds) => ds,
+            Err(r) => return r,
         };
-
-        let (area, db_number, offset) = match Self::parse_s7_address(&ds.source_config) {
-            Some(v) => v,
-            None => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some("Could not parse S7 address from source_config".to_string()),
-                    latency_ms: 0,
-                };
-            }
-        };
-
         let device = match self.storage.get_s7_device(cmd.device_id).await {
             Ok(Some(d)) => d,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some(format!("S7 device {} not found", cmd.device_id)),
-                    latency_ms: 0,
-                };
-            }
+            _ => return failed(format!("S7 device {} not found", cmd.device_id)),
+        };
+        let tags = match self.storage.list_s7_tags(device.id).await {
+            Ok(t) => t,
+            Err(e) => return failed(format!("S7 tags of device {}: {e}", device.id)),
+        };
+        let tag = match super::resolve::s7_tag(&ds.key, &ds.device_id, &ds.source_config, &tags) {
+            Ok(t) => t,
+            Err(e) => return failed(e),
         };
 
-        // Parse ip:port from device URL
         let (ip, port) = Self::parse_ip_port(&device.url, 102);
-
-        crate::s7::write_tag(&ip, port, &area, db_number, offset, value, None).await
+        let url = format!("{ip}:{port}");
+        crate::s7::write_tag(&url, device.rack, device.slot, &tag, value).await
     }
 }
 
@@ -177,43 +140,30 @@ impl CommandQueue {
         cmd: &crate::models::Command,
         value: f64,
     ) -> WriteResult {
-        let ds = match self.storage.get_data_source_by_id(cmd.data_source_id).await {
-            Ok(Some(ds)) => ds,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some("Data source not found".to_string()),
-                    latency_ms: 0,
-                };
-            }
+        let ds = match self.command_data_source(cmd).await {
+            Ok(ds) => ds,
+            Err(r) => return r,
         };
-
-        let node_id = match Self::parse_opcua_node_id(&ds.source_config) {
-            Some(id) => id,
-            None => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some("Could not parse OPC UA node_id from source_config".to_string()),
-                    latency_ms: 0,
-                };
-            }
-        };
-
         let device = match self.storage.get_opcua_device(cmd.device_id).await {
             Ok(Some(d)) => d,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some(format!("OPC UA device {} not found", cmd.device_id)),
-                    latency_ms: 0,
-                };
-            }
+            _ => return failed(format!("OPC UA device {} not found", cmd.device_id)),
+        };
+        let nodes = match self.storage.list_opcua_nodes(device.id).await {
+            Ok(n) => n,
+            Err(e) => return failed(format!("OPC UA nodes of device {}: {e}", device.id)),
+        };
+        let node_id = match super::resolve::opcua_node_id(
+            &ds.key,
+            &ds.device_id,
+            &ds.source_config,
+            &nodes,
+        ) {
+            Ok(id) => id,
+            Err(e) => return failed(e),
         };
 
-        crate::opcua::write_tag(&device.url, &node_id, value).await
+        // The poller's session, keyed like its cache entries.
+        crate::opcua::write_tag(&format!("opcua_{}", device.id), &node_id, value).await
     }
 }
 
@@ -224,47 +174,26 @@ impl CommandQueue {
         cmd: &crate::models::Command,
         value: f64,
     ) -> WriteResult {
-        let ds = match self.storage.get_data_source_by_id(cmd.data_source_id).await {
-            Ok(Some(ds)) => ds,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some("Data source not found".to_string()),
-                    latency_ms: 0,
-                };
-            }
+        let ds = match self.command_data_source(cmd).await {
+            Ok(ds) => ds,
+            Err(r) => return r,
         };
-
-        let tag_name = match Self::parse_enip_tag_name(&ds.source_config) {
-            Some(name) => name,
-            None => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some(
-                        "Could not parse EtherNet/IP tag name from source_config".to_string(),
-                    ),
-                    latency_ms: 0,
-                };
-            }
-        };
-
         let device = match self.storage.get_enip_device(cmd.device_id).await {
             Ok(Some(d)) => d,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some(format!("EtherNet/IP device {} not found", cmd.device_id)),
-                    latency_ms: 0,
-                };
-            }
+            _ => return failed(format!("EtherNet/IP device {} not found", cmd.device_id)),
         };
+        let tags = match self.storage.list_enip_tags(device.id).await {
+            Ok(t) => t,
+            Err(e) => return failed(format!("EtherNet/IP tags of device {}: {e}", device.id)),
+        };
+        let (tag_name, data_type) =
+            match super::resolve::enip_tag(&ds.key, &ds.device_id, &ds.source_config, &tags) {
+                Ok(t) => t,
+                Err(e) => return failed(e),
+            };
 
         let (ip, port) = Self::parse_ip_port(&device.url, 44818);
-
-        crate::ethernet_ip::write_tag(&ip, port, &tag_name, value).await
+        crate::ethernet_ip::write_tag(&format!("{ip}:{port}"), &tag_name, &data_type, value).await
     }
 }
 
@@ -287,17 +216,24 @@ impl CommandQueue {
             }
         };
 
-        let point_index = match Self::parse_dnp3_point_index(&ds.source_config) {
-            Some(idx) => idx,
-            None => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some("Could not parse DNP3 point index from source_config".to_string()),
-                    latency_ms: 0,
-                };
-            }
-        };
+        let (control, mode) =
+            match crate::dnp3::commands::parse_write_target(&ds.source_config, value) {
+                Ok(t) => t,
+                Err(e) => {
+                    return WriteResult {
+                        success: false,
+                        device_response: None,
+                        error: Some(e.to_string()),
+                        latency_ms: 0,
+                    };
+                }
+            };
+
+        // The poller's own session first: outstations often take one master.
+        let key = format!("dnp3_{}", cmd.device_id);
+        if let Some(r) = crate::dnp3::commands::operate_via_poller(&key, control, mode).await {
+            return r;
+        }
 
         let device = match self.storage.get_dnp3_device(cmd.device_id).await {
             Ok(Some(d)) => d,
@@ -311,7 +247,6 @@ impl CommandQueue {
             }
         };
 
-        let on = value != 0.0;
         match Dnp3MasterSession::connect(
             &device.ip,
             device.port,
@@ -320,15 +255,17 @@ impl CommandQueue {
         )
         .await
         {
-            Ok(mut session) => session
-                .direct_operate_binary(point_index, on)
-                .await
-                .unwrap_or_else(|e| WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some(format!("DNP3 write failed: {e}")),
-                    latency_ms: 0,
-                }),
+            Ok(mut session) => {
+                session
+                    .operate(control, mode)
+                    .await
+                    .unwrap_or_else(|e| WriteResult {
+                        success: false,
+                        device_response: None,
+                        error: Some(format!("DNP3 write failed: {e}")),
+                        latency_ms: 0,
+                    })
+            }
             Err(e) => WriteResult {
                 success: false,
                 device_response: None,
@@ -346,52 +283,33 @@ impl CommandQueue {
         cmd: &crate::models::Command,
         value: f64,
     ) -> WriteResult {
-        let ds = match self.storage.get_data_source_by_id(cmd.data_source_id).await {
-            Ok(Some(ds)) => ds,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some("Data source not found".to_string()),
-                    latency_ms: 0,
-                };
-            }
+        let ds = match self.command_data_source(cmd).await {
+            Ok(ds) => ds,
+            Err(r) => return r,
         };
-
-        let (object_type, object_instance, property) =
-            match Self::parse_bacnet_object_info(&ds.source_config) {
-                Some(info) => info,
-                None => {
-                    return WriteResult {
-                        success: false,
-                        device_response: None,
-                        error: Some(
-                            "Could not parse BACnet object info from source_config".to_string(),
-                        ),
-                        latency_ms: 0,
-                    };
-                }
-            };
-
         let device = match self.storage.get_bacnet_device(cmd.device_id).await {
             Ok(Some(d)) => d,
-            _ => {
-                return WriteResult {
-                    success: false,
-                    device_response: None,
-                    error: Some(format!("BACnet device {} not found", cmd.device_id)),
-                    latency_ms: 0,
-                };
-            }
+            _ => return failed(format!("BACnet device {} not found", cmd.device_id)),
         };
+        let objects = match self.storage.list_bacnet_objects(device.id).await {
+            Ok(o) => o,
+            Err(e) => return failed(format!("BACnet objects of device {}: {e}", device.id)),
+        };
+        let point =
+            match super::resolve::bacnet_point(&ds.key, &ds.device_id, &ds.source_config, &objects)
+            {
+                Ok(p) => p,
+                Err(e) => return failed(e),
+            };
 
         crate::bacnet::write_property(
             &device.ip,
             device.port,
-            &object_type,
-            object_instance,
-            &property,
+            &point.object_type,
+            point.object_instance,
+            &point.property,
             value,
+            point.priority,
         )
         .await
     }

@@ -1,5 +1,58 @@
 use super::Storage;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
+
+/// Name of the file, next to the database, holding the admin password the
+/// server generated on first start. Deleted when the admin changes it.
+pub const INITIAL_ADMIN_PASSWORD_FILE: &str = "initial-admin-password";
+
+/// Where the generated admin password is kept for a database at `db_path`;
+/// `None` for an in-memory database.
+pub fn initial_admin_password_path(db_path: &str) -> Option<PathBuf> {
+    if db_path == ":memory:" || db_path.is_empty() {
+        return None;
+    }
+    let dir = Path::new(db_path)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    Some(dir.join(INITIAL_ADMIN_PASSWORD_FILE))
+}
+
+/// Write `password` to [`initial_admin_password_path`], created with mode 0600
+/// (owner only) so the password is never readable by other local accounts,
+/// even for an instant.
+fn write_initial_admin_password(db_path: &str, password: &str) -> Result<Option<PathBuf>> {
+    use std::io::Write;
+    let Some(path) = initial_admin_password_path(db_path) else {
+        return Ok(None);
+    };
+    // A stale file from an earlier database would otherwise make create_new fail.
+    let _ = std::fs::remove_file(&path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .with_context(|| format!("create {}", path.display()))?;
+    writeln!(file, "{password}").with_context(|| format!("write {}", path.display()))?;
+    Ok(Some(path))
+}
+
+/// Remove the generated-password file once the admin has chosen a password.
+/// Missing file is fine (already removed, or never generated).
+pub fn remove_initial_admin_password(db_path: &str) {
+    if let Some(path) = initial_admin_password_path(db_path)
+        && let Err(e) = std::fs::remove_file(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("Could not delete {}: {e}", path.display());
+    }
+}
 
 impl Storage {
     // ── Seed ──
@@ -22,11 +75,23 @@ impl Storage {
                 .await?;
             self.set_must_change_password("admin", true).await?;
 
-            tracing::warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            tracing::warn!("  GENERATED ADMIN PASSWORD: {}", password);
-            tracing::warn!("  You will be required to change this on first login.");
-            tracing::warn!("  Save this password now — it will NOT be shown again.");
-            tracing::warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            // The password goes to a file only this account can read, not to the
+            // log: logs are shipped, rotated and read by people who should not
+            // get the admin password.
+            match write_initial_admin_password(self.db_path(), &password) {
+                Ok(Some(path)) => tracing::warn!(
+                    "Generated the admin password and wrote it to {} (readable by this account only). \
+                     Sign in as admin with it; you must change it at first sign-in, which deletes the file.",
+                    path.display()
+                ),
+                Ok(None) => tracing::warn!(
+                    "Generated an admin password for the in-memory database; it is not saved anywhere"
+                ),
+                Err(e) => tracing::error!(
+                    "Could not write the generated admin password file: {e:#}. \
+                     Run `voltrus --reset-admin-password` to set a new one."
+                ),
+            }
         }
 
         // Seed default RBAC roles if none exist

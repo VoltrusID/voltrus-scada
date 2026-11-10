@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::cache::DeviceCache;
 use crate::models::{DeviceStatus, WriteResult};
+use crate::quality::Quality;
 
 use super::client::S7Client;
 use super::types::*;
@@ -35,23 +36,11 @@ pub async fn poll_s7_device(config: S7DeviceConfig, cache: DeviceCache) {
 
                 loop {
                     match client.read_tags(&config.tags).await {
-                        Ok(values) => {
-                            let mut metrics = HashMap::new();
-                            for (i, value) in values.iter().enumerate() {
-                                let tag_name = if i < config.tags.len() {
-                                    config.tags[i].name.clone().unwrap_or_else(|| {
-                                        format!(
-                                            "{}_{}",
-                                            config.tags[i].area.to_string().to_lowercase(),
-                                            config.tags[i].offset
-                                        )
-                                    })
-                                } else {
-                                    format!("tag_{}", i)
-                                };
-                                metrics.insert(tag_name, value.to_f64());
-                            }
-                            cache.update(&device_id, metrics, false).await;
+                        Ok(items) => {
+                            let (metrics, quality) = items_to_metrics(&config.tags, items);
+                            cache
+                                .update_with_quality(&device_id, metrics, quality, false)
+                                .await;
                         }
                         Err(e) => {
                             tracing::warn!("S7 device {} read error: {}", device_id, e);
@@ -81,103 +70,68 @@ pub async fn poll_s7_device(config: S7DeviceConfig, cache: DeviceCache) {
     }
 }
 
+/// The cache name of a tag: its configured name, or area and offset.
+fn tag_name(tag: &S7Tag) -> String {
+    tag.name
+        .clone()
+        .unwrap_or_else(|| format!("{}_{}", tag.area.to_string().to_lowercase(), tag.offset))
+}
+
+/// Metrics and their quality from one Read Var answer. A refused item is
+/// NaN and bad, never a 0 that would read like a real value.
+pub(super) fn items_to_metrics(
+    tags: &[S7Tag],
+    items: Vec<super::client::S7ReadItem>,
+) -> (HashMap<String, f64>, HashMap<String, Quality>) {
+    let mut metrics = HashMap::new();
+    let mut quality = HashMap::new();
+    for (tag, item) in tags.iter().zip(items) {
+        let name = tag_name(tag);
+        match item {
+            Ok(value) => {
+                metrics.insert(name, value.to_f64());
+            }
+            Err(code) => {
+                quality.insert(name.clone(), super::client::item_error_quality(code));
+                metrics.insert(name, f64::NAN);
+            }
+        }
+    }
+    (metrics, quality)
+}
+
 // ── One-shot write function ──
 
-/// Write a single f64 value to an S7 PLC tag.
-///
-/// Connects to the PLC at `ip:port`, resolves the area string to an S7 area,
-/// writes the value using the specified data type (defaults to REAL), and returns a `WriteResult`.
-///
-/// The `area` parameter accepts strings like "DB", "Input", "Output", "Marker",
-/// "Timer", or "Counter".
-///
-/// The `data_type` parameter accepts strings like "bool", "byte", "word", "dword",
-/// "real", "string". Defaults to "real" when None.
-pub async fn write_tag(
-    ip: &str,
-    port: u16,
-    area: &str,
-    db_number: u32,
-    offset: u16,
-    value: f64,
-    data_type: Option<&str>,
-) -> WriteResult {
+/// Write an engineering value to one S7 tag, encoded in the tag's own data
+/// type (see [`S7Tag::resolve`]), over a short-lived connection to `url`
+/// (`ip:port`) with the device's rack and slot.
+pub async fn write_tag(url: &str, rack: u8, slot: u8, tag: &S7Tag, value: f64) -> WriteResult {
     if !crate::node_role::is_active() {
         return WriteResult::refused_passive();
     }
     let start = std::time::Instant::now();
-    let url = format!("{}:{}", ip, port);
-
-    // Resolve area string
-    let s7_area = match parse_area_string(area) {
-        Some(a) => a,
-        None => {
-            return WriteResult {
-                success: false,
-                device_response: None,
-                error: Some(format!("Unknown S7 area: '{}'", area)),
-                latency_ms: start.elapsed().as_millis() as u64,
-            };
-        }
+    let fail = |error: String| WriteResult {
+        success: false,
+        device_response: None,
+        error: Some(error),
+        latency_ms: start.elapsed().as_millis() as u64,
     };
 
-    // Resolve data type (defaults to Real for backward compatibility)
-    let s7_data_type = data_type
-        .and_then(S7DataType::from_str_name)
-        .unwrap_or(S7DataType::Real);
-
-    let tag = S7Tag {
-        area: s7_area,
-        db_number: db_number as u16,
-        offset,
-        bit_offset: 0,
-        data_type: s7_data_type.clone(),
-        length: if s7_data_type == S7DataType::String {
-            254
-        } else {
-            1
-        },
-        name: None,
+    let s7_value = match tag.value_for(value) {
+        Ok(v) => v,
+        Err(e) => return fail(e),
     };
 
-    let s7_value = match s7_data_type {
-        S7DataType::Bool => S7Value::Bool(value != 0.0),
-        S7DataType::Byte => S7Value::Byte(value as u8),
-        S7DataType::Word => S7Value::Word(value as u16),
-        S7DataType::DWord => S7Value::DWord(value as u32),
-        S7DataType::Real => S7Value::Real(value as f32),
-        S7DataType::String => S7Value::String(format!("{}", value)),
-    };
-
-    // Connect with timeout
-    let mut client = S7Client::new(&url, 0, 1);
-    let connect_result =
-        tokio::time::timeout(std::time::Duration::from_secs(5), client.connect()).await;
-
-    match connect_result {
+    let mut client = S7Client::new(url, rack, slot);
+    match tokio::time::timeout(std::time::Duration::from_secs(5), client.connect()).await {
         Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            return WriteResult {
-                success: false,
-                device_response: None,
-                error: Some(format!("S7 connection failed: {e}")),
-                latency_ms: start.elapsed().as_millis() as u64,
-            };
-        }
-        Err(_) => {
-            return WriteResult {
-                success: false,
-                device_response: None,
-                error: Some("S7 connect timeout (5s)".into()),
-                latency_ms: start.elapsed().as_millis() as u64,
-            };
-        }
+        Ok(Err(e)) => return fail(format!("S7 connection failed: {e}")),
+        Err(_) => return fail("S7 connect timeout (5s)".into()),
     }
 
-    // Write with timeout
     let write_result = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        client.write_tag(&tag, &s7_value),
+        client.write_tag(tag, &s7_value),
     )
     .await;
 
@@ -187,36 +141,13 @@ pub async fn write_tag(
         Ok(Ok(())) => WriteResult {
             success: true,
             device_response: Some(format!(
-                "Wrote {} {} offset {} = {} ({:?})",
-                area, db_number, offset, value, s7_data_type
+                "Wrote {} DB{} offset {}.{} = {} ({:?})",
+                tag.area, tag.db_number, tag.offset, tag.bit_offset, value, tag.data_type
             )),
             error: None,
             latency_ms: start.elapsed().as_millis() as u64,
         },
-        Ok(Err(e)) => WriteResult {
-            success: false,
-            device_response: None,
-            error: Some(format!("S7 write failed: {e}")),
-            latency_ms: start.elapsed().as_millis() as u64,
-        },
-        Err(_) => WriteResult {
-            success: false,
-            device_response: None,
-            error: Some("S7 write timeout (5s)".into()),
-            latency_ms: start.elapsed().as_millis() as u64,
-        },
-    }
-}
-
-/// Parse an area string (case-insensitive) to an `S7Area`.
-fn parse_area_string(s: &str) -> Option<S7Area> {
-    match s.to_lowercase().as_str() {
-        "db" | "data" => Some(S7Area::DB),
-        "input" | "i" => Some(S7Area::Input),
-        "output" | "q" | "o" => Some(S7Area::Output),
-        "marker" | "m" => Some(S7Area::Marker),
-        "timer" | "t" => Some(S7Area::Timer),
-        "counter" | "c" => Some(S7Area::Counter),
-        _ => None,
+        Ok(Err(e)) => fail(format!("S7 write failed: {e}")),
+        Err(_) => fail("S7 write timeout (5s)".into()),
     }
 }

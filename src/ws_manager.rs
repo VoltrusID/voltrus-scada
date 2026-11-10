@@ -329,6 +329,8 @@ mod tests {
                 quality: "good".to_string(),
                 ts: 0,
                 simulated: false,
+                data_quality: None,
+                ts_ms: None,
             },
         );
 
@@ -352,6 +354,8 @@ mod tests {
                 quality: "good".to_string(),
                 ts: 0,
                 simulated: false,
+                data_quality: None,
+                ts_ms: None,
             },
         );
         assert!(matches!(
@@ -370,6 +374,8 @@ mod tests {
                 quality: "good".to_string(),
                 ts: 1,
                 simulated: false,
+                data_quality: None,
+                ts_ms: None,
             },
         );
         match rx.try_recv() {

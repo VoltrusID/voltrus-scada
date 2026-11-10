@@ -214,6 +214,8 @@ mod tests {
                 quality: "good".into(),
                 ts: 1_700_000_000,
                 simulated: false,
+                data_quality: None,
+                ts_ms: None,
             }],
         });
         let batch = next_chunk(&mut body).await;

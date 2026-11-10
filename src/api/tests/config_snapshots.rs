@@ -74,3 +74,50 @@ async fn test_delete_snapshot() {
     let (status, _) = send_request(&app, "DELETE", &uri, None, Some(&cookie), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// `recipes.values` is an SQL keyword: a snapshot holding a recipe must still
+/// roll back, and bring the recipe back as it was.
+#[tokio::test]
+async fn test_rollback_restores_recipes() {
+    let app = test_app_with_seeded_admin().await;
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+    let (status, recipe) = send_request(
+        &app,
+        "POST",
+        "/api/v1/recipes",
+        None,
+        Some(&cookie),
+        Some(serde_json::json!({
+            "name": "summer", "device_id": "plc-1", "values": "{\"sp\": 42.0}",
+        })),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {recipe}");
+    let (status, snap) = send_request(
+        &app,
+        "POST",
+        "/api/v1/config/snapshots",
+        None,
+        Some(&cookie),
+        Some(serde_json::json!({"label": "with a recipe"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let snap_id = snap["id"].as_i64().unwrap();
+
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        &format!("/api/v1/config/snapshots/{snap_id}/rollback"),
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, listed) = send_request(&app, "GET", "/api/v1/recipes", None, Some(&cookie), None).await;
+    let listed = listed.as_array().unwrap();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0]["name"], "summer");
+    assert_eq!(listed[0]["values"], recipe["values"]);
+}

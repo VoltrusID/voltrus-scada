@@ -12,6 +12,7 @@
 
 pub mod ai_copilot;
 pub mod alarm_delay;
+pub mod alarm_eval;
 pub mod analytics;
 pub mod api;
 pub mod asset;
@@ -64,6 +65,7 @@ pub mod opcua;
 pub mod poller_manager;
 pub mod project_export;
 pub mod project_yaml;
+pub mod quality;
 pub mod recipe;
 pub mod retention;
 #[cfg(feature = "s7")]

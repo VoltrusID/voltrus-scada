@@ -188,30 +188,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         network::NetworkManager::new(app_config.networks.clone()),
     );
     if crate::node_role::polls_devices() {
-        #[cfg(feature = "modbus")]
-        {
-            let device_configs = storage.get_all_device_configs().await?;
-            for config in &device_configs {
-                poller_manager.start(config.clone()).await;
-                tracing::info!("Started poller for device {}", config.id);
-            }
-        }
-
-        // Start OPC-UA pollers
-        #[cfg(feature = "opcua")]
-        match storage.get_all_opcua_device_configs().await {
-            Ok(opcua_configs) => {
-                for config in &opcua_configs {
-                    poller_manager.start_opcua(config.clone()).await;
-                    tracing::info!("Started OPC-UA poller for device {}", config.id);
-                }
-                if !opcua_configs.is_empty() {
-                    tracing::info!("Started {} OPC-UA device(s)", opcua_configs.len());
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load OPC-UA device configs: {}", e);
-            }
+        match poller_manager.start_all_enabled().await {
+            Ok(started) => tracing::info!("Started {started} device poller(s)"),
+            Err(e) => tracing::warn!("Failed to start device pollers: {e:#}"),
         }
     } else {
         tracing::info!("Passive node: device pollers start when this node takes over");
@@ -266,6 +245,12 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                 let mut records = Vec::new();
                 for snap in &snapshots {
                     for (metric, value) in &snap.metrics {
+                        // A bad value has no number worth keeping and a stale one
+                        // was stored when it was read; history shows a gap.
+                        let quality = snap.quality_of(metric);
+                        if quality.is_bad() || quality == crate::quality::Quality::UncertainStale {
+                            continue;
+                        }
                         records.push((
                             snap.device_id.clone(),
                             snap.timestamp,
@@ -302,99 +287,22 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
                 // Evaluate alarm thresholds
                 if let Ok(sources) = sources {
-                    let mut value_map = std::collections::HashMap::new();
-                    for snap in &snapshots {
-                        for (metric, value) in &snap.metrics {
-                            value_map.insert(format!("{}:{}", snap.device_id, metric), *value);
-                        }
-                    }
-
                     for source in &sources {
-                        let value = if source.source_type == "modbus" {
-                            // Find device metrics
-                            let metrics: std::collections::HashMap<String, f64> = snapshots
-                                .iter()
-                                .filter(|s| {
-                                    s.device_id == source.device_id
-                                        && s.status == DeviceStatus::Online
-                                })
-                                .flat_map(|s| s.metrics.clone())
-                                .collect();
-
-                            if metrics.is_empty() {
-                                continue;
-                            }
-
-                            // Check for expression in source_config
-                            if let Ok(cfg) =
-                                serde_json::from_str::<serde_json::Value>(&source.source_config)
-                            {
-                                if let Some(expr_str) =
-                                    cfg.get("expression").and_then(|v| v.as_str())
-                                {
-                                    match crate::expression::evaluate(expr_str, &metrics) {
-                                        Ok(val) => val,
-                                        Err(_) => continue,
-                                    }
-                                } else {
-                                    *value_map
-                                        .get(&format!(
-                                            "{}:{}",
-                                            source.device_id,
-                                            crate::api::data::metric_name(
-                                                &source.key,
-                                                &source.device_id
-                                            )
-                                        ))
-                                        .unwrap_or(&source.base_val)
-                                }
-                            } else {
-                                *value_map
-                                    .get(&format!(
-                                        "{}:{}",
-                                        source.device_id,
-                                        crate::api::data::metric_name(
-                                            &source.key,
-                                            &source.device_id
-                                        )
-                                    ))
-                                    .unwrap_or(&source.base_val)
-                            }
-                        } else {
+                        // Only real device tags raise alarms, and only on a good
+                        // value: a value that is missing, bad or stale leaves the
+                        // tag's alarms as they are rather than raising or clearing
+                        // them on a number that does not describe the process.
+                        if source.source_type != "modbus" {
+                            continue;
+                        }
+                        let Some(value) = crate::alarm_eval::alarmable(crate::alarm_eval::resolve(
+                            source, &snapshots,
+                        )) else {
                             continue;
                         };
-
-                        // Parse alarm deadband + low-alarm thresholds from source_config.
-                        // Low thresholds are Optional: absent => disabled (no low alarm),
-                        // present (even 0) => enabled. High thresholds use warn_val/crit_val.
-                        let (deadband, low_warn, low_crit): (f64, Option<f64>, Option<f64>) =
-                            if let Ok(cfg) =
-                                serde_json::from_str::<serde_json::Value>(&source.source_config)
-                            {
-                                (
-                                    cfg.get("deadband").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                                    cfg.get("low_warn").and_then(|v| v.as_f64()),
-                                    cfg.get("low_crit").and_then(|v| v.as_f64()),
-                                )
-                            } else {
-                                (0.0, None, None)
-                            };
-
-                        // Decide which alarm condition (if any) is met. High alarms fire
-                        // when value >= threshold; low alarms when value <= threshold.
-                        // Critical takes precedence. The None arm resolves all active alarms
-                        // for this source with direction-aware deadband hysteresis.
-                        let cond = if source.crit_val > 0.0 && value >= source.crit_val {
-                            Some(("critical", source.crit_val, "high"))
-                        } else if source.warn_val > 0.0 && value >= source.warn_val {
-                            Some(("warning", source.warn_val, "high"))
-                        } else if low_crit.is_some_and(|lc| value <= lc) {
-                            Some(("critical", low_crit.unwrap_or(0.0), "low"))
-                        } else if low_warn.is_some_and(|lw| value <= lw) {
-                            Some(("warning", low_warn.unwrap_or(0.0), "low"))
-                        } else {
-                            None
-                        };
+                        let thresholds = crate::alarm_eval::Thresholds::of(source);
+                        let deadband = thresholds.deadband;
+                        let cond = thresholds.condition(value);
 
                         // ISA-18.2 on/off delays (seconds) from the source's
                         // threshold config. 0 keeps the immediate behavior.
@@ -577,6 +485,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                                 "value": value,
                                 "timestamp": snap.timestamp,
                                 "status": "online",
+                                "quality": snap.quality_of(metric),
                             });
                             crate::notification::dispatch_outbound_webhooks(
                                 &storage_wh,
@@ -685,6 +594,12 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         }
     };
 
+    match crate::ai_copilot::key_store::migrate_plaintext(&storage, &auth_secret).await {
+        Ok(true) => tracing::info!("Encrypted the stored AI copilot API key"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("Could not encrypt the stored AI copilot API key: {e}"),
+    }
+
     let login_rate_limiter = crate::security::LoginRateLimiter::new();
     let global_rate_limiter = crate::security::GlobalRateLimiter::new();
     let intrusion_detector = crate::security::IntrusionDetector::new();
@@ -703,27 +618,8 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         });
     }
 
-    let (audit_logger, mut audit_rx) = crate::security::AuditLogger::new();
-
-    // Spawn audit log consumer
-    {
-        let storage = storage.clone();
-        tokio::spawn(async move {
-            while let Some(event) = audit_rx.recv().await {
-                if let Err(e) = storage
-                    .log_audit_event(
-                        &event.action,
-                        &event.username,
-                        &event.resource,
-                        event.details.as_deref(),
-                    )
-                    .await
-                {
-                    tracing::warn!("Failed to write audit log: {}", e);
-                }
-            }
-        });
-    }
+    let (audit_logger, audit_rx) = crate::security::AuditLogger::new();
+    crate::security::AuditLogger::spawn_writer(storage.clone(), audit_rx);
 
     // Initialize MQTT broker
     #[cfg(feature = "mqtt-broker")]
@@ -842,6 +738,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         login_rate_limiter,
         global_rate_limiter,
         audit_logger,
+        mcp_guard: Arc::new(crate::security::McpGuard::new(app_config.mcp.clone())),
         intrusion_detector,
         license_status,
         ext: ext.clone(),

@@ -19,12 +19,21 @@ name is the `type` and the data is the message as JSON, for example:
 
 ```
 event: TagUpdateBatch
-data: {"type":"TagUpdateBatch","updates":[{"tag_id":"inverter-1.power","value":412.5,"quality":"good","ts":1761700000,"simulated":false}]}
+data: {"type":"TagUpdateBatch","updates":[{"tag_id":"inverter-1.power","value":412.5,"quality":"normal","ts":1761700000,"simulated":false,"data_quality":"good","ts_ms":1761700000123}]}
 ```
 
 The first event of a stream is `AuthOk` (the signed-in user and permissions), as on
 the WebSocket. A comment line is sent every 15 seconds to keep proxies from closing an
 idle stream. A value that is NaN (a failed read) is `null` in JSON.
+
+Each tag update may also carry `data_quality` and `ts_ms`. `ts_ms` is when the value
+was read, in Unix milliseconds. `data_quality` is one of `good`, `uncertain`,
+`uncertain_stale` (not refreshed for three poll intervals), `bad`,
+`bad_comm_failure` (the device is unreachable; the value is the last one read),
+`bad_device_error` or `bad_config_error`. A missing `data_quality` means `good`.
+The older `quality` field is the tag's status (`normal`, `warning`, `critical`,
+`offline`) and is kept as
+it was.
 
 ## Writing a tag
 
@@ -41,8 +50,17 @@ outcome, as it could when writes went straight to the device. The intermediate `
 and `queued` (a retry) acknowledgements are broadcast to every other connection but not
 to the requester. A device that is offline leaves the write queued, so a client should
 stop waiting after a timeout and show it as queued (the web client does after 15 s).
-Only admins may write over the
-WebSocket. Clients that are not on the WebSocket (including the event stream) write
+
+After `acked`, the server checks the device really holds the value: the next fresh poll
+of good quality is compared with the written value. One more `CommandAck` follows, with
+status `readback_confirmed`, `readback_mismatch` (two fresh polls disagreed) or
+`readback_timeout` (no fresh good value within three poll intervals or 10 s). An acked
+value is never written into the live cache: the screen shows it once a poll confirms it.
+
+The same roles may write over the WebSocket as over REST and MCP: admins, operators
+(demo) and integration API keys. The user or key is checked again on every write and
+every 30 seconds; a socket whose user is disabled or deleted, or whose key is revoked,
+is closed with code 1008. Clients that are not on the WebSocket (including the event stream) write
 with the REST endpoint.
 
 ## The web client

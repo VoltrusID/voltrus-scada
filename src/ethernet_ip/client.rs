@@ -13,7 +13,11 @@ pub struct EthernetIpClient {
     session_handle: u32,
     connection_id: u32,
     sequence_counter: u16,
+    timeout: std::time::Duration,
 }
+
+/// Longest wait for a connection, session registration or one request's reply.
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl EthernetIpClient {
     pub fn new(url: &str) -> Self {
@@ -23,19 +27,36 @@ impl EthernetIpClient {
             session_handle: 0,
             connection_id: 0,
             sequence_counter: 0,
+            timeout: REQUEST_TIMEOUT,
         }
+    }
+
+    /// Use `timeout` instead of [`REQUEST_TIMEOUT`] for every exchange.
+    pub fn with_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     /// Connect to the PLC and register an EtherNet/IP session.
     pub async fn connect(&mut self) -> Result<()> {
-        let stream = TcpStream::connect(&self.url)
+        let stream = tokio::time::timeout(self.timeout, TcpStream::connect(&self.url))
             .await
+            .map_err(|_| anyhow::anyhow!("EtherNet/IP connect to {} timed out", self.url))?
             .with_context(|| format!("Failed to connect to {} for EtherNet/IP", self.url))?;
         stream.set_nodelay(true)?;
         self.stream = Some(stream);
 
-        self.register_session().await?;
-        Ok(())
+        match tokio::time::timeout(self.timeout, self.register_session()).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => {
+                self.stream = None;
+                Err(e)
+            }
+            Err(_) => {
+                self.stream = None;
+                anyhow::bail!("EtherNet/IP RegisterSession timed out")
+            }
+        }
     }
 
     /// Read a single CIP tag by name.
@@ -165,7 +186,28 @@ impl EthernetIpClient {
         Ok(())
     }
 
+    /// Whether the TCP session is still usable. A request that timed out or
+    /// failed on the wire drops it, since a late answer would be taken for the
+    /// next request's.
+    pub fn is_connected(&self) -> bool {
+        self.stream.is_some()
+    }
+
     pub(crate) async fn send_rr_data(&mut self, cip_payload: Vec<u8>) -> Result<Vec<u8>> {
+        match tokio::time::timeout(self.timeout, self.exchange_rr_data(cip_payload)).await {
+            Ok(Ok(reply)) => Ok(reply),
+            Ok(Err(e)) => {
+                self.stream = None;
+                Err(e)
+            }
+            Err(_) => {
+                self.stream = None;
+                anyhow::bail!("EtherNet/IP request timed out ({:?})", self.timeout)
+            }
+        }
+    }
+
+    async fn exchange_rr_data(&mut self, cip_payload: Vec<u8>) -> Result<Vec<u8>> {
         // Build SendRRData wrapper
         let mut rr_data = Vec::with_capacity(cip_payload.len() + 6);
         rr_data.extend_from_slice(&0u32.to_le_bytes()); // interface handle (CIP = 0)

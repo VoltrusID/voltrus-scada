@@ -66,6 +66,10 @@ pub struct Dnp3DeviceConfig {
     pub master_address: u16,
     pub outstation_address: u16,
     pub event_scan_interval_ms: Option<u64>,
+    pub enable_unsolicited: bool,
+    /// Seconds between periodic integrity polls; 0 for startup and restart
+    /// only.
+    pub integrity_poll_interval_secs: u64,
     pub points: Vec<Dnp3PointConfig>,
 }
 
@@ -80,6 +84,8 @@ impl Dnp3DeviceConfig {
             master_address: device.master_address,
             outstation_address: device.outstation_address,
             event_scan_interval_ms: device.event_scan_interval_ms,
+            enable_unsolicited: device.enable_unsolicited,
+            integrity_poll_interval_secs: device.integrity_poll_interval_secs,
             points: points
                 .iter()
                 .map(|p| Dnp3PointConfig {

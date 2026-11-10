@@ -1,4 +1,5 @@
 pub mod error;
+pub mod key_store;
 pub mod parser;
 pub mod prompts;
 pub mod provider;

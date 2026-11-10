@@ -1,293 +1,329 @@
-#![allow(dead_code)]
-#![allow(clippy::ptr_arg)]
-// src/dnp3/datalink.rs
+//! DNP3 data link layer (IEEE 1815-2012 clause 9): FT3 frames with a CRC
+//! after the 8-byte header and after every 16 bytes of user data.
 
 use anyhow::Result;
 
-// CRC-CCITT lookup table (polynomial 0x1021)
+/// Most user data octets one link frame can carry (LENGTH max 255 minus the
+/// 5 octets of control and addresses it also counts).
+pub const MAX_USER_DATA: usize = 250;
+
+/// CRC-16/DNP: polynomial 0x3D65, processed LSB first (so the table uses the
+/// bit-reversed 0xA6BC), initial value 0, result inverted.
 const CRC_TABLE: [u16; 256] = {
     let mut table = [0u16; 256];
-    let mut i = 0u16;
+    let mut i = 0;
     while i < 256 {
-        let mut crc = i << 8;
+        let mut crc = i as u16;
         let mut j = 0;
         while j < 8 {
-            if crc & 0x8000 != 0 {
-                crc = (crc << 1) ^ 0x1021;
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xA6BC
             } else {
-                crc <<= 1;
-            }
+                crc >> 1
+            };
             j += 1;
         }
-        table[i as usize] = crc;
+        table[i] = crc;
         i += 1;
     }
     table
 };
 
-pub fn crc_ccitt(data: &[u8]) -> u16 {
-    let mut crc: u16 = 0x0000;
-    for &byte in data {
-        crc = (crc << 8) ^ CRC_TABLE[((crc >> 8) ^ byte as u16) as usize];
+pub fn crc_dnp(data: &[u8]) -> u16 {
+    let mut crc: u16 = 0;
+    for &b in data {
+        crc = (crc >> 8) ^ CRC_TABLE[((crc ^ b as u16) & 0xFF) as usize];
     }
-    crc
+    !crc
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Link function codes. Primary (PRM=1) and secondary (PRM=0) codes overlap
+/// numerically, so the meaning depends on the PRM bit of the control octet.
+pub mod func {
+    pub const PRI_RESET_LINK_STATES: u8 = 0;
+    pub const PRI_TEST_LINK_STATES: u8 = 2;
+    pub const PRI_CONFIRMED_USER_DATA: u8 = 3;
+    pub const PRI_UNCONFIRMED_USER_DATA: u8 = 4;
+    pub const PRI_REQUEST_LINK_STATUS: u8 = 9;
+    pub const SEC_ACK: u8 = 0;
+    pub const SEC_NACK: u8 = 1;
+    pub const SEC_LINK_STATUS: u8 = 11;
+    pub const SEC_NOT_SUPPORTED: u8 = 15;
+}
+
+/// Link control octet: DIR | PRM | FCB | FCV(DFC) | FUNC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlByte {
-    pub master: bool,
+    /// Set on every frame sent by a master, primary or secondary.
+    pub dir: bool,
+    pub prm: bool,
     pub fcb: bool,
+    /// FCV on primary frames, DFC on secondary frames.
     pub fcv: bool,
-    pub sequence: u8,
+    pub func: u8,
 }
 
 impl ControlByte {
-    pub fn to_byte(&self) -> u8 {
-        let dir = if self.master { 0x80 } else { 0x00 };
-        let prm = if self.master { 0x40 } else { 0x00 };
-        let fcb = if self.fcb { 0x20 } else { 0x00 };
-        let fcv = if self.fcv { 0x10 } else { 0x00 };
-        let func = self.sequence & 0x0F;
-        dir | prm | fcb | fcv | func
+    pub fn to_byte(self) -> u8 {
+        (if self.dir { 0x80 } else { 0 })
+            | (if self.prm { 0x40 } else { 0 })
+            | (if self.fcb { 0x20 } else { 0 })
+            | (if self.fcv { 0x10 } else { 0 })
+            | (self.func & 0x0F)
     }
 
-    pub fn from_byte(byte: u8) -> Self {
+    pub fn from_byte(b: u8) -> Self {
         Self {
-            master: byte & 0x80 != 0,
-            fcb: byte & 0x20 != 0,
-            fcv: byte & 0x10 != 0,
-            sequence: byte & 0x0F,
+            dir: b & 0x80 != 0,
+            prm: b & 0x40 != 0,
+            fcb: b & 0x20 != 0,
+            fcv: b & 0x10 != 0,
+            func: b & 0x0F,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Dnp3Frame {
-    pub master: bool,
-    pub fcb: bool,
-    pub fcv: bool,
-    pub sequence: u8,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkFrame {
+    pub control: ControlByte,
     pub destination: u16,
     pub source: u16,
     pub data: Vec<u8>,
 }
 
-impl Dnp3Frame {
-    pub fn encode(&self) -> Result<Vec<u8>> {
-        let ctrl = ControlByte {
-            master: self.master,
-            fcb: self.fcb,
-            fcv: self.fcv,
-            sequence: self.sequence,
-        };
-        let user_data_len = 5 + self.data.len();
-
-        if user_data_len > 255 {
-            anyhow::bail!(
-                "DNP3 data length overflow: {} bytes exceeds maximum of 255",
-                user_data_len
-            );
-        }
-
-        let mut raw = Vec::with_capacity(user_data_len + 10);
-        raw.push(0x05);
-        raw.push(0x64);
-        raw.push(user_data_len as u8);
-        raw.push(ctrl.to_byte());
-        raw.push((self.destination & 0xFF) as u8);
-        raw.push(((self.destination >> 8) & 0xFF) as u8);
-        raw.push((self.source & 0xFF) as u8);
-        raw.push(((self.source >> 8) & 0xFF) as u8);
-        raw.extend_from_slice(&self.data);
-
-        Ok(insert_crc_blocks(&mut raw))
-    }
-
-    pub fn decode(bytes: &[u8]) -> Result<Self> {
-        if bytes.len() < 10 {
-            anyhow::bail!("Frame too short: {} bytes", bytes.len());
-        }
-        if bytes[0] != 0x05 || bytes[1] != 0x64 {
-            anyhow::bail!("Invalid start bytes: {:02X} {:02X}", bytes[0], bytes[1]);
-        }
-
-        let raw = strip_crc_blocks(bytes)?;
-
-        let len = raw[2] as usize;
-        if raw.len() < 3 + len {
-            anyhow::bail!(
-                "Frame truncated: expected {} bytes, got {}",
-                len,
-                raw.len() - 3
-            );
-        }
-
-        let ctrl = ControlByte::from_byte(raw[3]);
-        let destination = raw[4] as u16 | ((raw[5] as u16) << 8);
-        let source = raw[6] as u16 | ((raw[7] as u16) << 8);
-        let data = raw[8..3 + len].to_vec();
-
-        Ok(Self {
-            master: ctrl.master,
-            fcb: ctrl.fcb,
-            fcv: ctrl.fcv,
-            sequence: ctrl.sequence,
+impl LinkFrame {
+    pub fn new(control: ControlByte, destination: u16, source: u16, data: Vec<u8>) -> Self {
+        Self {
+            control,
             destination,
             source,
             data,
-        })
-    }
-}
-
-fn insert_crc_blocks(raw: &mut Vec<u8>) -> Vec<u8> {
-    let mut result = Vec::new();
-    result.extend_from_slice(&raw[0..3]);
-
-    let user_data = &raw[3..];
-    let mut offset = 0;
-    while offset < user_data.len() {
-        let block_end = std::cmp::min(offset + 16, user_data.len());
-        let block = &user_data[offset..block_end];
-        result.extend_from_slice(block);
-        let crc = crc_ccitt(block);
-        result.push((crc & 0xFF) as u8);
-        result.push(((crc >> 8) & 0xFF) as u8);
-        offset = block_end;
-    }
-
-    result
-}
-
-fn strip_crc_blocks(bytes: &[u8]) -> Result<Vec<u8>> {
-    if bytes.len() < 6 {
-        anyhow::bail!("Frame too short for CRC stripping");
-    }
-
-    let mut result = Vec::new();
-    result.extend_from_slice(&bytes[0..3]);
-
-    let mut offset = 3;
-    while offset < bytes.len() {
-        let remaining = bytes.len() - offset;
-        if remaining <= 2 {
-            break;
         }
-        let data_len = std::cmp::min(remaining - 2, 16);
-        let data = &bytes[offset..offset + data_len];
-        let crc_bytes = &bytes[offset + data_len..offset + data_len + 2];
-        let expected_crc = crc_ccitt(data);
-        let actual_crc = crc_bytes[0] as u16 | ((crc_bytes[1] as u16) << 8);
-        if expected_crc != actual_crc {
+    }
+
+    /// Unconfirmed user data is what masters and outstations use over TCP;
+    /// confirmed link service only adds round trips on a reliable transport.
+    pub fn user_data(from_master: bool, destination: u16, source: u16, data: Vec<u8>) -> Self {
+        let control = ControlByte {
+            dir: from_master,
+            prm: true,
+            fcb: false,
+            fcv: false,
+            func: func::PRI_UNCONFIRMED_USER_DATA,
+        };
+        Self::new(control, destination, source, data)
+    }
+
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        if self.data.len() > MAX_USER_DATA {
             anyhow::bail!(
-                "CRC mismatch at offset {}: expected {:04X}, got {:04X}",
-                offset,
-                expected_crc,
-                actual_crc
+                "DNP3 link frame user data is {} bytes, the maximum is {MAX_USER_DATA}",
+                self.data.len()
             );
         }
-        result.extend_from_slice(data);
-        offset += data_len + 2;
+        let mut out = Vec::with_capacity(encoded_len(self.data.len()));
+        out.extend_from_slice(&[
+            0x05,
+            0x64,
+            (5 + self.data.len()) as u8,
+            self.control.to_byte(),
+        ]);
+        out.extend_from_slice(&self.destination.to_le_bytes());
+        out.extend_from_slice(&self.source.to_le_bytes());
+        let crc = crc_dnp(&out);
+        out.extend_from_slice(&crc.to_le_bytes());
+        for block in self.data.chunks(16) {
+            out.extend_from_slice(block);
+            out.extend_from_slice(&crc_dnp(block).to_le_bytes());
+        }
+        Ok(out)
     }
 
-    Ok(result)
+    /// Decode exactly one complete frame.
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        match parse_frame(bytes)? {
+            ParseResult::Frame(f, used) if used == bytes.len() => Ok(f),
+            ParseResult::Frame(_, used) => {
+                anyhow::bail!("{} trailing bytes after frame", bytes.len() - used)
+            }
+            ParseResult::Incomplete => anyhow::bail!("DNP3 frame truncated"),
+        }
+    }
 }
 
-fn verify_crc_blocks(bytes: &[u8]) -> bool {
-    strip_crc_blocks(bytes).is_ok()
+/// Total wire size of a frame carrying `data_len` user data octets.
+pub fn encoded_len(data_len: usize) -> usize {
+    10 + data_len + 2 * data_len.div_ceil(16)
+}
+
+pub enum ParseResult {
+    Frame(LinkFrame, usize),
+    Incomplete,
+}
+
+/// Parse a frame at the start of `buf`. Errors mean the bytes at the start
+/// cannot be a valid frame; the caller should skip a byte and resynchronise.
+pub fn parse_frame(buf: &[u8]) -> Result<ParseResult> {
+    if buf.len() < 10 {
+        if buf.first().is_some_and(|&b| b != 0x05) || buf.get(1).is_some_and(|&b| b != 0x64) {
+            anyhow::bail!("bad DNP3 start octets");
+        }
+        return Ok(ParseResult::Incomplete);
+    }
+    if buf[0] != 0x05 || buf[1] != 0x64 {
+        anyhow::bail!("bad DNP3 start octets {:02X} {:02X}", buf[0], buf[1]);
+    }
+    let len = buf[2] as usize;
+    if len < 5 {
+        anyhow::bail!("DNP3 LENGTH {len} is below the minimum of 5");
+    }
+    let header_crc = u16::from_le_bytes([buf[8], buf[9]]);
+    if crc_dnp(&buf[0..8]) != header_crc {
+        anyhow::bail!("DNP3 header CRC mismatch");
+    }
+    let data_len = len - 5;
+    let total = encoded_len(data_len);
+    if buf.len() < total {
+        return Ok(ParseResult::Incomplete);
+    }
+    let mut data = Vec::with_capacity(data_len);
+    let mut pos = 10;
+    let mut remaining = data_len;
+    while remaining > 0 {
+        let n = remaining.min(16);
+        let block = &buf[pos..pos + n];
+        let crc = u16::from_le_bytes([buf[pos + n], buf[pos + n + 1]]);
+        if crc_dnp(block) != crc {
+            anyhow::bail!("DNP3 data block CRC mismatch");
+        }
+        data.extend_from_slice(block);
+        pos += n + 2;
+        remaining -= n;
+    }
+    let frame = LinkFrame {
+        control: ControlByte::from_byte(buf[3]),
+        destination: u16::from_le_bytes([buf[4], buf[5]]),
+        source: u16::from_le_bytes([buf[6], buf[7]]),
+        data,
+    };
+    Ok(ParseResult::Frame(frame, total))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_crc_empty() {
-        let crc = crc_ccitt(&[]);
-        assert_eq!(crc, 0x0000);
+    fn hex(s: &str) -> Vec<u8> {
+        s.split_whitespace()
+            .map(|b| u8::from_str_radix(b, 16).unwrap())
+            .collect()
     }
 
     #[test]
-    fn test_crc_known_pattern() {
-        let crc = crc_ccitt(&[0x05, 0x64]);
-        assert_ne!(crc, 0x0000);
+    fn crc_matches_the_catalogue_check_value() {
+        // CRC-16/DNP check value from the CRC catalogue (reveng).
+        assert_eq!(crc_dnp(b"123456789"), 0xEA82);
     }
 
     #[test]
-    fn test_encode_request_frame() {
-        let frame = Dnp3Frame {
-            master: true,
-            fcb: true,
-            fcv: true,
-            sequence: 0,
-            destination: 10,
-            source: 1,
-            data: vec![0xC0, 0x01],
-        };
+    fn reset_link_states_matches_known_frame() {
+        // Reset Link States, master 1024 -> outstation 1 (opendnp3 test vector).
+        let frame = LinkFrame::new(
+            ControlByte {
+                dir: true,
+                prm: true,
+                fcb: false,
+                fcv: false,
+                func: func::PRI_RESET_LINK_STATES,
+            },
+            1,
+            1024,
+            vec![],
+        );
+        let expected = hex("05 64 05 C0 01 00 00 04 E9 21");
+        assert_eq!(frame.encode().unwrap(), expected);
+        assert_eq!(LinkFrame::decode(&expected).unwrap(), frame);
+    }
+
+    #[test]
+    fn ack_matches_known_frame() {
+        // Secondary ACK, outstation 1 -> master 1024.
+        let frame = LinkFrame::new(ControlByte::from_byte(0x00), 1024, 1, vec![]);
+        assert_eq!(
+            frame.encode().unwrap(),
+            hex("05 64 05 00 00 04 01 00 19 A6")
+        );
+    }
+
+    #[test]
+    fn user_data_is_split_into_crc_blocks() {
+        let data: Vec<u8> = (0..20).collect();
+        let frame = LinkFrame::user_data(true, 10, 1, data.clone());
         let bytes = frame.encode().unwrap();
-        assert_eq!(bytes[0], 0x05);
-        assert_eq!(bytes[1], 0x64);
-        assert_eq!(bytes[2], (5 + frame.data.len()) as u8);
+        assert_eq!(bytes.len(), 10 + 16 + 2 + 4 + 2);
+        assert_eq!(bytes[2], 25);
+        assert_eq!(bytes[3], 0xC4);
+        assert_eq!(&bytes[10..26], &data[..16]);
+        assert_eq!(
+            u16::from_le_bytes([bytes[26], bytes[27]]),
+            crc_dnp(&data[..16])
+        );
+        assert_eq!(&bytes[28..32], &data[16..]);
+        assert_eq!(LinkFrame::decode(&bytes).unwrap(), frame);
     }
 
     #[test]
-    fn test_decode_response_frame() {
-        let frame = Dnp3Frame {
-            master: false,
-            fcb: true,
-            fcv: true,
-            sequence: 0,
-            destination: 1,
-            source: 10,
-            data: vec![],
-        };
-        let bytes = frame.encode().unwrap();
-        let decoded = Dnp3Frame::decode(&bytes).expect("decode should succeed");
-        assert_eq!(decoded.master, false);
-        assert_eq!(decoded.source, 10);
-        assert_eq!(decoded.destination, 1);
+    fn full_frame_with_integrity_poll() {
+        // Transport C0 + integrity poll APDU, master 1 -> outstation 10.
+        let apdu = hex("C0 C0 01 3C 02 06 3C 03 06 3C 04 06 3C 01 06");
+        let bytes = LinkFrame::user_data(true, 10, 1, apdu.clone())
+            .encode()
+            .unwrap();
+        assert_eq!(&bytes[..8], &hex("05 64 14 C4 0A 00 01 00")[..]);
+        assert_eq!(bytes.len(), encoded_len(apdu.len()));
+        assert_eq!(LinkFrame::decode(&bytes).unwrap().data, apdu);
     }
 
     #[test]
-    fn test_control_byte_master_request() {
-        let ctrl = ControlByte {
-            master: true,
-            fcb: true,
-            fcv: true,
-            sequence: 0,
-        };
-        let byte = ctrl.to_byte();
-        assert_eq!(byte & 0x40, 0x40);
-        assert_eq!(byte & 0x20, 0x20);
-        assert_eq!(byte & 0x01, 0x00);
+    fn corrupt_block_crc_is_rejected() {
+        let mut bytes = LinkFrame::user_data(false, 1, 10, vec![1, 2, 3])
+            .encode()
+            .unwrap();
+        bytes[11] ^= 0xFF;
+        assert!(LinkFrame::decode(&bytes).is_err());
+        let mut bytes = LinkFrame::user_data(false, 1, 10, vec![1, 2, 3])
+            .encode()
+            .unwrap();
+        bytes[4] ^= 0x01;
+        assert!(LinkFrame::decode(&bytes).is_err());
     }
 
     #[test]
-    fn test_crc_roundtrip() {
-        let frame = Dnp3Frame {
-            master: true,
-            fcb: true,
-            fcv: true,
-            sequence: 3,
-            destination: 100,
-            source: 1,
-            data: vec![0x01, 0x02, 0x03, 0x04, 0x05],
-        };
-        let encoded = frame.encode().unwrap();
-        let decoded = Dnp3Frame::decode(&encoded).expect("roundtrip decode should succeed");
-        assert_eq!(decoded, frame);
+    fn partial_frame_is_incomplete() {
+        let bytes = LinkFrame::user_data(false, 1, 10, vec![9; 40])
+            .encode()
+            .unwrap();
+        assert!(matches!(
+            parse_frame(&bytes[..bytes.len() - 1]).unwrap(),
+            ParseResult::Incomplete
+        ));
+        assert!(matches!(
+            parse_frame(&bytes[..4]).unwrap(),
+            ParseResult::Incomplete
+        ));
     }
 
     #[test]
-    fn test_data_length_overflow() {
-        let frame = Dnp3Frame {
-            master: true,
-            fcb: false,
-            fcv: false,
-            sequence: 0,
-            destination: 10,
-            source: 1,
-            data: vec![0u8; 251], // 5 + 251 = 256 > 255
-        };
-        assert!(frame.encode().is_err());
+    fn oversized_user_data_is_refused() {
+        assert!(
+            LinkFrame::user_data(true, 10, 1, vec![0; 251])
+                .encode()
+                .is_err()
+        );
+        assert!(
+            LinkFrame::user_data(true, 10, 1, vec![0; 250])
+                .encode()
+                .is_ok()
+        );
     }
 }

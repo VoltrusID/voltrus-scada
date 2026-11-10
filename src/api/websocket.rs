@@ -28,19 +28,76 @@ use crate::ws_types::{ClientMessage, ServerMessage};
 pub async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: axum_extra::extract::cookie::CookieJar,
 ) -> impl IntoResponse {
     let cookie_token = jar.get("voltrus_token").map(|c| c.value().to_string());
-    ws.on_upgrade(move |socket| handle_socket(socket, state, cookie_token))
+    let header_key = headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|k| !k.is_empty())
+        .map(str::to_string);
+    ws.on_upgrade(move |socket| handle_socket(socket, state, cookie_token, header_key))
+}
+
+/// How often an open socket re-reads its user or key, so a disabled or deleted
+/// user, or a revoked or expired key, loses the live feed within this delay
+/// even if it never writes.
+const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Who is on the other end of a socket. Only the identity is kept: the role is
+/// read from the database again on every write and every [`RECHECK_INTERVAL`].
+#[derive(Clone, Debug)]
+pub(super) enum WsPrincipal {
+    User(String),
+    ApiKey(i64),
+}
+
+impl WsPrincipal {
+    fn name(&self) -> String {
+        match self {
+            WsPrincipal::User(username) => username.clone(),
+            WsPrincipal::ApiKey(id) => format!("api_key:{id}"),
+        }
+    }
+
+    /// The principal's current role, or `None` when it may no longer use the
+    /// socket. Fails closed on a storage error.
+    pub(super) async fn current_role(&self, state: &AppState) -> Option<String> {
+        match self {
+            WsPrincipal::User(username) => {
+                let user = state.storage.get_user_by_username(username).await.ok()??;
+                (!user.disabled).then_some(user.role)
+            }
+            WsPrincipal::ApiKey(id) => {
+                let (permissions, role) = state.storage.api_key_access(*id).await.ok()??;
+                Some(super::effective_key_role(&role, &permissions).to_string())
+            }
+        }
+    }
+}
+
+/// Whether the socket loop keeps going after a client message.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum After {
+    Continue,
+    /// The principal's access is gone: close the socket.
+    Close,
 }
 
 // -- Socket handler --------------------------------------------------------
 
-async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<String>) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: AppState,
+    cookie_token: Option<String>,
+    header_key: Option<String>,
+) {
     let (mut sink, mut stream) = socket.split();
 
-    // 1. Obtain token: prefer cookie from upgrade request, fall back to Auth message.
-    let token = if let Some(t) = cookie_token {
+    // 1. Obtain credentials: an X-API-Key header on the upgrade request, else the
+    //    session cookie, else the token (session token or API key) of an Auth message.
+    let token = if let Some(t) = header_key.clone().or(cookie_token) {
         t
     } else {
         // No cookie – wait for a MessagePack Auth message (non-browser clients).
@@ -100,23 +157,31 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
         }
     };
 
-    // 3. Validate the token and re-read the user's current role.
-    let claims = match crate::api::auth_middleware::verify_session(&state, &token).await {
-        Some(c) => c,
-        None => {
-            let _ = send_msg(
-                &mut sink,
-                &ServerMessage::AuthError {
-                    message: "Invalid or expired token".to_string(),
-                },
-            )
-            .await;
-            return;
-        }
+    // 3. Validate the credentials and read the current role.
+    let principal = if header_key.is_none()
+        && let Some(claims) = crate::api::auth_middleware::verify_session(&state, &token).await
+    {
+        Some(WsPrincipal::User(claims.username))
+    } else {
+        crate::api::auth_middleware::authenticate_api_key(&state, &token)
+            .await
+            .map(|(_, key)| WsPrincipal::ApiKey(key.id))
+    };
+    let Some((principal, role)) = (match principal {
+        Some(p) => p.current_role(&state).await.map(|role| (p, role)),
+        None => None,
+    }) else {
+        let _ = send_msg(
+            &mut sink,
+            &ServerMessage::AuthError {
+                message: "Invalid or expired token".to_string(),
+            },
+        )
+        .await;
+        return;
     };
 
-    let username = claims.username.clone();
-    let role = claims.role.clone();
+    let username = principal.name();
 
     // 4. Determine permissions from role.
     let permissions = role_to_permissions(&role);
@@ -156,12 +221,21 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
     //    incoming WebSocket frames from the client.
     let conn_id_loop = conn_id.clone();
     let ws_manager_loop = state.ws_manager.clone();
-    let username_loop = username.clone();
-    let role_loop = role.clone();
     let state_loop = state.clone();
+    let mut recheck = tokio::time::interval_at(
+        tokio::time::Instant::now() + RECHECK_INTERVAL,
+        RECHECK_INTERVAL,
+    );
 
     loop {
         tokio::select! {
+            _ = recheck.tick() => {
+                if principal.current_role(&state_loop).await.is_none() {
+                    tracing::info!("WS: {} lost access, closing conn={}", username, conn_id);
+                    close_revoked(&mut sink).await;
+                    break;
+                }
+            }
             // Outgoing message from WsManager broadcast channel
             msg = rx.recv() => {
                 match msg {
@@ -195,14 +269,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
                                 continue;
                             }
                         };
-                        handle_client_message(
+                        let after = handle_client_message(
                             &client_msg,
                             &conn_id_loop,
                             &ws_manager_loop,
                             &state_loop,
-                            &username_loop,
-                            &role_loop,
+                            &principal,
                         ).await;
+                        if after == After::Close {
+                            close_revoked(&mut sink).await;
+                            break;
+                        }
                     }
                     Some(Ok(Message::Ping(data))) => {
                         let _ = sink.send(Message::Pong(data)).await;
@@ -233,14 +310,25 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
 
 // -- Client message dispatch -----------------------------------------------
 
-async fn handle_client_message(
+/// Tell the client why the socket closes (policy violation, 1008).
+async fn close_revoked(sink: &mut futures_util::stream::SplitSink<WebSocket, Message>) {
+    let _ = sink
+        .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: 1008,
+            reason: "credentials revoked or account disabled".into(),
+        })))
+        .await;
+}
+
+pub(super) async fn handle_client_message(
     msg: &ClientMessage,
     conn_id: &str,
     ws_manager: &Arc<crate::ws_manager::WsManager>,
     state: &AppState,
-    username: &str,
-    role: &str,
-) {
+    principal: &WsPrincipal,
+) -> After {
+    let username = principal.name();
+    let username = username.as_str();
     match msg {
         ClientMessage::Subscribe { tag_ids } => {
             ws_manager.subscribe(conn_id, tag_ids);
@@ -264,16 +352,31 @@ async fn handle_client_message(
         } => {
             let cmd_id = command_id.clone().unwrap_or_else(next_command_id);
 
-            // Permission check: only admins can write via WebSocket
-            if role != "admin" {
+            // The role is read again here: one granted at connect time may have
+            // been taken away since.
+            let Some(role) = principal.current_role(state).await else {
+                reject_write(
+                    ws_manager,
+                    conn_id,
+                    cmd_id,
+                    "Credentials revoked or account disabled",
+                );
+                return After::Close;
+            };
+            if !super::role_allows_operational_writes(&role) {
                 tracing::warn!(
                     "WS: user={} (role={}) denied tag write to {}",
                     username,
                     role,
                     tag_id
                 );
-                reject_write(ws_manager, conn_id, cmd_id, "Only admins can write tags");
-                return;
+                reject_write(
+                    ws_manager,
+                    conn_id,
+                    cmd_id,
+                    "Tag writes need the admin, demo or integration role",
+                );
+                return After::Continue;
             }
 
             handle_tag_write(
@@ -296,6 +399,7 @@ async fn handle_client_message(
             tracing::debug!("WS: ignoring duplicate Auth message");
         }
     }
+    After::Continue
 }
 
 // -- Tag write handling: through the command queue -------------------------
@@ -408,10 +512,12 @@ async fn handle_tag_write(
 
 /// Map a user role to a list of permission strings.
 pub(super) fn role_to_permissions(role: &str) -> Vec<String> {
-    match role {
-        "admin" => vec!["read".to_string(), "write".to_string(), "admin".to_string()],
-        "api" => vec!["read".to_string(), "write".to_string()],
-        _ => vec!["read".to_string()],
+    if role == "admin" {
+        vec!["read".to_string(), "write".to_string(), "admin".to_string()]
+    } else if super::role_allows_operational_writes(role) {
+        vec!["read".to_string(), "write".to_string()]
+    } else {
+        vec!["read".to_string()]
     }
 }
 
@@ -566,20 +672,115 @@ mod tests {
         (state, requester, other, id)
     }
 
-    async fn dispatch(state: &AppState, role: &str, msg: ClientMessage) {
-        handle_client_message(&msg, "me", &state.ws_manager, state, "admin", role).await;
+    /// Handle `msg` from the signed-in user `username`.
+    async fn dispatch(state: &AppState, username: &str, msg: ClientMessage) -> After {
+        dispatch_as(state, &WsPrincipal::User(username.to_string()), msg).await
+    }
+
+    async fn dispatch_as(state: &AppState, principal: &WsPrincipal, msg: ClientMessage) -> After {
+        handle_client_message(&msg, "me", &state.ws_manager, state, principal).await
+    }
+
+    async fn add_user(state: &AppState, username: &str, role: &str) -> i64 {
+        state
+            .storage
+            .create_user(username, &crate::api::auth::hash_password("pw"), "", role)
+            .await
+            .unwrap();
+        state
+            .storage
+            .get_user_by_username(username)
+            .await
+            .unwrap()
+            .unwrap()
+            .id
     }
 
     #[tokio::test]
-    async fn non_admin_write_is_rejected_to_the_requester_only() {
+    async fn read_only_user_write_is_rejected_to_the_requester_only() {
         let (state, mut me, mut other, id) = setup(true).await;
-        dispatch(&state, "operator", write_msg(&id.to_string(), "c1")).await;
+        add_user(&state, "watcher", "viewer").await;
+        let after = dispatch(&state, "watcher", write_msg(&id.to_string(), "c1")).await;
+        assert_eq!(after, After::Continue, "a refused write keeps the socket");
 
         let (command_id, status, reason) = only_ack(&mut me);
         assert_eq!((command_id.as_str(), status.as_str()), ("c1", "rejected"));
-        assert!(reason.unwrap().contains("admin"));
+        assert!(reason.unwrap().contains("demo or integration role"));
         assert!(other.try_recv().is_err(), "nobody else is told");
         assert_eq!(state.cache.get_metric_value("temp").await, Some(1.0));
+    }
+
+    /// The WebSocket follows the REST rule: a demo user may write.
+    #[tokio::test]
+    async fn demo_user_write_is_queued() {
+        let (state, mut me, _other, id) = setup(true).await;
+        add_user(&state, "demo1", "demo").await;
+        dispatch(&state, "demo1", write_msg(&id.to_string(), "c1")).await;
+        assert_accepted(&mut me);
+        let cmd = state.storage.get_command("c1").await.unwrap().unwrap();
+        assert_eq!(cmd.created_by, "demo1");
+    }
+
+    /// The role is read on every write: a user demoted or disabled after
+    /// connecting loses the right at once, and a disabled one loses the socket.
+    #[tokio::test]
+    async fn demoted_or_disabled_user_is_rechecked_on_write() {
+        let (state, mut me, _other, id) = setup(true).await;
+        let uid = add_user(&state, "demo1", "demo").await;
+        let principal = WsPrincipal::User("demo1".into());
+
+        state.storage.update_user_role(uid, "viewer").await.unwrap();
+        let after = dispatch_as(&state, &principal, write_msg(&id.to_string(), "c1")).await;
+        assert_eq!(after, After::Continue);
+        assert_eq!(only_ack(&mut me).1, "rejected");
+
+        state.storage.set_user_disabled(uid, true).await.unwrap();
+        let after = dispatch_as(&state, &principal, write_msg(&id.to_string(), "c2")).await;
+        assert_eq!(after, After::Close, "a disabled user's socket is closed");
+        assert_eq!(only_ack(&mut me).1, "rejected");
+        assert!(principal.current_role(&state).await.is_none());
+        assert!(state.storage.get_command("c2").await.unwrap().is_none());
+    }
+
+    /// Keys: integration writes, read-only refused, a revoked key's socket closes
+    /// (on its next write here; the periodic re-check uses the same lookup).
+    #[tokio::test]
+    async fn api_key_sockets_follow_the_key() {
+        let (state, mut me, _other, id) = setup(true).await;
+        let (ro, _) = state
+            .storage
+            .create_api_key("ro", "admin", None, "[]", "api")
+            .await
+            .unwrap();
+        let (int, _) = state
+            .storage
+            .create_api_key("int", "admin", None, "[]", "integration")
+            .await
+            .unwrap();
+
+        let after = dispatch_as(
+            &state,
+            &WsPrincipal::ApiKey(ro),
+            write_msg(&id.to_string(), "c1"),
+        )
+        .await;
+        assert_eq!(after, After::Continue);
+        assert_eq!(only_ack(&mut me).1, "rejected");
+
+        dispatch_as(
+            &state,
+            &WsPrincipal::ApiKey(int),
+            write_msg(&id.to_string(), "c2"),
+        )
+        .await;
+        assert_accepted(&mut me);
+
+        state.storage.revoke_api_key(int).await.unwrap();
+        let principal = WsPrincipal::ApiKey(int);
+        assert!(principal.current_role(&state).await.is_none());
+        let after = dispatch_as(&state, &principal, write_msg(&id.to_string(), "c3")).await;
+        assert_eq!(after, After::Close);
+        assert_eq!(only_ack(&mut me).1, "rejected");
     }
 
     #[tokio::test]

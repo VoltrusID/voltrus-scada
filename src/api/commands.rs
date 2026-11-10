@@ -135,12 +135,43 @@ pub async fn submit_tag_write(
     username: &str,
     req: TagWriteSubmission,
 ) -> Result<Command, WriteError> {
+    let value = req.value;
+    let reason = req
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .map(str::to_string);
+    let tag_id = req.tag_id;
+    let cmd = enqueue_checked_write(&state.storage, &state.cache, username, req).await?;
+
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: "tag_write".to_string(),
+        username: username.to_string(),
+        resource: format!("data_source:{tag_id}"),
+        details: Some(match reason {
+            Some(r) => format!("command={} value={value} reason={r}", cmd.id),
+            None => format!("command={} value={value}", cmd.id),
+        }),
+    });
+
+    Ok(cmd)
+}
+
+/// The write policy and the queue insert, without the security audit event:
+/// for writes that start inside the server (flows, recipes) as well as the API.
+/// The command and its reason still go into the command audit log.
+pub async fn enqueue_checked_write(
+    storage: &crate::storage::Storage,
+    cache: &crate::cache::DeviceCache,
+    username: &str,
+    req: TagWriteSubmission,
+) -> Result<Command, WriteError> {
     let tag_id = req.tag_id;
     let value = req.value;
 
     // 1. Get write policy — also validates that the data source exists
-    let policy = state
-        .storage
+    let policy = storage
         .get_write_policy(tag_id)
         .await?
         .ok_or_else(|| WriteError::NotFound("Data source not found".into()))?;
@@ -189,10 +220,9 @@ pub async fn submit_tag_write(
     {
         // The cache holds a metric under the bare register name, scoped by device
         // (the data source key may be device-qualified, `plts_1.voltage`).
-        let source = state.storage.get_data_source_by_id(tag_id).await?;
+        let source = storage.get_data_source_by_id(tag_id).await?;
         if let Some(source) = source
-            && let Some(current) = state
-                .cache
+            && let Some(current) = cache
                 .get_device_metric(
                     &source.device_id,
                     super::data::metric_name(&source.key, &source.device_id),
@@ -210,7 +240,7 @@ pub async fn submit_tag_write(
     if let Some(max_rate) = policy.write_max_rate
         && max_rate > 0
     {
-        let recent = state.storage.count_recent_writes(tag_id, 60).await?;
+        let recent = storage.count_recent_writes(tag_id, 60).await?;
         if recent >= max_rate {
             return Err(WriteError::RateLimited(format!(
                 "Rate limit exceeded: {recent} writes in the last 60s (max {max_rate})"
@@ -219,8 +249,7 @@ pub async fn submit_tag_write(
     }
 
     // 8. Get device info
-    let target = state
-        .storage
+    let target = storage
         .get_data_source_device_id(tag_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Device not found for data source"))?;
@@ -238,7 +267,7 @@ pub async fn submit_tag_write(
                     "Command id must be 1-64 characters of letters, digits, '-' or '_'".into(),
                 ));
             }
-            if state.storage.get_command(&id).await?.is_some() {
+            if storage.get_command(&id).await?.is_some() {
                 return Err(WriteError::Invalid("Command id is already in use".into()));
             }
             id
@@ -275,17 +304,7 @@ pub async fn submit_tag_write(
         readback_ts: None,
     };
 
-    state.storage.insert_command_audited(&cmd, reason).await?;
-
-    state.audit_logger.log(crate::security::AuditEvent {
-        action: "tag_write".to_string(),
-        username: username.to_string(),
-        resource: format!("data_source:{tag_id}"),
-        details: Some(match reason {
-            Some(r) => format!("command={} value={value} reason={r}", cmd.id),
-            None => format!("command={} value={value}", cmd.id),
-        }),
-    });
+    storage.insert_command_audited(&cmd, reason).await?;
 
     Ok(cmd)
 }
@@ -459,6 +478,7 @@ pub async fn get_write_policy(
 )]
 pub async fn update_write_policy(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
     Path(data_source_id): Path<i64>,
     Json(body): Json<WritePolicyUpdate>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -466,5 +486,12 @@ pub async fn update_write_policy(
         .storage
         .update_write_policy(data_source_id, &body)
         .await?;
+    // The write policy is the guard on setpoint writes; who loosened it matters.
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: "update_write_policy".to_string(),
+        username: user.username.clone(),
+        resource: format!("data_source:{data_source_id}"),
+        details: serde_json::to_string(&body).ok(),
+    });
     Ok(Json(json!({"ok": true})))
 }

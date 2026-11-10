@@ -120,6 +120,7 @@ fn test_cip_data_type_code_roundtrip() {
         CipDataType::String,
         CipDataType::Dword,
         CipDataType::Lint,
+        CipDataType::Lreal,
     ] {
         assert_eq!(CipDataType::from_code(dt.code()), Some(dt.clone()));
     }
@@ -371,4 +372,243 @@ fn test_parse_symbol_instance_valid() {
 fn test_parse_symbol_instance_empty() {
     assert!(parse_symbol_instance(&[]).is_none());
     assert!(parse_symbol_instance(&[0, 0, 0, 0]).is_none());
+}
+
+// ── Typed writes ──
+
+#[test]
+fn test_type_from_name() {
+    assert_eq!(CipDataType::from_name("real"), Some(CipDataType::Real));
+    assert_eq!(CipDataType::from_name(" DINT "), Some(CipDataType::Dint));
+    assert_eq!(CipDataType::from_name("lreal"), Some(CipDataType::Lreal));
+    assert_eq!(CipDataType::from_name("udt"), None);
+}
+
+#[test]
+fn test_value_for_each_type() {
+    assert_eq!(
+        CipDataType::Bool.value_for(2.0).unwrap(),
+        CipValue::Bool(true)
+    );
+    assert_eq!(
+        CipDataType::Bool.value_for(0.0).unwrap(),
+        CipValue::Bool(false)
+    );
+    assert_eq!(
+        CipDataType::Sint.value_for(-5.0).unwrap(),
+        CipValue::Sint(-5)
+    );
+    assert_eq!(
+        CipDataType::Int.value_for(1234.4).unwrap(),
+        CipValue::Int(1234)
+    );
+    assert_eq!(
+        CipDataType::Dint.value_for(-100_000.0).unwrap(),
+        CipValue::Dint(-100_000)
+    );
+    assert_eq!(
+        CipDataType::Real.value_for(12.5).unwrap(),
+        CipValue::Real(12.5)
+    );
+    assert_eq!(
+        CipDataType::Dword.value_for(0x0102_0304 as f64).unwrap(),
+        CipValue::Dword(0x0102_0304)
+    );
+    assert_eq!(
+        CipDataType::Lint.value_for(-5e12).unwrap(),
+        CipValue::Lint(-5_000_000_000_000)
+    );
+    assert_eq!(
+        CipDataType::Lreal.value_for(0.1).unwrap(),
+        CipValue::Lreal(0.1)
+    );
+    assert!(CipDataType::Lint.value_for(1e19).is_err());
+}
+
+#[test]
+fn test_value_for_refuses_out_of_range() {
+    assert!(CipDataType::Sint.value_for(128.0).is_err());
+    assert!(CipDataType::Int.value_for(-32_769.0).is_err());
+    assert!(CipDataType::Dword.value_for(-1.0).is_err());
+    assert!(CipDataType::Real.value_for(f64::NAN).is_err());
+}
+
+#[test]
+fn test_typed_value_encodes_with_its_type_code() {
+    let (code, data) = encode_cip_value(&CipDataType::Real.value_for(12.5).unwrap());
+    assert_eq!(code, CIP_TYPE_REAL);
+    assert_eq!(data, 12.5f32.to_le_bytes().to_vec());
+    let (code, _) = encode_cip_value(&CipDataType::Dword.value_for(1.0).unwrap());
+    assert_eq!(code, CIP_TYPE_DWORD);
+}
+
+#[test]
+fn test_type_of_read_value() {
+    assert_eq!(
+        CipDataType::of_value(&CipValue::Real(1.0)),
+        Some(CipDataType::Real)
+    );
+    assert_eq!(CipDataType::of_value(&CipValue::Bytes(vec![0; 4])), None);
+}
+
+#[test]
+fn test_encoded_size_matches_the_type() {
+    let cases = [
+        (CipDataType::Bool, 1.0, CIP_TYPE_BOOL, vec![0xFF]),
+        (CipDataType::Bool, 0.0, CIP_TYPE_BOOL, vec![0x00]),
+        (CipDataType::Sint, -2.0, CIP_TYPE_SINT, vec![0xFE]),
+        (CipDataType::Int, -2.0, CIP_TYPE_INT, vec![0xFE, 0xFF]),
+        (
+            CipDataType::Dint,
+            258.0,
+            CIP_TYPE_DINT,
+            vec![0x02, 0x01, 0x00, 0x00],
+        ),
+        (
+            CipDataType::Real,
+            1.0,
+            CIP_TYPE_REAL,
+            vec![0x00, 0x00, 0x80, 0x3F],
+        ),
+        (
+            CipDataType::Dword,
+            1.0,
+            CIP_TYPE_DWORD,
+            vec![0x01, 0x00, 0x00, 0x00],
+        ),
+        (CipDataType::Lint, -1.0, CIP_TYPE_LINT, vec![0xFF; 8]),
+        (
+            CipDataType::Lreal,
+            1.0,
+            CIP_TYPE_LREAL,
+            vec![0, 0, 0, 0, 0, 0, 0xF0, 0x3F],
+        ),
+    ];
+    for (t, v, code, bytes) in cases {
+        let (c, data) = encode_cip_value(&t.value_for(v).unwrap());
+        assert_eq!((c, data), (code, bytes), "{}", t.as_str());
+    }
+}
+
+#[test]
+fn test_write_request_carries_one_element_of_the_type() {
+    let req = build_write_tag_request("B", &CipValue::Bool(true));
+    // service, path size, path ("B" padded), type, element count, 1 data byte
+    assert_eq!(req[req.len() - 5..], [0xC1, 0x00, 0x01, 0x00, 0xFF]);
+}
+
+#[test]
+fn test_wide_types_round_trip() {
+    for value in [
+        CipValue::Lint(-42),
+        CipValue::Lreal(2.5),
+        CipValue::Dword(7),
+    ] {
+        let (code, data) = encode_cip_value(&value);
+        assert_eq!(decode_cip_value(code, &data).unwrap(), value);
+    }
+    assert_eq!(CipValue::Lreal(2.5).to_f64(), Some(2.5));
+    assert_eq!(CipValue::Dword(7).to_f64(), Some(7.0));
+}
+
+// ── Timeouts and offline detection ──
+
+/// How the stand-in controller answers SendRRData requests.
+#[derive(Clone, Copy)]
+enum Answer {
+    /// Never: the request hangs.
+    Nothing,
+    /// A CIP Read Tag reply with general status 0x05 (path destination unknown).
+    UnknownTag,
+}
+
+/// A controller that registers sessions and answers reads as `answer` says.
+async fn controller(answer: Answer) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                loop {
+                    let mut header = [0u8; ENIP_HEADER_SIZE];
+                    if s.read_exact(&mut header).await.is_err() {
+                        return;
+                    }
+                    let len = u16::from_le_bytes([header[2], header[3]]) as usize;
+                    let mut body = vec![0u8; len];
+                    if s.read_exact(&mut body).await.is_err() {
+                        return;
+                    }
+                    let command = u16::from_le_bytes([header[0], header[1]]);
+                    let reply_body = if command == CMD_REGISTER_SESSION {
+                        body
+                    } else {
+                        match answer {
+                            Answer::Nothing => continue,
+                            Answer::UnknownTag => {
+                                let cip = [CIP_READ_TAG | 0x80, 0x00, 0x05, 0x00];
+                                let mut rr = vec![0u8; 6];
+                                rr.extend_from_slice(&2u16.to_le_bytes());
+                                rr.extend_from_slice(&[0, 0, 0, 0, 0xB2, 0x00]);
+                                rr.extend_from_slice(&(cip.len() as u16).to_le_bytes());
+                                rr.extend_from_slice(&cip);
+                                rr
+                            }
+                        }
+                    };
+                    let mut reply = build_enip_header(command, 0x1234, 0, &reply_body);
+                    reply[4..8].copy_from_slice(&0x1234u32.to_le_bytes());
+                    if s.write_all(&reply).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    addr.to_string()
+}
+
+#[tokio::test]
+async fn test_read_times_out_and_drops_the_connection() {
+    let url = controller(Answer::Nothing).await;
+    let mut client =
+        EthernetIpClient::new(&url).with_timeout(std::time::Duration::from_millis(200));
+    client.connect().await.unwrap();
+    assert!(client.is_connected());
+
+    let started = std::time::Instant::now();
+    let err = client.read_tag("Speed").await.unwrap_err();
+    assert!(err.to_string().contains("timed out"), "{err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert!(
+        !client.is_connected(),
+        "a late reply must not answer the next request"
+    );
+}
+
+#[tokio::test]
+async fn test_device_goes_offline_when_every_read_keeps_failing() {
+    let url = controller(Answer::UnknownTag).await;
+    let config = EnipDeviceRuntimeConfig {
+        id: "enip_test".into(),
+        url,
+        slot: 0,
+        interval_ms: 10,
+        tags: vec![EnipTagConfig {
+            tag_name: "Missing".into(),
+            name: "missing".into(),
+            ..Default::default()
+        }],
+    };
+    let cache = crate::cache::DeviceCache::new();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        super::poller::try_connect_and_poll(&config, &cache),
+    )
+    .await
+    .expect("the poller gives up instead of polling forever");
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("cycles in a row"), "{err}");
 }

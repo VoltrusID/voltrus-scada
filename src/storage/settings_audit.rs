@@ -1,5 +1,37 @@
 use super::Storage;
 use anyhow::{Context, Result};
+use rusqlite::OptionalExtension;
+
+/// Result of [`Storage::verify_audit_chain`].
+#[derive(Debug, Default, Clone, serde::Serialize)]
+pub struct AuditChainReport {
+    /// True when every hashed row matches and links to the one before.
+    pub ok: bool,
+    pub checked: u64,
+    /// Rows from before the hash chain existed.
+    pub unhashed_legacy: u64,
+    /// First row that was altered, inserted out of chain or follows a deleted row.
+    pub first_bad_id: Option<i64>,
+}
+
+/// `sha256(prev_hash || row)`, with the row as a JSON array so no field
+/// boundary can be shifted between two fields.
+fn audit_row_hash(
+    prev_hash: &str,
+    id: i64,
+    action: &str,
+    username: &str,
+    resource: &str,
+    details: Option<&str>,
+    created_at: i64,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let row = serde_json::json!([id, action, username, resource, details, created_at]);
+    let mut hasher = Sha256::new();
+    hasher.update(prev_hash.as_bytes());
+    hasher.update(row.to_string().as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 impl Storage {
     // ── Audit Log ──
@@ -20,13 +52,103 @@ impl Storage {
 
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO audit_log (action, username, resource, details, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                rusqlite::params![action, username, resource, details, now],
+            // The previous hash is read and the new row hashed inside one
+            // transaction under the connection lock, so concurrent writers
+            // cannot fork the chain.
+            let tx = conn
+                .unchecked_transaction()
+                .context("Begin audit insert failed")?;
+            let prev_hash: String = tx
+                .query_row(
+                    "SELECT hash FROM audit_log WHERE hash IS NOT NULL ORDER BY id DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("Read audit chain head failed")?
+                .unwrap_or_default();
+            tx.execute(
+                "INSERT INTO audit_log (action, username, resource, details, created_at, prev_hash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![action, username, resource, details, now, prev_hash],
             )
             .context("Insert audit log failed")?;
+            let id = tx.last_insert_rowid();
+            let hash = audit_row_hash(
+                &prev_hash,
+                id,
+                &action,
+                &username,
+                &resource,
+                details.as_deref(),
+                now,
+            );
+            tx.execute(
+                "UPDATE audit_log SET hash = ?1 WHERE id = ?2",
+                rusqlite::params![hash, id],
+            )
+            .context("Hash audit log failed")?;
+            tx.commit().context("Commit audit log failed")?;
             Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Walk the audit log's hash chain. Each row stores
+    /// `sha256(prev_hash || row)`; editing a row, deleting one from the middle
+    /// or inserting one without the chain shows up as the first bad id. Rows
+    /// written before the chain existed (no hash, all before the first hashed
+    /// row) are counted, not checked. Retention purges the oldest rows, so the
+    /// first remaining row's `prev_hash` is taken as given.
+    pub async fn verify_audit_chain(&self) -> Result<AuditChainReport> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, action, username, resource, details, created_at, prev_hash, hash
+                     FROM audit_log ORDER BY id",
+                )
+                .context("Prepare audit verify failed")?;
+            let mut rows = stmt.query([]).context("Query audit verify failed")?;
+            let mut report = AuditChainReport::default();
+            let mut head: Option<String> = None;
+            while let Some(row) = rows.next().context("Read audit row failed")? {
+                let id: i64 = row.get(0)?;
+                let hash: Option<String> = row.get(7)?;
+                let Some(hash) = hash else {
+                    if head.is_none() {
+                        report.unhashed_legacy += 1;
+                        continue;
+                    }
+                    report.first_bad_id = Some(id);
+                    break;
+                };
+                let prev_hash: String = row.get::<_, Option<String>>(6)?.unwrap_or_default();
+                if head.as_ref().is_some_and(|h| *h != prev_hash) {
+                    report.first_bad_id = Some(id);
+                    break;
+                }
+                let details: Option<String> = row.get(4)?;
+                let expected = audit_row_hash(
+                    &prev_hash,
+                    id,
+                    &row.get::<_, String>(1)?,
+                    &row.get::<_, String>(2)?,
+                    &row.get::<_, String>(3)?,
+                    details.as_deref(),
+                    row.get(5)?,
+                );
+                if expected != hash {
+                    report.first_bad_id = Some(id);
+                    break;
+                }
+                report.checked += 1;
+                head = Some(hash);
+            }
+            report.ok = report.first_bad_id.is_none();
+            Ok(report)
         })
         .await
         .context("Task join failed")?

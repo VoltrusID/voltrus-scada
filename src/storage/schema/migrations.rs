@@ -255,6 +255,15 @@ pub(super) fn run_migrations(conn: &Connection) {
         );
     }
 
+    // Migration: write read-back. An acknowledged write is confirmed (or not)
+    // by the next poll; these record the outcome next to the command.
+    let _ = conn.execute_batch("ALTER TABLE commands ADD COLUMN readback_status TEXT");
+    let _ = conn.execute_batch("ALTER TABLE commands ADD COLUMN readback_value REAL");
+    let _ = conn.execute_batch(
+        "ALTER TABLE commands ADD COLUMN readback_attempts INTEGER NOT NULL DEFAULT 0",
+    );
+    let _ = conn.execute_batch("ALTER TABLE commands ADD COLUMN readback_ts TEXT");
+
     // Migration: v0.31.0 -- BACnet/IP device and object tables
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS bacnet_devices (
@@ -511,6 +520,11 @@ pub(super) fn run_migrations(conn: &Connection) {
             Err(e) => tracing::error!("Failed to repair {table} timestamps: {e}"),
         }
     }
+
+    // Migration: hash chain on the audit log (tamper evidence). Older rows keep
+    // NULL and are reported as pre-chain by verify_audit_chain.
+    let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT");
+    let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN hash TEXT");
 }
 
 /// Any second-based timestamp before the year 5138 is below this; a rollup
