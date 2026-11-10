@@ -48,10 +48,16 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
     let device_id = config.id.clone();
 
     // --- Build client ---
+    // Without message security the server certificate protects nothing, so any
+    // is accepted. With Sign or SignAndEncrypt the certificate is what proves
+    // the server is the right one: it must already be in `pki/trusted` (under
+    // the working directory). An unknown one is refused and copied to
+    // `pki/rejected`, from where an administrator moves it to `pki/trusted`.
+    let accept_any_server_cert = matches!(config.security_mode, OpcUaSecurityMode::None);
     let mut client = ClientBuilder::new()
         .application_name("Voltrus")
         .application_uri("urn:voltrus-lite")
-        .trust_server_certs(true)
+        .trust_server_certs(accept_any_server_cert)
         .create_sample_keypair(true)
         .client()
         .map_err(|e| anyhow::anyhow!("Client build errors: {:?}", e))?;
@@ -92,7 +98,16 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
     let (session, event_loop) = client
         .connect_to_matching_endpoint(endpoint, identity_token)
         .await
-        .context("OPC-UA connection failed")?;
+        .map_err(|e| {
+            if accept_any_server_cert {
+                anyhow::anyhow!("OPC-UA connection failed: {e}")
+            } else {
+                anyhow::anyhow!(
+                    "OPC-UA connection failed: {e} (a secure endpoint needs the server \
+                     certificate in pki/trusted; a refused one is in pki/rejected)"
+                )
+            }
+        })?;
 
     let mut event_handle = event_loop.spawn();
 
