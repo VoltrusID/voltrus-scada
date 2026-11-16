@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { edition, type BrandingSettings, type LoginProvidersProps } from './edition'
+import { edition, brandAccent, brandAccentText, type BrandingSettings, type LoginProvidersProps } from './edition'
 import { loginHintFrom } from './sharedAccount'
 
 const INPUT: React.CSSProperties = {
@@ -152,8 +152,8 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
               padding: '12px 20px',
               borderRadius: 8,
               border: 'none',
-              background: '#22c55e',
-              color: '#fff',
+              background: brandAccent(branding),
+              color: brandAccentText(branding),
               fontSize: 14,
               fontWeight: 600,
               cursor: 'pointer',

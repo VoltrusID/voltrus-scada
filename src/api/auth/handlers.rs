@@ -400,7 +400,7 @@ pub async fn refresh_token(
     }
 
     let refresh_hash = hash_refresh_token(refresh_token);
-    match state
+    let valid = match state
         .storage
         .get_refresh_token_by_hash(&refresh_hash)
         .await?
@@ -408,14 +408,18 @@ pub async fn refresh_token(
         Some(rt) if rt.revoked_at.is_none() && rt.expires_at > crate::timeutil::now_secs() => {
             // Revoke old token (rotation)
             let _ = state.storage.revoke_refresh_token(&rt.token_hash).await;
-
-            // Get user
-            let user = state
+            // A deleted or disabled account gets no new session, even from a
+            // refresh token that was never revoked.
+            state
                 .storage
                 .get_user_by_username(&rt.username)
                 .await?
-                .ok_or_else(|| anyhow::anyhow!("User not found"))?;
-
+                .filter(|user| !user.disabled)
+        }
+        _ => None,
+    };
+    match valid {
+        Some(user) => {
             // Create new tokens
             let new_access = create_token(&user.username, &user.role, &state.auth_secret);
             let new_refresh_raw = generate_refresh_token();
@@ -452,7 +456,7 @@ pub async fn refresh_token(
             let jar = jar.add(access_cookie).add(refresh_cookie);
             Ok((jar, Json(json!({"ok": true}))).into_response())
         }
-        _ => {
+        None => {
             // Clear cookies on invalid refresh
             let access_cookie = axum_extra::extract::cookie::Cookie::build(("voltrus_token", ""))
                 .max_age(time::Duration::seconds(0))

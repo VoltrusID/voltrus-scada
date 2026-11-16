@@ -23,6 +23,7 @@ export const queryKeys = {
   scadaEquipment:  (screenId: string) => ['scadaEquipment', screenId] as const,
   scadaConnections: (screenId: string) => ['scadaConnections', screenId] as const,
   users: ['users'] as const,
+  authMe: ['auth', 'me'] as const,
   flows: ['flows'] as const,
   flow: (id: string) => ['flow', id] as const,
   flowRuns: (id: string) => ['flowRuns', id] as const,

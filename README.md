@@ -64,7 +64,8 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   export, config snapshots, backup and restore, whole-configuration YAML
   projects (`voltrus project export|import|validate`).
 * **Security:** local accounts with Argon2; admin, operator (demo) and
-  read-only users; API keys whose permissions can narrow, never widen, their
+  read-only users; accounts can be disabled (signed out at once, sign-in
+  refused, history kept) from Data Manager › Admin › Users; API keys whose permissions can narrow, never widen, their
   role; rate limiting, SameSite=Strict session cookies, security headers,
   intrusion detection; a hash-chained audit log (`GET /api/v1/audit/verify`);
   the AI provider key encrypted at rest. Custom roles are labels only for now.

@@ -257,6 +257,8 @@ export interface UserItem {
   id: number
   username: string
   role: string
+  /** A disabled account keeps its row but cannot sign in. */
+  disabled?: boolean
 }
 
 // ── Flow Engine types ──

@@ -151,3 +151,23 @@ async fn count_other_active_admins_ignores_disabled_admins() {
     storage.set_user_disabled(b, true).await.unwrap();
     assert_eq!(storage.count_other_active_admins(a).await.unwrap(), 0);
 }
+
+/// SSO sign-in looks the account up here: a disabled external account comes
+/// back disabled (not re-enabled or recreated), so the add-on's sign-in
+/// refuses it.
+#[tokio::test]
+async fn external_account_lookup_keeps_the_disabled_flag() {
+    let storage = Storage::new_in_memory().unwrap();
+    let user = storage
+        .get_or_create_user_by_external_id("oidc", "ana@example.com", "viewer")
+        .await
+        .unwrap();
+    assert!(!user.disabled);
+    storage.set_user_disabled(user.id, true).await.unwrap();
+    let again = storage
+        .get_or_create_user_by_external_id("oidc", "ana@example.com", "viewer")
+        .await
+        .unwrap();
+    assert_eq!(again.id, user.id);
+    assert!(again.disabled);
+}
