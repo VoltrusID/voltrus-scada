@@ -54,6 +54,12 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   second confirming call by default, calls are rate limited per key, and
   `mcp.read_only: true` turns every write tool off. See
   [docs/mcp.md](docs/mcp.md).
+* **AI copilot (optional):** drafts register maps, dashboards, alarm
+  thresholds and flows for an engineer to review. Bring your own provider:
+  OpenAI, Anthropic, or any OpenAI-compatible server at a base URL you set
+  (Ollama, LM Studio, OpenRouter, Gemini, DeepSeek, Groq, your own gateway).
+  With Ollama or LM Studio on your network it works offline and needs no key.
+  Admins set it up in the copilot's Settings tab.
 * **Operations:** OEE and downtime, shift handover, asset inventory with NIS2
   export, config snapshots, backup and restore, whole-configuration YAML
   projects (`voltrus project export|import|validate`).
@@ -217,7 +223,8 @@ data centre, factory floor, oil and gas well, water treatment).
 Core makes no outbound connections on its own. It does not check for updates,
 send telemetry or contact any Voltrus server. It only connects to what you
 configure: your devices, your SMTP server, your webhooks and MQTT brokers, and
-an AI provider if you enable the optional AI copilot with your own key.
+an AI provider if you enable the optional AI copilot with your own key (or a
+local model server such as Ollama, which keeps it all on your network).
 The API documentation page (`/api/docs`, signed-in users only) loads its viewer
 script from a public CDN; the OpenAPI document at `/api/v1/openapi.json` does not.
 

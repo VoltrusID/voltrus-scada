@@ -24,7 +24,7 @@ licence key and no calls to Voltrus servers:
 | Data | Historian and trends, SPC (control, histogram, run charts), annotations, CSV and Excel import and export |
 | Automation | Flow engine, scripts, recipes, command queue with retries and expiry, simulation mode |
 | Integration | REST API (OpenAPI), Python and TypeScript SDKs, Prometheus, Grafana and BI endpoints, outbound webhooks, scheduled data egress |
-| Operations | OEE and downtime, shift handover, asset inventory with NIS2 export, EDR and hardware compatibility tools, AI copilot (bring your own key) |
+| Operations | OEE and downtime, shift handover, asset inventory with NIS2 export, EDR and hardware compatibility tools, AI copilot (bring your own key: OpenAI, Anthropic, or any OpenAI-compatible server such as Ollama for offline use) |
 | Security | Local accounts (Argon2), admin and read-only users, API keys, rate limiting, audit log, SameSite=Strict session cookies and security headers |
 
 ## What the Enterprise add-on adds
