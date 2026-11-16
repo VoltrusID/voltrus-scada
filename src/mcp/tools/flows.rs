@@ -1,4 +1,4 @@
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Extension, State};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -42,7 +42,7 @@ pub fn tools() -> Vec<Tool> {
             title: "Start flow",
             description: "Enable a flow (by id from list_flows) so it runs on its trigger. The \
                 state is stored and survives restarts.",
-            access: Access::Write,
+            access: Access::Operate,
             destructive: false,
             input_schema: id_schema,
             call: start_flow,
@@ -52,7 +52,7 @@ pub fn tools() -> Vec<Tool> {
             title: "Stop flow",
             description: "Disable a flow (by id from list_flows) so it no longer runs. The flow \
                 is kept; start_flow re-enables it.",
-            access: Access::Write,
+            access: Access::Operate,
             destructive: false,
             input_schema: id_schema,
             call: stop_flow,
@@ -288,12 +288,16 @@ async fn set_enabled(ctx: &Ctx, args: Value, enabled: bool) -> super::ToolResult
     if ctx.state.storage.get_flow(&id).await?.is_none() {
         return Err(ToolError::new(format!("flow '{id}' not found")));
     }
-    let auth = ctx.user.clone();
-    let result = if enabled {
-        flows::start_flow(State(ctx.state.clone()), Extension(auth), Path(id.clone())).await
-    } else {
-        flows::stop_flow(State(ctx.state.clone()), Extension(auth), Path(id.clone())).await
-    };
+    // MCP cannot sign: a start or stop the edition wants signed is refused.
+    let result = flows::set_flow_enabled(
+        &ctx.state,
+        &ctx.user,
+        crate::edition::ActionOrigin::Mcp,
+        &id,
+        enabled,
+        None,
+    )
+    .await;
     from_handler(result).await?;
     Ok(json!({"ok": true, "id": id, "enabled": enabled}))
 }

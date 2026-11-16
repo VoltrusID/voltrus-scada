@@ -88,9 +88,13 @@ the key travels in a header.
 
 ## Tools
 
-Read tools work with any authenticated principal. Write tools need the `admin`,
-`demo` or `integration` role (the rule the REST operational write routes use);
-for a read-only key they fail with JSON-RPC error `-32003`. Tools marked
+Read tools work with any authenticated principal. Operate tools need the
+`operator`, `admin`, `demo` or `integration` role (the REST operator routes'
+rule); write tools need the `admin`, `demo` or `integration` role (the rule
+the REST configuration routes use); for a read-only key they fail with
+JSON-RPC error `-32003`. When an add-on edition wants an action signed
+electronically, MCP calls of it are refused: an agent cannot sign (see
+[edition-hooks.md](edition-hooks.md#electronic-signatures)). Tools marked
 **admin** are for a signed-in admin session only, the rule the REST routes behind
 the admin guard use: API keys and integration keys get `-32003` and a message
 saying so.
@@ -108,15 +112,15 @@ saying so.
 | `read_live_values` | read | Current values from the live cache with status against limits. |
 | `read_history` | read | Trend data by key and preset range or `from`/`to`, `avg`/`minmax`/`sampling`. |
 | `list_alarms` | read | Alarms by status and priority. |
-| `acknowledge_alarm` | write | Acknowledge an alarm, attributed to the caller. |
+| `acknowledge_alarm` | operate | Acknowledge an alarm, attributed to the caller. |
 | `alarm_summary` | read | Active counts by severity, shelved, last 24 h, mean acknowledge time. |
 | `list_screens` | read | Screens (dashboards). |
 | `create_screen` | write | Create an empty screen. |
 | `add_tag_to_screen` | write | Place a tag on a screen. |
 | `list_flows` | read | Automation flows. |
 | `create_flow` | write | Create a flow (trigger plus node pipeline); validated first, disabled by default. |
-| `start_flow` / `stop_flow` | write | Enable or disable a flow. |
-| `write_tag` | write | Queue a setpoint write through the tag's write policy. |
+| `start_flow` / `stop_flow` | operate | Enable or disable a flow. |
+| `write_tag` | operate | Queue a setpoint write through the tag's write policy. |
 | `get_command_status` | read | Outcome of a queued write. |
 | `confirm_action` | write | Carry out a call another tool proposed, given its confirmation token. |
 | `list_device_templates` | read | Search the device template library (`q`, `manufacturer`, `protocol`, `source`). |

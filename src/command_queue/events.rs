@@ -9,6 +9,7 @@ impl CommandQueue {
                 status: status.to_string(),
                 device_response: error.map(|e| e.to_string()),
                 latency_ms: None,
+                signature_required: None,
             });
         }
     }
@@ -20,6 +21,7 @@ impl CommandQueue {
                 status: "acked".to_string(),
                 device_response: Some(response.to_string()),
                 latency_ms: Some(latency_ms),
+                signature_required: None,
             });
         }
     }
@@ -45,6 +47,7 @@ impl CommandQueue {
                 status: format!("readback_{}", outcome.status()),
                 device_response: value,
                 latency_ms: None,
+                signature_required: None,
             });
         }
     }

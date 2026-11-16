@@ -117,6 +117,13 @@ pub struct RefreshToken {
     pub expires_at: i64,
     pub created_at: i64,
     pub revoked_at: Option<i64>,
+    /// When the session this token belongs to began (sign-in); carried over
+    /// on every rotation. `None` on tokens issued before it was recorded.
+    #[serde(default)]
+    pub session_started_at: Option<i64>,
+    /// The user's last recorded activity in this session.
+    #[serde(default)]
+    pub last_activity_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]

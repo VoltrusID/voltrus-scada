@@ -525,6 +525,16 @@ pub(super) fn run_migrations(conn: &Connection) {
     // NULL and are reported as pre-chain by verify_audit_chain.
     let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN hash TEXT");
+
+    // Migration: the tag's value when a write was queued, on the command's
+    // first audit entry (audit trail of setpoint changes: old and new value).
+    let _ = conn.execute_batch("ALTER TABLE command_audit_log ADD COLUMN previous_value REAL");
+
+    // Migration: session limits (idle and absolute timeout). A refresh token
+    // carries when its session started and when the user was last active;
+    // older rows fall back to created_at.
+    let _ = conn.execute_batch("ALTER TABLE refresh_tokens ADD COLUMN session_started_at INTEGER");
+    let _ = conn.execute_batch("ALTER TABLE refresh_tokens ADD COLUMN last_activity_at INTEGER");
 }
 
 /// Any second-based timestamp before the year 5138 is below this; a rollup

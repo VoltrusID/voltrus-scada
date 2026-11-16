@@ -30,7 +30,10 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 ///
 /// * `public`: no authentication (like `/api/v1/health`).
 /// * `protected`: any authenticated user.
-/// * `operator`: admin, demo and integration roles (device and screen configuration).
+/// * `operate`: running the plant: the `operator` role plus admin, demo and
+///   integration (tag writes, alarm handling, recipe loads).
+/// * `operator`: configuration: admin, demo and integration roles (device and
+///   screen configuration). The name predates the `operate` group.
 /// * `admin`: admin users only.
 ///
 /// Extension routes sit behind the same CORS, rate limit and security header
@@ -38,6 +41,7 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub struct ExtensionRoutes {
     pub public: Router<AppState>,
     pub protected: Router<AppState>,
+    pub operate: Router<AppState>,
     pub operator: Router<AppState>,
     pub admin: Router<AppState>,
 }
@@ -47,6 +51,7 @@ impl Default for ExtensionRoutes {
         Self {
             public: Router::new(),
             protected: Router::new(),
+            operate: Router::new(),
             operator: Router::new(),
             admin: Router::new(),
         }
@@ -147,6 +152,157 @@ pub fn hosted_ai() -> Option<&'static Arc<dyn HostedAi>> {
     HOSTED_AI.get()
 }
 
+// ── Compliance hooks (21 CFR Part 11 style) ──────────────────────────────
+//
+// Plain Core never asks for any of this: every default keeps today's
+// behaviour. An add-on edition implements the `Extension` methods that use
+// these types. The full contract is in docs/edition-hooks.md.
+
+/// Where a password is being set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasswordChangeKind {
+    /// The signed-in user changes their own password
+    /// (`POST /api/v1/auth/change-password`).
+    SelfService,
+    /// An admin creates a user (`POST /api/v1/users`).
+    AdminCreate,
+    /// An admin sets another user's password (`PUT /api/v1/users/{id}`).
+    AdminReset,
+}
+
+/// A new password to check against the edition's password policy.
+#[derive(Clone)]
+pub struct PasswordCheck {
+    pub username: String,
+    /// The role the account has (or will have, for a new user).
+    pub role: String,
+    /// The new password in clear text. Never log or store it.
+    pub new_password: String,
+    pub kind: PasswordChangeKind,
+}
+
+impl std::fmt::Debug for PasswordCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PasswordCheck")
+            .field("username", &self.username)
+            .field("role", &self.role)
+            .field("new_password", &"<redacted>")
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+
+/// How long a signed-in session may last. `None` means no limit beyond the
+/// core's own (a 15-minute access token renewed by a 7-day sliding refresh
+/// token).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct SessionPolicy {
+    /// Sign the user out after this many seconds without user activity
+    /// (`POST /api/v1/auth/activity`, sent by the client on keyboard, mouse
+    /// and touch input).
+    pub idle_timeout_secs: Option<u64>,
+    /// Sign the user out this many seconds after they signed in, active or not.
+    pub absolute_timeout_secs: Option<u64>,
+}
+
+/// An action that may need an electronic signature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SignedAction {
+    /// A tag write / setpoint change (REST, WebSocket, MCP, flow, recipe).
+    TagWrite,
+    /// Acknowledging one alarm or all of them.
+    AlarmAck,
+    /// Shelving or unshelving an alarm.
+    AlarmShelve,
+    /// Loading a recipe (one signature covers every write of the load).
+    RecipeLoad,
+    /// Switching how the plant is run: a device's simulation mode, go-live
+    /// and its rollback, starting or stopping a flow, changing a tag's
+    /// write policy.
+    ModeSwitch,
+}
+
+impl SignedAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TagWrite => "tag_write",
+            Self::AlarmAck => "alarm_ack",
+            Self::AlarmShelve => "alarm_shelve",
+            Self::RecipeLoad => "recipe_load",
+            Self::ModeSwitch => "mode_switch",
+        }
+    }
+}
+
+/// Who or what started an action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionOrigin {
+    /// A person signed in with a session (REST or WebSocket, web or native
+    /// client, or an add-on bearer identity).
+    Session,
+    /// An API key (REST or WebSocket). Keys cannot sign.
+    ApiKey,
+    /// An MCP tool call (an AI agent acting for a user or a key). Cannot sign.
+    Mcp,
+    /// A flow's write node. Nobody is there to sign.
+    Flow,
+    /// A tag write queued by a recipe load. Asked once per tag before the
+    /// load starts, so one signature on the load covers it.
+    Recipe,
+}
+
+impl ActionOrigin {
+    /// Whether a person is there who can type a password.
+    pub fn can_sign(self) -> bool {
+        matches!(self, Self::Session | Self::Recipe)
+    }
+}
+
+/// The action being attempted, given to [`Extension::signature_required`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActionContext {
+    pub action: SignedAction,
+    pub origin: ActionOrigin,
+    /// The acting user (`api_key:<id>` for a key, `flow:<id>` for a flow).
+    pub username: String,
+    pub role: String,
+    /// What is acted on: `data_source:<id>`, `alarm:<id>` (`alarm:*` for
+    /// acknowledge-all), `recipe:<id>`, `device:<id>:simulation`,
+    /// `device:<id>:go_live`, `device:<id>:go_live_rollback`, `flow:<id>`,
+    /// `data_source:<id>:write_policy`.
+    pub resource: String,
+    /// Details per action, listed in docs/edition-hooks.md (a tag write has
+    /// `tag_id`, `key`, `device_id`, `value` and `previous`).
+    pub details: serde_json::Value,
+}
+
+/// A signature the edition asks for.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SignatureRequirement {
+    /// What signing means, shown to the signer and recorded with the
+    /// signature ("Approved setpoint change", "Reviewed and acknowledged").
+    pub meaning: String,
+}
+
+/// A verified signature, given to [`Extension::record_signature`]. The core has
+/// checked the signer's password; the edition stores the record.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SignatureRecord {
+    pub username: String,
+    pub role: String,
+    pub action: SignedAction,
+    pub origin: ActionOrigin,
+    pub resource: String,
+    pub details: serde_json::Value,
+    pub meaning: String,
+    pub reason: String,
+    /// Unix seconds.
+    pub signed_at: i64,
+}
+
 /// Hooks for add-on editions. Every method has a no-op default, so the
 /// open core runs with [`Community`].
 pub trait Extension: Send + Sync + 'static {
@@ -212,6 +368,81 @@ pub trait Extension: Send + Sync + 'static {
     fn auth_providers(&self) -> Vec<serde_json::Value> {
         Vec::new()
     }
+
+    /// Check a new password against the edition's policy (length, character
+    /// classes, history, ...), after the core's own 8-character minimum. Asked
+    /// on self-service change, admin create and admin reset. `Err` carries a
+    /// message shown to the user (answered 400).
+    fn validate_new_password<'a>(
+        &'a self,
+        _check: &'a PasswordCheck,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Called after a password was stored, with its Argon2 hash (for password
+    /// history and the change date that expiry counts from).
+    fn password_changed<'a>(
+        &'a self,
+        _username: &'a str,
+        _password_hash: &'a str,
+        _kind: PasswordChangeKind,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async {})
+    }
+
+    /// Whether the user's password has expired. Asked at sign-in once the
+    /// password is verified; `true` answers the sign-in like
+    /// `must_change_password` (plus `password_expired: true`).
+    fn password_expired<'a>(&'a self, _user: &'a crate::models::User) -> BoxFuture<'a, bool> {
+        Box::pin(async { false })
+    }
+
+    /// Idle and absolute session limits for this user, read at sign-in and on
+    /// every token refresh. The default sets none (core behaviour).
+    fn session_policy<'a>(
+        &'a self,
+        _username: &'a str,
+        _role: &'a str,
+    ) -> BoxFuture<'a, SessionPolicy> {
+        Box::pin(async { SessionPolicy::default() })
+    }
+
+    /// Whether `ctx` needs an electronic signature. `None` (the default) lets
+    /// the action go ahead as in Core. For origins that cannot sign (API keys,
+    /// MCP, flows) `Some` refuses the action.
+    fn signature_required<'a>(
+        &'a self,
+        _ctx: &'a ActionContext,
+    ) -> BoxFuture<'a, Option<SignatureRequirement>> {
+        Box::pin(async { None })
+    }
+
+    /// Store a verified signature. Returns the signature's id, written into
+    /// the action's audit entry (`signature=<id>`). An `Err` refuses the action
+    /// (answered 500): an action that needs a signature never runs unrecorded.
+    fn record_signature<'a>(
+        &'a self,
+        _record: &'a SignatureRecord,
+    ) -> BoxFuture<'a, anyhow::Result<Option<String>>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+static INSTALLED: OnceLock<Arc<dyn Extension>> = OnceLock::new();
+
+/// Make `ext` reachable from code that runs outside a request (flow write
+/// nodes). Called once by [`crate::run`].
+pub fn install(ext: Arc<dyn Extension>) {
+    let _ = INSTALLED.set(ext);
+}
+
+/// The edition the process runs with ([`Community`] before [`install`]).
+pub fn installed() -> Arc<dyn Extension> {
+    INSTALLED
+        .get()
+        .cloned()
+        .unwrap_or_else(|| Arc::new(Community))
 }
 
 /// The open core on its own: no add-on, no licence, nothing gated.

@@ -4,6 +4,7 @@ use axum::{
     Json,
     extract::{Extension, Path, State},
     http::StatusCode,
+    response::IntoResponse,
 };
 use serde_json::json;
 
@@ -173,9 +174,12 @@ pub async fn delete_flow(
 pub async fn start_flow(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, AppError> {
-    set_flow_enabled(&state, &auth, &id, true).await
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> Result<axum::response::Response, AppError> {
+    let origin = super::signature::origin_of(&auth, api_key.is_some());
+    set_flow_enabled(&state, &auth, origin, &id, true, signature.as_ref()).await
 }
 
 #[utoipa::path(
@@ -195,21 +199,41 @@ pub async fn start_flow(
 pub async fn stop_flow(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, AppError> {
-    set_flow_enabled(&state, &auth, &id, false).await
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> Result<axum::response::Response, AppError> {
+    let origin = super::signature::origin_of(&auth, api_key.is_some());
+    set_flow_enabled(&state, &auth, origin, &id, false, signature.as_ref()).await
 }
 
 /// Persist `enabled` on the stored flow, then mirror it into the running
-/// engine, so a restart or reload keeps what start/stop did.
-async fn set_flow_enabled(
+/// engine, so a restart or reload keeps what start/stop did. Starting or
+/// stopping a flow is a mode switch an add-on edition may want signed.
+pub(crate) async fn set_flow_enabled(
     state: &AppState,
     auth: &AuthUser,
+    origin: crate::edition::ActionOrigin,
     id: &str,
     enabled: bool,
-) -> Result<StatusCode, AppError> {
+    signature: Option<&crate::models::SignatureInput>,
+) -> Result<axum::response::Response, AppError> {
     let Some(flow) = state.storage.get_flow(id).await? else {
-        return Ok(StatusCode::NOT_FOUND);
+        return Ok(StatusCode::NOT_FOUND.into_response());
+    };
+    let signed = match super::signature::authorize_action(
+        state,
+        auth,
+        origin,
+        crate::edition::SignedAction::ModeSwitch,
+        format!("flow:{id}"),
+        serde_json::json!({"mode": if enabled { "start" } else { "stop" }, "flow_id": id, "name": flow.name}),
+        signature,
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
     };
     state
         .storage
@@ -225,9 +249,11 @@ async fn set_flow_enabled(
         action: if enabled { "start_flow" } else { "stop_flow" }.to_string(),
         username: auth.username.clone(),
         resource: format!("flow:{}", id),
-        details: None,
+        details: signed
+            .as_ref()
+            .map(|s| format!("{} reason={}", s.audit_suffix().trim_start(), s.reason)),
     });
-    Ok(StatusCode::NO_CONTENT)
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 #[utoipa::path(

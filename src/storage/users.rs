@@ -224,6 +224,85 @@ impl Storage {
 
     // ── Refresh token management ──
 
+    /// A refresh token of a session that began at `session_started_at`, its
+    /// user last active at `last_activity_at` (both Unix seconds).
+    pub async fn create_session_refresh_token(
+        &self,
+        username: &str,
+        token_hash: &str,
+        expires_at: i64,
+        created_at: i64,
+        session_started_at: i64,
+        last_activity_at: i64,
+    ) -> Result<i64> {
+        let conn = self.conn.clone();
+        let username = username.to_string();
+        let token_hash = token_hash.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO refresh_tokens (token_hash, username, expires_at, created_at, session_started_at, last_activity_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    token_hash,
+                    username,
+                    expires_at,
+                    created_at,
+                    session_started_at,
+                    last_activity_at
+                ],
+            )
+            .context("Create refresh token failed")?;
+            Ok(conn.last_insert_rowid())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Record user activity on the live (not revoked) refresh token
+    /// `token_hash`. Returns whether a token was updated.
+    pub async fn touch_refresh_token_activity(&self, token_hash: &str, now: i64) -> Result<bool> {
+        let conn = self.conn.clone();
+        let token_hash = token_hash.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let n = conn
+                .execute(
+                    "UPDATE refresh_tokens SET last_activity_at = ?1
+                     WHERE token_hash = ?2 AND revoked_at IS NULL",
+                    rusqlite::params![now, token_hash],
+                )
+                .context("Record session activity failed")?;
+            Ok(n > 0)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Set when a refresh token's session began and its last activity
+    /// (tests and migrations of old sessions).
+    pub async fn set_refresh_token_session_times(
+        &self,
+        token_hash: &str,
+        session_started_at: i64,
+        last_activity_at: i64,
+    ) -> Result<()> {
+        let conn = self.conn.clone();
+        let token_hash = token_hash.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "UPDATE refresh_tokens SET session_started_at = ?1, last_activity_at = ?2
+                 WHERE token_hash = ?3",
+                rusqlite::params![session_started_at, last_activity_at, token_hash],
+            )
+            .context("Update refresh token session failed")?;
+            Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     pub async fn create_refresh_token(
         &self,
         username: &str,
@@ -256,7 +335,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT id, token_hash, username, expires_at, created_at, revoked_at FROM refresh_tokens WHERE token_hash = ?1"
+                "SELECT id, token_hash, username, expires_at, created_at, revoked_at, session_started_at, last_activity_at FROM refresh_tokens WHERE token_hash = ?1"
             )
             .context("Prepare failed")?;
             let result = stmt.query_row(
@@ -269,6 +348,8 @@ impl Storage {
                         expires_at: row.get(3)?,
                         created_at: row.get(4)?,
                         revoked_at: row.get(5)?,
+                        session_started_at: row.get(6)?,
+                        last_activity_at: row.get(7)?,
                     })
                 },
             )

@@ -32,8 +32,12 @@ mod templates;
 pub enum Access {
     /// Any authenticated principal, including a read-only `api` key.
     Read,
-    /// Principals the REST operational write routes admit: admin, demo,
+    /// Running the plant (tag writes, alarm acknowledgement, flow start and
+    /// stop): the REST operator routes' principals, operator, demo, admin and
     /// integration. Every call is audit-logged.
+    Operate,
+    /// Changing the configuration: the REST configuration routes' principals,
+    /// admin, demo and integration. Every call is audit-logged.
     Write,
     /// Admin sessions only, for tools that expose the whole configuration but
     /// change nothing. API and integration keys are refused. Audit-logged.

@@ -23,17 +23,31 @@ pub async fn admin_only_middleware(
     next.run(req).await
 }
 
-/// Roles that may use the operational write routes: admin, demo, and the
-/// write-capable "integration" API key role. Plain "api" keys stay read-only.
+/// Roles that may operate the plant: write tags within their write policy,
+/// cancel commands, acknowledge and shelve alarms, load recipes, start and
+/// stop flows. That is `operator` plus every role that may also configure.
+/// `viewer`, the legacy `user` role and read-only `api` keys may not.
 /// REST, MCP and WebSocket tag writes all ask this one question, so the three
 /// cannot drift apart.
-pub fn role_allows_operational_writes(role: &str) -> bool {
+pub fn role_allows_operation(role: &str) -> bool {
+    role == "operator" || role_allows_configuration(role)
+}
+
+/// Roles that may change the configuration (devices, tags, screens, flows,
+/// recipes, settings): admin, demo, and the write-capable "integration" API
+/// key role. Plain "api" keys stay read-only.
+pub fn role_allows_configuration(role: &str) -> bool {
     matches!(role, "admin" | "demo" | "integration")
 }
 
+/// Former name of [`role_allows_configuration`], kept for add-on editions.
+pub fn role_allows_operational_writes(role: &str) -> bool {
+    role_allows_configuration(role)
+}
+
 /// Allows admin, demo, and integration roles. Used for routes that demo users
-/// can access (device config, screens, layouts, commands, flows, etc.) but not
-/// truly admin-only routes (user management, roles, API keys, security,
+/// can access (device config, screens, layouts, flows, etc.) but not truly
+/// admin-only routes (user management, roles, API keys, security,
 /// compliance). "integration" is the write-capable API key role; plain "api"
 /// keys stay read-only and are rejected here.
 pub async fn demo_allowed_middleware(
@@ -41,7 +55,7 @@ pub async fn demo_allowed_middleware(
     req: Request,
     next: Next,
 ) -> impl IntoResponse {
-    if !role_allows_operational_writes(&auth.role) {
+    if !role_allows_configuration(&auth.role) {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({"error": "admin access required"})),
@@ -51,16 +65,17 @@ pub async fn demo_allowed_middleware(
     next.run(req).await
 }
 
-/// For the few protected routes a signed-in read-only person may use but a
-/// read-only API key may not (acknowledging an alarm: an operator at the screen
-/// acknowledges, ISA-18.2 style; an unattended read-only integration must not).
-pub async fn deny_read_only_keys_middleware(req: Request, next: Next) -> axum::response::Response {
-    if let Some(key) = req.extensions().get::<ApiKeyAuth>()
-        && !role_allows_operational_writes(&key.role)
-    {
+/// The operator routes ([`role_allows_operation`]): operator, demo, admin and
+/// integration keys. Viewers and read-only API keys are refused.
+pub async fn operator_allowed_middleware(
+    Extension(auth): Extension<AuthUser>,
+    req: Request,
+    next: Next,
+) -> impl IntoResponse {
+    if !role_allows_operation(&auth.role) {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"error": "read-only API keys cannot do this; use an integration key"})),
+            Json(json!({"error": "operator access required"})),
         )
             .into_response();
     }

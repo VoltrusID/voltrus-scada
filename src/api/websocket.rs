@@ -349,6 +349,7 @@ pub(super) async fn handle_client_message(
             value,
             command_id,
             reason,
+            signature,
         } => {
             let cmd_id = command_id.clone().unwrap_or_else(next_command_id);
 
@@ -363,7 +364,7 @@ pub(super) async fn handle_client_message(
                 );
                 return After::Close;
             };
-            if !super::role_allows_operational_writes(&role) {
+            if !super::role_allows_operation(&role) {
                 tracing::warn!(
                     "WS: user={} (role={}) denied tag write to {}",
                     username,
@@ -374,18 +375,28 @@ pub(super) async fn handle_client_message(
                     ws_manager,
                     conn_id,
                     cmd_id,
-                    "Tag writes need the admin, demo or integration role",
+                    "Tag writes need the operator, demo, admin or integration role",
                 );
                 return After::Continue;
             }
 
+            let origin = match principal {
+                WsPrincipal::ApiKey(_) => crate::edition::ActionOrigin::ApiKey,
+                _ => crate::edition::ActionOrigin::Session,
+            };
+            let actor = super::commands::Actor {
+                username,
+                role: &role,
+                origin,
+            };
             handle_tag_write(
                 state,
                 conn_id,
-                username,
+                &actor,
                 tag_id,
                 *value,
                 reason.clone(),
+                signature.clone().map(Into::into),
                 cmd_id,
             )
             .await;
@@ -428,6 +439,7 @@ fn reject_write(
             status: "rejected".to_string(),
             device_response: Some(reason.to_string()),
             latency_ms: None,
+            signature_required: None,
         },
     );
 }
@@ -440,15 +452,22 @@ fn reject_write(
 /// reason); otherwise its first `CommandAck` for the command id is the final outcome
 /// (`acked`, `failed` or `expired`), the intermediate `sent` and `queued` going to the
 /// other connections only.
+///
+/// A write the edition wants signed is answered with `signature_required` set
+/// on the `CommandAck` (status `signature_required`, or `rejected` for a wrong
+/// password); the client resends it with `signature`.
+#[allow(clippy::too_many_arguments)]
 async fn handle_tag_write(
     state: &AppState,
     conn_id: &str,
-    username: &str,
+    actor: &super::commands::Actor<'_>,
     tag_id: &str,
     value: f64,
     reason: Option<String>,
+    signature: Option<crate::models::SignatureInput>,
     cmd_id: String,
 ) {
+    let username = actor.username;
     if !crate::node_role::is_active() {
         reject_write(
             &state.ws_manager,
@@ -482,7 +501,7 @@ async fn handle_tag_write(
     };
     // Registered before the command exists: the queue may answer within milliseconds.
     state.ws_manager.expect_final_ack(&cmd_id, conn_id);
-    match super::commands::submit_tag_write(state, username, submission).await {
+    match super::commands::submit_tag_write(state, actor, submission, signature.as_ref()).await {
         Ok(cmd) => {
             // No answer yet: the requester's first `CommandAck` for this id is the
             // queue's final one (`acked`, `failed`, `expired`), as it was the device's
@@ -503,7 +522,42 @@ async fn handle_tag_write(
                 data_source_id,
                 message
             );
-            reject_write(&state.ws_manager, conn_id, cmd_id, &message);
+            let prompt = match &refusal {
+                super::commands::WriteError::Signature(e) => {
+                    e.prompt()
+                        .map(|(action, req)| crate::ws_types::WsSignatureRequired {
+                            action: action.to_string(),
+                            meaning: req.meaning.clone(),
+                        })
+                }
+                _ => None,
+            };
+            match prompt {
+                Some(required) => {
+                    let missing = matches!(
+                        refusal,
+                        super::commands::WriteError::Signature(
+                            super::signature::SignatureError::Required { .. }
+                        )
+                    );
+                    state.ws_manager.send_to(
+                        conn_id,
+                        ServerMessage::CommandAck {
+                            command_id: cmd_id,
+                            status: if missing {
+                                "signature_required"
+                            } else {
+                                "rejected"
+                            }
+                            .to_string(),
+                            device_response: Some(message),
+                            latency_ms: None,
+                            signature_required: Some(required),
+                        },
+                    );
+                }
+                None => reject_write(&state.ws_manager, conn_id, cmd_id, &message),
+            }
         }
     }
 }
@@ -514,7 +568,7 @@ async fn handle_tag_write(
 pub(super) fn role_to_permissions(role: &str) -> Vec<String> {
     if role == "admin" {
         vec!["read".to_string(), "write".to_string(), "admin".to_string()]
-    } else if super::role_allows_operational_writes(role) {
+    } else if super::role_allows_operation(role) {
         vec!["read".to_string(), "write".to_string()]
     } else {
         vec!["read".to_string()]
@@ -590,6 +644,7 @@ mod tests {
             value: 42.0,
             command_id: Some(command_id.to_string()),
             reason: None,
+            signature: None,
         }
     }
 
@@ -705,7 +760,11 @@ mod tests {
 
         let (command_id, status, reason) = only_ack(&mut me);
         assert_eq!((command_id.as_str(), status.as_str()), ("c1", "rejected"));
-        assert!(reason.unwrap().contains("demo or integration role"));
+        assert!(
+            reason
+                .unwrap()
+                .contains("operator, demo, admin or integration role")
+        );
         assert!(other.try_recv().is_err(), "nobody else is told");
         assert_eq!(state.cache.get_metric_value("temp").await, Some(1.0));
     }
@@ -870,6 +929,7 @@ mod tests {
             value: 42.0,
             command_id: Some("c1".into()),
             reason: Some("raise setpoint for test run".into()),
+            signature: None,
         };
         dispatch(&state, "admin", msg).await;
 
@@ -907,6 +967,7 @@ mod tests {
             value: 5.0,
             command_id: None,
             reason: None,
+            signature: None,
         };
         dispatch(&state, "admin", msg).await;
         assert_accepted(&mut me);
@@ -929,6 +990,7 @@ mod tests {
                 status: status.to_string(),
                 device_response: response.map(str::to_string),
                 latency_ms: None,
+                signature_required: None,
             });
     }
 
@@ -1022,6 +1084,7 @@ mod tests {
             value: 51.0,
             command_id: Some("high".into()),
             reason: None,
+            signature: None,
         };
         dispatch(&state, "admin", too_high).await;
         assert_rejected(&state, &mut me, id, "high", "above maximum").await;
@@ -1031,6 +1094,7 @@ mod tests {
             value: 9.0,
             command_id: Some("low2".into()),
             reason: None,
+            signature: None,
         };
         dispatch(&state, "admin", too_low).await;
         assert_rejected(&state, &mut me, id, "low2", "below minimum").await;
@@ -1044,6 +1108,7 @@ mod tests {
             value: f64::NAN,
             command_id: Some("nan".into()),
             reason: None,
+            signature: None,
         };
         dispatch(&state, "admin", msg).await;
         assert_rejected(&state, &mut me, id, "nan", "Invalid numeric value").await;
@@ -1067,6 +1132,7 @@ mod tests {
             value: 42.0,
             command_id: Some("c2".into()),
             reason: Some("   ".into()),
+            signature: None,
         };
         dispatch(&state, "admin", blank).await;
         assert_rejected(&state, &mut me, id, "c2", "Reason is required").await;

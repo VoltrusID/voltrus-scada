@@ -56,6 +56,7 @@ pub(crate) mod settings;
 pub(crate) mod shared_accounts;
 mod shift_handover;
 mod shortcuts;
+pub mod signature;
 mod simulation;
 mod smtp_settings;
 #[cfg(feature = "snmp_scan")]
@@ -686,6 +687,9 @@ pub fn create_router(state: AppState) -> Router {
             )),
         )
         .route("/api/v1/auth/refresh", post(auth::refresh_token))
+        // User activity for the idle timeout; finds the session by its
+        // refresh cookie, like refresh.
+        .route("/api/v1/auth/activity", post(auth::record_activity))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/me", get(auth::auth_me))
         .route("/api/v1/auth/providers", get(auth::list_auth_providers))
@@ -792,17 +796,6 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/alarms/active/count",
             get(alarms::active_alarm_count),
-        )
-        // Any signed-in person may acknowledge (operators acknowledge alarms,
-        // ISA-18.2 practice); a read-only API key may not.
-        .merge(
-            Router::new()
-                .route("/api/v1/alarms", post(alarms::acknowledge_all))
-                .route(
-                    "/api/v1/alarms/{id}/acknowledge",
-                    post(alarms::acknowledge_alarm),
-                )
-                .route_layer(middleware::from_fn(deny_read_only_keys_middleware)),
         )
         .route(
             "/api/v1/notifications/settings",
@@ -958,8 +951,74 @@ pub fn create_router(state: AppState) -> Router {
         cookie_auth_middleware,
     ));
 
+    // Operator routes: running the plant, not configuring it. The operator
+    // role and every role that may configure (admin, demo, integration keys);
+    // viewers and read-only API keys are refused. Actions an add-on edition
+    // may want signed answer 428 until the request carries a signature.
+    let operator_protected = Router::new()
+        .route("/api/v1/tags/{id}/write", post(commands::write_tag))
+        // The write dialog reads the policy (range, reason) before it opens.
+        .route(
+            "/api/v1/data-sources/{id}/write-policy",
+            get(commands::get_write_policy),
+        )
+        .route(
+            "/api/v1/commands/{command_id}/cancel",
+            post(commands::cancel_command),
+        )
+        // Acknowledging (ISA-18.2: the operator at the screen acknowledges)
+        .route("/api/v1/alarms", post(alarms::acknowledge_all))
+        .route(
+            "/api/v1/alarms/{id}/acknowledge",
+            post(alarms::acknowledge_alarm),
+        )
+        // Alarm management: shelving, audit trail, analytics, summary
+        .route("/api/v1/alarms/{id}/shelf", post(alarms::shelf_alarm))
+        .route("/api/v1/alarms/{id}/unshelf", post(alarms::unshelf_alarm))
+        .route("/api/v1/alarms/audit", get(alarms::list_alarm_audit))
+        .route(
+            "/api/v1/alarms/{id}/journal",
+            get(alarms::get_alarm_journal),
+        )
+        .route(
+            "/api/v1/alarms/analytics",
+            get(alarms::list_alarm_analytics),
+        )
+        .route("/api/v1/alarms/summary", get(alarms::get_alarm_summary))
+        // Recipes: an operator loads them; editing them is configuration.
+        .route("/api/v1/recipes", get(recipes::list_recipes))
+        .route("/api/v1/recipes/{id}", get(recipes::get_recipe))
+        .route("/api/v1/recipes/{id}/load", post(recipes::load_recipe))
+        // Flows: an operator starts and stops them; editing is configuration.
+        .route("/api/v1/flows", get(flows::list_flows))
+        .route("/api/v1/flows/{id}", get(flows::get_flow))
+        .route("/api/v1/flows/{id}/start", post(flows::start_flow))
+        .route("/api/v1/flows/{id}/stop", post(flows::stop_flow))
+        .route("/api/v1/flows/{id}/runs", get(flows::list_flow_runs))
+        // Shift handover and downtime logging
+        .route(
+            "/api/v1/shift-handover",
+            get(shift_handover::list_shift_handovers).post(shift_handover::create_shift_handover),
+        )
+        .route(
+            "/api/v1/shift-handover/auto-report",
+            get(shift_handover::auto_shift_report),
+        )
+        .route(
+            "/api/v1/shift-handover/{id}",
+            get(shift_handover::get_shift_handover),
+        )
+        .route("/api/v1/oee/downtime", post(oee::create_downtime))
+        .route("/api/v1/oee/downtime/{id}/close", put(oee::close_downtime))
+        .merge(ext_routes.operate)
+        .layer(middleware::from_fn(operator_allowed_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            cookie_auth_middleware,
+        ));
+
     // Demo-allowed routes (authenticated + admin or demo role required)
-    // These are operational routes that demo users should be able to use.
+    // These are configuration routes that demo users should be able to use.
     let demo_protected = Router::new()
         // Changing a custom metric changes what operators see: operator tier.
         .route(
@@ -986,19 +1045,6 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/settings/naming-convention",
             put(naming_convention::update_naming_convention),
         )
-        // Alarm management: shelving, audit trail, analytics, summary
-        .route("/api/v1/alarms/{id}/shelf", post(alarms::shelf_alarm))
-        .route("/api/v1/alarms/{id}/unshelf", post(alarms::unshelf_alarm))
-        .route("/api/v1/alarms/audit", get(alarms::list_alarm_audit))
-        .route(
-            "/api/v1/alarms/{id}/journal",
-            get(alarms::get_alarm_journal),
-        )
-        .route(
-            "/api/v1/alarms/analytics",
-            get(alarms::list_alarm_analytics),
-        )
-        .route("/api/v1/alarms/summary", get(alarms::get_alarm_summary))
         .route("/api/v1/screens", post(screens::create_screen))
         .route(
             "/api/v1/screens/{id}",
@@ -1012,20 +1058,12 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/screens/{id}/data-sources/{data_source_id}",
             put(screens::update_screen_sensor).delete(screens::remove_screen_sensor),
         )
-        .route(
-            "/api/v1/flows",
-            get(flows::list_flows).post(flows::create_flow),
-        )
+        .route("/api/v1/flows", post(flows::create_flow))
         .route(
             "/api/v1/flows/{id}",
-            get(flows::get_flow)
-                .put(flows::update_flow)
-                .delete(flows::delete_flow),
+            put(flows::update_flow).delete(flows::delete_flow),
         )
-        .route("/api/v1/flows/{id}/start", post(flows::start_flow))
-        .route("/api/v1/flows/{id}/stop", post(flows::stop_flow))
         .route("/api/v1/flows/{id}/test", post(flows::test_flow))
-        .route("/api/v1/flows/{id}/runs", get(flows::list_flow_runs))
         .route(
             "/api/v1/notifications/settings",
             post(notifications::create_notification_setting),
@@ -1048,22 +1086,13 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/hw/benchmark",
             post(hardware_cert::run_hw_benchmark),
         )
-        // RTSP Video / Camera routes
-        .route("/api/v1/oee/downtime", post(oee::create_downtime))
-        .route("/api/v1/oee/downtime/{id}/close", put(oee::close_downtime))
         .route("/api/v1/oee/shifts", post(oee::create_shift))
         .route("/api/v1/oee/shifts/{id}", delete(oee::delete_shift))
-        .route(
-            "/api/v1/recipes",
-            get(recipes::list_recipes).post(recipes::create_recipe),
-        )
+        .route("/api/v1/recipes", post(recipes::create_recipe))
         .route(
             "/api/v1/recipes/{id}",
-            get(recipes::get_recipe)
-                .put(recipes::update_recipe)
-                .delete(recipes::delete_recipe),
+            put(recipes::update_recipe).delete(recipes::delete_recipe),
         )
-        .route("/api/v1/recipes/{id}/load", post(recipes::load_recipe))
         // OT Asset Inventory routes
         .route(
             "/api/v1/assets",
@@ -1110,29 +1139,10 @@ pub fn create_router(state: AppState) -> Router {
                 .put(annotations::update_annotation)
                 .delete(annotations::delete_annotation),
         )
-        // Shift Handover routes
-        .route(
-            "/api/v1/shift-handover",
-            get(shift_handover::list_shift_handovers).post(shift_handover::create_shift_handover),
-        )
-        .route(
-            "/api/v1/shift-handover/auto-report",
-            get(shift_handover::auto_shift_report),
-        )
-        .route(
-            "/api/v1/shift-handover/{id}",
-            get(shift_handover::get_shift_handover),
-        )
-        // Command write/cancel routes
-        .route("/api/v1/tags/{id}/write", post(commands::write_tag))
         .route("/api/v1/tags/{id}/path", put(tag_tree::update_tag_path))
         .route(
-            "/api/v1/commands/{command_id}/cancel",
-            post(commands::cancel_command),
-        )
-        .route(
             "/api/v1/data-sources/{id}/write-policy",
-            get(commands::get_write_policy).patch(commands::update_write_policy),
+            patch(commands::update_write_policy),
         )
         // Node-RED import
         .route(
@@ -1446,6 +1456,7 @@ pub fn create_router(state: AppState) -> Router {
     let api_router = Router::new()
         .merge(public)
         .merge(protected)
+        .merge(operator_protected)
         .merge(demo_protected)
         .merge(admin_protected)
         .merge(import_router);
@@ -1503,7 +1514,8 @@ pub fn create_router(state: AppState) -> Router {
 // Middleware types re-exported from middleware module
 pub use auth_middleware::{
     ApiKeyAuth, AuthUser, admin_only_middleware, cookie_auth_middleware, demo_allowed_middleware,
-    deny_read_only_keys_middleware, effective_key_role, role_allows_operational_writes,
+    effective_key_role, operator_allowed_middleware, role_allows_configuration,
+    role_allows_operation, role_allows_operational_writes,
 };
 
 #[cfg(test)]

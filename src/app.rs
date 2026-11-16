@@ -122,6 +122,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         Arc::new(std::sync::RwLock::new(status))
     };
     tracing::info!("Edition: {}", ext.name());
+    crate::edition::install(ext.clone());
 
     // FlowEngine (lazy: only spawns when enabled flows exist)
     let flow_engine = {

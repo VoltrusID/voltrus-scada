@@ -57,8 +57,9 @@ status `readback_confirmed`, `readback_mismatch` (two fresh polls disagreed) or
 `readback_timeout` (no fresh good value within three poll intervals or 10 s). An acked
 value is never written into the live cache: the screen shows it once a poll confirms it.
 
-The same roles may write over the WebSocket as over REST and MCP: admins, operators
-(demo) and integration API keys. The user or key is checked again on every write and
+The same roles may write over the WebSocket as over REST and MCP: admins, operators,
+demo users and integration API keys (viewers and read-only keys may not). The user or
+key is checked again on every write and
 every 30 seconds; a socket whose user is disabled or deleted, or whose key is revoked,
 is closed with code 1008. Clients that are not on the WebSocket (including the event stream) write
 with the REST endpoint.

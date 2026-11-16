@@ -25,7 +25,7 @@ licence key and no calls to Voltrus servers:
 | Automation | Flow engine, scripts, recipes, command queue with retries and expiry, simulation mode |
 | Integration | REST API (OpenAPI), Python and TypeScript SDKs, Prometheus, Grafana and BI endpoints, outbound webhooks, scheduled data egress |
 | Operations | OEE and downtime, shift handover, asset inventory with NIS2 export, EDR and hardware compatibility tools, AI copilot (bring your own key: OpenAI, Anthropic, or any OpenAI-compatible server such as Ollama for offline use) |
-| Security | Local accounts (Argon2), admin and read-only users, API keys, rate limiting, audit log, SameSite=Strict session cookies and security headers |
+| Security | Local accounts (Argon2), admin, demo, operator and viewer roles, API keys, rate limiting, audit log with old and new value of every setpoint change, SameSite=Strict session cookies and security headers |
 
 ## What the Enterprise add-on adds
 
@@ -60,10 +60,10 @@ voltrus::run(std::sync::Arc::new(MyExtension)).await
 ```
 
 An [`Extension`](../src/edition.rs) can contribute HTTP routes (public, any user,
-operator, admin), start background tasks, handle CLI subcommands, validate bearer
+operator tier, configuration tier, admin), start background tasks, handle CLI subcommands, validate bearer
 tokens from an identity provider, add sign-in providers, supply Telegram and WhatsApp delivery (`ChatSender`) and
 resolve a licence into a `LicenseTier`. A sign-in provider (SAML, OIDC, LDAP) opens
-the user's session with `api::auth::issue_session`, the function local login uses,
+the user's session with `api::auth::issue_session` (or `issue_session_with_policy`), the function local login uses,
 so every session has the same cookies and lifetime. An external account found
 with `Storage::get_or_create_user_by_external_id` comes back with its `disabled`
 flag: deleting a single sign-on user does not keep them out (their next sign-in
@@ -81,6 +81,13 @@ to the header, the login page (logo, title, subtitle, and the accent on the Sign
 button), the browser tab title and the favicon (the logo, when it is an image data: URL
 or an http(s) or same-origin link). Without branding, including when the endpoint
 answers 403 or 404 in the Community edition, everything stays the Voltrus default.
+
+The compliance features of the add-on (21 CFR Part 11 mode) plug into Core
+through further hooks: password policy and expiry, idle and absolute session
+timeouts, electronic signatures on tag writes, alarm acknowledgement and
+shelving, recipe loads and mode switches, and add-on widgets on dashboards and
+SCADA screens. Core asks the hooks and enforces their answers; their defaults
+change nothing. The contract is in [edition-hooks.md](edition-hooks.md).
 
 The Enterprise add-on is a separate crate that depends on this one and calls
 `voltrus::run` with its own extension. It lives in

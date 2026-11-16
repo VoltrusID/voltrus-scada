@@ -1,6 +1,7 @@
 mod crypto;
 mod handlers;
 mod providers;
+mod session;
 mod token;
 mod users;
 
@@ -10,6 +11,7 @@ mod tests;
 pub use crypto::*;
 pub use handlers::*;
 pub use providers::*;
+pub use session::*;
 pub use token::*;
 pub use users::*;
 
