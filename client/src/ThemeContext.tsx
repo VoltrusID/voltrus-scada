@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react'
 import { useUiTheme, useUpdateUiTheme } from './queries'
 import type { ThemeValue } from './queries'
+import { isSharedAccount } from './sharedAccount'
 export type { ThemeValue }
 
 type ResolvedTheme = 'light' | 'dark'
@@ -69,7 +70,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const setTheme = useCallback((t: ThemeValue) => {
     setLocalTheme(t)
     localStorage.setItem('voltrus:ui_theme', t)
-    updateThemeMut.mutate(t)
+    // A shared account's theme is not saved on the server (it would change for everyone).
+    if (!isSharedAccount()) updateThemeMut.mutate(t)
   }, [updateThemeMut])
 
   return (

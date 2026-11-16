@@ -41,3 +41,8 @@ anyway if we ship a vulnerable version).
 * Change the generated admin password on first sign-in, and restrict who can
   reach the server port. Industrial networks should not be exposed to the
   internet.
+* To run a public demo, give the shared login the `viewer` role, list it in
+  `shared_accounts` (its password and preferences can't be changed and wrong
+  passwords never lock it; the per-address login limit still applies) and put
+  the credentials in `login_hint`, which the sign-in page shows. Never list an
+  admin: the server refuses to start.

@@ -11,15 +11,44 @@ pub fn load_config(path: &str) -> Result<AppConfig> {
         }
     };
 
-    let config: AppConfig = serde_yaml_neo::from_str(&content)
+    let mut config: AppConfig = serde_yaml_neo::from_str(&content)
         .with_context(|| format!("Failed to parse config file: {path}"))?;
 
+    normalize(&mut config);
     validate(&config)?;
 
     Ok(config)
 }
 
+/// Trims `shared_accounts` and `login_hint`; a blank hint is no hint.
+fn normalize(config: &mut AppConfig) {
+    for name in &mut config.shared_accounts {
+        *name = name.trim().to_string();
+    }
+    config.login_hint = config
+        .login_hint
+        .take()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty());
+}
+
 fn validate(config: &AppConfig) -> Result<()> {
+    for name in &config.shared_accounts {
+        anyhow::ensure!(!name.is_empty(), "shared_accounts has an empty username");
+    }
+    if let Some(hint) = &config.login_hint {
+        let max = crate::models::LOGIN_HINT_MAX_CHARS;
+        anyhow::ensure!(
+            hint.chars().count() <= max,
+            "login_hint is {} characters; it must be at most {max}",
+            hint.chars().count()
+        );
+        anyhow::ensure!(
+            !hint.chars().any(char::is_control),
+            "login_hint must be a single line of plain text"
+        );
+    }
+
     if let Some(ref smtp) = config.smtp {
         anyhow::ensure!(
             !smtp.host.is_empty(),
