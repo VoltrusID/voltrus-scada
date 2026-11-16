@@ -31,6 +31,9 @@ pub struct TokenUsage {
 pub enum AiProviderType {
     ByokOpenai,
     ByokAnthropic,
+    /// Any server with an OpenAI-style `/chat/completions` endpoint at a
+    /// configured base URL (Ollama, LM Studio, OpenRouter, ...).
+    ByokOpenaiCompatible,
     VoltrusAi,
 }
 
@@ -39,6 +42,7 @@ impl AiProviderType {
         match s {
             "byok_openai" => Some(Self::ByokOpenai),
             "byok_anthropic" => Some(Self::ByokAnthropic),
+            "byok_openai_compatible" => Some(Self::ByokOpenaiCompatible),
             "voltrus_ai" => Some(Self::VoltrusAi),
             _ => None,
         }
@@ -48,6 +52,7 @@ impl AiProviderType {
         match self {
             Self::ByokOpenai => "byok_openai",
             Self::ByokAnthropic => "byok_anthropic",
+            Self::ByokOpenaiCompatible => "byok_openai_compatible",
             Self::VoltrusAi => "voltrus_ai",
         }
     }
@@ -55,8 +60,70 @@ impl AiProviderType {
 
 pub struct AiSettings {
     pub provider: AiProviderType,
+    /// May be empty for `byok_openai_compatible` (local servers need no key).
     pub api_key: String,
     pub default_model: Option<String>,
+    /// Only used by `byok_openai_compatible`.
+    pub base_url: Option<String>,
+}
+
+impl AiSettings {
+    /// Checks that the provider has what it needs before a request is made.
+    pub fn validate(&self) -> Result<(), String> {
+        match self.provider {
+            AiProviderType::ByokOpenaiCompatible => {
+                let base_url = self.base_url.as_deref().unwrap_or("").trim();
+                if base_url.is_empty() {
+                    return Err("The OpenAI-compatible provider needs a base URL".into());
+                }
+                validate_base_url(base_url)?;
+                if self
+                    .default_model
+                    .as_deref()
+                    .unwrap_or("")
+                    .trim()
+                    .is_empty()
+                {
+                    return Err("The OpenAI-compatible provider needs a model name".into());
+                }
+                Ok(())
+            }
+            _ if self.api_key.is_empty() => Err("API key not configured".into()),
+            _ => Ok(()),
+        }
+    }
+}
+
+/// Checks a base URL for the OpenAI-compatible provider and returns it trimmed.
+/// Only http and https are accepted; http is fine for a model on the local network.
+pub fn validate_base_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let url = reqwest::Url::parse(trimmed).map_err(|e| format!("Invalid base URL: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("The base URL must start with http:// or https://".into());
+    }
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err("The base URL has no host".into());
+    }
+    // The base URL is shown back to admins, so no credentials in it.
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Put the key in the API key field, not in the base URL".into());
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err("The base URL must not have a query string or fragment".into());
+    }
+    Ok(trimmed.to_string())
+}
+
+/// The chat completions endpoint for a base URL such as `http://localhost:11434/v1`.
+/// A trailing slash, or a URL that already ends in `/chat/completions`, is accepted.
+pub fn chat_completions_url(base_url: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/');
+    if base.ends_with("/chat/completions") {
+        base.to_string()
+    } else {
+        format!("{base}/chat/completions")
+    }
 }
 
 /// Enum-based dispatch to avoid dyn trait issues with async fn.
@@ -78,7 +145,7 @@ impl HostedProvider {
         match crate::edition::hosted_ai() {
             Some(service) => service.complete(&self.api_key, &self.model, request).await,
             None => Err(AiError::ProviderError(
-                "The hosted AI provider is not available in this edition. Use byok_openai or byok_anthropic."
+                "The hosted AI provider is not available in this edition. Use byok_openai, byok_anthropic or byok_openai_compatible."
                     .into(),
             )),
         }
@@ -110,11 +177,19 @@ impl AiProviderImpl {
 pub fn resolve_provider(settings: &AiSettings) -> AiProviderImpl {
     match settings.provider {
         AiProviderType::ByokOpenai => AiProviderImpl::OpenAi(OpenAiProvider {
+            endpoint: OPENAI_CHAT_COMPLETIONS_URL.into(),
             api_key: settings.api_key.clone(),
             model: settings
                 .default_model
                 .clone()
                 .unwrap_or_else(|| "gpt-4o-mini".into()),
+            name: "openai",
+        }),
+        AiProviderType::ByokOpenaiCompatible => AiProviderImpl::OpenAi(OpenAiProvider {
+            endpoint: chat_completions_url(settings.base_url.as_deref().unwrap_or("")),
+            api_key: settings.api_key.clone(),
+            model: settings.default_model.clone().unwrap_or_default(),
+            name: "openai_compatible",
         }),
         AiProviderType::ByokAnthropic => AiProviderImpl::Anthropic(AnthropicProvider {
             api_key: settings.api_key.clone(),
@@ -133,18 +208,28 @@ pub fn resolve_provider(settings: &AiSettings) -> AiProviderImpl {
     }
 }
 
-// ── OpenAI ──────────────────────────────────────────────────────────────
+// ── OpenAI and OpenAI-compatible ────────────────────────────────────────
+
+const OPENAI_CHAT_COMPLETIONS_URL: &str = "https://api.openai.com/v1/chat/completions";
 
 pub struct OpenAiProvider {
+    /// Full chat completions URL.
+    pub endpoint: String,
+    /// Sent as a bearer token; no `Authorization` header when empty.
     pub api_key: String,
     pub model: String,
+    /// `openai` or `openai_compatible`.
+    pub name: &'static str,
 }
 
+// Compatible servers do not all send `model` or `usage`.
 #[derive(Deserialize)]
 struct OpenAiResponse {
     choices: Vec<OpenAiChoice>,
-    model: String,
-    usage: OpenAiUsage,
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    usage: Option<OpenAiUsage>,
 }
 
 #[derive(Deserialize)]
@@ -154,10 +239,11 @@ struct OpenAiChoice {
 
 #[derive(Deserialize)]
 struct OpenAiMessage {
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct OpenAiUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
@@ -177,48 +263,58 @@ impl OpenAiProvider {
             "temperature": request.temperature.unwrap_or(0.3),
         });
 
-        let resp = client
-            .post("https://api.openai.com/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", self.api_key))
+        let mut req = client
+            .post(&self.endpoint)
             .header("Content-Type", "application/json")
-            .timeout(std::time::Duration::from_secs(60))
-            .json(&body)
-            .send()
-            .await?;
+            .timeout(std::time::Duration::from_secs(60));
+        if !self.api_key.is_empty() {
+            req = req.header("Authorization", format!("Bearer {}", self.api_key));
+        }
+        let resp = req.json(&body).send().await?;
 
+        let label = self.label();
         let status = resp.status();
         if status.is_client_error() || status.is_server_error() {
             let text = resp.text().await.unwrap_or_default();
             return Err(AiError::ProviderError(format!(
-                "OpenAI API error ({status}): {text}"
+                "{label} API error ({status}): {text}"
             )));
         }
 
         let data: OpenAiResponse = resp.json().await.map_err(|e| {
-            AiError::MalformedResponse(format!("Failed to parse OpenAI response: {e}"))
+            AiError::MalformedResponse(format!("Failed to parse {label} response: {e}"))
         })?;
 
         let content = data
             .choices
             .into_iter()
             .next()
-            .map(|c| c.message.content)
+            .and_then(|c| c.message.content)
             .unwrap_or_default();
+        let usage = data.usage.unwrap_or_default();
 
         Ok(AiResponse {
             content,
-            model: data.model,
+            model: data.model.unwrap_or_else(|| self.model.clone()),
             usage: TokenUsage {
-                prompt_tokens: data.usage.prompt_tokens,
-                completion_tokens: data.usage.completion_tokens,
-                total_tokens: data.usage.total_tokens,
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens,
             },
-            provider: "openai".into(),
+            provider: self.name.into(),
         })
     }
 
     pub fn provider_name(&self) -> &str {
-        "openai"
+        self.name
+    }
+
+    fn label(&self) -> &'static str {
+        if self.name == "openai" {
+            "OpenAI"
+        } else {
+            "OpenAI-compatible"
+        }
     }
 }
 
@@ -302,5 +398,203 @@ impl AnthropicProvider {
 
     pub fn provider_name(&self) -> &str {
         "anthropic"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::Json;
+    use axum::http::HeaderMap;
+    use std::sync::{Arc, Mutex};
+
+    type Seen = Arc<Mutex<Vec<(Option<String>, serde_json::Value)>>>;
+
+    fn compatible(base_url: Option<&str>, model: Option<&str>, key: &str) -> AiSettings {
+        AiSettings {
+            provider: AiProviderType::ByokOpenaiCompatible,
+            api_key: key.into(),
+            default_model: model.map(Into::into),
+            base_url: base_url.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn provider_strings_round_trip() {
+        for p in [
+            AiProviderType::ByokOpenai,
+            AiProviderType::ByokAnthropic,
+            AiProviderType::ByokOpenaiCompatible,
+            AiProviderType::VoltrusAi,
+        ] {
+            assert_eq!(
+                AiProviderType::from_str(p.as_str()).unwrap().as_str(),
+                p.as_str()
+            );
+        }
+        assert_eq!(
+            AiProviderType::ByokOpenaiCompatible.as_str(),
+            "byok_openai_compatible"
+        );
+        assert!(AiProviderType::from_str("openai_compatible").is_none());
+    }
+
+    #[test]
+    fn chat_completions_url_joins_base_urls() {
+        let want = "http://localhost:11434/v1/chat/completions";
+        assert_eq!(chat_completions_url("http://localhost:11434/v1"), want);
+        assert_eq!(chat_completions_url("http://localhost:11434/v1/"), want);
+        assert_eq!(chat_completions_url(" http://localhost:11434/v1// "), want);
+        assert_eq!(chat_completions_url(want), want);
+        assert_eq!(chat_completions_url(&format!("{want}/")), want);
+        assert_eq!(
+            chat_completions_url("https://openrouter.ai/api/v1"),
+            "https://openrouter.ai/api/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn base_url_validation() {
+        assert_eq!(
+            validate_base_url(" http://localhost:11434/v1 ").unwrap(),
+            "http://localhost:11434/v1"
+        );
+        assert!(validate_base_url("https://api.groq.com/openai/v1").is_ok());
+        assert!(validate_base_url("http://192.168.1.20:1234/v1").is_ok());
+        assert!(validate_base_url("ftp://example.com/v1").is_err());
+        assert!(validate_base_url("file:///etc/passwd").is_err());
+        assert!(validate_base_url("localhost:11434/v1").is_err());
+        assert!(validate_base_url("not a url").is_err());
+        assert!(validate_base_url("").is_err());
+        assert!(validate_base_url("https://example.com/v1?key=x").is_err());
+        assert!(validate_base_url("https://user:secret@example.com/v1").is_err());
+    }
+
+    #[test]
+    fn settings_validation() {
+        let ok = compatible(Some("http://localhost:11434/v1"), Some("llama3.2"), "");
+        assert!(ok.validate().is_ok());
+        assert!(compatible(None, Some("llama3.2"), "").validate().is_err());
+        assert!(
+            compatible(Some("http://localhost:11434/v1"), None, "")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            compatible(Some("http://localhost:11434/v1"), Some("  "), "")
+                .validate()
+                .is_err()
+        );
+        assert!(
+            compatible(Some("gopher://x"), Some("m"), "")
+                .validate()
+                .is_err()
+        );
+        // The other BYOK providers still need a key.
+        let openai = AiSettings {
+            provider: AiProviderType::ByokOpenai,
+            api_key: String::new(),
+            default_model: None,
+            base_url: None,
+        };
+        assert!(openai.validate().is_err());
+    }
+
+    #[test]
+    fn resolve_uses_base_url_and_model() {
+        let p = resolve_provider(&compatible(
+            Some("http://localhost:11434/v1/"),
+            Some("qwen2.5"),
+            "",
+        ));
+        match p {
+            AiProviderImpl::OpenAi(p) => {
+                assert_eq!(p.endpoint, "http://localhost:11434/v1/chat/completions");
+                assert_eq!(p.model, "qwen2.5");
+                assert_eq!(p.provider_name(), "openai_compatible");
+            }
+            _ => panic!("expected the OpenAI request code"),
+        }
+        let openai = resolve_provider(&AiSettings {
+            provider: AiProviderType::ByokOpenai,
+            api_key: "sk-x".into(),
+            default_model: None,
+            base_url: Some("http://ignored".into()),
+        });
+        match openai {
+            AiProviderImpl::OpenAi(p) => assert_eq!(p.endpoint, OPENAI_CHAT_COMPLETIONS_URL),
+            _ => panic!("expected OpenAI"),
+        }
+    }
+
+    /// A local server that answers like Ollama (no `usage`, no `model`) and
+    /// records the Authorization header and body of each request.
+    async fn mock_server() -> (String, Seen) {
+        let seen: Seen = Arc::default();
+        let recorder = seen.clone();
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(
+                move |headers: HeaderMap, Json(body): Json<serde_json::Value>| {
+                    let recorder = recorder.clone();
+                    async move {
+                        let auth = headers
+                            .get("authorization")
+                            .map(|v| v.to_str().unwrap().to_string());
+                        recorder.lock().unwrap().push((auth, body));
+                        Json(serde_json::json!({
+                            "choices": [{"message": {"role": "assistant", "content": "OK"}}]
+                        }))
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/v1"), seen)
+    }
+
+    fn ping() -> AiRequest {
+        AiRequest {
+            system_prompt: "Reply OK".into(),
+            user_prompt: "ping".into(),
+            max_tokens: Some(1),
+            temperature: Some(0.0),
+        }
+    }
+
+    #[tokio::test]
+    async fn compatible_request_without_key_sends_no_authorization() {
+        let (base, seen) = mock_server().await;
+        let provider = resolve_provider(&compatible(Some(&base), Some("llama3.2"), ""));
+        let resp = provider.complete(ping()).await.unwrap();
+        assert_eq!(resp.content, "OK");
+        assert_eq!(resp.model, "llama3.2");
+        assert_eq!(resp.provider, "openai_compatible");
+        assert_eq!(resp.usage.total_tokens, 0);
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, None);
+        assert_eq!(seen[0].1["model"], "llama3.2");
+        assert_eq!(seen[0].1["max_tokens"], 1);
+    }
+
+    #[tokio::test]
+    async fn compatible_request_with_key_sends_bearer() {
+        let (base, seen) = mock_server().await;
+        let provider = resolve_provider(&compatible(
+            Some(&format!("{base}/chat/completions")),
+            Some("deepseek-chat"),
+            "sk-or-test",
+        ));
+        provider.complete(ping()).await.unwrap();
+        assert_eq!(
+            seen.lock().unwrap()[0].0.as_deref(),
+            Some("Bearer sk-or-test")
+        );
     }
 }

@@ -371,7 +371,8 @@ export interface AiSettings {
   api_key: string
   api_key_set: boolean
   api_key_preview: string
-  default_model: string
+  default_model: string | null
+  base_url: string | null
   enabled: boolean
 }
 

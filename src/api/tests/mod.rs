@@ -1,3 +1,4 @@
+mod ai_settings;
 mod alarms;
 mod analytics;
 mod api_docs;

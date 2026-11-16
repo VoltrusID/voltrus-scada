@@ -273,6 +273,8 @@ pub struct AiSettingsResponse {
     pub api_key_set: bool,
     pub api_key_preview: String,
     pub default_model: Option<String>,
+    /// Base URL of the `byok_openai_compatible` provider.
+    pub base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::ToSchema)]
