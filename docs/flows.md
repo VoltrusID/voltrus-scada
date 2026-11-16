@@ -44,7 +44,7 @@ JSON text. `POST` and `PUT` take v1 or v2, as JSON text or as a JSON value
 A v1 array is converted to a chain in the order the v1 engine ran it:
 processing nodes first, then the output nodes (`data_source_out`, `http_out`,
 `alarm_out`, `write_out`), each group in array order. Nodes are placed in a
-column (x 120, y 80, 200, 320, ...). Edges keep the old behaviour:
+row, left to right (y 80, x 120, 400, 680, ...). Edges keep the old behaviour:
 
 * `filter`: only `pass` (port 0) continues; `reject` has no edge, as v1
   stopped there.
@@ -139,6 +139,16 @@ calls per flow per minute (wrong tokens count too).
 
 `GET /api/v1/flows/node-types` is the authoritative list (fields, defaults,
 help text). Ports are listed in port order.
+
+Each type has `type`, `label`, `description`, `fields` and, for nodes,
+`category`, `outputs` and `side_effect`; `switch` also has
+`dynamic_outputs: "rules"` (one output per rule before `outputs`). A field has
+`key`, `label`, `kind` (`string`, `number`, `bool`, `select`, `expression`,
+`code`, `tag`, `device`, `json`, `duration_ms`, `cron`, `severity`),
+`required`, `help`, and when they apply `default`, `options` (`select`),
+`multiple: true` (a `tag` field that takes a list of ids, such as the
+`tag_change` trigger's `data_source_ids`) and `item_fields` (a `json` list of
+objects, such as switch and threshold rules: the fields of one item).
 
 | Type | Category | Outputs | Side effect | What it does |
 |---|---|---|---|---|

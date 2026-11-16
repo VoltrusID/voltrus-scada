@@ -119,7 +119,7 @@ fn node_meta(t: &str) -> (&'static str, &'static str, &'static str, Vec<F>) {
                     .def(json!([{"name": "high", "expression": "value > 50"}]))
                     .help("List of {name, expression}. Rule outputs come first, then otherwise.")
                     .items(vec![
-                        f("name", "Output name", "string").req(),
+                        f("name", "Output name", "string").help("Empty: rule 1, rule 2, ..."),
                         f("expression", "Condition", "expression").req(),
                     ]),
                 f("mode", "Match", "select")

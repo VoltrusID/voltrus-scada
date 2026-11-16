@@ -52,10 +52,12 @@ pub struct FlowGraph {
     pub edges: Vec<Edge>,
 }
 
-/// Vertical spacing of converted v1 nodes.
-const V1_X: i64 = 120;
-const V1_Y0: i64 = 80;
-const V1_DY: i64 = 120;
+/// Layout of converted v1 nodes: one row, left to right, as the editors draw
+/// a chain (inputs on the left, outputs on the right). The step fits a node
+/// card of the web editor (200 px wide) plus room for the wire.
+const V1_X0: i64 = 120;
+const V1_DX: i64 = 280;
+const V1_Y: i64 = 80;
 
 fn is_output_type(t: &str) -> bool {
     matches!(
@@ -216,8 +218,8 @@ impl FlowGraph {
         let mut nodes = Vec::new();
         for (i, mut raw) in process.into_iter().chain(output).enumerate() {
             if let Some(obj) = raw.as_object_mut() {
-                obj.entry("x").or_insert(json!(V1_X));
-                obj.entry("y").or_insert(json!(V1_Y0 + V1_DY * i as i64));
+                obj.entry("x").or_insert(json!(V1_X0 + V1_DX * i as i64));
+                obj.entry("y").or_insert(json!(V1_Y));
             }
             nodes.push(parse_node(raw, i)?);
         }
@@ -512,14 +514,14 @@ mod tests {
                 edge("e", 0, "w"),
             ]
         );
-        // Laid out vertically.
-        let ys: Vec<i64> = g
+        // Laid out in a row, left to right.
+        let xs: Vec<i64> = g
             .nodes
             .iter()
-            .map(|n| n.raw["y"].as_i64().unwrap())
+            .map(|n| n.raw["x"].as_i64().unwrap())
             .collect();
-        assert!(ys.windows(2).all(|w| w[1] > w[0]));
-        assert!(g.nodes.iter().all(|n| n.raw["x"] == json!(V1_X)));
+        assert!(xs.windows(2).all(|w| w[1] - w[0] >= 240));
+        assert!(g.nodes.iter().all(|n| n.raw["y"] == json!(V1_Y)));
 
         let v = g.to_value();
         assert_eq!(v["version"], 2);
