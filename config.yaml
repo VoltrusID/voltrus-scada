@@ -10,6 +10,15 @@ persist_interval_secs: 5
 # Use true behind an HTTPS proxy that runs on another machine.
 # cookie_secure: auto
 
+# Public demo: usernames many people sign in with (give them the viewer role).
+# Nobody can change such an account's password, theme, language or shortcuts
+# (403), and wrong passwords never lock it; the per-address login limit still
+# applies. Checked by username on each request, so the account can be created
+# later. Listing an admin account stops the server at startup.
+# shared_accounts: [guest]
+# Plain text shown under the sign-in form, at most 200 characters, one line.
+# login_hint: "Demo: sign in as guest / voltrus-demo"
+
 # Each device's interval_ms must be 1 to 3600000; a value outside that range stops
 # the server at startup with a message naming the device.
 

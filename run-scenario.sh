@@ -36,6 +36,7 @@ if [ -z "$SCENARIO" ]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR"
 SCENARIO_DIR="$SCRIPT_DIR/scenarios/$SCENARIO"
 
 if [ ! -d "$SCENARIO_DIR" ]; then
@@ -43,9 +44,15 @@ if [ ! -d "$SCENARIO_DIR" ]; then
     exit 1
 fi
 
-# Build first
+# Build first. With the web client built (static/index.html), this is the
+# same build as the quick start, so nothing is rebuilt; without it, build
+# without the embedded UI rather than fail.
 echo -e "${CYAN}Building voltrus and simulators...${NC}"
-VOLTRUS_SKIP_UI_EMBED=1 cargo build --release 2>/dev/null
+if [ -f "$SCRIPT_DIR/static/index.html" ]; then
+    cargo build --release
+else
+    VOLTRUS_SKIP_UI_EMBED=1 cargo build --release
+fi
 echo -e "${GREEN}Build complete.${NC}"
 echo ""
 
@@ -64,7 +71,7 @@ tmux select-window -t "$SESSION:voltrus"
 echo ""
 echo -e "${GREEN}Scenario '$SCENARIO' running in tmux session '$SESSION'${NC}"
 echo ""
-echo "  Dashboard: ${CYAN}http://localhost:${VOLTRUS_PORT:-3000}${NC}"
+echo -e "  Dashboard: ${CYAN}http://localhost:${VOLTRUS_PORT:-3000}${NC}"
 echo ""
 echo "  tmux commands:"
 echo "    tmux attach -t $SESSION     # attach"

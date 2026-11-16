@@ -25,6 +25,14 @@ pub struct AppConfig {
     /// `Secure` attribute of the login cookies: `true`, `false` or `auto` (default).
     #[serde(default)]
     pub cookie_secure: CookieSecure,
+    /// Usernames shared with many people (a public demo's `guest`): their
+    /// password and preferences can't be changed and wrong passwords never lock them.
+    #[serde(default)]
+    pub shared_accounts: Vec<String>,
+    /// Plain-text line shown under the sign-in form, at most
+    /// [`LOGIN_HINT_MAX_CHARS`] characters.
+    #[serde(default)]
+    pub login_hint: Option<String>,
     #[serde(default)]
     pub retention: RetentionConfig,
     #[serde(default)]
@@ -56,6 +64,9 @@ pub struct AppConfig {
     #[serde(default)]
     pub mcp: McpConfig,
 }
+
+/// Longest accepted `login_hint`.
+pub const LOGIN_HINT_MAX_CHARS: usize = 200;
 
 /// `mcp:` in the config file: guardrails on the MCP endpoint.
 #[derive(Debug, Clone, Deserialize)]

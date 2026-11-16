@@ -53,6 +53,7 @@ pub(crate) mod screens;
 #[cfg(feature = "scripts")]
 mod scripts;
 pub(crate) mod settings;
+pub(crate) mod shared_accounts;
 mod shift_handover;
 mod shortcuts;
 mod simulation;
@@ -103,6 +104,8 @@ pub struct AppState {
     pub auth_secret: String,
     pub cors_origin: Option<String>,
     pub cookie_secure: crate::models::CookieSecure,
+    /// `shared_accounts` and `login_hint` (public demo sign-in).
+    pub public_demo: Arc<shared_accounts::PublicDemo>,
     pub retention_config: crate::models::RetentionConfig,
     pub flow_engine: Option<Arc<crate::flow_engine::engine::FlowEngine>>,
     pub login_rate_limiter: crate::security::LoginRateLimiter,
@@ -807,14 +810,8 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/api/v1/data-sources", get(data_sources::list_data_sources))
         .route("/api/v1/tags/tree", get(tag_tree::get_tag_tree))
-        .route(
-            "/api/v1/shortcuts",
-            get(shortcuts::get_shortcuts).put(shortcuts::save_shortcuts),
-        )
-        .route(
-            "/api/v1/nav-shortcuts",
-            get(shortcuts::get_nav_shortcuts).put(shortcuts::save_nav_shortcuts),
-        )
+        .route("/api/v1/shortcuts", get(shortcuts::get_shortcuts))
+        .route("/api/v1/nav-shortcuts", get(shortcuts::get_nav_shortcuts))
         .route("/api/v1/alarms", get(alarms::list_alarms))
         .route(
             "/api/v1/alarms/active/count",
@@ -874,13 +871,19 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/analytics/custom-metrics/evaluate",
             get(analytics::evaluate_all_custom_metrics),
         )
-        .route(
-            "/api/v1/settings/ui-theme",
-            get(settings::get_ui_theme).put(settings::update_ui_theme),
-        )
-        .route(
-            "/api/v1/settings/ui-lang",
-            get(settings::get_ui_lang).put(settings::update_ui_lang),
+        .route("/api/v1/settings/ui-theme", get(settings::get_ui_theme))
+        .route("/api/v1/settings/ui-lang", get(settings::get_ui_lang))
+        // Per-user preferences: a shared demo account keeps its own for everyone.
+        .merge(
+            Router::new()
+                .route("/api/v1/shortcuts", put(shortcuts::save_shortcuts))
+                .route("/api/v1/nav-shortcuts", put(shortcuts::save_nav_shortcuts))
+                .route("/api/v1/settings/ui-theme", put(settings::update_ui_theme))
+                .route("/api/v1/settings/ui-lang", put(settings::update_ui_lang))
+                .route_layer(middleware::from_fn_with_state(
+                    state.clone(),
+                    shared_accounts::deny_shared_accounts_middleware,
+                )),
         )
         // EDR compatibility routes (any authenticated user can view)
         .route("/api/v1/edr/report", get(edr_compat::get_edr_report))

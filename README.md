@@ -58,6 +58,12 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   second confirming call by default, calls are rate limited per key, and
   `mcp.read_only: true` turns every write tool off. See
   [docs/mcp.md](docs/mcp.md).
+* **AI copilot (optional):** drafts register maps, dashboards, alarm
+  thresholds and flows for an engineer to review. Bring your own provider:
+  OpenAI, Anthropic, or any OpenAI-compatible server at a base URL you set
+  (Ollama, LM Studio, OpenRouter, Gemini, DeepSeek, Groq, your own gateway).
+  With Ollama or LM Studio on your network it works offline and needs no key.
+  Admins set it up in the copilot's Settings tab.
 * **Operations:** OEE and downtime, shift handover, asset inventory with NIS2
   export, config snapshots, backup and restore, whole-configuration YAML
   projects (`voltrus project export|import|validate`).
@@ -114,7 +120,8 @@ are Core plus the add-on. Details of the split and how it is built:
 
 ## Quick start
 
-You need Rust (stable, edition 2024) and Node.js 22 or newer.
+You need Rust (stable, edition 2024) and Node.js 22.12 or newer (the client's
+Vite needs it).
 
 ```bash
 # 1. Build the web client into ./static
@@ -144,6 +151,8 @@ creates its database on first start).
   themed UI, or for `npm run build` against a running server. The log says which
   UI is served at startup. A `static/` folder left over from an older release
   therefore shows the old UI: delete it after upgrading to use the built-in one.
+  Started from the repository, as above, the server serves the `static/`
+  folder from step 1 and logs a warning about it. That is expected.
 
 If you serve Voltrus over plain HTTP on the LAN (`http://<ip>:3000`) the sign-in
 cookie is set without the `Secure` attribute, so login works. Behind an HTTPS
@@ -151,10 +160,18 @@ reverse proxy or tunnel on the same machine that sends `X-Forwarded-Proto: https
 (or Cloudflare's `CF-Visitor`) it is set with `Secure`. `cookie_secure: true` or
 `false` in the config forces either; the default is `auto`.
 
+For a public demo with one shared read-only login, create a `viewer` account and
+set `shared_accounts: [guest]` and `login_hint: "Demo: sign in as guest / ..."`:
+the hint appears under the sign-in form, and visitors can neither change that
+account's password or preferences nor lock it with wrong passwords.
+
 Open <http://localhost:3000>. The first start generates a random admin
 password and writes it to `initial-admin-password` next to the database
 (readable by the owner only); the log shows the path, never the password.
-Sign in as `admin`, change the password, and the file is deleted.
+With `db_path: "data.db"` that is `./initial-admin-password` in the folder you
+started the server from. Sign in as `admin` with it; you must then choose a new
+password, which deletes the file. Release binaries up to v0.50.1 print the
+password in the log instead and write no file.
 
 Set `auth_secret` in the config. Without it a new secret is generated at every
 start, which signs everyone out and makes a stored AI provider key unreadable.
@@ -163,6 +180,7 @@ Prebuilt Core binaries for Linux (x86_64, aarch64), Windows (x86_64) and macOS
 are attached to each [release](https://github.com/VoltrusID/voltrus-scada/releases).
 The web client is inside the executable: unpack, edit `config.yaml.example`
 (save it as `config.yaml`), run `./voltrus config.yaml` (`voltrus.exe` on Windows).
+The Linux archive also has `modbus-sim`, a simulated power meter on port 5020.
 
 To build with fewer protocols:
 
@@ -213,15 +231,27 @@ Secrets are written as `${ENV_NAME}` references. Format and examples:
 ### Simulators and scenarios
 
 `cargo run --features modbus --bin modbus-sim` and the other `*-sim` binaries
-start fake devices. [`scenarios/`](scenarios) has ready-made plants (solar farm,
-data centre, factory floor, oil and gas well, water treatment).
+start fake devices. `modbus-sim` listens on port 5020: add a Modbus device at
+`127.0.0.1`, port 5020, in the web UI to read it.
+
+[`scenarios/`](scenarios) has ready-made plants (solar farm, data centre,
+factory floor, oil and gas well, water treatment). To run one with its
+simulators and a server on <http://localhost:3000>, after the quick start:
+
+```bash
+./run-scenario.sh solar-farm    # needs tmux
+tmux kill-session -t voltrus-solar-farm   # stop it
+```
+
+The admin password is in `./initial-admin-password`, as above.
 
 ## Network behaviour
 
 Core makes no outbound connections on its own. It does not check for updates,
 send telemetry or contact any Voltrus server. It only connects to what you
 configure: your devices, your SMTP server, your webhooks and MQTT brokers, and
-an AI provider if you enable the optional AI copilot with your own key.
+an AI provider if you enable the optional AI copilot with your own key (or a
+local model server such as Ollama, which keeps it all on your network).
 The API documentation page (`/api/docs`, signed-in users only) loads its viewer
 script from a public CDN; the OpenAPI document at `/api/v1/openapi.json` does not.
 

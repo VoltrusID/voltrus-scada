@@ -713,6 +713,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     })
     .await?;
 
+    let public_demo = api::shared_accounts::PublicDemo::from_config(&app_config);
+    api::shared_accounts::check_no_shared_admins(&storage, &public_demo).await?;
+
     let state = AppState {
         cache: cache.clone(),
         storage: storage.clone(),
@@ -721,6 +724,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         auth_secret,
         cors_origin: app_config.cors_origin.clone(),
         cookie_secure: app_config.cookie_secure,
+        public_demo: Arc::new(public_demo),
         retention_config: app_config.retention.clone(),
         flow_engine,
         login_rate_limiter,

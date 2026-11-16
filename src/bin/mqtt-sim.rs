@@ -50,9 +50,9 @@ impl MeterData {
         let mut rng = rand::rng();
 
         let v_common = rng.random_range(-1.5..1.5);
-        for i in 0..3 {
+        for v in &mut self.voltage {
             let drift = rng.random_range(-0.8..0.8);
-            self.voltage[i] = (self.voltage[i] + v_common + drift).clamp(210.0, 230.0);
+            *v = (*v + v_common + drift).clamp(210.0, 230.0);
         }
 
         let i_common = rng.random_range(-2.0..2.0);
@@ -61,9 +61,8 @@ impl MeterData {
             self.current[i] = (self.current[i] + i_common + imbalance).clamp(5.0, 80.0);
         }
 
-        for i in 0..3 {
-            self.power_factor[i] =
-                (self.power_factor[i] + rng.random_range(-0.005..0.005)).clamp(0.80, 0.99);
+        for pf in &mut self.power_factor {
+            *pf = (*pf + rng.random_range(-0.005..0.005)).clamp(0.80, 0.99);
         }
 
         self.frequency = (self.frequency + rng.random_range(-0.005..0.005)).clamp(49.9, 50.1);
