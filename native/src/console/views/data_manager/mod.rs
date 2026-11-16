@@ -742,10 +742,13 @@ mod tests {
             .iter()
             .map(|spec| spec.id)
             .collect();
-        for id in ["system", "mqtt", "edr"] {
+        for id in ["system", "mqtt", "edr", "flows"] {
             assert!(any.contains(&id), "{id} is open to every user");
         }
-        assert!(!any.contains(&"sources") && !any.contains(&"flows"));
+        assert!(
+            !any.contains(&"sources"),
+            "flows are readable by any user; sources not"
+        );
         let operator: Vec<_> = visible(SECTIONS, Some(Role::Operator))
             .iter()
             .map(|spec| spec.id)

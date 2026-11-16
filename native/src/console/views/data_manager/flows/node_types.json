@@ -35,11 +35,11 @@
      "help": "List of {name, expression}. Rule outputs come first, then otherwise.",
      "item_fields": [
       {
-       "help": "",
+       "help": "Empty: rule 1, rule 2, ...",
        "key": "name",
        "kind": "string",
        "label": "Output name",
-       "required": true
+       "required": false
       },
       {
        "help": "",

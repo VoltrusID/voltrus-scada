@@ -1267,17 +1267,27 @@ pub fn parse_rules(value: &Value) -> Result<Vec<(String, String)>, String> {
         .iter()
         .enumerate()
         .map(|(index, rule)| {
-            let name = rule.get("name").and_then(Value::as_str);
             let expression = rule.get("expression").and_then(Value::as_str);
-            match (name, expression) {
-                (Some(name), Some(expression)) => Ok((name.to_owned(), expression.to_owned())),
+            match (rule.get("name"), expression) {
+                (None | Some(Value::Null | Value::String(_)), Some(expression)) => {
+                    Ok((rule_name(rule, index), expression.to_owned()))
+                }
                 _ => Err(format!(
-                    "rule {} needs a name and an expression (text)",
+                    "rule {} needs an expression (text) and, if named, a text name",
                     index + 1
                 )),
             }
         })
         .collect()
+}
+
+/// A rule's output name: its `name`, or `rule N` as the engine names an
+/// unnamed one.
+pub fn rule_name(rule: &Value, index: usize) -> String {
+    rule.get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .map_or_else(|| format!("rule {}", index + 1), str::to_owned)
 }
 
 // ── The graph ────────────────────────────────────────────────────────────
@@ -1314,9 +1324,13 @@ impl Problem {
     }
 }
 
-/// Where the legacy layout puts its columns and rows.
-pub const LAYOUT_COLUMN: f64 = 260.0;
+/// Where Arrange puts its columns and rows.
+pub const LAYOUT_COLUMN: f64 = 280.0;
 pub const LAYOUT_ROW: f64 = 110.0;
+/// Where a converted legacy chain goes: the graph server's row.
+pub const LEGACY_X0: f64 = 120.0;
+pub const LEGACY_DX: f64 = 280.0;
+pub const LEGACY_Y: f64 = 80.0;
 
 /// A flow's trigger and graph as JSON maps, in the server's key order.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1383,9 +1397,10 @@ impl FlowGraph {
     }
 
     /// The legacy engine's flow as a graph: the process steps chained from
-    /// the trigger in order, every output step fed by the chain's end.
-    /// Steps without a position go in columns: the chain down the first,
-    /// the outputs down the second.
+    /// the trigger in order, every output step fed by the chain's end (as
+    /// the legacy engine ran it). Steps without a position go left to
+    /// right as the graph server lays a converted chain out (x 120, 400,
+    /// 680, … at y 80), the outputs stacked in the column after the chain.
     pub fn from_legacy(trigger: Map<String, Value>, nodes: Vec<Map<String, Value>>) -> Self {
         let is_output = |node: &Map<String, Value>| {
             node_kind(config_type(node)).is_some_and(|kind| kind.category == "output")
@@ -1397,7 +1412,7 @@ impl FlowGraph {
             extra: Map::new(),
         };
         let mut previous = TRIGGER.to_owned();
-        let mut chain_row = 0.0;
+        let mut x = LEGACY_X0;
         for node in graph.nodes.iter_mut().filter(|node| !is_output(node)) {
             let id = config_id(node).to_owned();
             graph.edges.push(Edge {
@@ -1405,19 +1420,19 @@ impl FlowGraph {
                 port: 0,
                 to: id.clone(),
             });
-            place_if_unplaced(node, LAYOUT_COLUMN, chain_row);
-            chain_row += LAYOUT_ROW;
+            place_if_unplaced(node, x, LEGACY_Y);
+            x += LEGACY_DX;
             previous = id;
         }
-        let mut output_row = (chain_row - LAYOUT_ROW).max(0.0);
+        let mut y = LEGACY_Y;
         for node in graph.nodes.iter_mut().filter(|node| is_output(node)) {
             graph.edges.push(Edge {
                 from: previous.clone(),
                 port: 0,
                 to: config_id(node).to_owned(),
             });
-            place_if_unplaced(node, 2.0 * LAYOUT_COLUMN, output_row);
-            output_row += LAYOUT_ROW;
+            place_if_unplaced(node, x, y);
+            y += LAYOUT_ROW;
         }
         graph
     }
@@ -1565,11 +1580,12 @@ impl FlowGraph {
         if let Some(key) = known.dynamic_key()
             && let Some(items) = node.get(key).and_then(Value::as_array)
         {
-            names.extend(items.iter().enumerate().map(|(at, item)| {
-                item.get("name")
-                    .and_then(Value::as_str)
-                    .map_or_else(|| format!("{}", at + 1), str::to_owned)
-            }));
+            names.extend(
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(at, item)| rule_name(item, at)),
+            );
         }
         names.extend(known.outputs.iter().cloned());
         names
@@ -2351,12 +2367,13 @@ pub(crate) mod tests {
                 ("e", 0, "h")
             ]
         );
-        // The chain down one column, the outputs down the next.
-        assert_eq!(graph.position(1), (LAYOUT_COLUMN, 0.0));
-        assert_eq!(graph.position(2), (LAYOUT_COLUMN, LAYOUT_ROW));
-        assert_eq!(graph.position(0), (2.0 * LAYOUT_COLUMN, LAYOUT_ROW));
-        assert_eq!(graph.position(3), (2.0 * LAYOUT_COLUMN, 2.0 * LAYOUT_ROW));
-        assert_eq!(graph.trigger_spot(), (0.0, 0.0));
+        // The chain left to right as the graph server lays it out, the
+        // outputs stacked after it.
+        assert_eq!(graph.position(1), (120.0, 80.0));
+        assert_eq!(graph.position(2), (400.0, 80.0));
+        assert_eq!(graph.position(0), (680.0, 80.0));
+        assert_eq!(graph.position(3), (680.0, 190.0));
+        assert_eq!(graph.trigger_spot(), (120.0 - LAYOUT_COLUMN, 80.0));
         let builtin = Catalogue::builtin();
         assert_eq!(graph.validate(&builtin), Ok(()));
 
@@ -2369,7 +2386,7 @@ pub(crate) mod tests {
             .map(|node| node["id"].as_str().unwrap())
             .collect();
         assert_eq!(order, ["f", "e", "o", "h"]);
-        assert_eq!(back[0]["x"], 260);
+        assert_eq!(back[0]["x"], 120);
         let again = FlowGraph::parse(TIMER, &text).unwrap().0;
         assert_eq!(again.position(2), graph.position(0), "positions kept");
 

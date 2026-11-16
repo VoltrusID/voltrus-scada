@@ -1851,7 +1851,7 @@ fn edit_items(
                         }
                         None if item_field.required && item_field.kind.is_text() => {
                             let value = if item_field.key == "name" {
-                                format!("out{}", items.len() + 1)
+                                format!("rule {}", items.len() + 1)
                             } else {
                                 String::new()
                             };
@@ -4143,8 +4143,11 @@ mod tests {
                 editor.graph.nodes[0]["rules"][1].clone(),
             )
         });
-        assert_eq!(outputs, ["hot", "out2", "otherwise"]);
-        assert_eq!(rule, serde_json::json!({"name": "out2", "expression": ""}));
+        assert_eq!(outputs, ["hot", "rule 2", "otherwise"]);
+        assert_eq!(
+            rule,
+            serde_json::json!({"name": "rule 2", "expression": ""})
+        );
         let otherwise = with(&mut h, |editor| editor.graph.edges[2].port);
         assert_eq!(otherwise, 2, "the otherwise wire stays on otherwise");
         // Typing in the new rule's condition stores the list.
