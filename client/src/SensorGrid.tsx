@@ -3,6 +3,9 @@ import { ResponsiveGridLayout, useContainerWidth, verticalCompactor } from 'reac
 import { SensorConfig, ScreenLayouts } from './types'
 import { EditPanel } from './EditPanel'
 import { SensorCard } from './SensorCard'
+import { AddDashboardWidget, DashboardWidgetCard } from './components/DashboardWidgetCard'
+import { initialConfigOf, getScreenWidget } from './edition/widgets'
+import { newDashboardWidgetId, widgetItemKey, type DashboardWidget } from './dashboardWidgets'
 
 const BREAKPOINTS = { lg: 1200, md: 768, sm: 480, xs: 0 }
 const COLS = { lg: 24, md: 12, sm: 4, xs: 2 }
@@ -24,9 +27,12 @@ interface Props {
   forcedBreakpoint: string | null
   shortcuts: Record<number, string>
   mode: 'live' | 'history' | 'system' | 'flows' | 'tags' | 'assets' | 'scripts'
+  /** Add-on widgets saved in this screen's layout (see dashboardWidgets.ts). */
+  widgets?: DashboardWidget[]
+  onWidgetsChange?: (widgets: DashboardWidget[]) => void
 }
 
-export function SensorGrid({ screenLayouts, screenSensors, editMode, activeScreen, gap, editingId, setEditingId, setSelectedSensor, loadSensorsForScreen, onLayoutChange, onSave, onDelete, forcedBreakpoint, shortcuts, mode }: Props) {
+export function SensorGrid({ screenLayouts, screenSensors, editMode, activeScreen, gap, editingId, setEditingId, setSelectedSensor, loadSensorsForScreen, onLayoutChange, onSave, onDelete, forcedBreakpoint, shortcuts, mode, widgets = [], onWidgetsChange }: Props) {
   const { width: measuredWidth, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 })
   const didDrag = useRef(false)
 
@@ -45,13 +51,18 @@ export function SensorGrid({ screenLayouts, screenSensors, editMode, activeScree
     onLayoutChange(layout, allLayouts)
   }, [onLayoutChange, forcedBreakpoint, screenLayouts])
 
-  const ready = screenSensors.length > 0 && (screenLayouts.lg.length > 0 || screenLayouts.md.length > 0 || screenLayouts.sm.length > 0)
+  const ready = (screenSensors.length > 0 || widgets.length > 0) && (screenLayouts.lg.length > 0 || screenLayouts.md.length > 0 || screenLayouts.sm.length > 0)
 
   // Stable key that only changes when sensor set changes (not on every data tick)
-  const stableKey = screenSensors.map(s => s.id).sort((a, b) => a - b).join(',')
+  const stableKey = screenSensors.map(s => s.id).sort((a, b) => a - b).join(',') + '|' + widgets.map(w => w.id).join(',')
+
+  const addWidget = (type: string) => {
+    onWidgetsChange?.([...widgets, { id: newDashboardWidgetId(), type, config: initialConfigOf(getScreenWidget(type)) }])
+  }
 
   return (
     <div ref={containerRef} style={{ maxWidth: '100%' }}>
+      {editMode && onWidgetsChange && <AddDashboardWidget onAdd={addWidget} />}
       {mounted && ready && (
         <ResponsiveGridLayout
           key={stableKey}
@@ -87,6 +98,17 @@ export function SensorGrid({ screenLayouts, screenSensors, editMode, activeScree
                 }}
               />
               {editingId === s.id && <EditPanel sensor={s} activeScreen={activeScreen} onSave={onSave} onDelete={onDelete} onClose={() => setEditingId(null)} shortcuts={shortcuts} />}
+            </div>
+          ))}
+          {widgets.map(w => (
+            <div key={widgetItemKey(w.id)} style={{ position: 'relative' }}>
+              <DashboardWidgetCard
+                widget={w}
+                sensors={screenSensors}
+                editMode={editMode && !!onWidgetsChange}
+                onChange={config => onWidgetsChange?.(widgets.map(x => (x.id === w.id ? { ...x, config } : x)))}
+                onRemove={() => onWidgetsChange?.(widgets.filter(x => x.id !== w.id))}
+              />
             </div>
           ))}
         </ResponsiveGridLayout>

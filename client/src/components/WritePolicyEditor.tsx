@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { inputStyle, monoInputStyle, labelStyle, labelTextStyle } from '../styles'
 import { updateWritePolicy } from '../api/commands'
 import type { WritePolicy } from '../api/commands'
+import { isSignatureCancelled } from '../signature/logic'
 
 interface Props {
   tagId: number
@@ -51,7 +52,7 @@ export function WritePolicyEditor({ tagId, tagName, currentPolicy, isAdmin, onSa
       setSuccess(true)
       onSave?.()
     } catch (e: any) {
-      setError(e.message || 'Failed to save write policy')
+      if (!isSignatureCancelled(e)) setError(e.message || 'Failed to save write policy')
     } finally {
       setSaving(false)
     }

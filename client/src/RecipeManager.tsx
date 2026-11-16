@@ -5,7 +5,8 @@ import { RecipeLoadStatus } from './components/RecipeLoadStatus';
 import { btnStyle } from './styles';
 import { toast } from './components/Toast';
 
-export function RecipeManager() {
+/** Operators list and load recipes; creating, editing and deleting needs `canConfigure`. */
+export function RecipeManager({ canConfigure = true }: { canConfigure?: boolean }) {
   const { data: devices } = useModbusDevices();
   const [filterDevice, setFilterDevice] = useState('');
   const [filterCategory, setFilterCategory] = useState('');
@@ -120,12 +121,14 @@ export function RecipeManager() {
           ))}
         </select>
 
-        <button
-          onClick={() => setShowCreate(true)}
-          style={{ ...btnStyle, padding: '6px 16px', fontSize: 12 }}
-        >
-          + Save Current as Recipe
-        </button>
+        {canConfigure && (
+          <button
+            onClick={() => setShowCreate(true)}
+            style={{ ...btnStyle, padding: '6px 16px', fontSize: 12 }}
+          >
+            + Save Current as Recipe
+          </button>
+        )}
       </div>
 
       {showCreate && (
@@ -228,8 +231,8 @@ export function RecipeManager() {
                       <td style={tdStyle}>{new Date(r.updated_at * 1000).toLocaleString()}</td>
                       <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
                         <button onClick={() => setConfirmLoadId(r.id)} style={actionBtn}>Load</button>
-                        <button onClick={() => startEdit(r)} style={actionBtn}>Edit</button>
-                        <button onClick={() => handleDelete(r.id)} style={{ ...actionBtn, color: 'var(--crit)' }}>Delete</button>
+                        {canConfigure && <button onClick={() => startEdit(r)} style={actionBtn}>Edit</button>}
+                        {canConfigure && <button onClick={() => handleDelete(r.id)} style={{ ...actionBtn, color: 'var(--crit)' }}>Delete</button>}
                       </td>
                     </>
                   )}

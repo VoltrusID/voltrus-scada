@@ -24,11 +24,13 @@ function Edge({ from, to }: { from: { x: number; y: number }; to: { x: number; y
 /* ── Flow List View ── */
 function FlowList({ flows, onEdit, onDelete, onStart, onStop, onCreate }: {
   flows: Flow[]
-  onEdit: (f: Flow) => void
-  onDelete: (id: string) => void
-  onStart: (id: string) => void
-  onStop: (id: string) => void
-  onCreate: () => void
+  /** Absent for users who may not configure flows (operators). */
+  onEdit?: (f: Flow) => void
+  onDelete?: (id: string) => void
+  /** Absent for read-only users. */
+  onStart?: (id: string) => void
+  onStop?: (id: string) => void
+  onCreate?: () => void
 }) {
   return (
     <div style={{ padding: '24px 32px', maxWidth: 1200, margin: '0 auto' }}>
@@ -37,10 +39,12 @@ function FlowList({ flows, onEdit, onDelete, onStart, onStop, onCreate }: {
           <h2 style={{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', letterSpacing: '-0.5px' }}>Flows</h2>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>Data pipelines that transform, filter, and route sensor data</p>
         </div>
-        <button style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)', fontSize: 13 }} onClick={onCreate}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-          New Flow
-        </button>
+        {onCreate && (
+          <button style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)', fontSize: 13 }} onClick={onCreate}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            New Flow
+          </button>
+        )}
       </div>
 
       {flows.length === 0 ? (
@@ -67,8 +71,8 @@ function FlowList({ flows, onEdit, onDelete, onStart, onStop, onCreate }: {
               <div key={flow.id} style={{
                 display: 'flex', alignItems: 'center', gap: 16, padding: '14px 20px', borderRadius: 10,
                 border: '1px solid var(--border)', background: 'var(--card)',
-                transition: 'border-color .15s', cursor: 'pointer',
-              }} onClick={() => onEdit(flow)}>
+                transition: 'border-color .15s', cursor: onEdit ? 'pointer' : 'default',
+              }} onClick={onEdit ? () => onEdit(flow) : undefined}>
                 <div style={{
                   width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
                   background: flow.enabled ? 'var(--green)' : 'var(--muted)',
@@ -84,12 +88,12 @@ function FlowList({ flows, onEdit, onDelete, onStart, onStop, onCreate }: {
                 </div>
                 <div style={{ display: 'flex', gap: 6, flexShrink: 0 }} onClick={e => e.stopPropagation()}>
                   {flow.enabled ? (
-                    <button style={{ ...btnStyle, padding: '5px 10px', fontSize: 12, color: 'var(--warn)' }} onClick={() => onStop(flow.id)}>Stop</button>
+                    onStop && <button style={{ ...btnStyle, padding: '5px 10px', fontSize: 12, color: 'var(--warn)' }} onClick={() => onStop(flow.id)}>Stop</button>
                   ) : (
-                    <button style={{ ...btnStyle, padding: '5px 10px', fontSize: 12, color: 'var(--green)' }} onClick={() => onStart(flow.id)}>Start</button>
+                    onStart && <button style={{ ...btnStyle, padding: '5px 10px', fontSize: 12, color: 'var(--green)' }} onClick={() => onStart(flow.id)}>Start</button>
                   )}
-                  <button style={{ ...btnStyle, padding: '5px 10px', fontSize: 12 }} onClick={() => onEdit(flow)}>Edit</button>
-                  <button style={{ ...btnStyle, padding: '5px 10px', fontSize: 12, color: 'var(--crit)' }} onClick={() => onDelete(flow.id)}>Delete</button>
+                  {onEdit && <button style={{ ...btnStyle, padding: '5px 10px', fontSize: 12 }} onClick={() => onEdit(flow)}>Edit</button>}
+                  {onDelete && <button style={{ ...btnStyle, padding: '5px 10px', fontSize: 12, color: 'var(--crit)' }} onClick={() => onDelete(flow.id)}>Delete</button>}
                 </div>
               </div>
             )
@@ -101,9 +105,9 @@ function FlowList({ flows, onEdit, onDelete, onStart, onStop, onCreate }: {
 }
 
 /* ── Main FlowManager ── */
-export function FlowManager({ isAdmin }: { isAdmin: boolean }) {
+export function FlowManager({ canOperate, canConfigure }: { canOperate: boolean; canConfigure: boolean }) {
   const [editingFlow, setEditingFlow] = useState<Flow | null>(null)
-  const { data: flows = [] } = useFlows(isAdmin)
+  const { data: flows = [] } = useFlows(canOperate)
   const createFlow = useCreateFlow()
   const updateFlow = useUpdateFlow()
   const deleteFlow = useDeleteFlow()
@@ -131,18 +135,18 @@ export function FlowManager({ isAdmin }: { isAdmin: boolean }) {
     setEditingFlow(null)
   }
 
-  if (editingFlow) {
+  if (editingFlow && canConfigure) {
     return <FlowEditor flow={editingFlow} onSave={handleSave} onCancel={() => setEditingFlow(null)} />
   }
 
   return (
     <FlowList
       flows={flows}
-      onEdit={setEditingFlow}
-      onDelete={id => deleteFlow.mutate(id)}
-      onStart={id => startFlow.mutate(id)}
-      onStop={id => stopFlow.mutate(id)}
-      onCreate={handleCreate}
+      onEdit={canConfigure ? setEditingFlow : undefined}
+      onDelete={canConfigure ? id => deleteFlow.mutate(id) : undefined}
+      onStart={canOperate ? id => startFlow.mutate(id) : undefined}
+      onStop={canOperate ? id => stopFlow.mutate(id) : undefined}
+      onCreate={canConfigure ? handleCreate : undefined}
     />
   )
 }

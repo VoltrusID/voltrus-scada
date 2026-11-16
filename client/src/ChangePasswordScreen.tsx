@@ -14,7 +14,7 @@ const INPUT: React.CSSProperties = {
   boxSizing: 'border-box',
 }
 
-export function ChangePasswordScreen({ onSubmit }: { onSubmit: (oldPassword: string, newPassword: string) => Promise<void> }) {
+export function ChangePasswordScreen({ onSubmit, expired }: { onSubmit: (oldPassword: string, newPassword: string) => Promise<void>; expired?: boolean }) {
   const [oldPw, setOldPw] = useState('')
   const [pw, setPw] = useState('')
   const [pw2, setPw2] = useState('')
@@ -81,7 +81,7 @@ export function ChangePasswordScreen({ onSubmit }: { onSubmit: (oldPassword: str
             <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--fg)' }}>Change Your Password</h1>
           </div>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>
-            You must set a new password before continuing.
+            {expired ? 'Your password has expired. Set a new one to continue.' : 'You must set a new password before continuing.'}
           </p>
         </div>
 

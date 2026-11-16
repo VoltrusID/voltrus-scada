@@ -3,6 +3,7 @@ import { Rnd } from 'react-rnd'
 import type { SensorConfig, SensorData } from '../../types'
 import type { WidgetInstance } from './types'
 import { getWidgetComponent } from './registry'
+import { ScreenWidgetView } from '../../components/ScreenWidgetView'
 
 interface WidgetShellProps {
   instance: WidgetInstance
@@ -60,8 +61,8 @@ export default function WidgetShell({
     [onResize, instance.id],
   )
 
+  // Types core does not know are add-on widgets (or ones this build lacks, drawn as a placeholder).
   const WidgetComponent = getWidgetComponent(instance.type)
-  if (!WidgetComponent) return null
 
   // At runtime `selected` marks the equipment whose faceplate is open.
   const outline = !editMode ? (selected ? '1.5px solid var(--cyan)' : 'none')
@@ -102,16 +103,29 @@ export default function WidgetShell({
         }}
       >
         <div style={{ flex: 1, minHeight: 0, overflow: UNCLIPPED.has(instance.type) ? 'visible' : 'hidden', pointerEvents: editMode ? 'none' : undefined }}>
-          <WidgetComponent
-            instance={instance}
-            sensor={sensor}
-            data={data}
-            sensors={sensors}
-            currentValues={currentValues}
-            editMode={editMode}
-            selected={selected}
-            onWriteValue={onWriteValue}
-          />
+          {WidgetComponent ? (
+            <WidgetComponent
+              instance={instance}
+              sensor={sensor}
+              data={data}
+              sensors={sensors}
+              currentValues={currentValues}
+              editMode={editMode}
+              selected={selected}
+              onWriteValue={onWriteValue}
+            />
+          ) : (
+            <ScreenWidgetView
+              type={instance.type}
+              config={instance.config ?? {}}
+              surface="scada"
+              width={instance.width}
+              height={instance.height}
+              editMode={editMode}
+              sensors={sensors}
+              values={currentValues}
+            />
+          )}
         </div>
       </div>
     </Rnd>

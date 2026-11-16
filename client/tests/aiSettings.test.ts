@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { AI_PROVIDERS, baseUrlError, buildAiSettingsBody, keyWillBeRemoved } from '../src/copilot/aiSettings.ts'
+import { AI_PROVIDERS, availableAiProviders, baseUrlError, buildAiSettingsBody, keyWillBeRemoved } from '../src/copilot/aiSettings.ts'
 
 const empty = { provider: '', apiKey: '', model: '', baseUrl: '', clearKey: false }
 
@@ -51,4 +51,15 @@ test('the form warns when saving will remove the stored key', () => {
   assert.equal(keyWillBeRemoved({ ...empty, provider: 'byok_anthropic' }, stored, false), false)
   assert.equal(keyWillBeRemoved({ ...empty, clearKey: true }, stored, true), true)
   assert.deepEqual(buildAiSettingsBody({ ...empty, clearKey: true }, stored), { body: { provider: 'byok_openai', clear_api_key: true } })
+})
+
+test('Voltrus AI is offered only when the server allows it or it is already chosen', () => {
+  const values = (hosted: boolean | undefined, stored: string) => availableAiProviders(hosted, stored).map(p => p.value)
+  assert.ok(!values(false, 'byok_openai').includes('voltrus_ai'))
+  assert.ok(!values(undefined, 'byok_openai').includes('voltrus_ai'))
+  assert.ok(values(true, 'byok_openai').includes('voltrus_ai'))
+  assert.ok(values(false, 'voltrus_ai').includes('voltrus_ai'))
+  assert.ok(values(false, 'byok_openai').includes('byok_openai_compatible'))
+  // The full list keeps the value, so a stored hosted provider still has its label.
+  assert.ok(AI_PROVIDERS.some(p => p.value === 'voltrus_ai'))
 })

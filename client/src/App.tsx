@@ -28,6 +28,15 @@ import { ThemeProvider } from './ThemeContext'
 import { setSharedAccount } from './sharedAccount'
 import { useTranslation } from 'react-i18next'
 import { duplicateName } from './duplicateName'
+import { roleAbilities } from './roles'
+import { RoleContext } from './RoleContext'
+import { SignatureDialog } from './signature/SignatureDialog'
+import { cancelAllSignaturePrompts } from './signature/prompt'
+import { NO_SESSION_POLICY, parseSessionPolicy, sessionEndMessage, type SessionPolicy } from './session'
+import { onSessionEnded } from './queries/fetch'
+import { useSessionActivity } from './hooks/useSessionActivity'
+import { extractDashboardWidgets, withDashboardWidgets, type DashboardWidget } from './dashboardWidgets'
+import { dashboardSizeOf, getScreenWidget } from './edition/widgets'
 
 // Lazy-loaded heavy components — only fetched when opened
 const DashboardSettings = lazy(() => import('./DashboardSettings').then(m => ({ default: m.DashboardSettings })))
@@ -61,6 +70,8 @@ export function AppInner() {
   const [authLoading, setAuthLoading] = useState(true)
   const [loginError, setLoginError] = useState('')
   const [mustChangePassword, setMustChangePassword] = useState(false)
+  const [passwordExpired, setPasswordExpired] = useState(false)
+  const [sessionPolicy, setSessionPolicy] = useState<SessionPolicy>(NO_SESSION_POLICY)
 
   // ── UI state ─────────────────────────────────────────────────────
   const [editMode, setEditMode] = useState(false)
@@ -197,9 +208,8 @@ export function AppInner() {
   const effectiveSystemInfo = systemInfo ?? storeSystemInfo
 
   // ── Derived values ───────────────────────────────────────────────
-  const isAdmin = authRole === 'admin'
-  const isDemo = authRole === 'demo'
-  const isAdminOrDemo = isAdmin || isDemo
+  const abilities = useMemo(() => roleAbilities(authRole), [authRole])
+  const { isAdmin, canConfigure, canOperate } = abilities
 
   const effectiveNavShortcuts = useMemo(() => {
     const defaults: Record<string, string> = {
@@ -281,7 +291,7 @@ export function AppInner() {
     fetchJson<any>('/api/v1/auth/me').then(d => {
       if (d.authenticated) connectWS()
       setSharedAccount(d.shared === true)
-      setAuthed(d.authenticated === true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setAuthLoading(false)
+      setAuthed(d.authenticated === true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setSessionPolicy(parseSessionPolicy(d)); setAuthLoading(false)
     }).catch(() => { setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser(''); setAuthLoading(false) })
   }, [])
 
@@ -296,6 +306,7 @@ export function AppInner() {
         throw new Error(body.error || `Login failed: ${r.status}`)
       }
       const d = await r.json(); setSharedAccount(d.shared === true); connectWS(); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || username); setMustChangePassword(!!d.must_change_password)
+      setPasswordExpired(d.password_expired === true); setSessionPolicy(parseSessionPolicy(d))
     } catch (e: any) { setLoginError(e.message || 'Login failed') }
   }
 
@@ -303,7 +314,17 @@ export function AppInner() {
     setSharedAccount(d.shared === true); connectWS(); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setMustChangePassword(!!d.must_change_password)
   }
 
-  const handleLogout = async () => { disconnectWS(); storeActions.clearData(); await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser('') }
+  const handleLogout = async () => { cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData(); await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser('') }
+
+  // The server ended the session (idle or absolute limit): sign out and say why on the login screen.
+  const idleTimeoutRef = useRef<number | null>(null)
+  idleTimeoutRef.current = sessionPolicy.idleTimeoutSecs
+  useEffect(() => onSessionEnded(reason => {
+    cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData()
+    setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser('')
+    setLoginError(sessionEndMessage(reason, idleTimeoutRef.current))
+  }), [disconnectWS, storeActions])
+  useSessionActivity(sessionPolicy.idleTimeoutSecs, authed)
 
   // ── Handlers ─────────────────────────────────────────────────────
 
@@ -339,20 +360,30 @@ export function AppInner() {
     await addSensorMut.mutateAsync(dup)
   }
 
+  // Add-on widgets live in the layout items themselves (dashboardWidgets.ts).
+  const dashboardWidgets = useMemo(() => extractDashboardWidgets(effectiveLayouts), [effectiveLayouts])
+  const dashboardWidgetsRef = useRef<DashboardWidget[]>(dashboardWidgets)
+  dashboardWidgetsRef.current = dashboardWidgets
+  const widgetSize = useCallback((w: DashboardWidget) => dashboardSizeOf(getScreenWidget(w.type)), [])
+  const handleDashboardWidgetsChange = useCallback((widgets: DashboardWidget[]) => {
+    setLocalLayouts(withDashboardWidgets(effectiveLayouts, widgets, widgetSize))
+  }, [effectiveLayouts, widgetSize])
+
   const handleLayoutChange = useCallback((currentLayout: any[], allLayouts: { [bp: string]: any[] }) => {
     const normalize = (items: any[]) => items.map((l: any) => ({ i: String(l.i), x: l.x, y: l.y, w: l.w, h: l.h }))
-    const newLayouts: ScreenLayouts = {
+    // The grid reports bare positions: put the widget payloads back on their items.
+    const newLayouts: ScreenLayouts = withDashboardWidgets({
       lg: allLayouts.lg?.length > 0 ? normalize(allLayouts.lg) : [],
       md: allLayouts.md?.length > 0 ? normalize(allLayouts.md) : [],
       sm: allLayouts.sm?.length > 0 ? normalize(allLayouts.sm) : [],
       xs: allLayouts.xs?.length > 0 ? normalize(allLayouts.xs) : [],
-    }
+    }, dashboardWidgetsRef.current, widgetSize)
     setLocalLayouts(prev => {
       const next = JSON.stringify(newLayouts)
       if (prev && JSON.stringify(prev) === next) return prev
       return newLayouts
     })
-  }, [])
+  }, [widgetSize])
 
   const handleCanvasLayoutChange = useCallback((items: CanvasLayoutItem[]) => {
     setLocalCanvasLayouts(items)
@@ -433,12 +464,13 @@ export function AppInner() {
   if (mustChangePassword) {
     const handleChangePassword = async (oldPassword: string, newPassword: string) => {
       await fetchOk('/api/v1/auth/change-password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }) })
-      setMustChangePassword(false)
+      setMustChangePassword(false); setPasswordExpired(false)
     }
-    return <ChangePasswordScreen onSubmit={handleChangePassword} />
+    return <ChangePasswordScreen onSubmit={handleChangePassword} expired={passwordExpired} />
   }
 
   return (
+    <RoleContext.Provider value={abilities}>
     <LicenseContext.Provider value={licenseInfo}>
     <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <a href="#main-content" className="skip-to-content">Skip to content</a>
@@ -458,7 +490,8 @@ export function AppInner() {
         onFlowsClick={() => setMode('flows')}
         onTagsClick={() => setMode('tags')}
         onAssetsClick={() => setMode('assets')}
-        isAdmin={isAdminOrDemo}
+        isAdmin={canConfigure}
+        canOperate={canOperate}
         username={authUser}
         onLogout={handleLogout}
         onAlarmPanelToggle={toggleAlarms}
@@ -518,12 +551,12 @@ export function AppInner() {
           )}
           {mode === 'flows' && (
             <OverlayScreen title="Flow Manager" onClose={() => setMode('live')}>
-              <Suspense fallback={null}><FlowManager isAdmin={isAdminOrDemo} /></Suspense>
+              <Suspense fallback={null}><FlowManager canOperate={canOperate} canConfigure={canConfigure} /></Suspense>
             </OverlayScreen>
           )}
           {mode === 'tags' && (
             <OverlayScreen title="Tag Browser" onClose={() => setMode('live')}>
-              <Suspense fallback={null}><TagBrowser isAdmin={isAdminOrDemo} /></Suspense>
+              <Suspense fallback={null}><TagBrowser isAdmin={canConfigure} /></Suspense>
             </OverlayScreen>
           )}
           {mode === 'assets' && (
@@ -568,7 +601,9 @@ export function AppInner() {
               saveTwinConnectionsMut={saveTwinConnectionsMut}
               updateSensorMut={updateSensorMut}
               fetchOk={fetchOk}
-              isAdmin={isAdminOrDemo}
+              isAdmin={canConfigure}
+              dashboardWidgets={dashboardWidgets}
+              onDashboardWidgetsChange={canConfigure ? handleDashboardWidgetsChange : undefined}
             />
           )}
         </div>
@@ -590,7 +625,7 @@ export function AppInner() {
           }}>
             {(() => {
               const s = sensors.find(x => x.id === selectedSensor)
-              return s ? <Suspense fallback={null}><SensorDetail sensor={s} onBack={() => setSelectedSensor(null)} historyRange={historyRange} onRangeChange={setHistoryRange} historyDetail={historyDetail} onDetailChange={setHistoryDetail} historyAutoAgg={dashSettings.historyAutoAgg} shortcuts={shortcuts} mode={mode === 'history' ? 'history' : 'live'} onModeChange={setMode} allSensors={sensors} isAdmin={isAdminOrDemo} /></Suspense> : null
+              return s ? <Suspense fallback={null}><SensorDetail sensor={s} onBack={() => setSelectedSensor(null)} historyRange={historyRange} onRangeChange={setHistoryRange} historyDetail={historyDetail} onDetailChange={setHistoryDetail} historyAutoAgg={dashSettings.historyAutoAgg} shortcuts={shortcuts} mode={mode === 'history' ? 'history' : 'live'} onModeChange={setMode} allSensors={sensors} isAdmin={canConfigure} canOperate={canOperate} /></Suspense> : null
             })()}
           </div>
         )}
@@ -598,7 +633,7 @@ export function AppInner() {
 
 
         {showDashSettings && <Suspense fallback={null}><DashboardSettings settings={dashSettings} onChange={setDashSettings} onClose={() => setShowDashSettings(false)} alarmMuted={alarmMuted} onToggleMute={() => { toggleMute(); setAlarmMuted(!alarmMuted) }} kioskMode={kiosk.enabled} onToggleKiosk={kiosk.toggle} /></Suspense>}
-        {_routePage === 'data' && <Suspense fallback={null}><DataManager sensors={sensors} onSave={handleSave} onDelete={handleDelete} onAdd={handleAddSensorToManager} onDuplicate={handleDuplicateSensor} onClose={() => navigate({ to: '/' })} shortcuts={shortcuts} isAdmin={isAdminOrDemo} isStrictAdmin={isAdmin} /></Suspense>}
+        {_routePage === 'data' && <Suspense fallback={null}><DataManager sensors={sensors} onSave={handleSave} onDelete={handleDelete} onAdd={handleAddSensorToManager} onDuplicate={handleDuplicateSensor} onClose={() => navigate({ to: '/' })} shortcuts={shortcuts} isAdmin={canConfigure} isStrictAdmin={isAdmin} canOperate={canOperate} /></Suspense>}
         {showAddDialog && activeScreen !== 'all' && (
           <AddSensorDialog screenId={activeScreen} sensors={sensors} screenSensorIds={screenSensors.map(s => s.id)} onClose={() => setShowAddDialog(false)} onDone={() => { setShowAddDialog(false); queryClient.invalidateQueries({ queryKey: ['screenDataSources', activeScreen] }); queryClient.invalidateQueries({ queryKey: ['sensors'] }) }} />
         )}
@@ -606,7 +641,7 @@ export function AppInner() {
         {screenConfirm && <ConfirmDialog {...screenConfirm} onClose={() => setScreenConfirm(null)} />}
         {showBrandingDialog && edition.branding && <edition.branding.Dialog branding={branding} onClose={() => setShowBrandingDialog(false)} />}
         {_routePage === 'alarms' && <Suspense fallback={null}><AlarmPanel onClose={() => navigate({ to: '/' })} /></Suspense>}
-        {_routePage === 'commands' && <Suspense fallback={null}><CommandPanel onClose={() => navigate({ to: '/' })} isAdmin={isAdminOrDemo} /></Suspense>}
+        {_routePage === 'commands' && <Suspense fallback={null}><CommandPanel onClose={() => navigate({ to: '/' })} canOperate={canOperate} /></Suspense>}
         {showExportPanel && <Suspense fallback={null}><DataExportPanel onClose={() => setShowExportPanel(false)} /></Suspense>}
         {_routePage === 'shift' && <Suspense fallback={null}><ShiftHandoverPanel onClose={() => navigate({ to: '/' })} /></Suspense>}
         {showSnapshotPanel && (
@@ -629,10 +664,12 @@ export function AppInner() {
 
       <Footer activeAlarmCount={activeAlarms.count} viewMode={viewMode} activeScreen={activeScreen} screens={screens} />
       <ToastContainer />
+      <SignatureDialog />
       {/* router outlet (child route components render null; AppInner owns all chrome) */}
       <span style={{ display: 'none' }}><Outlet /></span>
     </div>
     </LicenseContext.Provider>
+    </RoleContext.Provider>
   )
 }
 

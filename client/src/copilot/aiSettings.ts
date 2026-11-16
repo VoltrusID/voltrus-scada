@@ -1,13 +1,24 @@
 // Form logic for the AI copilot settings, kept free of React so it can be tested.
 
 export const OPENAI_COMPATIBLE = 'byok_openai_compatible'
+export const HOSTED_AI = 'voltrus_ai'
 
 export const AI_PROVIDERS = [
   { value: 'byok_openai', label: 'OpenAI (BYOK)' },
   { value: 'byok_anthropic', label: 'Anthropic (BYOK)' },
   { value: OPENAI_COMPATIBLE, label: 'OpenAI-compatible (Ollama, LM Studio, OpenRouter…)' },
-  { value: 'voltrus_ai', label: 'Voltrus AI' },
+  { value: HOSTED_AI, label: 'Voltrus AI' },
 ]
+
+/**
+ * Providers to offer in the selector. The hosted provider is listed only when
+ * the server says this install can use it, or when it is already the stored
+ * provider (so the current value still shows).
+ */
+export function availableAiProviders(hostedAvailable: boolean | undefined, storedProvider: string): typeof AI_PROVIDERS {
+  if (hostedAvailable || storedProvider === HOSTED_AI) return AI_PROVIDERS
+  return AI_PROVIDERS.filter(p => p.value !== HOSTED_AI)
+}
 
 /** Example base URLs shown under the field. */
 export const BASE_URL_EXAMPLES = [
