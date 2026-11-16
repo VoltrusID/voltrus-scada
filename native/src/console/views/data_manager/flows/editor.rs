@@ -277,7 +277,7 @@ pub(super) fn open(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    let read_only = !console.is_operator();
+    let read_only = !console.may_configure();
     let admin = console.is_admin();
     let state = console.state::<State>();
     let catalogue = catalogue_of(state);
@@ -1067,6 +1067,9 @@ fn save_texts(editor: &Editor) -> Result<(String, String), String> {
 
 /// ⌘S: `PUT /api/v1/flows/{id}` with the canvas's graph.
 fn save(console: &mut Console, cx: &mut Context<Console>) {
+    if super::cannot_configure(console, cx) {
+        return;
+    }
     let state = console.state::<State>();
     state.seq += 1;
     let seq = state.seq;

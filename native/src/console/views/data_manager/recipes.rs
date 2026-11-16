@@ -6,8 +6,9 @@
 //! (every 2 s while on screen, until each is done), retries a failed one,
 //! and opens them on the Commands page.
 //!
-//! Every recipe route is an operator route (`demo_protected`, the list
-//! too), so the section is listed for operators only.
+//! Listing, viewing and loading recipes is an operator route (the list
+//! too), so the section is listed for operators; saving, changing and
+//! deleting one is configuration (admin, demo, integration).
 //!
 //! Keys: `/` searches by name, Enter opens a recipe (its values beside the
 //! live ones, and its fields), `n` saves a new one, `l` loads the recipe
@@ -477,12 +478,24 @@ fn next_category(console: &mut Console, cx: &mut Context<Console>) {
     pick_category(console, next, cx);
 }
 
-fn needs_operator(console: &mut Console, cx: &mut Context<Console>) -> bool {
-    if console.is_operator() {
+/// Listing, opening, loading and retrying need a role that operates; a
+/// viewer hears why.
+fn cannot_operate(console: &mut Console, cx: &mut Context<Console>) -> bool {
+    if console.may_operate() {
+        return false;
+    }
+    console.show_toast("Recipes need an operator role", true, cx);
+    true
+}
+
+/// Saving, changing and deleting a recipe is configuration; an operator
+/// hears why.
+fn cannot_configure(console: &mut Console, cx: &mut Context<Console>) -> bool {
+    if console.may_configure() {
         return false;
     }
     console.show_toast(
-        "Recipes need the operator role (admin, demo or integration)",
+        "Changing recipes needs the admin, demo or integration role",
         true,
         cx,
     );
@@ -492,7 +505,7 @@ fn needs_operator(console: &mut Console, cx: &mut Context<Console>) -> bool {
 // ── New recipe ───────────────────────────────────────────────────────────
 
 fn open_new(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if needs_operator(console, cx) {
+    if cannot_configure(console, cx) {
         return;
     }
     let name = text_field("Summer setpoints", InputKind::Text, false, cx);
@@ -842,6 +855,9 @@ fn discard_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
 }
 
 fn submit_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) {
+    if cannot_configure(console, cx) {
+        return;
+    }
     let Some(sheet) = console.state::<State>().sheet.as_mut() else {
         return;
     };
@@ -1091,7 +1107,7 @@ fn sheet_view(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
 // ── Load ─────────────────────────────────────────────────────────────────
 
 fn ask_load(console: &mut Console, recipe: Recipe, window: &mut Window, cx: &mut Context<Console>) {
-    if needs_operator(console, cx) {
+    if cannot_operate(console, cx) {
         return;
     }
     let focus = cx.focus_handle();
@@ -1178,7 +1194,7 @@ fn load_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
 /// Retry a failed command of the load: write its value again (`POST
 /// /api/v1/tags/{id}/write`, as the web client does).
 fn retry(console: &mut Console, id: String, cx: &mut Context<Console>) {
-    if needs_operator(console, cx) {
+    if cannot_operate(console, cx) {
         return;
     }
     let Some(run) = console.state::<State>().load.as_mut() else {
@@ -1235,7 +1251,7 @@ fn ask_delete(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    if needs_operator(console, cx) {
+    if cannot_configure(console, cx) {
         return;
     }
     let focus = cx.focus_handle();
@@ -1692,7 +1708,7 @@ fn recipe_row(
 #[allow(clippy::too_many_lines)]
 fn load_card(console: &mut Console, cx: &mut Context<Console>) -> Option<AnyElement> {
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_operate();
     let run = console.state_ref::<State>()?.load.as_ref()?;
     let LoadTally {
         total,
@@ -2128,6 +2144,24 @@ mod tests {
         });
         assert!(h.update(|console, _, _| console.overlay.is_none()));
         assert!(h.calls().is_empty(), "nothing is asked of the server");
+    }
+
+    /// An operator lists and loads recipes but does not change them.
+    #[gpui::test]
+    fn an_operator_loads_recipes_but_does_not_change_them(cx: &mut gpui::TestAppContext) {
+        assert!(
+            visible(SECTIONS, Some(Role::Operate))
+                .iter()
+                .any(|spec| spec.id == ID)
+        );
+        let mut h = signed_in(cx, "operator");
+        h.update(|console, window, cx| {
+            open_new(console, window, cx);
+            ask_delete(console, summer(), window, cx);
+        });
+        assert!(h.update(|console, _, _| console.overlay.is_none()));
+        h.update(|console, window, cx| ask_load(console, summer(), window, cx));
+        assert!(h.update(|console, _, _| console.overlay_is(LOAD)));
     }
 
     #[test]

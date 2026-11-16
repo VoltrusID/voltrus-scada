@@ -1,4 +1,4 @@
-use axum::extract::{Extension, Path, State};
+use axum::extract::{Path, State};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -19,7 +19,7 @@ pub fn tools() -> Vec<Tool> {
                 write rate limit, or the policy demands a `reason` and none is given. On \
                 success the command is queued (status \"pending\") and a command_id returned; \
                 poll get_command_status for the outcome.",
-            access: Access::Write,
+            access: Access::Operate,
             destructive: false,
             input_schema: || {
                 json!({
@@ -94,13 +94,16 @@ fn write_tag(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
             policy,
             scheduled_at: args.scheduled_at,
             reason: args.reason.filter(|r| !r.trim().is_empty()),
+            signature: None,
         };
+        // MCP cannot sign: a write the edition wants signed is refused.
         from_handler(
-            commands::write_tag(
-                State(ctx.state.clone()),
-                Extension(ctx.user.clone()),
-                Path(args.tag_id),
-                axum::Json(request),
+            commands::write_tag_as(
+                &ctx.state,
+                &ctx.user,
+                crate::edition::ActionOrigin::Mcp,
+                args.tag_id,
+                request,
             )
             .await,
         )

@@ -11,6 +11,7 @@ import { AlarmBanner } from '../scada2/AlarmBanner'
 import { isRunning } from '../scada2/connections/ConnectionLayer'
 import { wsWriteTagResult } from '../api/websocket'
 import { writeTag } from '../api/commands'
+import { isSignatureCancelled } from '../signature/logic'
 import { toast } from '../components/Toast'
 import { placeLayout, bounds, type PlacedItem, type PlacedArea } from './placement'
 import { Pipes3D, type PipeRun } from './Pipes3D'
@@ -230,7 +231,7 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
       else toast.success('Command sent')
       return true
     } catch (err: any) {
-      toast.error(err.message || 'Write failed')
+      if (!isSignatureCancelled(err)) toast.error(err.message || 'Write failed')
       return false
     }
   }, [])

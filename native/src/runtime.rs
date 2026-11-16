@@ -37,7 +37,9 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::api::{self, Alarm, DataSource, HistorySeries, Method, VoltrusApi};
+use crate::signature::{self, Ask, Signable, Signature};
 use crate::stress::{self, StressFeed, StressOptions};
+use crate::tag_api::{self, WriteMode};
 use crate::ws_types::{ClientMessage, ServerMessage, TagUpdateEntry};
 
 /// Names a generic REST call so its answer finds the code that asked:
@@ -191,6 +193,14 @@ pub enum Command {
         reason: String,
     },
     Unshelve(i64),
+    /// Send `action` again with the user's electronic signature, after the
+    /// server asked for one ([`Event::SignatureNeeded`]). A REST tag write
+    /// is retried by the console itself; this sends the others. Answered by
+    /// [`Event::Written`] for a direct write, else [`Event::Signed`].
+    Sign {
+        action: Signable,
+        signature: Signature,
+    },
     RefreshAlarms,
     /// Load history for every tag over `range` (`30m`, `1h`, `6h`, `24h`, `7d`).
     History(String),
@@ -250,6 +260,12 @@ impl fmt::Debug for Command {
                 .field("reason", reason)
                 .finish(),
             Self::Unshelve(id) => f.debug_tuple("Unshelve").field(id).finish(),
+            // The signature's own `Debug` leaves the password out.
+            Self::Sign { action, signature } => f
+                .debug_struct("Sign")
+                .field("action", action)
+                .field("signature", signature)
+                .finish(),
             Self::RefreshAlarms => f.write_str("RefreshAlarms"),
             Self::History(range) => f.debug_tuple("History").field(range).finish(),
             Self::Call { key, .. } => f
@@ -344,6 +360,19 @@ pub enum Event {
     Done {
         action: String,
         result: Result<(), String>,
+    },
+    /// The server wants `action` signed (an Enterprise add-on): ask the
+    /// user, then send [`Command::Sign`]. `ask.error` says why the last
+    /// signature was refused.
+    SignatureNeeded {
+        action: Signable,
+        ask: Ask,
+    },
+    /// The answer to a signed [`Command::Sign`] sent through REST: what
+    /// the server reported (a write's command id), if anything.
+    Signed {
+        action: Signable,
+        result: Result<Option<String>, String>,
     },
     /// The answer to a [`Command::Call`].
     Reply {
@@ -478,6 +507,14 @@ enum Rest {
         action: String,
         result: Result<(), String>,
     },
+    /// An alarm action the server wants signed, or the answer to a signed
+    /// one (`signed`).
+    Signable {
+        action: Signable,
+        signed: bool,
+        result: Result<Option<String>, String>,
+        ask: Option<Ask>,
+    },
     PasswordChanged(Result<(), String>),
     /// A renewal (`POST /auth/refresh`): the new tokens.
     Renewed(Result<Tokens, SignInError>),
@@ -567,10 +604,11 @@ const LATE_WRITES: usize = 32;
 struct Writes {
     nonce: String,
     next: u64,
-    /// Command id → data source id.
-    pending: HashMap<String, i64>,
+    /// Command id → data source id and the value written (sent again if
+    /// the server asks for a signature).
+    pending: HashMap<String, (i64, f64)>,
     /// Timed-out writes, oldest first.
-    late: VecDeque<(String, i64)>,
+    late: VecDeque<(String, i64, f64)>,
 }
 
 impl Writes {
@@ -583,11 +621,11 @@ impl Writes {
         }
     }
 
-    /// A new command id for a write to `tag`.
-    fn issue(&mut self, tag: i64) -> String {
+    /// A new command id for a write of `value` to `tag`.
+    fn issue(&mut self, tag: i64, value: f64) -> String {
         self.next += 1;
         let id = format!("native-{}-{}", self.nonce, self.next);
-        self.pending.insert(id.clone(), tag);
+        self.pending.insert(id.clone(), (tag, value));
         id
     }
 
@@ -598,27 +636,29 @@ impl Writes {
 
     /// The tag of a write that waited too long, if it still waited.
     fn time_out(&mut self, id: &str) -> Option<i64> {
-        let tag = self.pending.remove(id)?;
+        let (tag, value) = self.pending.remove(id)?;
         if self.late.len() == LATE_WRITES {
             self.late.pop_front();
         }
-        self.late.push_back((id.to_owned(), tag));
+        self.late.push_back((id.to_owned(), tag, value));
         Some(tag)
     }
 
-    /// The tag of an acknowledged write of ours, and whether it had timed
-    /// out.
-    fn acknowledge(&mut self, id: &str) -> Option<(i64, bool)> {
-        if let Some(tag) = self.pending.remove(id) {
-            return Some((tag, false));
+    /// The tag and value of an acknowledged write of ours, and whether it
+    /// had timed out.
+    fn acknowledge(&mut self, id: &str) -> Option<(i64, f64, bool)> {
+        if let Some((tag, value)) = self.pending.remove(id) {
+            return Some((tag, value, false));
         }
-        let position = self.late.iter().position(|(late, _)| late == id)?;
-        self.late.remove(position).map(|(_, tag)| (tag, true))
+        let position = self.late.iter().position(|(late, ..)| late == id)?;
+        self.late
+            .remove(position)
+            .map(|(_, tag, value)| (tag, value, true))
     }
 
     /// The tags of every waiting write, when the connection drops.
     fn abandon(&mut self) -> Vec<i64> {
-        self.pending.drain().map(|(_, tag)| tag).collect()
+        self.pending.drain().map(|(_, (tag, _))| tag).collect()
     }
 }
 
@@ -906,26 +946,22 @@ impl Actor {
                     let _ = socket.try_send(ClientMessage::Subscribe { tag_ids: tags });
                 }
             }
-            Command::Write { id, value } => self.write(id, value),
-            Command::Acknowledge(id) => {
-                self.action(format!("Acknowledge alarm {id}"), move |api| {
-                    Box::pin(async move { api.ack_alarm(id).await })
-                });
-            }
-            Command::AcknowledgeAll => {
-                self.action("Acknowledge all alarms".into(), |api| {
-                    Box::pin(async move { api.ack_all().await })
-                });
-            }
+            Command::Write { id, value } => self.write(id, value, None),
+            Command::Acknowledge(id) => self.signable(Signable::Acknowledge(id), None),
+            Command::AcknowledgeAll => self.signable(Signable::AcknowledgeAll, None),
             Command::Shelve {
                 alarm,
                 seconds,
                 reason,
-            } => {
-                self.action(format!("Shelve alarm {alarm}"), move |api| {
-                    Box::pin(async move { api.shelve_alarm(alarm, seconds, &reason).await })
-                });
-            }
+            } => self.signable(
+                Signable::Shelve {
+                    alarm,
+                    seconds,
+                    reason,
+                },
+                None,
+            ),
+            Command::Sign { action, signature } => self.signable(action, Some(signature)),
             Command::Unshelve(id) => {
                 self.action(format!("Unshelve alarm {id}"), move |api| {
                     Box::pin(async move { api.unshelve_alarm(id).await })
@@ -1083,7 +1119,74 @@ impl Actor {
         }
     }
 
-    fn write(&mut self, id: i64, value: f64) {
+    /// An action an Enterprise server may want signed: sent unsigned first
+    /// (`signature` is `None`), then again with the user's signature. A
+    /// direct write goes over the WebSocket; the rest through REST.
+    fn signable(&mut self, action: Signable, signature: Option<Signature>) {
+        if let Signable::TagWrite {
+            tag,
+            value,
+            mode: WriteMode::Direct,
+            ..
+        } = action
+        {
+            self.write(tag, value, signature);
+            return;
+        }
+        let Some(s) = &self.session else {
+            if signature.is_some() {
+                self.out.send(Event::Signed {
+                    action,
+                    result: Err("Not connected".into()),
+                });
+            }
+            return;
+        };
+        let api = s.api.clone();
+        let signed = signature.is_some();
+        spawn_rest(&self.inputs, s.id, async move {
+            let signature = signature.as_ref();
+            let result = match &action {
+                Signable::Acknowledge(id) => api.ack_alarm(*id, signature).await.map(|()| None),
+                Signable::AcknowledgeAll => api.ack_all(signature).await.map(|()| None),
+                Signable::Shelve {
+                    alarm,
+                    seconds,
+                    reason,
+                } => api
+                    .shelve_alarm(*alarm, *seconds, reason, signature)
+                    .await
+                    .map(|()| None),
+                Signable::TagWrite {
+                    tag,
+                    value,
+                    mode,
+                    reason,
+                } => match tag_api::write_request(*value, reason, *mode) {
+                    Some(mut body) => {
+                        body.signature = signature.cloned();
+                        api.send_json::<_, tag_api::WriteAccepted>(
+                            Method::POST,
+                            &format!("/api/v1/tags/{tag}/write"),
+                            &body,
+                        )
+                        .await
+                        .map(|answer| Some(format!("command {}", answer.command_id)))
+                    }
+                    None => Ok(None),
+                },
+            };
+            let ask = result.as_ref().err().and_then(signature::ask);
+            Rest::Signable {
+                action,
+                signed,
+                result: result.map_err(|error| error.to_string()),
+                ask,
+            }
+        });
+    }
+
+    fn write(&mut self, id: i64, value: f64, signature: Option<Signature>) {
         let Some(s) = self.session.as_mut() else {
             self.out.send(Event::Written {
                 tag: id,
@@ -1100,11 +1203,12 @@ impl Actor {
             });
             return;
         };
-        let command_id = s.writes.issue(id);
+        let command_id = s.writes.issue(id, value);
         let message = ClientMessage::TagWrite {
             tag_id: id.to_string(),
             value,
             command_id: Some(command_id.clone()),
+            signature,
         };
         if socket.try_send(message).is_err() {
             s.writes.cancel(&command_id);
@@ -1201,6 +1305,22 @@ impl Actor {
             }),
             Rest::Action { action, result } => {
                 self.out.send(Event::Done { action, result });
+                self.refresh_alarms();
+            }
+            Rest::Signable {
+                action,
+                signed,
+                result,
+                ask,
+            } => {
+                self.out.send(match (ask, signed) {
+                    (Some(ask), _) => Event::SignatureNeeded { action, ask },
+                    (None, true) => Event::Signed { action, result },
+                    (None, false) => Event::Done {
+                        action: action.describe(),
+                        result: result.map(|_| ()),
+                    },
+                });
                 self.refresh_alarms();
             }
             Rest::PasswordChanged(result) => {
@@ -1361,14 +1481,34 @@ impl Actor {
                 status,
                 device_response,
                 latency_ms,
+                signature_required,
             } => {
-                let Some((tag, late)) = self
+                let Some((tag, value, late)) = self
                     .session
                     .as_mut()
                     .and_then(|s| s.writes.acknowledge(&command_id))
                 else {
                     return;
                 };
+                // The server wants the write signed: ask, unless the user
+                // has moved on since it timed out.
+                if let Some(ask) = signature::ask_of_ack(
+                    &status,
+                    device_response.as_deref(),
+                    signature_required.as_ref(),
+                ) && !late
+                {
+                    self.out.send(Event::SignatureNeeded {
+                        action: Signable::TagWrite {
+                            tag,
+                            value,
+                            mode: WriteMode::Direct,
+                            reason: String::new(),
+                        },
+                        ask,
+                    });
+                    return;
+                }
                 let ok = matches!(
                     status.as_str(),
                     "ok" | "success" | "acked" | "confirmed" | "written"
@@ -1819,14 +1959,14 @@ mod tests {
     #[test]
     fn writes_match_only_their_own_acks_even_late_ones() {
         let mut writes = Writes::new("abc".into());
-        let first = writes.issue(11);
-        let second = writes.issue(12);
+        let first = writes.issue(11, 1.0);
+        let second = writes.issue(12, 2.0);
         assert_ne!(first, second);
         assert!(first.starts_with("native-abc-"));
         assert_eq!(writes.acknowledge("native-other-1"), None);
         assert_eq!(writes.time_out(&first), Some(11));
         assert_eq!(writes.time_out(&first), None, "reported once");
-        assert_eq!(writes.acknowledge(&first), Some((11, true)));
+        assert_eq!(writes.acknowledge(&first), Some((11, 1.0, true)));
         assert_eq!(writes.acknowledge(&first), None);
         assert_eq!(writes.abandon(), [12]);
         assert_eq!(writes.acknowledge(&second), None);
@@ -1847,6 +1987,7 @@ mod tests {
             tag_id,
             value,
             command_id: Some(command_id),
+            signature: None,
         }) = queue.try_recv()
         else {
             panic!("expected a tag write on the socket");
@@ -1861,6 +2002,7 @@ mod tests {
                 status: "ok".into(),
                 device_response: None,
                 latency_ms: Some(12),
+                signature_required: None,
             },
         ));
         let events = h.events();
@@ -1873,6 +2015,70 @@ mod tests {
                 Event::Written { tag, result: Ok(detail), late: true },
             ] if not_connected == "Not connected" && *tag == 7 && detail == "ok (12 ms)"
         ));
+    }
+
+    /// The server wants a direct write signed: the console is asked, and
+    /// the signed write goes out on the socket with the same value.
+    #[test]
+    fn a_direct_write_asks_for_a_signature_and_sends_it() {
+        let mut h = Harness::new();
+        h.sign_in();
+        let (sender, mut queue) = mpsc::channel(4);
+        let generation = h.session().generation;
+        h.socket(Socket::Open(generation, sender));
+        h.events();
+        h.feed(Input::Command(Command::Write { id: 7, value: 1.5 }));
+        let Ok(ClientMessage::TagWrite {
+            command_id: Some(command_id),
+            ..
+        }) = queue.try_recv()
+        else {
+            panic!("expected a tag write on the socket");
+        };
+        let required = crate::signature::SignatureRequired {
+            action: "tag_write".into(),
+            meaning: "I approve".into(),
+        };
+        h.socket(Socket::Message(
+            generation,
+            ServerMessage::CommandAck {
+                command_id,
+                status: "signature_required".into(),
+                device_response: None,
+                latency_ms: None,
+                signature_required: Some(required.clone()),
+            },
+        ));
+        let events = h.events();
+        let [Event::SignatureNeeded { action, ask }] = events.as_slice() else {
+            panic!("expected a request for a signature: {events:?}");
+        };
+        assert_eq!(ask.request, required);
+        assert_eq!(
+            *action,
+            Signable::TagWrite {
+                tag: 7,
+                value: 1.5,
+                mode: WriteMode::Direct,
+                reason: String::new()
+            }
+        );
+        let signature = crate::signature::signature(&ask.request, "secret", "batch 7").unwrap();
+        h.feed(Input::Command(Command::Sign {
+            action: action.clone(),
+            signature: signature.clone(),
+        }));
+        let Ok(ClientMessage::TagWrite {
+            tag_id,
+            value,
+            signature: Some(sent),
+            ..
+        }) = queue.try_recv()
+        else {
+            panic!("expected the signed write on the socket");
+        };
+        assert_eq!((tag_id.as_str(), value), ("7", 1.5));
+        assert_eq!(sent, signature);
     }
 
     fn tokens(token: &str, refresh: &str) -> Tokens {

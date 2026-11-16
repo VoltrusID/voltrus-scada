@@ -4,6 +4,7 @@ import { SensorGrid } from '../SensorGrid'
 import { CanvasView } from '../CanvasView'
 import { ScreenLayouts, CanvasLayoutItem, SensorConfig } from '../types'
 import type { LayoutItem } from '../types'
+import type { DashboardWidget } from '../dashboardWidgets'
 
 const DigitalTwinView = lazy(() => import('../DigitalTwinView').then(m => ({ default: m.DigitalTwinView })))
 const ScadaView = lazy(() => import('../scada2/ScadaView').then(m => ({ default: m.ScadaView })))
@@ -42,6 +43,8 @@ interface Props {
   isAdmin: boolean
   scadaToolbarSlotSetter?: (slot: React.ReactNode) => void
   screenName?: string
+  dashboardWidgets?: DashboardWidget[]
+  onDashboardWidgetsChange?: (widgets: DashboardWidget[]) => void
 }
 
 export function MainContent({
@@ -52,7 +55,7 @@ export function MainContent({
   twinLayouts, twinCamera, twinConnections, sensors,
   saveScadaEquipmentMut, saveScadaConnectionsMut, saveTwinLayoutMut,
   saveTwinConnectionsMut, updateSensorMut, fetchOk, isAdmin,
-  scadaToolbarSlotSetter, screenName,
+  scadaToolbarSlotSetter, screenName, dashboardWidgets, onDashboardWidgetsChange,
 }: Props) {
   const queryClient = useQueryClient()
 
@@ -81,6 +84,8 @@ export function MainContent({
         forcedBreakpoint={forcedBreakpoint}
         shortcuts={shortcuts}
         mode={mode}
+        widgets={dashboardWidgets}
+        onWidgetsChange={onDashboardWidgetsChange}
       />
     )
   }

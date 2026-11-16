@@ -188,10 +188,10 @@ pub struct Rights {
     pub screens: bool,
 }
 
-/// The server's rule: screen and layout changes are operator routes
+/// The server's rule: screen and layout changes are configuration routes
 /// (admin, demo, integration).
 pub fn rights(role: Option<Role>, screen: &str) -> Rights {
-    let operator = role.is_some_and(|role| role >= Role::Operator);
+    let operator = role.is_some_and(|role| role >= Role::Configure);
     Rights {
         arrange: operator,
         tags: operator && screen != OVERVIEW,
@@ -556,7 +556,7 @@ mod tests {
         let viewer = rights(Some(Role::Any), "plts_1");
         assert_eq!(viewer, Rights::default(), "a viewer only looks");
         assert_eq!(rights(None, "plts_1"), Rights::default());
-        let operator = rights(Some(Role::Operator), "plts_1");
+        let operator = rights(Some(Role::Configure), "plts_1");
         assert!(operator.arrange && operator.tags && operator.screens);
         let overview = rights(Some(Role::Admin), OVERVIEW);
         assert!(overview.arrange && overview.screens);

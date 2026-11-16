@@ -2,6 +2,25 @@ use super::Storage;
 use anyhow::{Context, Result};
 use rusqlite::OptionalExtension;
 
+/// A `name=value` field of an audit entry's details, as tag writes and signed
+/// actions write them (`command=… previous=… value=… signature=… meaning="…"
+/// reason=…`). Only the fields before the quoted meaning and the free-text
+/// reason are read, so text in those cannot fake a field.
+pub(crate) fn audit_detail_field(details: &str, name: &str) -> Option<String> {
+    for token in details.split_whitespace() {
+        let Some((key, value)) = token.split_once('=') else {
+            continue;
+        };
+        if key == "meaning" || key == "reason" {
+            return None;
+        }
+        if key == name {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
 /// Result of [`Storage::verify_audit_chain`].
 #[derive(Debug, Default, Clone, serde::Serialize)]
 pub struct AuditChainReport {
@@ -339,22 +358,30 @@ impl Storage {
                 })
                 .context("Query audit CSV failed")?;
 
-            let mut csv = String::from("id,action,username,resource,details,created_at\n");
+            let mut csv = String::from(
+                "id,action,username,resource,details,created_at,previous_value,new_value,signature\n",
+            );
             for row in rows {
                 let entry = row.context("Map audit CSV row failed")?;
+                let details = entry.details.as_deref().unwrap_or("");
+                let field = |name: &str| audit_detail_field(details, name).unwrap_or_default();
+                let (previous, new) = if entry.action == "tag_write" {
+                    (field("previous"), field("value"))
+                } else {
+                    (String::new(), String::new())
+                };
+                let signature = field("signature");
                 csv.push_str(&format!(
-                    "{},\"{}\",\"{}\",\"{}\",\"{}\",{}\n",
+                    "{},\"{}\",\"{}\",\"{}\",\"{}\",{},\"{}\",\"{}\",\"{}\"\n",
                     entry.id,
                     entry.action.replace('"', "\"\""),
                     entry.username.replace('"', "\"\""),
                     entry.resource.replace('"', "\"\""),
-                    entry
-                        .details
-                        .as_deref()
-                        .unwrap_or("")
-                        .replace('"', "\"\"")
-                        .replace('\n', "\\n"),
+                    details.replace('"', "\"\"").replace('\n', "\\n"),
                     entry.created_at,
+                    previous.replace('"', "\"\""),
+                    new.replace('"', "\"\""),
+                    signature.replace('"', "\"\""),
                 ));
             }
 

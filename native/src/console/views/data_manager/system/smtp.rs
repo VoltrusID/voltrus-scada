@@ -56,21 +56,21 @@ struct State {
 }
 
 pub(super) fn subtitle(console: &Console) -> String {
-    if console.is_operator() {
+    if console.may_configure() {
         "Outgoing mail for alarm emails · ↵ save · Tab next field · [ ] encryption".to_owned()
     } else {
-        "Outgoing mail for alarm emails · operator role".to_owned()
+        "Outgoing mail for alarm emails · admin, demo or integration role".to_owned()
     }
 }
 
 pub(super) fn open(console: &mut Console) {
-    if console.is_operator() && !console.state::<State>().asked {
+    if console.may_configure() && !console.state::<State>().asked {
         fetch(console);
     }
 }
 
 pub(super) fn fetch(console: &mut Console) {
-    if console.stress.is_some() || !console.is_operator() {
+    if console.stress.is_some() || !console.may_configure() {
         return;
     }
     let state = console.state::<State>();
@@ -89,7 +89,7 @@ pub(super) fn focus(console: &mut Console, window: &mut Window, cx: &mut Context
         .and_then(|state| state.fields.as_ref())
         .map(|fields| fields.host.clone());
     match host {
-        Some(host) if console.is_operator() => {
+        Some(host) if console.may_configure() => {
             host.read(cx).focus(window);
             true
         }
@@ -151,7 +151,7 @@ fn fill(console: &mut Console, settings: &SmtpSettings, cx: &mut Context<Console
 }
 
 fn save(console: &mut Console, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         return;
     }
     let Some(draft) = draft(console, cx) else {
@@ -179,7 +179,7 @@ fn save(console: &mut Console, cx: &mut Context<Console>) {
 }
 
 fn send_test(console: &mut Console, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         return;
     }
     let Some(recipient) = console
@@ -339,9 +339,9 @@ pub(super) fn render(
     cx: &mut Context<Console>,
 ) -> AnyElement {
     let theme = theme(cx).clone();
-    if !console.is_operator() {
+    if !console.may_configure() {
         return notice(
-            format!("SMTP settings: {}", needs(Role::Operator).to_lowercase()),
+            format!("SMTP settings: {}", needs(Role::Configure).to_lowercase()),
             false,
             &theme,
         );

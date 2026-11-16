@@ -11,6 +11,7 @@ pub mod notification_types;
 pub mod operations;
 pub mod protocol_device_types;
 pub mod rbac_types;
+pub mod signature_types;
 
 pub use alarm_types::*;
 pub use analytics::*;
@@ -25,6 +26,7 @@ pub use notification_types::*;
 pub use operations::*;
 pub use protocol_device_types::*;
 pub use rbac_types::*;
+pub use signature_types::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -279,6 +281,9 @@ pub struct AiSettingsResponse {
     pub default_model: Option<String>,
     /// Base URL of the `byok_openai_compatible` provider.
     pub base_url: Option<String>,
+    /// Whether the hosted `voltrus_ai` provider can be used: only when an
+    /// add-on edition registers it. Clients offer it only then.
+    pub hosted_ai_available: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::ToSchema)]

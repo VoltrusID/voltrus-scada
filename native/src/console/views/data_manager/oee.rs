@@ -4,8 +4,9 @@
 //! into it), the downtime events (open one with a machine state, close an
 //! open one with a reason) and the shift schedule (add, delete).
 //!
-//! Reading is open to every user; the writes are operator routes, so their
-//! buttons say why they are off for others.
+//! Reading is open to every user; downtime is recorded and closed by
+//! operators and the shift schedule changed by the configuring roles, so
+//! the buttons say why they are off for others.
 //!
 //! Keys: ←/→ move between the figures and Enter drills in, ↓ goes to the
 //! list below; `,`/`.` step through the devices, `[`/`]` the ranges, `t`
@@ -439,13 +440,23 @@ fn new_item(console: &mut Console, window: &mut Window, cx: &mut Context<Console
     }
 }
 
-/// The writes are operator routes; a viewer hears why the button is off.
+/// Downtime is recorded and closed by operators; a viewer hears why the
+/// button is off.
 fn operator_or_toast(console: &mut Console, what: &str, cx: &mut Context<Console>) -> bool {
-    if console.is_operator() {
+    if console.may_operate() {
+        return true;
+    }
+    console.show_toast(format!("{what} needs an operator role"), true, cx);
+    false
+}
+
+/// The shift schedule is configuration (admin, demo, integration).
+fn configurer_or_toast(console: &mut Console, what: &str, cx: &mut Context<Console>) -> bool {
+    if console.may_configure() {
         return true;
     }
     console.show_toast(
-        format!("{what} needs the operator role (admin, demo or integration)"),
+        format!("{what} needs the admin, demo or integration role"),
         true,
         cx,
     );
@@ -717,7 +728,7 @@ fn close_dialog_view(
 }
 
 fn open_new_shift(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if !operator_or_toast(console, "Adding a shift", cx) {
+    if !configurer_or_toast(console, "Adding a shift", cx) {
         return;
     }
     let name = text_field("Morning", InputKind::Text, false, cx);
@@ -858,7 +869,7 @@ fn ask_delete_shift(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    if !operator_or_toast(console, "Deleting a shift", cx) {
+    if !configurer_or_toast(console, "Deleting a shift", cx) {
         return;
     }
     let focus = cx.focus_handle();
@@ -981,7 +992,8 @@ pub(crate) fn state_color(state: &str, theme: &Theme) -> Hsla {
 #[allow(clippy::too_many_lines)]
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_operate();
+    let configure = console.may_configure();
     let options = devices(console);
     // The tag list came after the section opened: pick its first device
     // now (after this frame; render itself never fetches).
@@ -1160,24 +1172,24 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             .tooltip(if operator {
                 "N"
             } else {
-                "Needs the operator role (admin, demo or integration)"
+                "Needs an operator role"
             })
             .disabled(!operator)
             .on_click(cx.listener(|console, _, window, cx| open_record(console, window, cx))),
         Tab::Shifts => Button::new("oee-new-shift", "New shift")
             .compact()
             .icon(Icon::Plus)
-            .tooltip(if operator {
+            .tooltip(if configure {
                 "N"
             } else {
-                "Needs the operator role (admin, demo or integration)"
+                "Needs the admin, demo or integration role"
             })
-            .disabled(!operator)
+            .disabled(!configure)
             .on_click(cx.listener(|console, _, window, cx| open_new_shift(console, window, cx))),
     };
     let list = match tab {
         Tab::Downtime => events_list(console, device.is_none(), width, span, window, cx),
-        Tab::Shifts => shifts_list(console, operator, window, cx),
+        Tab::Shifts => shifts_list(console, configure, window, cx),
     };
     let lists = card(&theme)
         .flex_1()
@@ -1530,7 +1542,7 @@ fn events_list(
     cx: &mut Context<Console>,
 ) -> AnyElement {
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_operate();
     let zone = console.zone.clone();
     let value = console.state::<State>().events.value.clone();
     let rows = match value {
@@ -1712,7 +1724,7 @@ fn events_list(
                                                         .tooltip(if operator {
                                                             "Close with a reason  ↵"
                                                         } else {
-                                                            "Needs the operator role"
+                                                            "Needs an operator role"
                                                         })
                                                         .disabled(!operator)
                                                         .on_click(cx.listener(
@@ -1851,7 +1863,7 @@ fn shifts_list(
                                         .tooltip(if operator {
                                             "Delete  ⌫"
                                         } else {
-                                            "Needs the operator role"
+                                            "Needs the admin, demo or integration role"
                                         })
                                         .color(theme.danger)
                                         .on_click(cx.listener(move |console, _, window, cx| {
@@ -1968,6 +1980,16 @@ mod tests {
             "a viewer reads OEE but changes nothing"
         );
         assert!(h.calls().is_empty());
+
+        // An operator records and closes downtime; the shift schedule is
+        // configuration.
+        let mut h = signed_in(cx, "operator");
+        open(&mut h, ID);
+        h.calls();
+        h.update(open_new_shift);
+        assert!(h.update(|console, _, _| console.overlay.is_none()));
+        h.update(|console, window, cx| ask_close(console, open_event(), window, cx));
+        assert!(h.update(|console, _, _| console.overlay_is(CLOSE)));
     }
 
     #[test]

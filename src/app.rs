@@ -122,6 +122,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         Arc::new(std::sync::RwLock::new(status))
     };
     tracing::info!("Edition: {}", ext.name());
+    crate::edition::install(ext.clone());
 
     // SMTP settings, shared by the settings API and the flow engine's notify nodes.
     let smtp_config = Arc::new(tokio::sync::RwLock::new(app_config.smtp.clone()));

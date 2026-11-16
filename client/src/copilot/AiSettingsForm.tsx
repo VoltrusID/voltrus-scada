@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAiSettings, useUpdateAiSettings, useTestAiSettings } from '../queries/copilot'
-import { AI_PROVIDERS, BASE_URL_EXAMPLES, OPENAI_COMPATIBLE, buildAiSettingsBody, keyWillBeRemoved } from './aiSettings'
+import { availableAiProviders, BASE_URL_EXAMPLES, OPENAI_COMPATIBLE, buildAiSettingsBody, keyWillBeRemoved } from './aiSettings'
 
 const labelStyle = { display: 'block', fontSize: 12, color: 'var(--muted)', marginBottom: 4 } as const
 const inputStyle = { width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 14, boxSizing: 'border-box' } as const
@@ -54,7 +54,7 @@ export function AiSettingsForm() {
       <div>
         <label htmlFor="ai-provider" style={labelStyle}>Provider</label>
         <select id="ai-provider" value={current} onChange={e => setProvider(e.target.value)} style={inputStyle}>
-          {AI_PROVIDERS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+          {availableAiProviders(settings.hosted_ai_available, settings.provider).map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
         </select>
       </div>
 

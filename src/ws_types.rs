@@ -36,8 +36,49 @@ pub enum ClientMessage {
         /// Why the write is made; required by tags with `write_requires_reason`.
         #[serde(default)]
         reason: Option<String>,
+        /// An electronic signature, sent after a `CommandAck` that carried
+        /// `signature_required`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<WsSignature>,
     },
     Ping,
+}
+
+/// A signature on a WebSocket tag write (see `models::SignatureInput`).
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct WsSignature {
+    pub password: String,
+    #[serde(default)]
+    pub meaning: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl std::fmt::Debug for WsSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsSignature")
+            .field("password", &"<redacted>")
+            .field("meaning", &self.meaning)
+            .field("reason", &self.reason)
+            .finish()
+    }
+}
+
+impl From<WsSignature> for crate::models::SignatureInput {
+    fn from(s: WsSignature) -> Self {
+        Self {
+            password: s.password,
+            meaning: s.meaning,
+            reason: s.reason,
+        }
+    }
+}
+
+/// The signature a write needs, on its `CommandAck`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WsSignatureRequired {
+    pub action: String,
+    pub meaning: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +111,11 @@ pub enum ServerMessage {
         status: String,
         device_response: Option<String>,
         latency_ms: Option<u64>,
+        /// Set when the write needs an electronic signature: `status` is
+        /// `signature_required` (none given) or `rejected` (wrong password,
+        /// `device_response` says so). Resend the write with `signature`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature_required: Option<WsSignatureRequired>,
     },
     DeviceStatus {
         device_id: String,
@@ -162,6 +208,7 @@ mod tests {
                 value: 42.0,
                 command_id: None,
                 reason: None,
+                signature: None,
             },
             ClientMessage::Ping,
         ];
@@ -206,6 +253,7 @@ mod tests {
                 status: "acked".to_string(),
                 device_response: None,
                 latency_ms: Some(50),
+                signature_required: None,
             },
             ServerMessage::DeviceStatus {
                 device_id: "d1".to_string(),

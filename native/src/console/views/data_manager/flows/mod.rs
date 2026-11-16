@@ -17,6 +17,10 @@
 //! stored `enabled` flag (what the engine loads at start-up) changes in
 //! the settings form or the editor. The list shows both: what this console
 //! last started or stopped, and the stored flag when they differ.
+//!
+//! Listing, viewing, starting and stopping flows and reading their runs is
+//! for operators; creating, changing, test-running and deleting them is
+//! configuration (admin, demo, integration).
 
 pub(crate) mod canvas;
 pub(crate) mod editor;
@@ -356,7 +360,7 @@ fn activate_row(
         return;
     };
     if toggle {
-        if console.is_operator() {
+        if console.may_operate() {
             toggle_run(console, &flow, cx);
         }
     } else {
@@ -385,8 +389,22 @@ fn toggle_run(console: &mut Console, flow: &Flow, cx: &mut Context<Console>) {
     cx.notify();
 }
 
+/// Changing flows is configuration: an operator hears why, and nothing
+/// opens.
+pub(super) fn cannot_configure(console: &mut Console, cx: &mut Context<Console>) -> bool {
+    if console.may_configure() {
+        return false;
+    }
+    console.show_toast(
+        "Changing flows needs the admin, demo or integration role",
+        true,
+        cx,
+    );
+    true
+}
+
 fn ask_delete(console: &mut Console, flow: &Flow, window: &mut Window, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if cannot_configure(console, cx) {
         return;
     }
     let focus = cx.focus_handle();
@@ -429,9 +447,10 @@ fn set_sort(console: &mut Console, sort: Sort, cx: &mut Context<Console>) {
 }
 
 fn open_new(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if console.is_operator() {
-        forms::open_meta(console, None, window, cx);
+    if cannot_configure(console, cx) {
+        return;
     }
+    forms::open_meta(console, None, window, cx);
 }
 
 /// O: open the cursor's flow (or the first) on the canvas; before the list
@@ -695,7 +714,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             } else {
                 "Nothing has this text in its name, ID or trigger."
             },
-            if total == 0 && console.is_operator() {
+            if total == 0 && console.may_configure() {
                 vec![new_button("data-flows-first", cx)]
             } else {
                 Vec::new()
@@ -725,10 +744,10 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .into_any_element()
     };
 
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let subtitle = if !operator {
         format!(
-            "{total} flows · {active} running · read-only: changing flows needs the operator role · ↵ view · H runs"
+            "{total} flows · {active} running · read-only: changing flows needs the admin, demo or integration role · ↵ view · H runs"
         )
     } else if filtered {
         format!("{shown} of {total} flows match")
@@ -782,7 +801,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                     open_new(console, window, cx);
                 }))
                 .on_action(cx.listener(|console, _: &EngFlowsEdit, window, cx| {
-                    if !console.is_operator() {
+                    if !console.may_configure() {
                         return;
                     }
                     if let Some(flow) = cursor_flow(console, cx) {
@@ -838,7 +857,8 @@ fn flow_row(
     let is_running = running(state, flow);
     let busy = state.pending.values().any(|id| *id == flow.id);
     let drift = is_running != flow.enabled;
-    let operator = console.is_operator();
+    let operator = console.may_configure();
+    let runner = console.may_operate();
     let hover = theme.hover;
     let steps = flow
         .node_count()
@@ -971,7 +991,7 @@ fn flow_row(
                 .items_center()
                 .justify_end()
                 .gap(SPACE_1)
-                .when(operator, |this| {
+                .when(runner, |this| {
                     this.child(
                         Button::new(
                             ("data-flow-run", row),

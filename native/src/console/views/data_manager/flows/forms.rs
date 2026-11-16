@@ -74,6 +74,9 @@ pub(super) fn open_meta(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
+    if super::cannot_configure(console, cx) {
+        return;
+    }
     let id_text = original
         .as_ref()
         .map_or_else(|| format!("flow_{}", now_millis()), |flow| flow.id.clone());
@@ -113,6 +116,9 @@ pub(super) fn open_meta(
 }
 
 fn save_meta(console: &mut Console, cx: &mut Context<Console>) {
+    if super::cannot_configure(console, cx) {
+        return;
+    }
     let state = console.state::<State>();
     state.seq += 1;
     let seq = state.seq;

@@ -2,10 +2,12 @@ use axum::{
     Json,
     extract::{Extension, Path, Query, State},
     http::StatusCode,
+    response::IntoResponse,
 };
 use serde::Deserialize;
 
 use crate::api::{AppError, AppState, AuthUser};
+use crate::edition::{ActionContext, ActionOrigin, SignedAction};
 use crate::models::{CreateRecipeRequest, Recipe};
 
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -172,6 +174,7 @@ pub async fn delete_recipe(
         (status = 200, body = serde_json::Value),
         (status = 403),
         (status = 404),
+        (status = 428, description = "Retry with `signature`"),
     ),
     tag = "Recipes",
     security(("api_key" = []), ("cookie_auth" = []))
@@ -179,13 +182,86 @@ pub async fn delete_recipe(
 pub async fn load_recipe(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<i64>,
-) -> Result<Json<serde_json::Value>, AppError> {
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> Result<axum::response::Response, AppError> {
     let recipe = state
         .storage
         .get_recipe(id)
         .await?
-        .ok_or_else(|| AppError(anyhow::anyhow!("Recipe not found")))?;
+        .ok_or_else(|| AppError::not_found("Recipe not found"))?;
+
+    // One signature covers the whole load: asked for the load itself, and
+    // for each tag it writes (origin `recipe`), before any write is queued.
+    let origin = super::signature::origin_of(&user, api_key.is_some());
+    let ctx = ActionContext {
+        action: SignedAction::RecipeLoad,
+        origin,
+        username: user.username.clone(),
+        role: user.role.clone(),
+        resource: format!("recipe:{id}"),
+        details: serde_json::json!({
+            "recipe_id": recipe.id,
+            "name": recipe.name,
+            "version": recipe.version,
+            "device_id": recipe.device_id,
+            "values": serde_json::from_str::<serde_json::Value>(&recipe.values).unwrap_or_default(),
+        }),
+    };
+    let mut requirement = state.ext.signature_required(&ctx).await;
+    if requirement.is_none() {
+        let values: std::collections::HashMap<String, f64> =
+            serde_json::from_str(&recipe.values).unwrap_or_default();
+        for (key, value) in &values {
+            let Some(ds) = state
+                .storage
+                .find_data_source_by_device_and_key(&recipe.device_id, key)
+                .await?
+            else {
+                continue;
+            };
+            let tag_ctx = ActionContext {
+                action: SignedAction::TagWrite,
+                origin: if origin == ActionOrigin::Session {
+                    ActionOrigin::Recipe
+                } else {
+                    origin
+                },
+                username: user.username.clone(),
+                role: user.role.clone(),
+                resource: format!("data_source:{}", ds.id),
+                details: serde_json::json!({
+                    "key": ds.key,
+                    "device_id": ds.device_id,
+                    "value": value,
+                    "recipe_id": recipe.id,
+                }),
+            };
+            if let Some(found) = state.ext.signature_required(&tag_ctx).await {
+                requirement = Some(found);
+                break;
+            }
+        }
+    }
+    let signed = match super::signature::authorize_requirement(
+        &state,
+        &ctx,
+        requirement,
+        signature.as_ref(),
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
+    };
+    super::signature::audit_signed(
+        &state,
+        &user,
+        "recipe_load",
+        format!("recipe:{id}"),
+        &signed,
+    );
 
     let load =
         crate::recipe::load_recipe_to_plc(&recipe, &state.storage, &state.cache, &user.username)
@@ -205,5 +281,6 @@ pub async fn load_recipe(
             load.command_ids.len(),
             refused.len()
         ),
-    })))
+    }))
+    .into_response())
 }

@@ -818,6 +818,7 @@ impl Console {
                 if result.is_ok() {
                     views::tag_write::written(self, tag, cx);
                 }
+                views::sign::written(self, tag, &result, window, cx);
                 self.write_result = Some((tag, result));
             }
             Event::Done { action, result } => {
@@ -825,7 +826,18 @@ impl Console {
                     self.show_toast(format!("{action} failed: {error}"), true, cx);
                 }
             }
-            Event::Reply { key, reply } => self.reply(key, reply, cx),
+            Event::SignatureNeeded { action, ask } => {
+                views::sign::ask(self, action, ask, window, cx);
+            }
+            Event::Signed { action, result } => {
+                views::sign::settled(self, &action, result, window, cx);
+            }
+            Event::Reply { key, reply } => {
+                self.reply(key, reply, cx);
+                // A reply may ask for a signature; the prompt needs the
+                // window the reply handlers do not get.
+                views::sign::after_reply(self, window, cx);
+            }
             Event::DeviceStatus {
                 device_id,
                 online,
@@ -1039,7 +1051,8 @@ impl Console {
         let (_, role) = self.user.as_ref()?;
         Some(match role.to_ascii_lowercase().as_str() {
             "admin" => Role::Admin,
-            "demo" | "integration" => Role::Operator,
+            "demo" | "integration" => Role::Configure,
+            "operator" => Role::Operate,
             _ => Role::Any,
         })
     }
@@ -1054,13 +1067,21 @@ impl Console {
         self.allows(Role::Any)
     }
 
-    /// Admin, demo or integration: the server's operator routes (shelve,
-    /// alarm journal and summary, handover, annotations, …).
-    pub fn is_operator(&self) -> bool {
-        self.allows(Role::Operator)
+    /// Operator, demo, integration or admin: writes tags, cancels commands,
+    /// acknowledges and shelves alarms, loads recipes, runs flows, hands
+    /// over shifts, records downtime, reads the alarm journal.
+    pub fn may_operate(&self) -> bool {
+        self.allows(Role::Operate)
     }
 
-    /// Strictly admin: tag writes over the WebSocket, users, roles, keys.
+    /// Demo, integration or admin: the server's configuration routes
+    /// (devices, screens, data sources, write policies, settings,
+    /// annotations, …).
+    pub fn may_configure(&self) -> bool {
+        self.allows(Role::Configure)
+    }
+
+    /// Strictly admin: users, roles, API keys.
     pub fn is_admin(&self) -> bool {
         self.allows(Role::Admin)
     }

@@ -43,6 +43,7 @@ pub async fn get_ai_settings(State(state): State<AppState>) -> Result<impl IntoR
         api_key_preview,
         default_model,
         base_url,
+        hosted_ai_available: crate::edition::hosted_ai().is_some(),
     }))
 }
 
@@ -83,6 +84,16 @@ pub async fn update_ai_settings(
         })?),
         None => None,
     };
+    // The hosted provider exists only when an add-on edition registers it; a
+    // stored `voltrus_ai` setting keeps parsing, but it cannot be chosen anew.
+    if matches!(provider, Some(AiProviderType::VoltrusAi))
+        && crate::edition::hosted_ai().is_none()
+        && stored_provider.as_deref() != Some(AiProviderType::VoltrusAi.as_str())
+    {
+        return Err(AppError::bad_request(
+            "The hosted Voltrus AI provider is not available in this edition. Use byok_openai, byok_anthropic or byok_openai_compatible.",
+        ));
+    }
     let base_url = match body.base_url.as_deref().map(str::trim) {
         Some("") => Some(String::new()),
         Some(url) => Some(validate_base_url(url).map_err(AppError::bad_request)?),

@@ -287,8 +287,12 @@ pub(super) fn open_snapshots(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    if !console.is_operator() {
-        console.show_toast("Config snapshots need the operator role", true, cx);
+    if !console.may_configure() {
+        console.show_toast(
+            "Config snapshots need the admin, demo or integration role",
+            true,
+            cx,
+        );
         return;
     }
     if let Some(row) = visible(SECTIONS, console.role())
@@ -494,7 +498,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
 /// The web panel's Config tab is the Config snapshots section here.
 fn config(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     div()
         .flex()
         .flex_col()
@@ -531,7 +535,7 @@ fn config(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                             .tooltip(if operator {
                                 "Go to the section"
                             } else {
-                                "Needs the operator role"
+                                "Needs the admin, demo or integration role"
                             })
                             .on_click(cx.listener(|console, _, window, cx| {
                                 open_snapshots(console, window, cx);
@@ -842,7 +846,8 @@ pub(super) fn form_note(
 pub(super) fn needs(role: Role) -> &'static str {
     match role {
         Role::Admin => "Needs the admin role",
-        _ => "Needs the operator role",
+        Role::Configure => "Needs the admin, demo or integration role",
+        Role::Operate | Role::Any => "Needs the admin, demo or integration role",
     }
 }
 

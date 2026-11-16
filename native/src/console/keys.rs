@@ -464,15 +464,16 @@ pub static COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!("Move up", Lists, ChevronUp, ["up"], MENU, ListUp, false),
-    command!(
-        "Acknowledge all alarms",
-        Alarms,
-        Check,
-        ["secondary-shift-a"],
-        CONSOLE,
-        AcknowledgeAll,
-        true
-    ),
+    CommandSpec {
+        label: "Acknowledge all alarms",
+        group: Group::Alarms,
+        icon: Icon::Check,
+        keys: &["secondary-shift-a"],
+        context: CONSOLE,
+        action: || -> Box<dyn Action> { Box::new(AcknowledgeAll) },
+        palette: true,
+        role: Role::Operate,
+    },
     command!(
         "Light or dark",
         View,
@@ -604,7 +605,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: OPS_SHIFT,
         action: || -> Box<dyn Action> { Box::new(OpsNewHandover) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Operate,
     },
     CommandSpec {
         label: "Export the audit log as CSV",
@@ -614,7 +615,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: OPS_AUDIT,
         action: || -> Box<dyn Action> { Box::new(OpsExportAudit) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     command!(
         "Export data…",
@@ -678,7 +679,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: CONSOLE,
         action: || -> Box<dyn Action> { Box::new(TagsWritePolicy) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Add a note to the tag's chart…",
@@ -688,7 +689,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: CONSOLE,
         action: || -> Box<dyn Action> { Box::new(TagsAddNote) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     command!(
         "Compare the tag with another…",
@@ -752,7 +753,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: ALARM_LIST,
         action: || -> Box<dyn Action> { Box::new(AlarmsShelve) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Operate,
     },
     command!(
         "Next alarm filter",
@@ -807,7 +808,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: CONSOLE,
         action: || -> Box<dyn Action> { Box::new(AlarmsShowAnalytics) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Operate,
     },
     CommandSpec {
         label: "Alarm audit trail",
@@ -817,7 +818,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: CONSOLE,
         action: || -> Box<dyn Action> { Box::new(AlarmsShowAudit) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Operate,
     },
     // The card dashboard (`views::dashboard`): arrows and letters act on
     // its focused grid; the palette's entries open the page first.
@@ -910,7 +911,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::dashboard::DASHBOARD,
         action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardEdit) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Dashboard: arrange the cards by device",
@@ -920,7 +921,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::dashboard::DASHBOARD,
         action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardArrange) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Dashboard: add tags to the screen",
@@ -930,7 +931,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::dashboard::DASHBOARD,
         action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardAddTags) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Dashboard: remove the card from the screen (editing)",
@@ -940,7 +941,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::dashboard::DASHBOARD,
         action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardRemove) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Dashboard: new screen",
@@ -950,7 +951,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::dashboard::DASHBOARD,
         action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardNewScreen) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Dashboard: rename the screen",
@@ -960,7 +961,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: CONSOLE,
         action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardRenameScreen) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Dashboard: delete the screen",
@@ -970,7 +971,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: CONSOLE,
         action: || -> Box<dyn Action> { Box::new(super::views::dashboard::DashboardDeleteScreen) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     command!(
         "Dashboard: next screen",
@@ -1179,7 +1180,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::MIMIC,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicArmOn) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Operate,
     },
     CommandSpec {
         label: "Mimic: arm stop / close / off",
@@ -1189,7 +1190,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::MIMIC,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicArmOff) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Operate,
     },
     CommandSpec {
         label: "Mimic: raise the setpoint",
@@ -1199,7 +1200,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::MIMIC,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicStepUp) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Operate,
     },
     CommandSpec {
         label: "Mimic: lower the setpoint",
@@ -1209,7 +1210,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::MIMIC,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicStepDown) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Operate,
     },
     command!(
         "Mimic: next screen",
@@ -1238,7 +1239,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         super::views::mimic::MimicReload,
         false
     ),
-    // The mimic's edit mode (`views::mimic::editor`), operators only.
+    // The mimic's edit mode (`views::mimic::editor`): admin, demo or
+    // integration.
     CommandSpec {
         label: "Mimic: edit the screen (E again: done)",
         group: Group::View,
@@ -1247,7 +1249,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::MIMIC,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEdit) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic: edit the screen (E again: done)",
@@ -1257,7 +1259,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEdit) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: save the screen",
@@ -1267,7 +1269,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS_ANYWHERE,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditSave) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: undo",
@@ -1277,7 +1279,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditUndo) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: redo",
@@ -1287,7 +1289,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditRedo) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: copy",
@@ -1297,7 +1299,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditCopy) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: paste",
@@ -1307,7 +1309,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditPaste) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: duplicate",
@@ -1317,7 +1319,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditDuplicate) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: select everything",
@@ -1327,7 +1329,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditSelectAll) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: delete the selection",
@@ -1337,7 +1339,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditDelete) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: nudge 1 px (⇧: 10 px)",
@@ -1349,7 +1351,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditNudge(0, -1))
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: nudge 1 px (⇧: 10 px)",
@@ -1361,7 +1363,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditNudge(0, 1))
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: nudge 1 px (⇧: 10 px)",
@@ -1373,7 +1375,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditNudge(-1, 0))
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: nudge 1 px (⇧: 10 px)",
@@ -1385,7 +1387,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditNudge(1, 0))
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: nudge 1 px (⇧: 10 px)",
@@ -1397,7 +1399,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditNudge(0, -10))
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: nudge 1 px (⇧: 10 px)",
@@ -1409,7 +1411,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditNudge(0, 10))
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: nudge 1 px (⇧: 10 px)",
@@ -1421,7 +1423,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditNudge(-10, 0))
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: nudge 1 px (⇧: 10 px)",
@@ -1433,7 +1435,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditNudge(10, 0))
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: bring to the front",
@@ -1443,7 +1445,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditFront) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: send to the back",
@@ -1453,7 +1455,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditBack) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: select tool",
@@ -1465,7 +1467,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditSelectTool)
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: connect tool (source, then target)",
@@ -1477,7 +1479,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditConnectTool)
         },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: turn a quarter clockwise",
@@ -1487,7 +1489,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditRotate) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: turn a quarter back",
@@ -1499,7 +1501,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             Box::new(super::views::mimic::editor::MimicEditRotateBack)
         },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: mirror",
@@ -1509,7 +1511,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditMirror) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: show or hide the grid",
@@ -1519,7 +1521,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditGrid) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: search the palette",
@@ -1529,7 +1531,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditFind) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: select the next widget",
@@ -1539,7 +1541,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditNext) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic editor: select the previous widget",
@@ -1549,7 +1551,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::editor::MimicEditPrevious) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic: zoom in",
@@ -1559,7 +1561,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicZoomIn) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic: zoom out",
@@ -1569,7 +1571,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicZoomOut) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Mimic: fit the stage",
@@ -1579,7 +1581,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: super::views::mimic::editor::KEYS,
         action: || -> Box<dyn Action> { Box::new(super::views::mimic::MimicFit) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "New data source",
@@ -1589,7 +1591,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: DATA_SOURCES,
         action: || -> Box<dyn Action> { Box::new(DataNewSource) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     command!(
         "Duplicate the source",
@@ -2231,7 +2233,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: ENG_IMPORTS,
         action: || -> Box<dyn Action> { Box::new(EngImportsOpen) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Import: data file or Node-RED wizard",
@@ -2241,7 +2243,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: ENG_IMPORTS,
         action: || -> Box<dyn Action> { Box::new(EngImportsSwitch) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     CommandSpec {
         label: "Import: next CSV delimiter",
@@ -2251,7 +2253,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: ENG_IMPORTS,
         action: || -> Box<dyn Action> { Box::new(EngImportsDelimiter) },
         palette: false,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     command!(
         "Flows: new flow",
@@ -2615,7 +2617,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         context: DATA_RULES,
         action: || -> Box<dyn Action> { Box::new(DataNewRule) },
         palette: true,
-        role: Role::Operator,
+        role: Role::Configure,
     },
     command!(
         "Delete the user, role or rule; revoke the key",

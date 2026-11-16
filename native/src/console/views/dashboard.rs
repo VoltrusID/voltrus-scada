@@ -510,7 +510,11 @@ fn step_screen(
 }
 
 fn needs_operator(console: &mut Console, cx: &mut Context<Console>) {
-    console.show_toast("Changing screens needs an operator role", true, cx);
+    console.show_toast(
+        "Changing screens needs the admin, demo or integration role",
+        true,
+        cx,
+    );
 }
 
 fn toggle_edit(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {

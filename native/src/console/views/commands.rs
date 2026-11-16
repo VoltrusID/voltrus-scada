@@ -286,7 +286,7 @@ fn activate_row(
 
 /// Cancel `command` (operators; only pending or queued commands).
 fn cancel(console: &mut Console, command: &QueuedCommand, cx: &mut Context<Console>) {
-    if !may_cancel(console.is_operator(), command) {
+    if !may_cancel(console.may_operate(), command) {
         return;
     }
     let state = console.state::<State>();
@@ -380,7 +380,7 @@ pub fn side_panel(console: &Console) -> Pixels {
 
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_operate();
     let state = console.state::<State>();
     let (tab, filter, page) = (state.tab, state.filter, state.page);
     let rows = state.listing().rows.clone();

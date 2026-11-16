@@ -143,8 +143,9 @@ impl QueuedCommand {
     }
 }
 
-/// Whether a user may cancel `command`: the cancel route is an operator
-/// route (admin, demo, integration), and only unsent commands cancel.
+/// Whether a user may cancel `command`: the cancel route needs a role that
+/// operates (operator, demo, integration, admin), and only unsent commands
+/// cancel.
 pub fn may_cancel(operator: bool, command: &QueuedCommand) -> bool {
     operator && command.is_cancellable()
 }
@@ -807,8 +808,8 @@ mod tests {
         // console offers no cancel for it.
         assert!(!may_cancel(true, &command("sent")));
         assert!(!may_cancel(true, &command("acked")));
-        // A viewer (role `viewer`/`operator` on the server) cannot reach the
-        // operator route at all.
+        // A viewer (role `viewer` or the legacy `user` on the server)
+        // cannot cancel at all.
         assert!(!may_cancel(false, &command("pending")));
     }
 

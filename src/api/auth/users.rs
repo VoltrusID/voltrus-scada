@@ -106,11 +106,30 @@ pub async fn create_user_handler(
         )
             .into_response());
     }
+    if let Err(message) = check_password_policy(
+        &state,
+        &body.username,
+        &body.role,
+        &body.password,
+        crate::edition::PasswordChangeKind::AdminCreate,
+    )
+    .await
+    {
+        return Ok((StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response());
+    }
     let password_hash = hash_password(&body.password);
     let id = state
         .storage
         .create_user(&body.username, &password_hash, "", &body.role)
         .await?;
+    state
+        .ext
+        .password_changed(
+            &body.username,
+            &password_hash,
+            crate::edition::PasswordChangeKind::AdminCreate,
+        )
+        .await;
 
     state.audit_logger.log(crate::security::AuditEvent {
         action: "create_user".to_string(),
@@ -166,6 +185,20 @@ pub async fn update_user_handler(
         )
             .into_response());
     }
+    if let Some(password) = body.password.as_deref() {
+        let role = body.role.as_deref().unwrap_or(&user.role);
+        if let Err(message) = check_password_policy(
+            &state,
+            &user.username,
+            role,
+            password,
+            crate::edition::PasswordChangeKind::AdminReset,
+        )
+        .await
+        {
+            return Ok((StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response());
+        }
+    }
     // An enabled admin who is demoted or disabled stops being able to
     // administer: refuse when no other enabled admin is left, and refuse to
     // lock yourself out.
@@ -196,6 +229,14 @@ pub async fn update_user_handler(
         if user.username == "admin" {
             crate::storage::remove_initial_admin_password(state.storage.db_path());
         }
+        state
+            .ext
+            .password_changed(
+                &user.username,
+                &hash,
+                crate::edition::PasswordChangeKind::AdminReset,
+            )
+            .await;
         details.push("password_changed".to_string());
     }
     if let Some(disabled) = body.disabled

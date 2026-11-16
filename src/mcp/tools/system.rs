@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 
 use super::{Access, Ctx, Tool, ToolFuture, ToolResult};
-use crate::api::role_allows_operational_writes;
+use crate::api::{role_allows_configuration, role_allows_operation};
 use crate::models::DeviceStatus;
 
 pub fn tools() -> Vec<Tool> {
@@ -41,7 +41,8 @@ async fn run(ctx: &Ctx) -> ToolResult {
         "caller": {
             "username": ctx.user.username,
             "role": ctx.user.role,
-            "can_write": role_allows_operational_writes(&ctx.user.role),
+            "can_write": role_allows_operation(&ctx.user.role),
+            "can_configure": role_allows_configuration(&ctx.user.role),
         },
         "counts": {
             "tags": tags,

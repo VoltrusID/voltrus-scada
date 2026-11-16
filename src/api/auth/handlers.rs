@@ -233,13 +233,18 @@ async fn check_password_and_login(
     // Successful login — reset failed attempts, then open the session.
     let _ = state.storage.reset_failed_attempts(&body.username).await;
     state.login_rate_limiter.cleanup();
-    let jar = issue_session(
+    // An expired password (add-on password policy) is answered like a
+    // password the admin asked to change.
+    let password_expired = !shared && state.ext.password_expired(&user).await;
+    let policy = state.ext.session_policy(&body.username, &user.role).await;
+    let jar = issue_session_with_policy(
         &state.storage,
         &state.auth_secret,
         secure,
         jar,
         &body.username,
         &user.role,
+        &policy,
     )
     .await;
     (
@@ -249,8 +254,10 @@ async fn check_password_and_login(
             "username": body.username,
             "role": user.role,
             // Nobody can change a shared account's password, so never ask.
-            "must_change_password": user.must_change_password && !shared,
+            "must_change_password": (user.must_change_password || password_expired) && !shared,
+            "password_expired": password_expired,
             "shared": shared,
+            "session": super::session_json(&policy),
         }),
         jar,
     )
@@ -264,6 +271,11 @@ async fn check_password_and_login(
 /// Other sessions of the same user (another browser or device) keep their
 /// refresh tokens; only the refresh token this client presents is replaced by
 /// the new one.
+///
+/// The session gets no limit beyond the core's; use
+/// [`issue_session_with_policy`] with the edition's
+/// [`crate::edition::Extension::session_policy`] to cap the first access
+/// token too (refreshes apply the policy either way).
 pub async fn issue_session(
     storage: &crate::storage::Storage,
     auth_secret: &str,
@@ -272,33 +284,47 @@ pub async fn issue_session(
     username: &str,
     role: &str,
 ) -> CookieJar {
+    issue_session_with_policy(
+        storage,
+        auth_secret,
+        cookie_secure,
+        jar,
+        username,
+        role,
+        &crate::edition::SessionPolicy::default(),
+    )
+    .await
+}
+
+/// [`issue_session`] under a session policy: the access token lives no longer
+/// than the idle timeout or the session's absolute lifetime.
+pub async fn issue_session_with_policy(
+    storage: &crate::storage::Storage,
+    auth_secret: &str,
+    cookie_secure: bool,
+    jar: CookieJar,
+    username: &str,
+    role: &str,
+    policy: &crate::edition::SessionPolicy,
+) -> CookieJar {
     if let Some(old) = jar.get("voltrus_refresh") {
         let old_hash = hash_refresh_token(old.value());
         let _ = storage.revoke_refresh_token(&old_hash).await;
     }
 
-    let access_token = create_token(username, role, auth_secret);
+    let now = crate::timeutil::now_secs();
+    let ttl_ms = super::access_ttl_ms(policy, now, now);
+    let access_token = create_token_with_ttl(username, role, auth_secret, ttl_ms);
 
     // Generate refresh token
     let refresh_token_raw = generate_refresh_token();
     let refresh_hash = hash_refresh_token(&refresh_token_raw);
-    let refresh_expires = crate::timeutil::now_secs() + REFRESH_TOKEN_EXPIRY_SECS;
+    let refresh_expires = now + REFRESH_TOKEN_EXPIRY_SECS;
     let _ = storage
-        .create_refresh_token(
-            username,
-            &refresh_hash,
-            refresh_expires,
-            crate::timeutil::now_secs(),
-        )
+        .create_session_refresh_token(username, &refresh_hash, refresh_expires, now, now, now)
         .await;
 
-    let access_cookie = axum_extra::extract::cookie::Cookie::build(("voltrus_token", access_token))
-        .http_only(true)
-        .secure(cookie_secure)
-        .same_site(axum_extra::extract::cookie::SameSite::Strict)
-        .max_age(time::Duration::seconds(900)) // 15 minutes
-        .path("/")
-        .build();
+    let access_cookie = super::access_cookie(access_token, cookie_secure, ttl_ms);
 
     let refresh_cookie =
         axum_extra::extract::cookie::Cookie::build(("voltrus_refresh", refresh_token_raw))
@@ -358,11 +384,16 @@ pub async fn auth_me(State(state): State<AppState>, jar: CookieJar) -> impl Into
     match crate::api::auth_middleware::verify_session(&state, token).await {
         Some(claims) => {
             let shared = state.public_demo.is_shared(&claims.username, &claims.role);
+            let policy = state
+                .ext
+                .session_policy(&claims.username, &claims.role)
+                .await;
             Json(json!({
                 "authenticated": true,
                 "username": claims.username,
                 "role": claims.role,
                 "shared": shared,
+                "session": super::session_json(&policy),
             }))
         }
         None => Json(json!({"authenticated": false})),
@@ -415,34 +446,48 @@ pub async fn refresh_token(
                 .get_user_by_username(&rt.username)
                 .await?
                 .filter(|user| !user.disabled)
+                .map(|user| (user, rt))
         }
         _ => None,
     };
     match valid {
-        Some(user) => {
+        Some((user, rt)) => {
+            // Session limits of the add-on edition (none in Core).
+            let now = crate::timeutil::now_secs();
+            let policy = state.ext.session_policy(&user.username, &user.role).await;
+            let started = rt.session_started_at.unwrap_or(rt.created_at);
+            let last_active = rt.last_activity_at.unwrap_or(rt.created_at);
+            if let Some(end) = super::session_ended(&policy, started, last_active, now) {
+                return Ok((
+                    clear_session_cookies(jar),
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({"error": end.message(), "code": end.code()})),
+                    ),
+                )
+                    .into_response());
+            }
+
             // Create new tokens
-            let new_access = create_token(&user.username, &user.role, &state.auth_secret);
+            let ttl_ms = super::access_ttl_ms(&policy, started, now);
+            let new_access =
+                create_token_with_ttl(&user.username, &user.role, &state.auth_secret, ttl_ms);
             let new_refresh_raw = generate_refresh_token();
             let new_refresh_hash = hash_refresh_token(&new_refresh_raw);
-            let refresh_expires = crate::timeutil::now_secs() + REFRESH_TOKEN_EXPIRY_SECS;
+            let refresh_expires = now + REFRESH_TOKEN_EXPIRY_SECS;
             let _ = state
                 .storage
-                .create_refresh_token(
+                .create_session_refresh_token(
                     &user.username,
                     &new_refresh_hash,
                     refresh_expires,
-                    crate::timeutil::now_secs(),
+                    now,
+                    started,
+                    last_active,
                 )
                 .await;
 
-            let access_cookie =
-                axum_extra::extract::cookie::Cookie::build(("voltrus_token", new_access))
-                    .http_only(true)
-                    .secure(secure)
-                    .same_site(axum_extra::extract::cookie::SameSite::Strict)
-                    .max_age(time::Duration::seconds(900))
-                    .path("/")
-                    .build();
+            let access_cookie = super::access_cookie(new_access, secure, ttl_ms);
 
             let refresh_cookie =
                 axum_extra::extract::cookie::Cookie::build(("voltrus_refresh", new_refresh_raw))
@@ -478,6 +523,19 @@ pub async fn refresh_token(
                 .into_response())
         }
     }
+}
+
+/// Expire both session cookies.
+fn clear_session_cookies(jar: CookieJar) -> CookieJar {
+    let access_cookie = axum_extra::extract::cookie::Cookie::build(("voltrus_token", ""))
+        .max_age(time::Duration::seconds(0))
+        .path("/")
+        .build();
+    let refresh_cookie = axum_extra::extract::cookie::Cookie::build(("voltrus_refresh", ""))
+        .max_age(time::Duration::seconds(0))
+        .path("/")
+        .build();
+    jar.add(access_cookie).add(refresh_cookie)
 }
 
 #[utoipa::path(
@@ -536,11 +594,49 @@ pub async fn change_password(
         )
             .into_response());
     }
+    if let Err(message) = check_password_policy(
+        &state,
+        &user.username,
+        &user.role,
+        &body.new_password,
+        crate::edition::PasswordChangeKind::SelfService,
+    )
+    .await
+    {
+        return Ok((StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response());
+    }
 
     let hash = hash_password(&body.new_password);
     state.storage.update_user_password(user.id, &hash).await?;
     if user.username == "admin" {
         crate::storage::remove_initial_admin_password(state.storage.db_path());
     }
+    state
+        .ext
+        .password_changed(
+            &user.username,
+            &hash,
+            crate::edition::PasswordChangeKind::SelfService,
+        )
+        .await;
     Ok(Json(json!({"ok": true})).into_response())
+}
+
+/// The add-on edition's password policy ([`crate::edition::Extension::validate_new_password`]);
+/// the core's own minimum length is checked by each caller first. `Err` is
+/// the message for the user.
+pub(crate) async fn check_password_policy(
+    state: &AppState,
+    username: &str,
+    role: &str,
+    new_password: &str,
+    kind: crate::edition::PasswordChangeKind,
+) -> Result<(), String> {
+    let check = crate::edition::PasswordCheck {
+        username: username.to_string(),
+        role: role.to_string(),
+        new_password: new_password.to_string(),
+        kind,
+    };
+    state.ext.validate_new_password(&check).await
 }

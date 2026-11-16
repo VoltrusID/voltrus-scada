@@ -49,7 +49,13 @@ impl Storage {
     /// who created it (`created_by`) and why. Writes from a user (REST,
     /// WebSocket) use this so the audit trail starts with the person, not with
     /// the queue's own "system" transitions.
-    pub async fn insert_command_audited(&self, cmd: &Command, reason: Option<&str>) -> Result<()> {
+    /// `previous_value` is the tag's value when the write was queued.
+    pub async fn insert_command_audited(
+        &self,
+        cmd: &Command,
+        reason: Option<&str>,
+        previous_value: Option<f64>,
+    ) -> Result<()> {
         let conn = self.conn.clone();
         let cmd = cmd.clone();
         let reason = reason.map(str::to_string);
@@ -58,9 +64,16 @@ impl Storage {
             let tx = conn.unchecked_transaction().context("Begin tx failed")?;
             insert_command_row(&tx, &cmd)?;
             tx.execute(
-                "INSERT INTO command_audit_log (command_id, old_status, new_status, changed_by, reason, created_at)
-                 VALUES (?, '', ?, ?, ?, ?)",
-                rusqlite::params![cmd.id, cmd.status, cmd.created_by, reason, cmd.created_at],
+                "INSERT INTO command_audit_log (command_id, old_status, new_status, changed_by, reason, created_at, previous_value)
+                 VALUES (?, '', ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    cmd.id,
+                    cmd.status,
+                    cmd.created_by,
+                    reason,
+                    cmd.created_at,
+                    previous_value
+                ],
             )
             .context("Insert command audit log failed")?;
             tx.commit().context("Commit failed")?;
@@ -376,7 +389,7 @@ impl Storage {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, command_id, old_status, new_status, changed_by, reason, created_at
+                    "SELECT id, command_id, old_status, new_status, changed_by, reason, created_at, previous_value
                  FROM command_audit_log
                  WHERE command_id = ?1
                  ORDER BY created_at ASC",
@@ -392,6 +405,7 @@ impl Storage {
                         changed_by: row.get(4)?,
                         reason: row.get(5)?,
                         created_at: row.get(6)?,
+                        previous_value: row.get(7)?,
                     })
                 })
                 .context("Query get_command_audit failed")?;

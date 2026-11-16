@@ -9,7 +9,7 @@
 //! Roles as the server enforces them (`src/api/mod.rs`): every GET here,
 //! the template preview and `POST /wizard/create` take any signed-in user;
 //! `GET /templates/{id}`, `POST /templates/{id}/instantiate` and the three
-//! `/settings/smtp` routes take the operator role (`demo_protected`).
+//! `/settings/smtp` routes take admin, demo or integration (`demo_protected`).
 
 use std::collections::BTreeMap;
 

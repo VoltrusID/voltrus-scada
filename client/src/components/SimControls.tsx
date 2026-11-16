@@ -5,6 +5,7 @@ import {
   getGoLiveSettings, updateGoLiveSettings,
 } from '../api/simulation'
 import type { SimProfile, GoLiveStatus } from '../api/simulation'
+import { isSignatureCancelled } from '../signature/logic'
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -292,7 +293,7 @@ export function SimControls({
       setSimEnabled(true)
       onUpdate()
     } catch (e: any) {
-      setError(e.message || 'Failed to enable simulation')
+      if (!isSignatureCancelled(e)) setError(e.message || 'Failed to enable simulation')
     } finally {
       setToggling(false)
     }
@@ -309,7 +310,7 @@ export function SimControls({
       await refreshGoLiveStatus()
       onUpdate()
     } catch (e: any) {
-      setError(e.message || 'Failed to switch to live mode')
+      if (!isSignatureCancelled(e)) setError(e.message || 'Failed to switch to live mode')
     } finally {
       setToggling(false)
     }
@@ -327,7 +328,7 @@ export function SimControls({
       onUpdate()
     } catch (e: any) {
       setShowRollbackConfirm(false)
-      setError(e.message || 'Rollback failed')
+      if (!isSignatureCancelled(e)) setError(e.message || 'Rollback failed')
     } finally {
       setRollingBack(false)
     }

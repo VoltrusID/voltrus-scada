@@ -10,6 +10,7 @@ use axum::{
     body::Bytes,
     extract::{Extension, Path, State},
     http::{HeaderMap, StatusCode},
+    response::IntoResponse,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -289,9 +290,12 @@ pub async fn delete_flow(
 pub async fn start_flow(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, AppError> {
-    set_flow_enabled(&state, &auth, &id, true).await
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> Result<axum::response::Response, AppError> {
+    let origin = super::signature::origin_of(&auth, api_key.is_some());
+    set_flow_enabled(&state, &auth, origin, &id, true, signature.as_ref()).await
 }
 
 #[utoipa::path(
@@ -311,27 +315,47 @@ pub async fn start_flow(
 pub async fn stop_flow(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
-) -> Result<StatusCode, AppError> {
-    set_flow_enabled(&state, &auth, &id, false).await
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> Result<axum::response::Response, AppError> {
+    let origin = super::signature::origin_of(&auth, api_key.is_some());
+    set_flow_enabled(&state, &auth, origin, &id, false, signature.as_ref()).await
 }
 
 /// Persist `enabled` on the stored flow, then mirror it into the running
-/// engine, so a restart or reload keeps what start/stop did.
-async fn set_flow_enabled(
+/// engine, so a restart or reload keeps what start/stop did. Starting or
+/// stopping a flow is a mode switch an add-on edition may want signed.
+pub(crate) async fn set_flow_enabled(
     state: &AppState,
     auth: &AuthUser,
+    origin: crate::edition::ActionOrigin,
     id: &str,
     enabled: bool,
-) -> Result<StatusCode, AppError> {
+    signature: Option<&crate::models::SignatureInput>,
+) -> Result<axum::response::Response, AppError> {
     let Some(flow) = state.storage.get_flow(id).await? else {
-        return Ok(StatusCode::NOT_FOUND);
+        return Ok(StatusCode::NOT_FOUND.into_response());
     };
     // A flow that is invalid as stored cannot be started.
     let parsed = if enabled {
         Some(RuntimeFlow::from_db(&flow).map_err(AppError::bad_request)?)
     } else {
         None
+    };
+    let signed = match super::signature::authorize_action(
+        state,
+        auth,
+        origin,
+        crate::edition::SignedAction::ModeSwitch,
+        format!("flow:{id}"),
+        serde_json::json!({"mode": if enabled { "start" } else { "stop" }, "flow_id": id, "name": flow.name}),
+        signature,
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
     };
     state
         .storage
@@ -355,9 +379,11 @@ async fn set_flow_enabled(
         action: if enabled { "start_flow" } else { "stop_flow" }.to_string(),
         username: auth.username.clone(),
         resource: format!("flow:{}", id),
-        details: None,
+        details: signed
+            .as_ref()
+            .map(|s| format!("{} reason={}", s.audit_suffix().trim_start(), s.reason)),
     });
-    Ok(StatusCode::NO_CONTENT)
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// `{payload, metadata}` a run or test run starts with.
@@ -514,13 +540,17 @@ pub async fn test_flow(
 pub async fn run_flow(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
     body: Bytes,
-) -> Result<Json<Value>, AppError> {
+) -> Result<axum::response::Response, AppError> {
     #[derive(Deserialize, Default)]
     struct Body {
         #[serde(default)]
         input: RunInput,
+        /// When the edition wants a manual run signed (428).
+        #[serde(default)]
+        signature: Option<crate::models::SignatureInput>,
     }
     let body: Body = if body.iter().all(u8::is_ascii_whitespace) {
         Body::default()
@@ -534,6 +564,22 @@ pub async fn run_flow(
         .await?
         .ok_or_else(|| AppError::not_found("Flow not found"))?;
     let flow = RuntimeFlow::from_db(&stored).map_err(AppError::bad_request)?;
+    // Running a flow by hand is a mode switch the edition may want signed.
+    // The writes the run makes are still asked as flow writes (origin `flow`).
+    let signed = match super::signature::authorize_action(
+        &state,
+        &auth,
+        super::signature::origin_of(&auth, api_key.is_some()),
+        crate::edition::SignedAction::ModeSwitch,
+        format!("flow:{id}"),
+        json!({"mode": "run", "flow_id": id, "name": stored.name}),
+        body.signature.as_ref(),
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
+    };
     let mut msg = body.input.into_message();
     msg.metadata
         .entry("source".into())
@@ -554,9 +600,11 @@ pub async fn run_flow(
         action: "run_flow".to_string(),
         username: auth.username.clone(),
         resource: format!("flow:{}", id),
-        details: None,
+        details: signed
+            .as_ref()
+            .map(|s| format!("{} reason={}", s.audit_suffix().trim_start(), s.reason)),
     });
-    Ok(Json(result_json(&result)))
+    Ok(Json(result_json(&result)).into_response())
 }
 
 fn fire_error(e: FireError) -> AppError {

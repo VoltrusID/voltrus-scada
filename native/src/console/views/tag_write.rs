@@ -1,8 +1,10 @@
-//! Writing to a tag, and its write policy. Operators (admin, demo,
-//! integration) write through `POST /api/v1/tags/{id}/write`, immediate or
-//! queued, with a reason, checked against the policy and answered with the
-//! command's id; an admin can also write directly over the WebSocket. The
-//! policy editor reads a tag's policy with `GET
+//! Writing to a tag, and its write policy. The roles that operate
+//! (operator, demo, integration, admin) write through `POST
+//! /api/v1/tags/{id}/write`, immediate or queued, with a reason, checked
+//! against the policy and answered with the command's id, or directly over
+//! the WebSocket. An Enterprise server may require an electronic signature
+//! for a write: the prompt is [`super::sign`]. Only the configuring roles
+//! (admin, demo, integration) change a write policy. The policy editor reads a tag's policy with `GET
 //! /api/v1/data-sources/{id}/write-policy` each time the write dialog or the
 //! editor opens (the console checks limits against what it read or saved)
 //! and sends changes with `PATCH` on the same path.
@@ -14,6 +16,7 @@ use gpui::{AnyElement, ClipboardItem, Context, Entity, Subscription, Window, div
 use reqwest::Method;
 use serde::de::IgnoredAny;
 use voltrus_scada_native::runtime::{Call, CallKey, Command, Reply};
+use voltrus_scada_native::signature::{self, Signable, Signed};
 use voltrus_scada_native::tag_api::{self, PolicyPatch, WriteAccepted, WriteMode, WritePolicy};
 use vt_ui::Icon;
 use vt_ui::chart::format_value;
@@ -21,6 +24,7 @@ use vt_ui::components::{Button, IconButton, Segment, field, kbd, section_label, 
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
 use vt_ui::theme::*;
 
+use super::sign;
 use super::tag_detail::{dialog, note_line, on_field, open_index, text_field, write_keys};
 use crate::console::Console;
 use crate::console::overlay::Overlay;
@@ -33,6 +37,8 @@ pub(crate) struct WriteState {
     policies: HashMap<i64, WritePolicy>,
     /// The tag whose REST write awaits the server.
     sending: Option<i64>,
+    /// That write, to send again signed if the server asks for a signature.
+    sent: Option<Signable>,
     /// The last REST write's answer, by tag.
     result: Option<(i64, Result<WriteAccepted, String>)>,
     /// Why the dialog's value cannot go, shown once the operator tried.
@@ -70,13 +76,8 @@ fn load_policy(console: &mut Console, id: i64) {
 
 /// ⇧⌘W: the write dialog for the open tag.
 pub(crate) fn open_write(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    let modes = WriteMode::allowed(console.is_admin(), console.is_operator());
-    if modes.is_empty() {
-        console.show_toast(
-            "Writing needs the operator role (admin, demo or integration)",
-            true,
-            cx,
-        );
+    if WriteMode::allowed(console.may_operate()).is_empty() {
+        console.show_toast("Writing needs an operator role", true, cx);
         return;
     }
     if console.state::<WriteState>().reason.is_none() {
@@ -159,12 +160,21 @@ pub(crate) fn submit(console: &mut Console, _: &mut Window, cx: &mut Context<Con
         Some(body) => {
             state.sending = Some(id);
             state.result = None;
+            // Sent again, signed, if the server asks for a signature.
+            state.sent = Some(Signable::TagWrite {
+                tag: id,
+                value,
+                mode,
+                reason,
+            });
             let path = format!("/api/v1/tags/{id}/write");
             console.call(
                 CallKey::new("tags.write").with(id),
                 Call::new(move |api| async move {
-                    api.send_json::<_, WriteAccepted>(Method::POST, &path, &body)
-                        .await
+                    signature::signed(
+                        api.send_json::<_, WriteAccepted>(Method::POST, &path, &body)
+                            .await,
+                    )
                 }),
             );
         }
@@ -177,11 +187,11 @@ pub(crate) fn submit(console: &mut Console, _: &mut Window, cx: &mut Context<Con
     cx.notify();
 }
 
-/// The policy editor for the open tag (operators).
+/// The policy editor for the open tag (admin, demo, integration).
 pub(crate) fn open_policy(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         console.show_toast(
-            "Write policies need the operator role (admin, demo or integration)",
+            "Write policies need the admin, demo or integration role",
             true,
             cx,
         );
@@ -326,10 +336,24 @@ pub(crate) fn on_reply(
 ) {
     match key.name {
         "tags.write" => {
-            let result = reply.take::<WriteAccepted>();
-            let open = console.overlay_is("tag-write");
             let state = console.state::<WriteState>();
             state.sending = None;
+            let sent = state.sent.take();
+            let result = match reply.take::<Signed<WriteAccepted>>() {
+                Ok(Signed::Done(answer)) => Ok(answer),
+                Ok(Signed::Ask(ask)) => {
+                    // The prompt replaces the dialog and sends the write
+                    // again, signed.
+                    if let Some(action) = sent {
+                        sign::queue(console, action, ask);
+                    }
+                    cx.notify();
+                    return;
+                }
+                Err(error) => Err(error),
+            };
+            let open = console.overlay_is("tag-write");
+            let state = console.state::<WriteState>();
             state.result = Some((key.arg, result.clone()));
             // The value went: Enter again must not send it a second time.
             if result.is_ok() {
@@ -422,7 +446,7 @@ fn describe(policy: &WritePolicy) -> String {
 fn mode_note(mode: WriteMode) -> &'static str {
     match mode {
         WriteMode::Direct => {
-            "Over the WebSocket, at once. The server checks only that the tag is writable; no command record, no reason."
+            "Over the WebSocket, at once: checked against the write policy, but with no command record and no reason."
         }
         WriteMode::Immediate => {
             "Through the command queue now: checked against the write policy and recorded with its id."
@@ -436,7 +460,8 @@ fn mode_note(mode: WriteMode) -> &'static str {
 /// The detail panel's write section.
 pub(crate) fn section(console: &mut Console, id: i64, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_operate();
+    let configure = console.may_configure();
     let policy = known_policy(console, id);
     let last = console
         .state::<WriteState>()
@@ -462,8 +487,7 @@ pub(crate) fn section(console: &mut Console, id: i64, cx: &mut Context<Console>)
             if !operator {
                 return this.child(note_line(
                     Icon::Lock,
-                    "Writing values needs the operator role (admin, demo or integration)."
-                        .to_owned(),
+                    "Writing values needs an operator role.".to_owned(),
                     theme.fg_dim,
                 ));
             }
@@ -512,13 +536,15 @@ pub(crate) fn section(console: &mut Console, id: i64, cx: &mut Context<Console>)
                                 open_write(console, window, cx);
                             })),
                     )
-                    .child(
-                        Button::new("open-policy", "Write policy…")
-                            .icon(Icon::Settings)
-                            .on_click(cx.listener(|console, _, window, cx| {
-                                open_policy(console, window, cx);
-                            })),
-                    ),
+                    .when(configure, |this| {
+                        this.child(
+                            Button::new("open-policy", "Write policy…")
+                                .icon(Icon::Settings)
+                                .on_click(cx.listener(|console, _, window, cx| {
+                                    open_policy(console, window, cx);
+                                })),
+                        )
+                    }),
             )
         })
         .into_any_element()
@@ -538,7 +564,7 @@ fn write_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
     } else {
         "no value yet".to_owned()
     };
-    let modes = WriteMode::allowed(console.is_admin(), console.is_operator());
+    let modes = WriteMode::allowed(console.may_operate());
     let policy = known_policy(console, id);
     let text = console.inputs.write.read(cx).value().to_owned();
     let direct_busy = console.writing == Some(id);
@@ -880,10 +906,77 @@ mod tests {
             value: 42.0,
             created_at: 0,
         };
-        h.reply(CallKey::new("tags.write").with(7), Reply::ok(accepted));
+        h.reply(
+            CallKey::new("tags.write").with(7),
+            Reply::ok(Signed::Done(accepted)),
+        );
         h.draw();
         h.keys("enter");
         assert!(h.commands().is_empty());
+    }
+
+    /// An operator writes; the server wants it signed: the prompt opens in
+    /// place of the dialog and the signed write carries the same value,
+    /// mode and reason.
+    #[gpui::test]
+    fn a_write_the_server_wants_signed_is_sent_again_signed(cx: &mut TestAppContext) {
+        use voltrus_scada_native::signature::{Ask, SignatureRequired};
+
+        let mut h = writing(cx, "operator");
+        h.update(open_write);
+        h.commands();
+        type_value(&mut h, "42");
+        h.update(|console, _, cx| {
+            if let Some(reason) = console.state::<WriteState>().reason.clone() {
+                reason.update(cx, |field, cx| field.set_text("setpoint change", cx));
+            }
+        });
+        h.draw();
+        h.keys("enter");
+        assert_eq!(h.calls(), vec![CallKey::new("tags.write").with(7)]);
+        let ask = Ask {
+            request: SignatureRequired {
+                action: "tag_write".into(),
+                meaning: "I approve this setpoint change".into(),
+            },
+            error: None,
+        };
+        h.reply(
+            CallKey::new("tags.write").with(7),
+            Reply::ok(Signed::<WriteAccepted>::Ask(ask)),
+        );
+        assert!(h.update(|console, _, _| console.overlay_is(sign::ID)));
+        h.update(|console, window, cx| sign::sign_with(console, "secret", "ok", window, cx));
+        let sent = h.commands();
+        let [Command::Sign { action, signature }] = sent.as_slice() else {
+            panic!("expected the signed write: {sent:?}");
+        };
+        assert_eq!(
+            *action,
+            Signable::TagWrite {
+                tag: 7,
+                value: 42.0,
+                mode: WriteMode::Immediate,
+                reason: "setpoint change".into()
+            }
+        );
+        assert_eq!(signature.meaning, "I approve this setpoint change");
+        assert_eq!(signature.reason, "ok");
+    }
+
+    #[gpui::test]
+    fn an_operator_writes_every_way_and_a_viewer_cannot(cx: &mut TestAppContext) {
+        let mut h = writing(cx, "operator");
+        h.update(open_write);
+        assert!(h.update(|console, _, _| console.overlay_is("tag-write")));
+        assert!(h.update(|console, _, _| console.may_operate() && !console.may_configure()));
+        assert_eq!(
+            WriteMode::allowed(h.update(|console, _, _| console.may_operate())),
+            [WriteMode::Direct, WriteMode::Immediate, WriteMode::Queued]
+        );
+        let mut h = writing(cx, "viewer");
+        h.update(open_write);
+        assert!(!h.update(|console, _, _| console.overlay_is("tag-write")));
     }
 
     #[gpui::test]

@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use time::{Date, Month, PrimitiveDateTime, Time};
 
 use crate::api::HistorySeries;
+use crate::ws_types::Signature;
 use crate::zone::LocalZone;
 
 // ── Writes ────────────────────────────────────────────────────────────────
@@ -17,8 +18,8 @@ use crate::zone::LocalZone;
 /// How a written value reaches the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteMode {
-    /// Over the WebSocket, at once: admin only, and the server checks only
-    /// the tag's `writable` flag (no limits, no reason, no command record).
+    /// Over the WebSocket, at once: the server checks the tag's write
+    /// policy but takes no reason and keeps no command record.
     Direct,
     /// `POST /api/v1/tags/{id}/write` with `policy: immediate`: checked
     /// against the write policy and recorded as a command.
@@ -45,13 +46,12 @@ impl WriteMode {
         }
     }
 
-    /// The modes a user may pick: operators (admin, demo, integration)
-    /// write through REST; only an admin also writes over the WebSocket.
-    pub fn allowed(admin: bool, operator: bool) -> &'static [Self] {
-        if admin {
+    /// The modes a user may pick: every role that operates (operator,
+    /// demo, integration, admin) writes through REST and over the
+    /// WebSocket; viewers do not write.
+    pub fn allowed(operate: bool) -> &'static [Self] {
+        if operate {
             &[Self::Direct, Self::Immediate, Self::Queued]
-        } else if operator {
-            &[Self::Immediate, Self::Queued]
         } else {
             &[]
         }
@@ -80,6 +80,9 @@ pub struct WriteRequest {
     pub policy: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Only on the retry of a write the server wanted signed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<Signature>,
 }
 
 /// The server's `202 Accepted` answer to a REST write.
@@ -144,6 +147,7 @@ pub fn write_request(value: f64, reason: &str, mode: WriteMode) -> Option<WriteR
         value,
         policy: mode.policy()?,
         reason: (!reason.is_empty()).then(|| reason.to_owned()),
+        signature: None,
     })
 }
 
@@ -855,16 +859,13 @@ mod tests {
 
     #[test]
     fn roles_pick_the_write_modes() {
+        // Operators, demo, integration and admin users write every way.
         assert_eq!(
-            WriteMode::allowed(true, true),
+            WriteMode::allowed(true),
             [WriteMode::Direct, WriteMode::Immediate, WriteMode::Queued]
         );
-        // Demo and integration users write through REST only.
-        assert_eq!(
-            WriteMode::allowed(false, true),
-            [WriteMode::Immediate, WriteMode::Queued]
-        );
-        assert!(WriteMode::allowed(false, false).is_empty());
+        // Viewers read only.
+        assert!(WriteMode::allowed(false).is_empty());
         assert_eq!(WriteMode::Direct.policy(), None);
         assert_eq!(WriteMode::Queued.policy(), Some("queued"));
     }

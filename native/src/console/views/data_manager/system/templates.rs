@@ -318,7 +318,7 @@ fn open_template(
         state.note = None;
         state.detail = None;
     }
-    if console.is_operator() {
+    if console.may_configure() {
         if changed || !matches!(console.state::<State>().detail, Some(Ok(_))) {
             fetch_detail(console, &template.id);
         }
@@ -353,7 +353,7 @@ fn back(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -
         View::Browse => return false,
         View::Detail => View::Browse,
         View::Instantiate => {
-            if console.is_operator() {
+            if console.may_configure() {
                 View::Detail
             } else {
                 View::Browse
@@ -366,10 +366,10 @@ fn back(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -
 
 /// The name and instances: the confirmation, then the server.
 fn ask_instantiate(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         console.state::<State>().note = Some(Err(format!(
             "Instantiating: {}",
-            needs(Role::Operator).to_lowercase()
+            needs(Role::Configure).to_lowercase()
         )));
         cx.notify();
         return;
@@ -554,7 +554,7 @@ pub(super) fn render(
     .into_iter()
     .filter(|(each, _)| {
         *each == View::Browse
-            || (selected.is_some() && (*each != View::Detail || console.is_operator()))
+            || (selected.is_some() && (*each != View::Detail || console.may_configure()))
     })
     .map(|(each, label)| {
         Segment::new(
@@ -999,7 +999,7 @@ fn instantiate(
     cx: &mut Context<Console>,
 ) -> AnyElement {
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let state = console.state::<State>();
     let Some(fields) = &state.fields else {
         return div().into_any_element();
@@ -1035,7 +1035,7 @@ fn instantiate(
             )
             .when(!operator, |this| {
                 this.child(div().text_size(FONT_SMALL).text_color(theme.warning).child(
-                    "Anyone may preview a template; instantiating it needs the operator role.",
+                    "Anyone may preview a template; instantiating it needs the admin, demo or integration role.",
                 ))
             })
             .child(
@@ -1058,7 +1058,7 @@ fn instantiate(
                         .tooltip(if operator {
                             "↵ in the name field"
                         } else {
-                            needs(Role::Operator)
+                            needs(Role::Configure)
                         })
                         .on_click(cx.listener(|console, _, window, cx| {
                             ask_instantiate(console, window, cx);

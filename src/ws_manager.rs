@@ -451,6 +451,7 @@ mod tests {
             status: "acked".to_string(),
             device_response: Some("OK".to_string()),
             latency_ms: Some(12),
+            signature_required: None,
         });
 
         match rx.try_recv() {
@@ -483,6 +484,7 @@ mod tests {
             status: "acked".to_string(),
             device_response: None,
             latency_ms: None,
+            signature_required: None,
         };
         assert!(mgr.send_to("c1", ack.clone()));
         assert!(!mgr.send_to("gone", ack));

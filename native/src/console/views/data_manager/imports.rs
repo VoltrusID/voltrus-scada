@@ -2624,7 +2624,7 @@ mod tests {
     #[test]
     fn only_admins_import_data_files() {
         assert!(may_import_data(Some(Role::Admin)));
-        assert!(!may_import_data(Some(Role::Operator)));
+        assert!(!may_import_data(Some(Role::Configure)));
         assert!(!may_import_data(Some(Role::Any)));
         assert!(!may_import_data(None));
     }

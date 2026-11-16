@@ -332,3 +332,31 @@ fn menus_and_popovers_open_inside_a_small_window(cx: &mut TestAppContext) {
     h.keys("down enter");
     assert!(h.update(|console, _, _| console.overlay_is("settings")));
 }
+
+/// The server's roles in the console's levels: viewers read, operators
+/// operate, demo and integration also configure, admins do everything.
+#[gpui::test]
+fn roles_map_to_operate_configure_and_admin(cx: &mut TestAppContext) {
+    use pages::Role;
+    for (role, level, operate, configure, admin) in [
+        ("viewer", Role::Any, false, false, false),
+        ("user", Role::Any, false, false, false),
+        ("operator", Role::Operate, true, false, false),
+        ("Operator", Role::Operate, true, false, false),
+        ("demo", Role::Configure, true, true, false),
+        ("integration", Role::Configure, true, true, false),
+        ("admin", Role::Admin, true, true, true),
+    ] {
+        let mut h = Harness::new(cx);
+        h.sign_in(role);
+        let got = h.update(|console, _, _| {
+            (
+                console.role(),
+                console.may_operate(),
+                console.may_configure(),
+                console.is_admin(),
+            )
+        });
+        assert_eq!(got, (Some(level), operate, configure, admin), "{role}");
+    }
+}

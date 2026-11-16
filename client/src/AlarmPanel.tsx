@@ -16,6 +16,7 @@ import {
 import { detectFlood } from './alarmFlood'
 import { fmtTs } from './styles'
 import type { Alarm } from './types'
+import { useRole } from './RoleContext'
 
 const FILTER_TABS = ['all', 'active', 'acknowledged', 'shelved'] as const
 const PANEL_TABS = ['alarms', 'analytics', 'audit'] as const
@@ -411,6 +412,8 @@ export function AlarmPanel({ onClose }: Props) {
   }
 
   const isMobile = useIsMobile()
+  // Viewers see alarms; acknowledging and shelving needs an operator.
+  const { canOperate } = useRole()
   const [filter, setFilter] = useState<string>('active')
   const navigate = useNavigate()
   const routerSearch = useRouterState({ select: s => s.location.search }) as { tab?: string }
@@ -467,7 +470,7 @@ export function AlarmPanel({ onClose }: Props) {
         {/* Header */}
         <div style={{ padding: '12px 16px 10px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
           <span style={{ fontSize: isMobile ? 17 : 15, fontWeight: 700 }}>Alarms</span>
-          <button onClick={() => ackAllMut.mutate()} aria-label="Acknowledge all alarms" style={{ marginLeft: 10, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--warn)', background: 'transparent', color: 'var(--warn)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Ack All</button>
+          {canOperate && <button onClick={() => ackAllMut.mutate()} aria-label="Acknowledge all alarms" style={{ marginLeft: 10, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--warn)', background: 'transparent', color: 'var(--warn)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Ack All</button>}
           <button onClick={onClose} aria-label="Close" style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, transition: 'color 0.15s' }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
@@ -559,7 +562,7 @@ export function AlarmPanel({ onClose }: Props) {
 
                         {/* Action buttons */}
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                          {isActive && !isShelved && (
+                          {canOperate && isActive && !isShelved && (
                             <button onClick={() => ackMut.mutate(alarm.id)} aria-label={`Acknowledge alarm: ${alarm.source_name}`} style={{
                               padding: '4px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
                               border: `1px solid ${sevColor}`, background: 'transparent', color: sevColor,
@@ -567,13 +570,13 @@ export function AlarmPanel({ onClose }: Props) {
                           )}
 
                           {/* Shelf / Unshelf controls */}
-                          {isActive && !isShelved && (
+                          {canOperate && isActive && !isShelved && (
                             <button onClick={() => setShelfTarget(shelfTarget === alarm.id ? null : alarm.id)} style={{
                               padding: '4px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
                               border: '1px solid var(--border)', background: 'transparent', color: 'var(--muted)',
                             }}>Shelf</button>
                           )}
-                          {isShelved && (
+                          {canOperate && isShelved && (
                             <button onClick={() => unshelfMut.mutate(alarm.id)} disabled={unshelfMut.isPending} style={{
                               padding: '4px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
                               border: '1px solid #94a3b8', background: 'transparent', color: '#94a3b8',
@@ -588,7 +591,7 @@ export function AlarmPanel({ onClose }: Props) {
                         </div>
 
                         {/* Shelf form */}
-                        {shelfTarget === alarm.id && (
+                        {canOperate && shelfTarget === alarm.id && (
                           <ShelfForm alarmId={alarm.id} onClose={() => setShelfTarget(null)} />
                         )}
 
@@ -613,7 +616,7 @@ export function AlarmPanel({ onClose }: Props) {
                       >
                         <SwipeableAlarmRow
                           alarm={alarm}
-                          isMobile={isMobile}
+                          isMobile={isMobile && canOperate}
                           onAck={() => ackMut.mutate(alarm.id)}
                         >
                           {cardContent}

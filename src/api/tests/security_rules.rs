@@ -66,7 +66,7 @@ async fn alarm(storage: &Storage) -> i64 {
 }
 
 #[tokio::test]
-async fn read_only_user_may_acknowledge_but_read_only_key_may_not() {
+async fn viewers_and_read_only_keys_may_not_acknowledge() {
     let f = fx().await;
     let a = alarm(&f.storage).await;
     let uri = format!("/api/v1/alarms/{a}/acknowledge");
@@ -85,7 +85,7 @@ async fn read_only_user_may_acknowledge_but_read_only_key_may_not() {
     assert_eq!(status, StatusCode::FORBIDDEN, "acknowledge-all too");
 
     let (status, body) = send_request(&f.app, "POST", &uri, None, Some(&f.viewer), None).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "a viewer only reads: {body}");
 
     let b = alarm(&f.storage).await;
     let (status, body) = send_request(

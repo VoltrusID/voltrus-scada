@@ -2,8 +2,9 @@ use crate::api::*;
 use crate::models::*;
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
+    response::IntoResponse,
 };
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,158 @@ pub struct SimulateRequest {
     pub simulation_mode: bool,
     pub sim_profile_id: Option<i64>,
     pub sim_config: Option<String>,
+    /// An electronic signature, when the edition asks for one (428 answer).
+    #[serde(default)]
+    pub signature: Option<SignatureInput>,
+}
+
+// ── Mode switches (simulation, go-live, rollback) ──
+//
+// Switching a device between simulation and live is a mode switch an add-on
+// edition may want signed; the handlers below ask before they act.
+
+/// Ask for the signature of a mode switch on device `id`. `Err` is the answer
+/// to send (428/403/...).
+async fn sign_mode_switch(
+    state: &AppState,
+    user: &AuthUser,
+    api_key: bool,
+    resource: String,
+    details: serde_json::Value,
+    signature: Option<&SignatureInput>,
+) -> Result<Option<signature::Signed>, signature::SignatureError> {
+    signature::authorize_action(
+        state,
+        user,
+        signature::origin_of(user, api_key),
+        crate::edition::SignedAction::ModeSwitch,
+        resource,
+        details,
+        signature,
+    )
+    .await
+}
+
+/// Run `action` once signed, and audit the signature if it succeeded.
+async fn signed_switch<R: IntoResponse>(
+    state: &AppState,
+    user: &AuthUser,
+    audit_action: &str,
+    resource: String,
+    signed: Option<signature::Signed>,
+    action: impl std::future::Future<Output = R>,
+) -> axum::response::Response {
+    let response = action.await.into_response();
+    if response.status().is_success() {
+        signature::audit_signed(state, user, audit_action, resource, &signed);
+    }
+    response
+}
+
+/// POST /api/v1/devices/{id}/simulate
+pub async fn toggle_simulation(
+    state: State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<ApiKeyAuth>>,
+    Path(id): Path<String>,
+    Json(req): Json<SimulateRequest>,
+) -> axum::response::Response {
+    let resource = format!("device:{id}:simulation");
+    let details = serde_json::json!({
+        "mode": if req.simulation_mode { "simulation" } else { "live" },
+        "device_id": id,
+    });
+    let signed = match sign_mode_switch(
+        &state,
+        &user,
+        api_key.is_some(),
+        resource.clone(),
+        details,
+        req.signature.as_ref(),
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(answer) => return answer.into_response(),
+    };
+    let state2 = state.clone();
+    signed_switch(
+        &state,
+        &user,
+        "toggle_simulation",
+        resource,
+        signed,
+        toggle_simulation_inner(state2, Path(id), Json(req)),
+    )
+    .await
+}
+
+/// POST /api/v1/devices/{id}/go-live
+pub async fn go_live(
+    state: State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<ApiKeyAuth>>,
+    Path(id): Path<String>,
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> axum::response::Response {
+    let resource = format!("device:{id}:go_live");
+    let signed = match sign_mode_switch(
+        &state,
+        &user,
+        api_key.is_some(),
+        resource.clone(),
+        serde_json::json!({"mode": "go_live", "device_id": id}),
+        signature.as_ref(),
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(answer) => return answer.into_response(),
+    };
+    let state2 = state.clone();
+    signed_switch(
+        &state,
+        &user,
+        "go_live",
+        resource,
+        signed,
+        go_live_inner(state2, Path(id)),
+    )
+    .await
+}
+
+/// POST /api/v1/devices/{id}/go-live/rollback
+pub async fn rollback_go_live(
+    state: State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<ApiKeyAuth>>,
+    Path(id): Path<String>,
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> axum::response::Response {
+    let resource = format!("device:{id}:go_live_rollback");
+    let signed = match sign_mode_switch(
+        &state,
+        &user,
+        api_key.is_some(),
+        resource.clone(),
+        serde_json::json!({"mode": "go_live_rollback", "device_id": id}),
+        signature.as_ref(),
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(answer) => return answer.into_response(),
+    };
+    let state2 = state.clone();
+    signed_switch(
+        &state,
+        &user,
+        "go_live_rollback",
+        resource,
+        signed,
+        rollback_go_live_inner(state2, Path(id)),
+    )
+    .await
 }
 
 // ── Sim Profiles ──
@@ -107,7 +260,7 @@ pub async fn get_simulation(
     })))
 }
 
-pub async fn toggle_simulation(
+async fn toggle_simulation_inner(
     state: State<AppState>,
     Path(id): Path<String>,
     Json(req): Json<SimulateRequest>,
@@ -247,7 +400,7 @@ pub async fn update_go_live_settings(
 /// device to live mode and starts the connection grace window. The snapshot is
 /// mandatory: without it there is nothing to roll back to, so a failed snapshot
 /// aborts the go-live.
-pub async fn go_live(
+async fn go_live_inner(
     state: State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {
@@ -375,7 +528,7 @@ async fn perform_rollback(
 /// snapshot and puts the device back in simulation mode in one transaction.
 /// 404 when the device has no go-live to undo (never went live, already rolled
 /// back, or older than 24 hours); 410 when its snapshot was deleted.
-pub async fn rollback_go_live(
+async fn rollback_go_live_inner(
     state: State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, StatusCode> {

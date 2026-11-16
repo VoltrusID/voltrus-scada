@@ -235,6 +235,7 @@ mod tests {
             status: "acked".into(),
             device_response: Some("OK".into()),
             latency_ms: Some(7),
+            signature_required: None,
         });
         let ack = next_chunk(&mut body).await;
         assert!(

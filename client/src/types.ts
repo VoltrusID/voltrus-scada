@@ -45,7 +45,11 @@ export interface DataPoint { value: number; ts: number; simulated?: boolean; lo?
 
 export interface Screen { id: string; name: string; type: string; sort_order: number }
 
-export interface LayoutItem { i: string; x: number; y: number; w: number; h: number }
+export interface LayoutItem {
+  i: string; x: number; y: number; w: number; h: number
+  /** Present on add-on widget items (`i` = `widget:<id>`), see dashboardWidgets.ts. */
+  widget?: { type: string; config: Record<string, unknown> }
+}
 
 export type ScreenLayouts = { lg: LayoutItem[]; md: LayoutItem[]; sm: LayoutItem[]; xs: LayoutItem[] }
 
@@ -457,6 +461,8 @@ export interface AiSettings {
   default_model: string | null
   base_url: string | null
   enabled: boolean
+  /** Whether this install may use the hosted Voltrus AI provider; absent from older servers. */
+  hosted_ai_available?: boolean
 }
 
 export interface AiProposal {

@@ -355,16 +355,19 @@ mod tests {
     fn operator_pages_stay_out_of_a_viewers_reach() {
         use crate::console::overlay::{entries, more_pages};
         use crate::console::pages::{Role, spec};
-        // The server serves commands to anyone, the handover log and the
-        // audit log to operators only (`demo_protected`).
+        // The server serves commands to anyone, the handover log to
+        // operators and the audit log to the configuring roles
+        // (`demo_protected`).
         assert_eq!(spec(Page::Commands).role, Role::Any);
-        assert_eq!(spec(Page::Shift).role, Role::Operator);
-        assert_eq!(spec(Page::Audit).role, Role::Operator);
+        assert_eq!(spec(Page::Shift).role, Role::Operate);
+        assert_eq!(spec(Page::Audit).role, Role::Configure);
         let viewer = more_pages(Some(Role::Any));
         assert!(viewer.contains(&Page::Commands));
         assert!(!viewer.contains(&Page::Shift) && !viewer.contains(&Page::Audit));
-        let operator = more_pages(Some(Role::Operator));
-        assert!(operator.contains(&Page::Shift) && operator.contains(&Page::Audit));
+        let operator = more_pages(Some(Role::Operate));
+        assert!(operator.contains(&Page::Shift) && !operator.contains(&Page::Audit));
+        let configure = more_pages(Some(Role::Configure));
+        assert!(configure.contains(&Page::Shift) && configure.contains(&Page::Audit));
         // The palette offers the operator commands only to operators; the
         // data export (any user) to everyone.
         let titles = |role| -> Vec<String> {
@@ -381,6 +384,11 @@ mod tests {
                 .any(|title| title == "New shift handover entry")
         );
         assert!(!viewer.iter().any(|title| title == "Go to Audit log"));
+        assert!(
+            titles(Role::Operate)
+                .iter()
+                .any(|title| title == "New shift handover entry")
+        );
         let admin = titles(Role::Admin);
         assert!(
             admin

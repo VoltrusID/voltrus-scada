@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { Flow, FlowCatalogue, FlowRun, FlowTestInput, FlowTestResult } from '../types'
 import { queryKeys } from './keys'
-import { fetchJson, fetchOk, fetchWithRefresh } from './fetch'
+import { fetchJson, fetchOk, fetchSigned, fetchWithRefresh } from './fetch'
 import { FALLBACK_CATALOGUE } from '../components/flow-editor/catalogue'
 
 /** Error from a flow endpoint; `nodeId` is set when the server names a node. */
@@ -15,8 +15,9 @@ export class FlowApiError extends Error {
   }
 }
 
-async function flowRequest(url: string, init?: RequestInit): Promise<Response> {
-  const r = await fetchWithRefresh(url, init)
+/** `signed`: the request may need an electronic signature (a manual run). */
+async function flowRequest(url: string, init?: RequestInit, signed = false): Promise<Response> {
+  const r = await (signed ? fetchSigned : fetchWithRefresh)(url, init)
   if (!r.ok) {
     const body = await r.json().catch(() => ({})) as { error?: string; node_id?: string }
     throw new FlowApiError(body.error || `Request failed: ${r.status}`, r.status, body.node_id)
@@ -152,7 +153,7 @@ export function useRunFlow() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ id, input }: { id: string; input?: FlowTestInput }) => {
-      const r = await flowRequest(`/api/v1/flows/${id}/run`, jsonInit('POST', input ? { input } : {}))
+      const r = await flowRequest(`/api/v1/flows/${id}/run`, jsonInit('POST', input ? { input } : {}), true)
       return r.json().catch(() => ({})) as Promise<unknown>
     },
     onSuccess: (_, { id }) => {

@@ -21,7 +21,12 @@ pub(crate) fn hash_refresh_token(token: &str) -> String {
 /// cookie-safe, so the `Set-Cookie` value needs no percent-encoding and is
 /// accepted as is where cookies are not decoded (the WebSocket `Auth` message).
 pub fn create_token(username: &str, role: &str, secret: &str) -> String {
-    let exp = crate::timeutil::now_millis() as u64 + ACCESS_TOKEN_EXPIRY_MS;
+    create_token_with_ttl(username, role, secret, ACCESS_TOKEN_EXPIRY_MS)
+}
+
+/// [`create_token`] valid for `ttl_ms` (shorter under a session policy).
+pub fn create_token_with_ttl(username: &str, role: &str, secret: &str, ttl_ms: u64) -> String {
+    let exp = crate::timeutil::now_millis() as u64 + ttl_ms;
     let payload = serde_json::to_string(&TokenClaims {
         username: username.to_string(),
         exp,

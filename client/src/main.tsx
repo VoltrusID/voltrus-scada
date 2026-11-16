@@ -9,6 +9,7 @@ import App from './App'
 import { RouterProvider } from '@tanstack/react-router'
 import { router } from './router'
 import { toast } from './components/Toast'
+import { isSignatureCancelled } from './signature/logic'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,6 +21,8 @@ const queryClient = new QueryClient({
     },
     mutations: {
       onError: (err: any) => {
+        // Cancelling a signature prompt abandons the action quietly.
+        if (isSignatureCancelled(err)) return
         toast.error(err.message || 'Request failed')
       },
     },

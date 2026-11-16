@@ -526,6 +526,16 @@ pub(super) fn run_migrations(conn: &Connection) {
     let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN hash TEXT");
 
+    // Migration: the tag's value when a write was queued, on the command's
+    // first audit entry (audit trail of setpoint changes: old and new value).
+    let _ = conn.execute_batch("ALTER TABLE command_audit_log ADD COLUMN previous_value REAL");
+
+    // Migration: session limits (idle and absolute timeout). A refresh token
+    // carries when its session started and when the user was last active;
+    // older rows fall back to created_at.
+    let _ = conn.execute_batch("ALTER TABLE refresh_tokens ADD COLUMN session_started_at INTEGER");
+    let _ = conn.execute_batch("ALTER TABLE refresh_tokens ADD COLUMN last_activity_at INTEGER");
+
     // Migration: flow graphs. The per-node trace of a flow's recent runs (kept
     // on the newest runs only, see insert_flow_run), and the SHA-256 of the
     // flow's webhook token (the token itself is shown once and not stored).

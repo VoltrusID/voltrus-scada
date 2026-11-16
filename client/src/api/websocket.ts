@@ -22,6 +22,8 @@ export interface CommandAck {
   status: string;
   device_response?: string;
   latency_ms?: number;
+  /** Set when the server wants this write electronically signed (status `signature_required` or `rejected`). */
+  signature_required?: { action: string; meaning: string };
 }
 
 export interface DeviceStatus {
@@ -467,7 +469,8 @@ export const WS_WRITE_WAIT_MS = 15_000;
  * write at once (`rejected`) and an accepted one when the command is final (`acked`,
  * `failed`, `expired`); until then it is queued, so a device that does not answer within
  * `waitMs` is reported as `queued`, not as a failure. Resolves `null` when there is no
- * WebSocket that can write (the caller uses the REST endpoint); rejects with the server's
+ * WebSocket that can write, or when the server wants the write signed: the caller then
+ * uses the REST endpoint, whose fetch prompts for the signature. Rejects with the server's
  * reason when the write was refused or failed.
  */
 export function wsWriteTagResult(
@@ -486,7 +489,8 @@ export function wsWriteTagResult(
     };
     const onAck = (ack: CommandAck) => {
       if (ack.command_id !== commandId) return;
-      if (ack.status === 'acked') finish(() => resolve('acked'));
+      if (ack.signature_required || ack.status === 'signature_required') finish(() => resolve(null));
+      else if (ack.status === 'acked') finish(() => resolve('acked'));
       else if (['rejected', 'failed', 'expired', 'cancelled'].includes(ack.status)) {
         finish(() => reject(new Error(ack.device_response || `Write ${ack.status}`)));
       }

@@ -1,0 +1,1011 @@
+//! The compliance hooks of `crate::edition::Extension` with a test edition:
+//! electronic signatures (428 flow, wrong-password lockout, API keys and MCP
+//! refused), password policy and expiry, session idle and absolute limits,
+//! and the previous value in the tag-write audit trail.
+
+use std::sync::Mutex;
+
+use super::*;
+use crate::edition::{
+    ActionContext, ActionOrigin, BoxFuture, Extension, PasswordChangeKind, PasswordCheck,
+    SessionPolicy, SignatureRecord, SignatureRequirement, SignedAction,
+};
+use crate::security::{AuditEvent, AuditLogger};
+use axum::body::Body;
+use http::{Request, StatusCode};
+use serde_json::json;
+use tokio::sync::mpsc::Receiver;
+use tower::ServiceExt;
+
+const MEANING: &str = "Approved by operator";
+
+/// An edition that wants every signable action signed and keeps what the
+/// core hands it.
+#[derive(Default)]
+struct TestEdition {
+    records: Mutex<Vec<SignatureRecord>>,
+    asked: Mutex<Vec<(SignedAction, ActionOrigin, String)>>,
+    password_changes: Mutex<Vec<(String, PasswordChangeKind)>>,
+    session: SessionPolicy,
+    /// Let flows write without a signature.
+    allow_flows: bool,
+}
+
+impl Extension for TestEdition {
+    fn validate_new_password<'a>(
+        &'a self,
+        check: &'a PasswordCheck,
+    ) -> BoxFuture<'a, Result<(), String>> {
+        Box::pin(async move {
+            if check.new_password.len() < 12 {
+                return Err("Password must have at least 12 characters".to_string());
+            }
+            if check.new_password.contains(&check.username) {
+                return Err("Password must not contain the username".to_string());
+            }
+            Ok(())
+        })
+    }
+
+    fn password_changed<'a>(
+        &'a self,
+        username: &'a str,
+        password_hash: &'a str,
+        kind: PasswordChangeKind,
+    ) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            assert!(
+                password_hash.starts_with("$argon2"),
+                "a hash, never the password"
+            );
+            self.password_changes
+                .lock()
+                .unwrap()
+                .push((username.to_string(), kind));
+        })
+    }
+
+    fn password_expired<'a>(&'a self, user: &'a crate::models::User) -> BoxFuture<'a, bool> {
+        Box::pin(async move { user.username == "stale" })
+    }
+
+    fn session_policy<'a>(
+        &'a self,
+        _username: &'a str,
+        _role: &'a str,
+    ) -> BoxFuture<'a, SessionPolicy> {
+        Box::pin(async move { self.session })
+    }
+
+    fn signature_required<'a>(
+        &'a self,
+        ctx: &'a ActionContext,
+    ) -> BoxFuture<'a, Option<SignatureRequirement>> {
+        Box::pin(async move {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((ctx.action, ctx.origin, ctx.resource.clone()));
+            if ctx.origin == ActionOrigin::Flow && self.allow_flows {
+                return None;
+            }
+            Some(SignatureRequirement {
+                meaning: MEANING.to_string(),
+            })
+        })
+    }
+
+    fn record_signature<'a>(
+        &'a self,
+        record: &'a SignatureRecord,
+    ) -> BoxFuture<'a, anyhow::Result<Option<String>>> {
+        Box::pin(async move {
+            let mut records = self.records.lock().unwrap();
+            records.push(record.clone());
+            Ok(Some(format!("sig-{}", records.len())))
+        })
+    }
+}
+
+struct Fixture {
+    app: Router,
+    state: AppState,
+    edition: Arc<TestEdition>,
+    audit: Receiver<AuditEvent>,
+}
+
+async fn fixture(edition: TestEdition) -> Fixture {
+    let edition = Arc::new(edition);
+    let mut state = seeded_admin_app_state().await;
+    state.ext = edition.clone();
+    let (logger, audit) = AuditLogger::new();
+    state.audit_logger = logger;
+    let app = create_router(state.clone());
+    Fixture {
+        app,
+        state,
+        edition,
+        audit,
+    }
+}
+
+fn drain(rx: &mut Receiver<AuditEvent>) -> Vec<AuditEvent> {
+    std::iter::from_fn(|| rx.try_recv().ok()).collect()
+}
+
+async fn add_user(storage: &Storage, username: &str, password: &str, role: &str) {
+    let hash = crate::api::auth::hash_password(password);
+    storage
+        .create_user(username, &hash, "", role)
+        .await
+        .unwrap();
+}
+
+async fn cookie(app: &Router, username: &str, password: &str) -> String {
+    format!(
+        "voltrus_token={}",
+        login_cookie(app, username, password).await
+    )
+}
+
+/// A writable tag `dev1.temp` whose live value is 21.5.
+async fn writable_tag(state: &AppState) -> i64 {
+    let id = state
+        .storage
+        .create_data_source(
+            "dev1.temp",
+            "Temp",
+            "",
+            "#fff",
+            0.0,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0,
+            1,
+            "modbus",
+            r#"{"address":40001}"#,
+            "dev1",
+            None,
+            "line",
+        )
+        .await
+        .unwrap();
+    state
+        .storage
+        .update_write_policy(
+            id,
+            &crate::models::WritePolicyUpdate {
+                writable: Some(true),
+                write_min: None,
+                write_max: None,
+                write_max_rate: None,
+                write_requires_reason: None,
+                write_deadband: None,
+            },
+        )
+        .await
+        .unwrap();
+    state
+        .cache
+        .update(
+            "dev1",
+            std::collections::HashMap::from([("temp".to_string(), 21.5)]),
+            false,
+        )
+        .await;
+    id
+}
+
+fn signature(password: &str) -> serde_json::Value {
+    json!({"password": password, "meaning": MEANING, "reason": "Batch 42 setpoint"})
+}
+
+#[tokio::test]
+async fn a_write_the_edition_wants_signed_is_answered_428_then_runs_once_signed() {
+    let mut f = fixture(TestEdition::default()).await;
+    let tag = writable_tag(&f.state).await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let uri = format!("/api/v1/tags/{tag}/write");
+
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        &uri,
+        None,
+        Some(&admin),
+        Some(json!({"value": 30.0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body["code"], "signature_required");
+    assert_eq!(body["signature_required"]["meaning"], MEANING);
+    assert_eq!(body["signature_required"]["action"], "tag_write");
+    assert!(
+        f.state.storage.count_recent_writes(tag, 60).await.unwrap() == 0,
+        "nothing was queued"
+    );
+
+    // A signature for another meaning is asked again.
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        &uri,
+        None,
+        Some(&admin),
+        Some(json!({"value": 30.0, "signature": {"password": "admin", "meaning": "something else", "reason": "x"}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+
+    // No reason: 400.
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        &uri,
+        None,
+        Some(&admin),
+        Some(json!({"value": 30.0, "signature": {"password": "admin", "meaning": MEANING, "reason": "  "}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    drain(&mut f.audit);
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        &uri,
+        None,
+        Some(&admin),
+        Some(json!({"value": 30.0, "signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+    let records = f.edition.records.lock().unwrap().clone();
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.username, "admin");
+    assert_eq!(record.action, SignedAction::TagWrite);
+    assert_eq!(record.origin, ActionOrigin::Session);
+    assert_eq!(record.resource, format!("data_source:{tag}"));
+    assert_eq!(record.meaning, MEANING);
+    assert_eq!(record.reason, "Batch 42 setpoint");
+    assert_eq!(record.details["previous"], 21.5);
+    assert_eq!(record.details["value"], 30.0);
+
+    let entries = drain(&mut f.audit);
+    let write = entries
+        .iter()
+        .find(|e| e.action == "tag_write")
+        .expect("tag_write audit entry");
+    let details = write.details.as_deref().unwrap();
+    assert!(details.contains("previous=21.5 value=30"), "{details}");
+    assert!(details.contains("signature=sig-1"), "{details}");
+    assert!(
+        !entries
+            .iter()
+            .any(|e| e.details.as_deref().is_some_and(|d| d.contains("password"))),
+        "the password never reaches the audit log"
+    );
+    assert!(entries.iter().any(|e| e.action == "signature"));
+}
+
+#[tokio::test]
+async fn wrong_signature_passwords_count_towards_the_lockout() {
+    let f = fixture(TestEdition::default()).await;
+    let tag = writable_tag(&f.state).await;
+    add_user(&f.state.storage, "olivia", "olivia-pass-123", "operator").await;
+    let olivia = cookie(&f.app, "olivia", "olivia-pass-123").await;
+    let uri = format!("/api/v1/tags/{tag}/write");
+
+    for attempt in 1..super::super::signature::MAX_FAILED_ATTEMPTS {
+        let (status, body) = send_request(
+            &f.app,
+            "POST",
+            &uri,
+            None,
+            Some(&olivia),
+            Some(json!({"value": 30.0, "signature": signature("wrong")})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "attempt {attempt}: {body}");
+        assert_eq!(body["code"], "signature_invalid");
+        assert_eq!(body["signature_required"]["meaning"], MEANING);
+    }
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        &uri,
+        None,
+        Some(&olivia),
+        Some(json!({"value": 30.0, "signature": signature("wrong")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "account_locked");
+
+    // Locked: even the right password is refused, and sign-in too.
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        &uri,
+        None,
+        Some(&olivia),
+        Some(json!({"value": 30.0, "signature": signature("olivia-pass-123")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "account_locked");
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        None,
+        Some(json!({"username": "olivia", "password": "olivia-pass-123"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "the account is locked");
+    assert!(f.edition.records.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_right_signature_password_resets_the_failed_count() {
+    let f = fixture(TestEdition::default()).await;
+    let tag = writable_tag(&f.state).await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let uri = format!("/api/v1/tags/{tag}/write");
+    send_request(
+        &f.app,
+        "POST",
+        &uri,
+        None,
+        Some(&admin),
+        Some(json!({"value": 30.0, "signature": signature("wrong")})),
+    )
+    .await;
+    let user = f
+        .state
+        .storage
+        .get_user_by_username("admin")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(user.failed_attempts, 1);
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        &uri,
+        None,
+        Some(&admin),
+        Some(json!({"value": 31.0, "signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    let user = f
+        .state
+        .storage
+        .get_user_by_username("admin")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(user.failed_attempts, 0);
+}
+
+#[tokio::test]
+async fn api_keys_cannot_sign() {
+    let f = fixture(TestEdition::default()).await;
+    let tag = writable_tag(&f.state).await;
+    let (_, key) = f
+        .state
+        .storage
+        .create_api_key("plc-bridge", "admin", None, "[]", "integration")
+        .await
+        .unwrap();
+
+    for body in [
+        json!({"value": 30.0}),
+        json!({"value": 30.0, "signature": signature("admin")}),
+    ] {
+        let (status, answer) = send_request(
+            &f.app,
+            "POST",
+            &format!("/api/v1/tags/{tag}/write"),
+            Some(&key),
+            None,
+            Some(body),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+        assert_eq!(answer["code"], "signature_not_possible");
+    }
+    let asked = f.edition.asked.lock().unwrap().clone();
+    assert!(
+        asked
+            .iter()
+            .all(|(_, origin, _)| *origin == ActionOrigin::ApiKey)
+    );
+    assert!(f.edition.records.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mcp_and_flows_cannot_sign() {
+    let f = fixture(TestEdition::default()).await;
+    let tag = writable_tag(&f.state).await;
+    let admin = crate::api::AuthUser {
+        username: "admin".into(),
+        role: "admin".into(),
+    };
+    let body = crate::models::WriteRequest {
+        value: json!(30.0),
+        policy: "immediate".into(),
+        scheduled_at: None,
+        reason: None,
+        signature: None,
+    };
+    let resp = crate::api::commands::write_tag_as(&f.state, &admin, ActionOrigin::Mcp, tag, body)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // A flow's write is refused when the edition wants it signed...
+    let submission = || crate::api::commands::TagWriteSubmission {
+        tag_id: tag,
+        value: 31.0,
+        policy: "immediate".into(),
+        scheduled_at: None,
+        reason: Some("flow f1".into()),
+        command_id: None,
+    };
+    let checked =
+        crate::api::commands::check_write(&f.state.storage, &f.state.cache, &submission())
+            .await
+            .unwrap();
+    let refused = crate::api::commands::unattended_write_allowed(
+        f.edition.as_ref(),
+        "flow:f1",
+        &submission(),
+        &checked,
+    )
+    .await;
+    assert!(matches!(
+        refused,
+        Err(crate::api::commands::WriteError::Signature(
+            crate::api::signature::SignatureError::NotPossible(_)
+        ))
+    ));
+    // ...and goes through when its policy lets flows write unsigned.
+    let lenient = TestEdition {
+        allow_flows: true,
+        ..Default::default()
+    };
+    assert!(
+        crate::api::commands::unattended_write_allowed(
+            &lenient,
+            "flow:f1",
+            &submission(),
+            &checked
+        )
+        .await
+        .is_ok()
+    );
+    // Core never refuses a flow's write.
+    assert!(
+        crate::api::commands::unattended_write_allowed(
+            &crate::edition::Community,
+            "flow:f1",
+            &submission(),
+            &checked
+        )
+        .await
+        .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn alarm_acknowledge_and_shelve_need_the_signature_too() {
+    let f = fixture(TestEdition::default()).await;
+    let alarm = f
+        .state
+        .storage
+        .create_alarm("dev1.temp", "warning", 75.0, 70.0, "High", 0.0)
+        .await
+        .unwrap();
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let ack = format!("/api/v1/alarms/{alarm}/acknowledge");
+
+    let (status, body) = send_request(&f.app, "POST", &ack, None, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body["signature_required"]["action"], "alarm_ack");
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        &ack,
+        None,
+        Some(&admin),
+        Some(json!({"signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) =
+        send_request(&f.app, "POST", "/api/v1/alarms", None, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+
+    let shelf = format!("/api/v1/alarms/{alarm}/shelf");
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        &shelf,
+        None,
+        Some(&admin),
+        Some(json!({"duration_secs": 600, "reason": "maintenance"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+    assert_eq!(body["signature_required"]["action"], "alarm_shelve");
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        &shelf,
+        None,
+        Some(&admin),
+        Some(
+            json!({"duration_secs": 600, "reason": "maintenance", "signature": signature("admin")}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let records = f.edition.records.lock().unwrap().clone();
+    let actions: Vec<_> = records.iter().map(|r| r.action).collect();
+    assert_eq!(actions, [SignedAction::AlarmAck, SignedAction::AlarmShelve]);
+    assert_eq!(records[0].resource, format!("alarm:{alarm}"));
+}
+
+#[tokio::test]
+async fn mode_switches_need_the_signature() {
+    let f = fixture(TestEdition::default()).await;
+    let tag = writable_tag(&f.state).await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let uri = format!("/api/v1/data-sources/{tag}/write-policy");
+    let (status, body) = send_request(
+        &f.app,
+        "PATCH",
+        &uri,
+        None,
+        Some(&admin),
+        Some(json!({"write_max": 50.0})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body["signature_required"]["action"], "mode_switch");
+    let (status, body) = send_request(
+        &f.app,
+        "PATCH",
+        &uri,
+        None,
+        Some(&admin),
+        Some(json!({"write_max": 50.0, "signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let policy = f
+        .state
+        .storage
+        .get_write_policy(tag)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(policy.write_max, Some(50.0));
+    let record = f.edition.records.lock().unwrap()[0].clone();
+    assert_eq!(record.resource, format!("data_source:{tag}:write_policy"));
+
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/devices/dev1/simulate",
+        None,
+        Some(&admin),
+        Some(json!({"simulation_mode": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+}
+
+#[tokio::test]
+async fn community_asks_for_no_signature() {
+    let mut state = seeded_admin_app_state().await;
+    let (logger, mut audit) = AuditLogger::new();
+    state.audit_logger = logger;
+    let app = create_router(state.clone());
+    let tag = writable_tag(&state).await;
+    let admin = cookie(&app, "admin", "admin").await;
+    let (status, body) = send_request(
+        &app,
+        "POST",
+        &format!("/api/v1/tags/{tag}/write"),
+        None,
+        Some(&admin),
+        Some(json!({"value": 30.0, "reason": "trim"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let command_id = body["command_id"].as_str().unwrap().to_string();
+
+    // Previous and new value in the security audit entry...
+    let entries = drain(&mut audit);
+    let details = entries
+        .iter()
+        .find(|e| e.action == "tag_write")
+        .and_then(|e| e.details.clone())
+        .unwrap();
+    assert_eq!(
+        details,
+        format!("command={command_id} previous=21.5 value=30 reason=trim")
+    );
+    // ...and the previous value on the command's first audit entry.
+    let (status, trail) = send_request(
+        &app,
+        "GET",
+        &format!("/api/v1/commands/{command_id}/audit"),
+        None,
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(trail[0]["previous_value"], 21.5);
+}
+
+#[tokio::test]
+async fn the_audit_export_has_previous_and_new_value_columns() {
+    let storage = Storage::new_in_memory().unwrap();
+    storage
+        .log_audit_event(
+            "tag_write",
+            "olivia",
+            "data_source:7",
+            Some("command=abc previous=21.5 value=30 signature=sig-9 meaning=\"Approved by operator\" reason=value=99 previous=1"),
+        )
+        .await
+        .unwrap();
+    storage
+        .log_audit_event("create_user", "admin", "user:bob", Some("role=viewer"))
+        .await
+        .unwrap();
+    let csv = storage
+        .export_audit_logs_csv(None, None, None, None, None)
+        .await
+        .unwrap();
+    let mut lines = csv.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        "id,action,username,resource,details,created_at,previous_value,new_value,signature"
+    );
+    let rows: Vec<&str> = lines.collect();
+    let write = rows.iter().find(|l| l.contains("\"tag_write\"")).unwrap();
+    assert!(
+        write.ends_with(",\"21.5\",\"30\",\"sig-9\""),
+        "the reason text cannot fake a field: {write}"
+    );
+    let other = rows.iter().find(|l| l.contains("\"create_user\"")).unwrap();
+    assert!(other.ends_with(",\"\",\"\",\"\""), "{other}");
+}
+
+#[tokio::test]
+async fn the_password_policy_is_asked_on_every_password_change() {
+    let f = fixture(TestEdition::default()).await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/users",
+        None,
+        Some(&admin),
+        Some(json!({"username": "bob", "password": "short-pw", "role": "operator"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "Password must have at least 12 characters");
+    assert!(
+        f.state
+            .storage
+            .get_user_by_username("bob")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/users",
+        None,
+        Some(&admin),
+        Some(json!({"username": "bob", "password": "long-enough-pw", "role": "operator"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let bob_id = body["id"].as_i64().unwrap();
+
+    // Admin reset
+    let (status, body) = send_request(
+        &f.app,
+        "PUT",
+        &format!("/api/v1/users/{bob_id}"),
+        None,
+        Some(&admin),
+        Some(json!({"password": "bob-is-my-name-1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "Password must not contain the username");
+
+    // Self service
+    let bob = cookie(&f.app, "bob", "long-enough-pw").await;
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/auth/change-password",
+        None,
+        Some(&bob),
+        Some(json!({"old_password": "long-enough-pw", "new_password": "tiny-pw-1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "Password must have at least 12 characters");
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/auth/change-password",
+        None,
+        Some(&bob),
+        Some(json!({"old_password": "long-enough-pw", "new_password": "a-much-better-pw"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let changes = f.edition.password_changes.lock().unwrap().clone();
+    assert_eq!(
+        changes,
+        [
+            ("bob".to_string(), PasswordChangeKind::AdminCreate),
+            ("bob".to_string(), PasswordChangeKind::SelfService),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_expired_password_is_answered_like_must_change_password() {
+    let f = fixture(TestEdition::default()).await;
+    add_user(&f.state.storage, "stale", "old-password-1", "operator").await;
+    add_user(&f.state.storage, "fresh", "new-password-1", "operator").await;
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        None,
+        Some(json!({"username": "stale", "password": "old-password-1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["must_change_password"], true);
+    assert_eq!(body["password_expired"], true);
+
+    let (_, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/auth/login",
+        None,
+        None,
+        Some(json!({"username": "fresh", "password": "new-password-1"})),
+    )
+    .await;
+    assert_eq!(body["must_change_password"], false);
+    assert_eq!(body["password_expired"], false);
+}
+
+/// Sign in and return the (access, refresh) cookie values and the login body.
+async fn sign_in(
+    app: &Router,
+    username: &str,
+    password: &str,
+) -> (String, String, serde_json::Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"username": username, "password": password}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let access = extract_cookie_value(resp.headers(), "voltrus_token").unwrap();
+    let refresh = extract_cookie_value(resp.headers(), "voltrus_refresh").unwrap();
+    let max_age = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|c| c.starts_with("voltrus_token="))
+        .unwrap()
+        .to_string();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let mut body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    body["_access_cookie"] = json!(max_age);
+    (access, refresh, body)
+}
+
+async fn refresh(app: &Router, refresh: &str) -> (StatusCode, serde_json::Value) {
+    send_request(
+        app,
+        "POST",
+        "/api/v1/auth/refresh",
+        None,
+        Some(&format!("voltrus_refresh={refresh}")),
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn an_idle_session_ends_at_refresh() {
+    let f = fixture(TestEdition {
+        session: SessionPolicy {
+            idle_timeout_secs: Some(300),
+            absolute_timeout_secs: None,
+        },
+        ..Default::default()
+    })
+    .await;
+    let (_, refresh_token, body) = sign_in(&f.app, "admin", "admin").await;
+    assert_eq!(body["session"]["idle_timeout_secs"], 300);
+    assert!(
+        body["_access_cookie"]
+            .as_str()
+            .unwrap()
+            .contains("Max-Age=300"),
+        "the access token lives no longer than the idle timeout: {}",
+        body["_access_cookie"]
+    );
+
+    let hash = crate::api::auth::hash_refresh_token(&refresh_token);
+    let now = crate::timeutil::now_secs();
+
+    // Active 100 s ago: the session goes on.
+    f.state
+        .storage
+        .set_refresh_token_session_times(&hash, now - 1000, now - 100)
+        .await
+        .unwrap();
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/auth/activity",
+        None,
+        Some(&format!("voltrus_refresh={refresh_token}")),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let rt = f
+        .state
+        .storage
+        .get_refresh_token_by_hash(&hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(rt.last_activity_at.unwrap() >= now, "activity recorded");
+
+    // Idle for 400 s: refresh refuses.
+    f.state
+        .storage
+        .set_refresh_token_session_times(&hash, now - 1000, now - 400)
+        .await
+        .unwrap();
+    let (status, body) = refresh(&f.app, &refresh_token).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "session_idle");
+}
+
+#[tokio::test]
+async fn a_session_ends_at_its_absolute_lifetime_and_keeps_its_start_across_refreshes() {
+    let f = fixture(TestEdition {
+        session: SessionPolicy {
+            idle_timeout_secs: None,
+            absolute_timeout_secs: Some(3600),
+        },
+        ..Default::default()
+    })
+    .await;
+    let (_, first, _) = sign_in(&f.app, "admin", "admin").await;
+    let now = crate::timeutil::now_secs();
+    f.state
+        .storage
+        .set_refresh_token_session_times(
+            &crate::api::auth::hash_refresh_token(&first),
+            now - 3000,
+            now - 3000,
+        )
+        .await
+        .unwrap();
+
+    // Still inside the hour: a new refresh token, same session start.
+    let resp = f
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/refresh")
+                .header("cookie", format!("voltrus_refresh={first}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let second = extract_cookie_value(resp.headers(), "voltrus_refresh").unwrap();
+    let rt = f
+        .state
+        .storage
+        .get_refresh_token_by_hash(&crate::api::auth::hash_refresh_token(&second))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(rt.session_started_at, Some(now - 3000));
+
+    f.state
+        .storage
+        .set_refresh_token_session_times(
+            &crate::api::auth::hash_refresh_token(&second),
+            now - 4000,
+            now,
+        )
+        .await
+        .unwrap();
+    let (status, body) = refresh(&f.app, &second).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "session_expired");
+}
+
+#[tokio::test]
+async fn community_sessions_have_no_limit() {
+    let state = seeded_admin_app_state().await;
+    let app = create_router(state.clone());
+    let (_, refresh_token, body) = sign_in(&app, "admin", "admin").await;
+    assert_eq!(
+        body["session"]["idle_timeout_secs"],
+        serde_json::Value::Null
+    );
+    assert!(
+        body["_access_cookie"]
+            .as_str()
+            .unwrap()
+            .contains("Max-Age=900")
+    );
+    let now = crate::timeutil::now_secs();
+    state
+        .storage
+        .set_refresh_token_session_times(
+            &crate::api::auth::hash_refresh_token(&refresh_token),
+            now - 86_400 * 5,
+            now - 86_400 * 5,
+        )
+        .await
+        .unwrap();
+    let (status, _) = refresh(&app, &refresh_token).await;
+    assert_eq!(status, StatusCode::OK);
+}

@@ -160,7 +160,7 @@ fn fetch_tab(console: &mut Console, tab: Tab, again: bool) {
     if console.stress.is_some() {
         return;
     }
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let state = console.state::<State>();
     match tab {
         Tab::Report => {
@@ -260,7 +260,7 @@ fn copy_all(console: &mut Console, cx: &mut Context<Console>) {
 
 /// S: save the Defender script where the operator picks.
 fn save_script(console: &mut Console, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         console.show_toast("Only operators can download the Defender script", true, cx);
         return;
     }
@@ -520,11 +520,11 @@ fn rows(console: &Console, query: &str) -> Vec<Row> {
             found.into_iter().cloned().map(Row::Exclusion).collect()
         }
         Tab::Script => {
-            if console.is_operator() {
+            if console.may_configure() {
                 text_rows(state.script.as_ref(), "Loading the Defender script…")
             } else {
                 vec![Row::Note(
-                    "The Windows Defender script is for operators (admin, demo, integration)."
+                    "The Windows Defender script is for the admin, demo or integration roles."
                         .to_owned(),
                     false,
                 )]
@@ -721,7 +721,7 @@ fn draw_row(row: &Row, index: usize, ring: bool, current: bool, theme: &Theme) -
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     ensure_search(console, window, cx);
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let query = query(console, cx);
     let rows: Rc<[Row]> = rows(console, &query).into();
     let state = console.state::<State>();
@@ -794,7 +794,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 .tooltip(if operator {
                     "S"
                 } else {
-                    "Operators only (admin, demo, integration)"
+                    "Admin, demo or integration only"
                 })
                 .disabled(!operator || saving)
                 .on_click(cx.listener(|console, _, _, cx| save_script(console, cx)))

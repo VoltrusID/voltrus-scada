@@ -4,6 +4,7 @@ import { useShiftHandovers, useCreateShiftHandover, useShiftAutoReport } from '.
 import type { ShiftHandover as ShiftHandoverType } from './queries'
 import { btnStyle, inputStyle, labelStyle, labelTextStyle, tabStyle } from './styles'
 import { authorLabel } from './authorLabel'
+import { useRole } from './RoleContext'
 
 function formatTimestamp(epoch: number): string {
   return new Date(epoch * 1000).toLocaleString('en-US', {
@@ -400,6 +401,7 @@ export function ShiftHandoverPanel({ onClose, embedded }: Props) {
   const activeTab: TabId = routerSearch.tab === 'log' || routerSearch.tab === 'report' ? routerSearch.tab : 'log'
   const setActiveTab = (t: TabId) => navigate({ to: '/shift', search: prev => ({ ...prev, tab: t }) })
   const [showCreate, setShowCreate] = useState(false)
+  const { canOperate } = useRole()
 
   const content = (
     <>
@@ -413,7 +415,7 @@ export function ShiftHandoverPanel({ onClose, embedded }: Props) {
           <span style={{ fontSize: 17, fontWeight: 700 }}>Shift Handover</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          {activeTab === 'log' && (
+          {activeTab === 'log' && canOperate && (
             <button onClick={() => setShowCreate(v => !v)} style={{
               ...btnStyle, padding: '5px 10px', borderColor: 'var(--cyan)', color: 'var(--cyan)',
             }} aria-label="Create new handover log">

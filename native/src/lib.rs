@@ -10,6 +10,7 @@
 //! - [`perf`]: frame statistics for the HUD and the stress report.
 //! - [`screens`]: screens, their card layouts and the 24-column card grid
 //!   (compaction, drag, resize, auto-arrange), shared with the mimic viewer.
+//! - [`signature`]: electronic signatures an Enterprise server may ask for.
 //! - [`tag_api`]: tag writes and write policies, the tag tree, naming
 //!   convention, annotations and the tag detail's history queries.
 //! - [`device_file`]: Modbus Poll and BACnet Explorer device files, parsed
@@ -25,6 +26,7 @@ pub mod mimic;
 pub mod perf;
 pub mod runtime;
 pub mod screens;
+pub mod signature;
 pub mod stress;
 pub mod tag_api;
 pub mod ws_types;

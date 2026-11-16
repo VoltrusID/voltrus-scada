@@ -962,10 +962,10 @@ fn banner(text: String, theme: &Theme) -> AnyElement {
 
 #[allow(clippy::too_many_lines)]
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
-    if !console.is_operator() {
+    if !console.may_configure() {
         return empty_state(
             Icon::Lock,
-            "Scripts need the operator role",
+            "Scripts need the admin, demo or integration role",
             "The server lets administrators, demo and integration users edit and run scripts.",
             Vec::new(),
             cx,

@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use super::tools::{self, Access, Ctx};
-use crate::api::{AppState, AuthUser, role_allows_operational_writes};
+use crate::api::{AppState, AuthUser, role_allows_configuration, role_allows_operation};
 
 pub const PARSE_ERROR: i64 = -32700;
 pub const INVALID_REQUEST: i64 = -32600;
@@ -238,14 +238,26 @@ fn authorize(
             ),
         ));
     }
-    if tool.access == Access::Write && !role_allows_operational_writes(&user.role) {
+    if tool.access == Access::Write && !role_allows_configuration(&user.role) {
         denied(state, user, name, "role");
         return Err(error_response(
             id.clone(),
             FORBIDDEN,
             format!(
-                "tool '{name}' changes the system and needs the admin, demo or integration role; \
-                 this credential has role '{}'. Use an integration API key.",
+                "tool '{name}' changes the configuration and needs the admin, demo or integration \
+                 role; this credential has role '{}'. Use an integration API key.",
+                user.role
+            ),
+        ));
+    }
+    if tool.access == Access::Operate && !role_allows_operation(&user.role) {
+        denied(state, user, name, "role");
+        return Err(error_response(
+            id.clone(),
+            FORBIDDEN,
+            format!(
+                "tool '{name}' operates the plant and needs the operator, demo, admin or \
+                 integration role; this credential has role '{}'. Use an integration API key.",
                 user.role
             ),
         ));

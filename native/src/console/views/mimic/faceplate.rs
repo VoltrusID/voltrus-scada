@@ -407,7 +407,7 @@ pub(crate) fn render(
                 div()
                     .text_size(FONT_SMALL)
                     .text_color(hmi.fg_dim)
-                    .child("Commands need the operator role (admin, demo or integration)."),
+                    .child("Commands need an operator role."),
             );
         }
         if let Some(armed) = &armed_now {

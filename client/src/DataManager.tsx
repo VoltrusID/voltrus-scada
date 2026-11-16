@@ -27,6 +27,8 @@ interface NavItem {
   icon: React.ReactNode
   admin?: boolean
   strictAdmin?: boolean
+  /** Shown to anyone who may operate (operators too), not only to configurers. */
+  operate?: boolean
 }
 
 interface NavGroup {
@@ -59,7 +61,7 @@ const CORE_GROUPS: NavGroup[] = [
     items: [
       { id: 'oee', label: 'OEE', icon: <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg> },
       { id: 'analytics', label: 'Analytics', icon: <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg> },
-      { id: 'recipes', label: 'Recipes', admin: true, icon: <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg> },
+      { id: 'recipes', label: 'Recipes', operate: true, icon: <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg> },
     ],
   },
   {
@@ -134,7 +136,7 @@ function useNarrow(): boolean {
   return narrow;
 }
 
-export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onClose, shortcuts, isAdmin, isStrictAdmin }: {
+export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onClose, shortcuts, isAdmin, isStrictAdmin, canOperate = isAdmin }: {
   sensors: SensorConfig[];
   onSave: (s: SensorConfig, shortcut?: string | null) => void;
   onDelete: (id: number) => void;
@@ -144,6 +146,8 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
   shortcuts: Record<number, string>;
   isAdmin?: boolean;
   isStrictAdmin?: boolean;
+  /** May operate: recipes (list and load) for operators. Defaults to isAdmin. */
+  canOperate?: boolean;
 }) {
   const navigate = useNavigate();
   const routerSearch = useRouterState({ select: s => s.location.search }) as { tab?: string };
@@ -195,7 +199,7 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
   const visibleGroups = GROUPS
     .map(group => ({
       ...group,
-      items: group.items.filter(i => !(i.strictAdmin && !isStrictAdmin) && !(i.admin && !isAdmin)),
+      items: group.items.filter(i => !(i.strictAdmin && !isStrictAdmin) && !(i.admin && !isAdmin) && !(i.operate && !canOperate)),
     }))
     .filter(group => group.items.length > 0)
 
@@ -301,8 +305,8 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
           {tab === 'analytics' && (
             <AnalyticsPanel />
           )}
-          {tab === 'recipes' && isAdmin && (
-            <RecipeManager />
+          {tab === 'recipes' && canOperate && (
+            <RecipeManager canConfigure={!!isAdmin} />
           )}
           {tab === 's7' && isAdmin && (
             <S7DeviceManager onClose={onClose} embedded />

@@ -38,8 +38,10 @@ function LastRun({ flowId }: { flowId: string }) {
   )
 }
 
-function FlowRow({ flow, cat, canEdit, onEdit, onDuplicate, onDelete, onStart, onStop }: {
+function FlowRow({ flow, cat, canEdit, canRun, onEdit, onDuplicate, onDelete, onStart, onStop }: {
   flow: Flow; cat: FlowCatalogue; canEdit: boolean
+  /** Start and stop: operators too, not only those who may edit. */
+  canRun: boolean
   onEdit: () => void; onDuplicate: () => void; onDelete: () => void; onStart: () => void; onStop: () => void
 }) {
   const trigger = parseTrigger(flow.trigger_config)
@@ -70,7 +72,7 @@ function FlowRow({ flow, cat, canEdit, onEdit, onDuplicate, onDelete, onStart, o
           color: flow.enabled ? 'var(--green)' : 'var(--muted)',
           background: flow.enabled ? 'color-mix(in srgb, var(--green) 12%, transparent)' : 'var(--hover-overlay)',
         }}>{flow.enabled ? 'Running' : 'Stopped'}</span>
-        {canEdit && (flow.enabled
+        {canRun && (flow.enabled
           ? <button type="button" style={{ ...small, color: 'var(--warn)' }} onClick={onStop}>Stop</button>
           : <button type="button" style={{ ...small, color: 'var(--green)' }} onClick={onStart}>Start</button>)}
         <button type="button" style={small} onClick={onEdit}>{canEdit ? 'Edit' : 'View'}</button>
@@ -86,7 +88,7 @@ function FlowRow({ flow, cat, canEdit, onEdit, onDuplicate, onDelete, onStart, o
  * roles get a read-only view of the list and canvas. Only `isStrictAdmin`
  * (admin) may create webhook tokens.
  */
-export function FlowManager({ isAdmin, isStrictAdmin = isAdmin }: { isAdmin: boolean; isStrictAdmin?: boolean }) {
+export function FlowManager({ isAdmin, isStrictAdmin = isAdmin, canOperate = isAdmin }: { isAdmin: boolean; isStrictAdmin?: boolean; canOperate?: boolean }) {
   const canEdit = isAdmin
   const [editing, setEditing] = useState<{ flow: Flow; saved: boolean } | null>(null)
   const [q, setQ] = useState('')
@@ -176,7 +178,7 @@ export function FlowManager({ isAdmin, isStrictAdmin = isAdmin }: { isAdmin: boo
             <span /><span>Name</span><span>Trigger</span><span>Nodes</span><span>Last run</span><span style={{ textAlign: 'right' }}>Status</span>
           </div>
           {shown.map(f => (
-            <FlowRow key={f.id} flow={f} cat={cat} canEdit={canEdit}
+            <FlowRow key={f.id} flow={f} cat={cat} canEdit={canEdit} canRun={canOperate}
               onEdit={() => setEditing({ flow: f, saved: true })}
               onDuplicate={() => setEditing({
                 flow: { ...f, id: `flow_${Date.now()}`, name: duplicateName(f.name), enabled: false, created_at: 0, updated_at: 0 },

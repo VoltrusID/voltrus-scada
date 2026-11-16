@@ -97,9 +97,14 @@ fn activate_row(
     }
 }
 
-/// `a`: acknowledge, if it waits for it.
+/// `a`: acknowledge, if it waits for it and the user operates (viewers
+/// read only).
 pub(super) fn acknowledge(console: &mut Console, alarm: &Alarm) {
-    if alarm.acknowledged_at.is_none() && !is_shelved(alarm) && !is_resolved(alarm) {
+    if console.may_operate()
+        && alarm.acknowledged_at.is_none()
+        && !is_shelved(alarm)
+        && !is_resolved(alarm)
+    {
         console.acknowledge(alarm.id);
     }
 }
@@ -112,7 +117,7 @@ pub(super) fn shelve_or_unshelve(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    if !console.is_operator() {
+    if !console.may_operate() {
         console.show_toast("Shelving needs an operator role", true, cx);
     } else if is_shelved(alarm) {
         console.unshelve(alarm.id);
@@ -375,7 +380,7 @@ pub(super) fn render(
                 move |console: &mut Console, range: Range<usize>, _, cx: &mut Context<Console>| {
                     let theme = vt_ui::theme::theme(cx).clone();
                     let now = time_now_secs();
-                    let operator = console.is_operator();
+                    let operator = console.may_operate();
                     let source = source(console);
                     range
                         .map(
@@ -499,7 +504,7 @@ fn alarm_row(
                 .into_any_element(),
         );
     } else if !resolved && !shelved {
-        if !acknowledged {
+        if !acknowledged && operator {
             actions.push(
                 Button::new(ElementId::NamedInteger("ack".into(), key), "Ack")
                     .compact()

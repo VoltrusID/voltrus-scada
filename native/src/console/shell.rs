@@ -804,7 +804,7 @@ pub fn parse_cooldown(text: &str) -> Result<i64, String> {
 }
 
 pub fn save_cooldown(console: &mut Console, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         return;
     }
     let Some(input) = console.state::<Shell>().cooldown_input.clone() else {
