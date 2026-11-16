@@ -2,6 +2,17 @@ import { useEffect, useState } from 'react'
 import { edition, brandAccent, brandAccentText, type BrandingSettings, type LoginProvidersProps } from './edition'
 import { loginHintFrom } from './sharedAccount'
 
+/**
+ * The UI font: the brand font when enterprise branding sets --font-ui (Core
+ * sets it to the app's system font stack), Inter as a last resort.
+ */
+const LOGIN_FONT = 'var(--font-ui, Inter, sans-serif)'
+
+/** `accent` at `percent` opacity, for tints of the brand accent (default green). */
+function tint(accent: string, percent: number): string {
+  return `color-mix(in srgb, ${accent} ${percent}%, transparent)`
+}
+
 const INPUT: React.CSSProperties = {
   width: '100%',
   padding: '12px 14px',
@@ -10,7 +21,7 @@ const INPUT: React.CSSProperties = {
   background: 'var(--bg)',
   color: 'var(--fg)',
   fontSize: 14,
-  fontFamily: 'Inter, sans-serif',
+  fontFamily: LOGIN_FONT,
   outline: 'none',
   transition: 'border-color 0.15s, box-shadow 0.15s',
   boxSizing: 'border-box',
@@ -33,6 +44,8 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
     return () => { live = false }
   }, [])
   const submit = (e: React.FormEvent) => { e.preventDefault(); onLogin(user, pass) }
+  const accent = brandAccent(branding)
+  const focusRing = (el: HTMLInputElement) => { el.style.borderColor = tint(accent, 50); el.style.boxShadow = `0 0 0 3px ${tint(accent, 10)}` }
 
   return (
     <div style={{
@@ -41,7 +54,7 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
       alignItems: 'center',
       justifyContent: 'center',
       background: 'var(--bg)',
-      fontFamily: 'Inter, sans-serif',
+      fontFamily: LOGIN_FONT,
       padding: 20,
     }}>
       <div style={{
@@ -57,12 +70,12 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
         <div style={{
           padding: '36px 36px 28px',
           textAlign: 'center',
-          background: 'linear-gradient(135deg, rgba(34,197,94,.06) 0%, rgba(34,197,94,.02) 100%)',
+          background: `linear-gradient(135deg, ${tint(accent, 6)} 0%, ${tint(accent, 2)} 100%)`,
           borderBottom: '1px solid var(--border)',
         }}>
           <div style={{
             width: 56, height: 56, borderRadius: 14,
-            background: 'rgba(34,197,94,.1)', border: '1px solid rgba(34,197,94,.2)',
+            background: tint(accent, 10), border: `1px solid ${tint(accent, 20)}`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             margin: '0 auto 16px',
           }}>
@@ -89,7 +102,7 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
               autoComplete="username"
               autoFocus
               aria-required="true"
-              onFocus={e => { e.currentTarget.style.borderColor = 'rgba(34,197,94,.5)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34,197,94,.1)' }}
+              onFocus={e => focusRing(e.currentTarget)}
               onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
             />
           </div>
@@ -106,7 +119,7 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
                 style={{ ...INPUT, paddingRight: 42 }}
                 autoComplete="current-password"
                 aria-required="true"
-                onFocus={e => { e.currentTarget.style.borderColor = 'rgba(34,197,94,.5)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(34,197,94,.1)' }}
+                onFocus={e => focusRing(e.currentTarget)}
                 onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
               />
               <button
@@ -152,12 +165,12 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
               padding: '12px 20px',
               borderRadius: 8,
               border: 'none',
-              background: brandAccent(branding),
+              background: accent,
               color: brandAccentText(branding),
               fontSize: 14,
               fontWeight: 600,
               cursor: 'pointer',
-              fontFamily: 'Inter, sans-serif',
+              fontFamily: LOGIN_FONT,
               transition: 'opacity 0.15s',
               marginTop: 4,
             }}
