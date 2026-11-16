@@ -525,6 +525,12 @@ pub(super) fn run_migrations(conn: &Connection) {
     // NULL and are reported as pre-chain by verify_audit_chain.
     let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT");
     let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN hash TEXT");
+
+    // Migration: flow graphs. The per-node trace of a flow's recent runs (kept
+    // on the newest runs only, see insert_flow_run), and the SHA-256 of the
+    // flow's webhook token (the token itself is shown once and not stored).
+    let _ = conn.execute_batch("ALTER TABLE flow_runs ADD COLUMN trace TEXT");
+    let _ = conn.execute_batch("ALTER TABLE flows ADD COLUMN webhook_token_hash TEXT");
 }
 
 /// Any second-based timestamp before the year 5138 is below this; a rollup

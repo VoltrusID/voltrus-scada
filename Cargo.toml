@@ -115,6 +115,10 @@ calamine = "0.37"
 snmp = "0.2.2"
 mime_guess = "2"
 
+[target.'cfg(unix)'.dependencies]
+# localtime_r for the server's UTC offset (flow schedule triggers); already in the tree.
+libc = "0.2"
+
 [build-dependencies]
 flate2 = "=1.1.9"
 
