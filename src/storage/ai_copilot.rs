@@ -45,6 +45,22 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    pub async fn delete_ai_setting(&self, key: &str) -> Result<()> {
+        let conn = self.conn.clone();
+        let key = format!("ai_{}", key);
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                rusqlite::params![key],
+            )
+            .context("Delete AI setting failed")?;
+            Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     // ── AI Proposals ──
 
     pub async fn create_ai_proposal(

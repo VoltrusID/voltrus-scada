@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchJson, fetchOk } from './fetch'
 import { queryKeys } from './keys'
 import type { AiSettings, AiProposal, EquipmentTemplate } from '../types'
+import type { AiSettingsBody } from '../copilot/aiSettings'
 
 // ── Settings ──
 
@@ -15,7 +16,7 @@ export function useAiSettings() {
 export function useUpdateAiSettings() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { provider?: string; api_key?: string; default_model?: string }) =>
+    mutationFn: (body: AiSettingsBody) =>
       fetchOk('/api/v1/ai/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.aiSettings }),
   })
@@ -23,7 +24,7 @@ export function useUpdateAiSettings() {
 
 export function useTestAiSettings() {
   return useMutation({
-    mutationFn: () => fetchOk('/api/v1/ai/settings/test').then(r => r.json()),
+    mutationFn: () => fetchOk('/api/v1/ai/settings/test', { method: 'POST' }).then(r => r.json()),
   })
 }
 

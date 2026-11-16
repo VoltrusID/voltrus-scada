@@ -42,6 +42,10 @@ pub async fn save(storage: &Storage, auth_secret: &str, key: &str) -> Result<()>
     storage.set_ai_setting(SETTING, &stored).await
 }
 
+pub async fn clear(storage: &Storage) -> Result<()> {
+    storage.delete_ai_setting(SETTING).await
+}
+
 /// Encrypt a key stored in plain text by an older version. Returns whether
 /// anything was rewritten.
 pub async fn migrate_plaintext(storage: &Storage, auth_secret: &str) -> Result<bool> {
