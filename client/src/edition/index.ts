@@ -7,7 +7,7 @@ import type { BrandingProvider, EnterpriseClientModule } from './types'
 
 export * from './types'
 export { COMMUNITY_LICENSE, FEATURE_FLAG_KEYS, hasFeature, normalizeLicense } from './license'
-export { DEFAULT_BRANDING } from './branding'
+export { DEFAULT_BRANDING, DEFAULT_ACCENT, applyBrandToDocument, brandAccent, brandAccentText } from './branding'
 export { mergeTabs } from './tabs'
 export { ENTERPRISE_NS, registerLocales } from './locales'
 

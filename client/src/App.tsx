@@ -21,7 +21,7 @@ import { createDashboardStore, DashboardStoreProvider } from './store/dashboardS
 import { useSensors, useScreenSensors, useScreens, useLayouts, useTwinLayouts, useTwinConnections, useCanvasLayouts, useShortcuts, useNavShortcuts, useActiveAlarmCount, useUpdateSensor, useDeleteSensor, useAddSensor, useSaveLayout, useSaveTwinLayout, useSaveTwinConnections, useSaveCanvasLayout, useSaveShortcuts, useSaveNavShortcuts, useCreateScreen, useRenameScreen, useDeleteScreen, useAddSensorToScreen, useRemoveSensorFromScreen, useScadaEquipment, useScadaConnections, useSaveScadaEquipment, useSaveScadaConnections, fetchOk, fetchJson } from './queries'
 import { LicenseContext } from './LicenseContext'
 import { useLicenseStatus } from './queries/license'
-import { edition, useEditionBranding, DEFAULT_BRANDING } from './edition'
+import { edition, useEditionBranding, DEFAULT_BRANDING, applyBrandToDocument } from './edition'
 import { OverlayScreen } from './components/OverlayScreen'
 import { VoltrusWebSocket, setWsInstance } from './api/websocket'
 import { ThemeProvider } from './ThemeContext'
@@ -167,6 +167,8 @@ export function AppInner() {
   const { data: navShortcuts = {} } = useNavShortcuts(authed)
   const licenseInfo = useLicenseStatus()
   const branding = useEditionBranding(licenseInfo) ?? DEFAULT_BRANDING
+  // Tab title and favicon follow the brand (Voltrus defaults when none is set).
+  useEffect(() => { applyBrandToDocument(document, branding) }, [branding])
   const { data: activeAlarms = { count: 0 } } = useActiveAlarmCount(authed)
 
   // ── Mutation hooks ───────────────────────────────────────────────
