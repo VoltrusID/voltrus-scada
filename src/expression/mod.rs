@@ -6,4 +6,4 @@ mod tests;
 mod token;
 
 pub use dsl::run_dsl;
-pub use evaluator::{evaluate, evaluate_json};
+pub use evaluator::{check_syntax, evaluate, evaluate_json};

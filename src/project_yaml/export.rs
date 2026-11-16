@@ -251,9 +251,41 @@ fn read_plain(conn: &Connection, sec: &Section, p: &Plain, ctx: &mut Ctx) -> Res
     Ok(out)
 }
 
-/// Rewrite the numeric ids flow nodes use into natural keys.
+/// The node list of a flow's `nodes`: the v1 pipeline itself, or `nodes` of a v2 graph.
+pub(super) fn flow_node_list(raw: &mut Mapping) -> Option<&mut Vec<Value>> {
+    match raw.get_mut("nodes")? {
+        Value::Sequence(nodes) => Some(nodes),
+        Value::Mapping(graph) => match graph.get_mut("nodes")? {
+            Value::Sequence(nodes) => Some(nodes),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Rewrite the numeric ids flow nodes (and a tag_change trigger) use into natural keys.
 pub fn flow_export(raw: &mut Mapping, ctx: &mut Ctx) {
-    let Some(Value::Sequence(nodes)) = raw.get_mut("nodes") else {
+    if let Some(Value::Mapping(trigger)) = raw.get_mut("trigger")
+        && trigger.get("type").and_then(Value::as_str) == Some("tag_change")
+    {
+        let ids: Vec<i64> = match trigger.get("data_source_ids") {
+            Some(Value::Sequence(s)) => s.iter().filter_map(Value::as_i64).collect(),
+            Some(v) => v.as_i64().into_iter().collect(),
+            None => Vec::new(),
+        };
+        let mut refs = Vec::new();
+        for id in ids {
+            match ctx.tag_ref_by_id.get(&id) {
+                Some(r) => refs.push(text(r.clone())),
+                None => ctx
+                    .warnings
+                    .push(format!("flow trigger refers to missing tag id {id}")),
+            }
+        }
+        trigger.remove("data_source_ids");
+        trigger.insert(text("tags"), Value::Sequence(refs));
+    }
+    let Some(nodes) = flow_node_list(raw) else {
         return;
     };
     for node in nodes {

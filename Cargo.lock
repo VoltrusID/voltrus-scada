@@ -8340,6 +8340,7 @@ dependencies = [
  "hmac",
  "http 1.4.0",
  "lettre",
+ "libc",
  "mime_guess",
  "password-hash",
  "rand 0.9.4",

@@ -1263,3 +1263,52 @@ async fn duplicate_device_template_keys_are_rejected() {
             .any(|i| i.message.contains("duplicate device template"))
     );
 }
+
+#[tokio::test]
+async fn flow_graphs_and_tag_change_triggers_round_trip_by_name() {
+    let a = seeded().await;
+    a.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO flows (id,name,enabled,trigger_config,nodes,created_at,updated_at) VALUES ('g','Graph',0,?1,?2,100,100)",
+            params![
+                r#"{"type":"tag_change","data_source_ids":[2],"deadband":0.5}"#,
+                r#"{"version":2,"nodes":[{"id":"w","type":"write_out","data_source_id":2,"x":5,"y":6},{"id":"s","type":"script","script_id":1}],"edges":[{"from":"trigger","port":0,"to":"w"},{"from":"w","port":1,"to":"s"}]}"#,
+            ],
+        )?;
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let text = export_text(&a).await;
+    assert!(!text.contains("data_source_ids"), "{text}");
+    let doc = parse_project_yaml(&text).unwrap();
+    let b = fresh();
+    apply_import_with_env(&b, &doc, Mode::Merge, env_for(&a).await)
+        .await
+        .unwrap();
+    let key_of = |s: &Storage, id: i64| {
+        let s = s.clone();
+        async move {
+            scalar_text(
+                &s,
+                &format!("SELECT device_id || '/' || key FROM data_sources WHERE id={id}"),
+            )
+            .await
+        }
+    };
+    let trigger: serde_json::Value = serde_json::from_str(
+        &scalar_text(&b, "SELECT trigger_config FROM flows WHERE id='g'").await,
+    )
+    .unwrap();
+    let nodes: serde_json::Value =
+        serde_json::from_str(&scalar_text(&b, "SELECT nodes FROM flows WHERE id='g'").await)
+            .unwrap();
+    let new_id = trigger["data_source_ids"][0].as_i64().unwrap();
+    assert_eq!(key_of(&b, new_id).await, key_of(&a, 2).await);
+    assert_eq!(nodes["nodes"][0]["data_source_id"], new_id);
+    assert_eq!(nodes["nodes"][0]["x"], 5);
+    let script_id = scalar_i64(&b, "SELECT id FROM scripts WHERE name='scale'").await;
+    assert_eq!(nodes["nodes"][1]["script_id"], script_id);
+    assert_eq!(nodes["edges"][1]["port"], 1);
+    crate::flow_engine::graph::FlowGraph::parse(&nodes.to_string()).unwrap();
+}
