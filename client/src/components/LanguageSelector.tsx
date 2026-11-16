@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import { useUiLang, useUpdateUiLang, type LangValue } from '../queries'
+import { isSharedAccount } from '../sharedAccount'
 
 const LANGUAGES: { code: LangValue; label: string }[] = [
   { code: 'en', label: 'English' },
@@ -13,18 +14,21 @@ export function LanguageSelector() {
   const { data } = useUiLang()
   const updateLangMut = useUpdateUiLang()
 
-  const serverLang: LangValue = data?.lang ?? 'en'
+  // A shared account keeps the language in this browser only (the server
+  // refuses to change it for everyone), so show the one in use.
+  const shared = isSharedAccount()
+  const current: LangValue = shared ? ((i18n.resolvedLanguage ?? i18n.language) as LangValue) : data?.lang ?? 'en'
 
   const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const lang = e.target.value as LangValue
     i18n.changeLanguage(lang)
     localStorage.setItem('voltrus:ui_lang', lang)
-    updateLangMut.mutate(lang)
+    if (!shared) updateLangMut.mutate(lang)
   }
 
   return (
     <select
-      value={serverLang}
+      value={current}
       onChange={handleChange}
       aria-label="Language"
       style={{

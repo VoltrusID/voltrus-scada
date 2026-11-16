@@ -21,10 +21,11 @@ import { createDashboardStore, DashboardStoreProvider } from './store/dashboardS
 import { useSensors, useScreenSensors, useScreens, useLayouts, useTwinLayouts, useTwinConnections, useCanvasLayouts, useShortcuts, useNavShortcuts, useActiveAlarmCount, useUpdateSensor, useDeleteSensor, useAddSensor, useSaveLayout, useSaveTwinLayout, useSaveTwinConnections, useSaveCanvasLayout, useSaveShortcuts, useSaveNavShortcuts, useCreateScreen, useRenameScreen, useDeleteScreen, useAddSensorToScreen, useRemoveSensorFromScreen, useScadaEquipment, useScadaConnections, useSaveScadaEquipment, useSaveScadaConnections, fetchOk, fetchJson } from './queries'
 import { LicenseContext } from './LicenseContext'
 import { useLicenseStatus } from './queries/license'
-import { edition, useEditionBranding, DEFAULT_BRANDING } from './edition'
+import { edition, useEditionBranding, DEFAULT_BRANDING, applyBrandToDocument } from './edition'
 import { OverlayScreen } from './components/OverlayScreen'
 import { VoltrusWebSocket, setWsInstance } from './api/websocket'
 import { ThemeProvider } from './ThemeContext'
+import { setSharedAccount } from './sharedAccount'
 import { useTranslation } from 'react-i18next'
 import { duplicateName } from './duplicateName'
 
@@ -166,6 +167,8 @@ export function AppInner() {
   const { data: navShortcuts = {} } = useNavShortcuts(authed)
   const licenseInfo = useLicenseStatus()
   const branding = useEditionBranding(licenseInfo) ?? DEFAULT_BRANDING
+  // Tab title and favicon follow the brand (Voltrus defaults when none is set).
+  useEffect(() => { applyBrandToDocument(document, branding) }, [branding])
   const { data: activeAlarms = { count: 0 } } = useActiveAlarmCount(authed)
 
   // ── Mutation hooks ───────────────────────────────────────────────
@@ -277,8 +280,9 @@ export function AppInner() {
   useEffect(() => {
     fetchJson<any>('/api/v1/auth/me').then(d => {
       if (d.authenticated) connectWS()
+      setSharedAccount(d.shared === true)
       setAuthed(d.authenticated === true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setAuthLoading(false)
-    }).catch(() => { setAuthed(false); setAuthRole('user'); setAuthUser(''); setAuthLoading(false) })
+    }).catch(() => { setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser(''); setAuthLoading(false) })
   }, [])
 
   const handleLogin = async (username: string, password: string) => {
@@ -291,15 +295,15 @@ export function AppInner() {
         const body = await r.json().catch(() => ({}))
         throw new Error(body.error || `Login failed: ${r.status}`)
       }
-      const d = await r.json(); connectWS(); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || username); setMustChangePassword(!!d.must_change_password)
+      const d = await r.json(); setSharedAccount(d.shared === true); connectWS(); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || username); setMustChangePassword(!!d.must_change_password)
     } catch (e: any) { setLoginError(e.message || 'Login failed') }
   }
 
-  const handleExternalLogin = (d: { username?: string; role?: string; must_change_password?: boolean }) => {
-    connectWS(); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setMustChangePassword(!!d.must_change_password)
+  const handleExternalLogin = (d: { username?: string; role?: string; must_change_password?: boolean; shared?: boolean }) => {
+    setSharedAccount(d.shared === true); connectWS(); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setMustChangePassword(!!d.must_change_password)
   }
 
-  const handleLogout = async () => { disconnectWS(); storeActions.clearData(); await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); setAuthed(false); setAuthRole('user'); setAuthUser('') }
+  const handleLogout = async () => { disconnectWS(); storeActions.clearData(); await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser('') }
 
   // ── Handlers ─────────────────────────────────────────────────────
 

@@ -89,6 +89,7 @@ export {
 
 export {
   useUsers,
+  useAuthMe,
   useCreateUser,
   useUpdateUser,
   useDeleteUser,

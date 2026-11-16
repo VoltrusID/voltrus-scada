@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { edition, type BrandingSettings, type LoginProvidersProps } from './edition'
+import { useEffect, useState } from 'react'
+import { edition, brandAccent, brandAccentText, type BrandingSettings, type LoginProvidersProps } from './edition'
+import { loginHintFrom } from './sharedAccount'
 
 const INPUT: React.CSSProperties = {
   width: '100%',
@@ -21,6 +22,16 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
   const [user, setUser] = useState('')
   const [pass, setPass] = useState('')
   const [showPass, setShowPass] = useState(false)
+  const [hint, setHint] = useState<string | null>(null)
+  useEffect(() => {
+    // Plain fetch: a failure only means no hint, not an error toast.
+    let live = true
+    fetch('/api/v1/auth/providers', { credentials: 'include' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(body => { if (live) setHint(loginHintFrom(body)) })
+      .catch(() => {})
+    return () => { live = false }
+  }, [])
   const submit = (e: React.FormEvent) => { e.preventDefault(); onLogin(user, pass) }
 
   return (
@@ -141,8 +152,8 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
               padding: '12px 20px',
               borderRadius: 8,
               border: 'none',
-              background: '#22c55e',
-              color: '#fff',
+              background: brandAccent(branding),
+              color: brandAccentText(branding),
               fontSize: 14,
               fontWeight: 600,
               cursor: 'pointer',
@@ -155,6 +166,9 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
           >
             Sign In
           </button>
+          {hint && (
+            <p style={{ margin: 0, fontSize: 12, color: 'var(--muted)', textAlign: 'center', overflowWrap: 'anywhere' }}>{hint}</p>
+          )}
         </form>
         {edition.LoginProviders && <edition.LoginProviders onLoggedIn={onExternalLogin} />}
       </div>

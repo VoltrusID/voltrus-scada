@@ -1,8 +1,9 @@
 //! Data Manager › Users (strictly admin), after the web client's
 //! `UserManager.tsx`: every account with its role, a new user (name,
-//! password typed twice, role), a role change, a password reset and a
-//! delete after a confirmation. The console refuses what would lock the
-//! admins out: demoting or deleting yourself, or the last admin. Passwords
+//! password typed twice, role), a role change, a password reset, disabling
+//! or enabling an account, and a delete after a confirmation. The console
+//! refuses what would lock the admins out: demoting, disabling or deleting
+//! yourself, or the last enabled admin. Passwords
 //! are typed in masked fields and never kept after the dialog closes.
 
 use std::ops::Range;
@@ -12,8 +13,8 @@ use gpui::{AnyElement, Context, Entity, Subscription, Window, div, px, uniform_l
 use serde::de::IgnoredAny;
 use voltrus_scada_native::api::Method;
 use voltrus_scada_native::api::admin::{
-    USER_ROLES, User, check_password, delete_refused, new_user_body, role_change_refused,
-    user_role, user_update_body,
+    USER_ROLES, User, check_password, delete_refused, disable_refused, disabled_body,
+    new_user_body, role_change_refused, user_role, user_update_body,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use vt_ui::Icon;
@@ -40,7 +41,7 @@ const FORM: &str = "data-user-form";
 const ROLE: f32 = 96.0;
 const ACCESS: f32 = 320.0;
 const STATUS: f32 = 150.0;
-const ACTIONS: f32 = 96.0;
+const ACTIONS: f32 = 128.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Kind {
@@ -77,6 +78,7 @@ pub(crate) struct State {
     /// How many forms were opened.
     form_seq: i64,
     deleting: Option<User>,
+    disabling: Option<User>,
 }
 
 fn fetch(console: &mut Console, again: bool) {
@@ -260,6 +262,55 @@ fn delete_confirmed(console: &mut Console, _: &mut Window, _: &mut Context<Conso
     );
 }
 
+/// Disable (after a confirmation) or enable (at once) an account.
+fn toggle_disabled(
+    console: &mut Console,
+    user: User,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) {
+    if user.disabled {
+        send_disabled(console, &user, false);
+        return;
+    }
+    if let Some(refused) = disable_refused(&me(console), &user, &users(console)) {
+        console.show_toast(refused, true, cx);
+        return;
+    }
+    let confirm = Confirm {
+        title: format!("Disable {}?", user.username),
+        body: "They are signed out everywhere and cannot sign in again, single sign-on included, until the account is enabled. Their history is kept.".to_owned(),
+        verb: "Disable",
+        run: disable_confirmed,
+    };
+    console.state::<State>().disabling = Some(user);
+    kit::ask(console, confirm, window, cx);
+}
+
+fn disable_confirmed(console: &mut Console, _: &mut Window, _: &mut Context<Console>) {
+    if let Some(user) = console.state::<State>().disabling.take() {
+        send_disabled(console, &user, true);
+    }
+}
+
+fn send_disabled(console: &mut Console, user: &User, disabled: bool) {
+    let (id, name) = (user.id, user.username.clone());
+    let done = if disabled {
+        format!("Disabled {name}")
+    } else {
+        format!("Enabled {name}")
+    };
+    let body = disabled_body(disabled);
+    console.call(
+        CallKey::new("data.users.disable").with(id),
+        Call::new(move |api| async move {
+            api.send_json::<_, IgnoredAny>(Method::PUT, &format!("/api/v1/users/{id}"), &body)
+                .await?;
+            anyhow::Ok((done, name))
+        }),
+    );
+}
+
 /// A save's request, checked first: method, path, body; then the toast it
 /// ends with and the user to put the cursor on.
 struct Save {
@@ -392,6 +443,14 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 },
             }
         }
+        "data.users.disable" => match reply.take::<(String, String)>() {
+            Ok((done, name)) => {
+                console.state::<State>().focus_name = Some(name);
+                fetch(console, true);
+                console.show_toast(done, false, cx);
+            }
+            Err(error) => console.show_toast(format!("Saving the user failed: {error}"), true, cx),
+        },
         "data.users.delete" => match reply.take::<String>() {
             Ok(name) => {
                 fetch(console, true);
@@ -587,15 +646,31 @@ fn user_row(
     let current = cursor == Some(row);
     let id = user.id;
     let you = user.username == me;
-    let status = match (you, user.must_change_password) {
-        (true, _) => "you".to_owned(),
-        (false, true) => "must change password".to_owned(),
-        (false, false) => "—".to_owned(),
+    let status = match (you, user.disabled, user.must_change_password) {
+        (true, _, _) => "you".to_owned(),
+        (false, true, _) => "disabled".to_owned(),
+        (false, false, true) => "must change password".to_owned(),
+        (false, false, false) => "—".to_owned(),
+    };
+    let status_color = if you {
+        theme.fg_dim
+    } else if user.disabled {
+        theme.danger
+    } else if user.must_change_password {
+        theme.warning
+    } else {
+        theme.fg_dim
     };
     let reach = user_role(&user.role).map_or("Not a role the server knows", |role| role.reach);
     let edit = user.clone();
     let reset = user.clone();
     let remove = user.clone();
+    let toggle = user.clone();
+    let (toggle_icon, toggle_tip) = if user.disabled {
+        (Icon::CircleCheck, "Enable: they can sign in again")
+    } else {
+        (Icon::CircleX, "Disable: sign them out and block sign-in")
+    };
     row_frame(
         element_id("data-user", id),
         current,
@@ -644,16 +719,7 @@ fn user_row(
     .when(wide, |this| {
         this.child(cell(reach, ACCESS, theme.fg_muted, false))
     })
-    .child(cell(
-        status,
-        STATUS,
-        if user.must_change_password && !you {
-            theme.warning
-        } else {
-            theme.fg_dim
-        },
-        false,
-    ))
+    .child(cell(status, STATUS, status_color, false))
     .child(
         actions(ACTIONS, current)
             .child(
@@ -671,6 +737,14 @@ fn user_row(
                     .disabled(you)
                     .on_click(cx.listener(move |console, _, window, cx| {
                         reset_password(console, reset.clone(), window, cx);
+                    })),
+            )
+            .child(
+                IconButton::new(element_id("data-user-disable", id), toggle_icon)
+                    .tooltip(toggle_tip)
+                    .disabled(you)
+                    .on_click(cx.listener(move |console, _, window, cx| {
+                        toggle_disabled(console, toggle.clone(), window, cx);
                     })),
             )
             .child(
@@ -821,7 +895,52 @@ mod tests {
             username: name.into(),
             role: role.into(),
             must_change_password: false,
+            disabled: false,
         }
+    }
+
+    #[gpui::test]
+    fn an_admin_disables_others_after_a_yes_and_enables_at_once(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, _, cx| on_open(console, cx));
+        h.reply(
+            CallKey::new("data.users.list"),
+            Reply::ok(vec![account(1, "op", "admin"), account(2, "ana", "demo")]),
+        );
+        h.calls();
+
+        h.update(|console, window, cx| {
+            toggle_disabled(console, account(1, "op", "admin"), window, cx);
+        });
+        assert!(
+            h.update(|console, _, _| console.overlay.is_none()),
+            "disabling yourself is refused before asking"
+        );
+        assert!(h.calls().is_empty());
+
+        h.update(|console, window, cx| {
+            toggle_disabled(console, account(2, "ana", "demo"), window, cx);
+        });
+        assert!(
+            h.update(|console, _, _| console.overlay.is_some()),
+            "confirm first"
+        );
+        assert!(h.calls().is_empty(), "nothing is sent before the yes");
+        h.update(disable_confirmed);
+        assert_eq!(h.calls(), vec![CallKey::new("data.users.disable").with(2)]);
+
+        let mut disabled = account(2, "ana", "demo");
+        disabled.disabled = true;
+        h.update(move |console, window, cx| {
+            console.close_overlay(window, cx);
+            toggle_disabled(console, disabled, window, cx);
+        });
+        assert_eq!(
+            h.calls(),
+            vec![CallKey::new("data.users.disable").with(2)],
+            "enabling needs no confirmation"
+        );
     }
 
     fn type_into(h: &mut Harness, pick: fn(&Form) -> Entity<TextInput>, text: &'static str) {

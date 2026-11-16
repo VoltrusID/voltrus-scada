@@ -257,6 +257,8 @@ export interface UserItem {
   id: number
   username: string
   role: string
+  /** A disabled account keeps its row but cannot sign in. */
+  disabled?: boolean
 }
 
 // ── Flow Engine types ──
@@ -439,7 +441,8 @@ export interface AiSettings {
   api_key: string
   api_key_set: boolean
   api_key_preview: string
-  default_model: string
+  default_model: string | null
+  base_url: string | null
   enabled: boolean
 }
 

@@ -24,7 +24,7 @@ licence key and no calls to Voltrus servers:
 | Data | Historian and trends, SPC (control, histogram, run charts), annotations, CSV and Excel import and export |
 | Automation | Flow engine, scripts, recipes, command queue with retries and expiry, simulation mode |
 | Integration | REST API (OpenAPI), Python and TypeScript SDKs, Prometheus, Grafana and BI endpoints, outbound webhooks, scheduled data egress |
-| Operations | OEE and downtime, shift handover, asset inventory with NIS2 export, EDR and hardware compatibility tools, AI copilot (bring your own key) |
+| Operations | OEE and downtime, shift handover, asset inventory with NIS2 export, EDR and hardware compatibility tools, AI copilot (bring your own key: OpenAI, Anthropic, or any OpenAI-compatible server such as Ollama for offline use) |
 | Security | Local accounts (Argon2), admin and read-only users, API keys, rate limiting, audit log, SameSite=Strict session cookies and security headers |
 
 ## What the Enterprise add-on adds
@@ -64,8 +64,23 @@ operator, admin), start background tasks, handle CLI subcommands, validate beare
 tokens from an identity provider, add sign-in providers, supply Telegram and WhatsApp delivery (`ChatSender`) and
 resolve a licence into a `LicenseTier`. A sign-in provider (SAML, OIDC, LDAP) opens
 the user's session with `api::auth::issue_session`, the function local login uses,
-so every session has the same cookies and lifetime. The `voltrus` binary in this repository
+so every session has the same cookies and lifetime. An external account found
+with `Storage::get_or_create_user_by_external_id` comes back with its `disabled`
+flag: deleting a single sign-on user does not keep them out (their next sign-in
+creates the account again), so admins disable the account instead, and the
+provider must refuse a disabled account (Enterprise does). A bearer token from `Extension::authenticate_bearer` is refused when a local account with the identity's user name exists and is disabled. The `voltrus` binary in this repository
 runs with `edition::Community`: no add-on, no licence, nothing gated.
+
+White-label branding is stored and served by the add-on (`/api/v1/settings/branding`),
+but its hooks live in the core. The server-side helpers in `security::sanitization`
+strip HTML from a title or subtitle and keep at most 200 characters (cut on a character
+boundary, so any script and emoji are safe), refuse a logo whose image file is over
+100 KB with a 400 (`sanitize_logo_input`, nothing is cut), and accept an accent colour
+only as `#rgb` or `#rrggbb` (`sanitize_brand_color`). The web client applies a brand
+to the header, the login page (logo, title, subtitle, and the accent on the Sign In
+button), the browser tab title and the favicon (the logo, when it is an image data: URL
+or an http(s) or same-origin link). Without branding, including when the endpoint
+answers 403 or 404 in the Community edition, everything stays the Voltrus default.
 
 The Enterprise add-on is a separate crate that depends on this one and calls
 `voltrus::run` with its own extension. It lives in

@@ -1,3 +1,4 @@
+mod ai_settings;
 mod alarms;
 mod analytics;
 mod api_docs;
@@ -31,6 +32,7 @@ mod scan_network;
 mod scripts;
 mod secrets;
 mod security_rules;
+mod shared_accounts;
 mod shift_report;
 mod shortcuts;
 mod status_codes;
