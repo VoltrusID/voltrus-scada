@@ -279,45 +279,113 @@ export interface FlowRun {
   success: boolean
   error: string | null
   output: string | null
+  /** Per-node trace of a real run (graph engine). May arrive as a JSON string. */
+  trace?: FlowRunTraceStep[] | string | null
+}
+
+export interface FlowRunTraceStep {
+  node_id: string
+  port: number | null
+  error: string | null
+}
+
+/** One step of a dry run (`POST /api/v1/flows/test`). */
+export interface FlowTraceStep {
+  node_id: string
+  type: string
+  input: unknown
+  output: unknown
+  /** Output port the message left on; null when the node emitted nothing. */
+  port: number | null
+  error: string | null
+  duration_us: number
+  side_effect_skipped: boolean
 }
 
 export interface FlowTestResult {
-  success: boolean
-  output: Record<string, any>
-  node_results: FlowNodeResult[]
+  ok: boolean
+  trace: FlowTraceStep[]
+  outputs_reached: number
 }
 
-export interface FlowNodeResult {
-  node_id: string
-  result?: string
-  output?: Record<string, any>
-  error?: string
+export interface FlowTestInput {
+  payload: unknown
+  metadata: Record<string, unknown>
 }
 
-export type FlowNodeType =
-  | 'filter'
-  | 'transform'
-  | 'threshold'
-  | 'lookup'
-  | 'expression'
-  | 'script'
-  | 'data_source_out'
-  | 'http_out'
-  | 'alarm_out'
-  | 'write_out'
-  | 'dsl'
+// ── Flow graph (nodes JSON, version 2) ──
 
-export type FlowTriggerType = 'modbus' | 'timer' | 'mqtt'
+export interface FlowGraphNodeV2 {
+  id: string
+  type: string
+  x: number
+  y: number
+  name?: string
+  [config: string]: unknown
+}
 
+export interface FlowGraphEdgeV2 {
+  from: string
+  port: number
+  to: string
+}
+
+export interface FlowGraphV2 {
+  version: 2
+  nodes: FlowGraphNodeV2[]
+  edges: FlowGraphEdgeV2[]
+}
+
+/** Legacy (version 1) node: an entry of the old JSON array, run in order. */
 export interface FlowNodeConfig {
   id: string
-  type: FlowNodeType
+  type: string
   [key: string]: any
 }
 
 export interface FlowTriggerConfig {
-  type: FlowTriggerType
+  type: string
   [key: string]: any
+}
+
+// ── Node catalogue (`GET /api/v1/flows/node-types`) ──
+
+export type FlowFieldKind =
+  | 'string' | 'number' | 'bool' | 'select' | 'expression' | 'code' | 'tag'
+  | 'device' | 'json' | 'duration_ms' | 'cron' | 'severity'
+
+export interface FlowField {
+  key: string
+  label: string
+  kind: FlowFieldKind | string
+  required?: boolean
+  default?: unknown
+  options?: { value: string; label: string }[]
+  help?: string
+}
+
+export type FlowNodeCategory = 'logic' | 'transform' | 'output' | 'timing' | 'advanced'
+
+export interface FlowTriggerType {
+  type: string
+  label: string
+  description?: string
+  fields: FlowField[]
+}
+
+export interface FlowNodeTypeDef {
+  type: string
+  label: string
+  category: FlowNodeCategory | string
+  description?: string
+  outputs: string[]
+  side_effect?: boolean
+  fields: FlowField[]
+}
+
+export interface FlowCatalogue {
+  triggers: FlowTriggerType[]
+  nodes: FlowNodeTypeDef[]
 }
 
 // -- Notification Settings types --
