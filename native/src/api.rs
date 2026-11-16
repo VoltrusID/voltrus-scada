@@ -38,16 +38,26 @@ pub struct ServerError {
     pub status: reqwest::StatusCode,
     /// The server's `{"error": …}` text, or the status and body.
     pub message: String,
+    /// The node a refused flow's error is about (`{"error", "node_id"}`).
+    pub node_id: Option<String>,
 }
 
 impl ServerError {
     fn new(status: reqwest::StatusCode, body: &str) -> Self {
         // Server errors are `{"error": "..."}` JSON.
-        let message = serde_json::from_str::<serde_json::Value>(body)
-            .ok()
+        let value = serde_json::from_str::<serde_json::Value>(body).ok();
+        let message = value
+            .as_ref()
             .and_then(|value| value.get("error")?.as_str().map(str::to_owned))
             .unwrap_or_else(|| format!("HTTP {status}: {body}"));
-        Self { status, message }
+        let node_id = value
+            .as_ref()
+            .and_then(|value| value.get("node_id")?.as_str().map(str::to_owned));
+        Self {
+            status,
+            message,
+            node_id,
+        }
     }
 
     /// The server refused the credentials: a wrong password (401) or a

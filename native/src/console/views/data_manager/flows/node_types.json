@@ -1,0 +1,813 @@
+{
+ "nodes": [
+  {
+   "category": "logic",
+   "description": "Lets the message out on pass when the condition is true, on reject otherwise.",
+   "fields": [
+    {
+     "help": "Uses payload fields, e.g. metrics.temp > 50 && status == \"online\".",
+     "key": "condition",
+     "kind": "expression",
+     "label": "Condition",
+     "required": true
+    }
+   ],
+   "label": "Filter",
+   "outputs": [
+    "pass",
+    "reject"
+   ],
+   "side_effect": false,
+   "type": "filter"
+  },
+  {
+   "category": "logic",
+   "description": "Routes the message by rules checked in order. Each rule has its own output, in rule order, followed by otherwise.",
+   "dynamic_outputs": "rules",
+   "fields": [
+    {
+     "default": [
+      {
+       "expression": "value > 50",
+       "name": "high"
+      }
+     ],
+     "help": "List of {name, expression}. Rule outputs come first, then otherwise.",
+     "item_fields": [
+      {
+       "help": "",
+       "key": "name",
+       "kind": "string",
+       "label": "Output name",
+       "required": true
+      },
+      {
+       "help": "",
+       "key": "expression",
+       "kind": "expression",
+       "label": "Condition",
+       "required": true
+      }
+     ],
+     "key": "rules",
+     "kind": "json",
+     "label": "Rules",
+     "required": true
+    },
+    {
+     "default": "first",
+     "help": "",
+     "key": "mode",
+     "kind": "select",
+     "label": "Match",
+     "options": [
+      {
+       "label": "First matching rule",
+       "value": "first"
+      },
+      {
+       "label": "Every matching rule",
+       "value": "all"
+      }
+     ],
+     "required": false
+    }
+   ],
+   "label": "Switch",
+   "outputs": [
+    "otherwise"
+   ],
+   "side_effect": false,
+   "type": "switch"
+  },
+  {
+   "category": "logic",
+   "description": "Checks a numeric field against rules in order; the first rule that matches sets its fields and the message leaves on above. No match leaves on below.",
+   "fields": [
+    {
+     "help": "Payload path, e.g. metrics.temp.",
+     "key": "field",
+     "kind": "string",
+     "label": "Field",
+     "required": true
+    },
+    {
+     "default": [
+      {
+       "gt": 50,
+       "set": {
+        "level": "high"
+       }
+      }
+     ],
+     "help": "List of {gt, gte, lt, lte, eq, set}; all given bounds must hold.",
+     "item_fields": [
+      {
+       "help": "",
+       "key": "gt",
+       "kind": "number",
+       "label": "Greater than",
+       "required": false
+      },
+      {
+       "help": "",
+       "key": "gte",
+       "kind": "number",
+       "label": "At least",
+       "required": false
+      },
+      {
+       "help": "",
+       "key": "lt",
+       "kind": "number",
+       "label": "Less than",
+       "required": false
+      },
+      {
+       "help": "",
+       "key": "lte",
+       "kind": "number",
+       "label": "At most",
+       "required": false
+      },
+      {
+       "help": "",
+       "key": "eq",
+       "kind": "number",
+       "label": "Equals",
+       "required": false
+      },
+      {
+       "help": "Payload fields set when the rule matches.",
+       "key": "set",
+       "kind": "json",
+       "label": "Set fields",
+       "required": false
+      }
+     ],
+     "key": "rules",
+     "kind": "json",
+     "label": "Rules",
+     "required": true
+    }
+   ],
+   "label": "Threshold",
+   "outputs": [
+    "above",
+    "below"
+   ],
+   "side_effect": false,
+   "type": "threshold"
+  },
+  {
+   "category": "logic",
+   "description": "Lets the message out on changed only when the field moved by more than the deadband since the last message that passed. The first message always passes.",
+   "fields": [
+    {
+     "help": "Payload path, e.g. value.",
+     "key": "field",
+     "kind": "string",
+     "label": "Field",
+     "required": true
+    },
+    {
+     "default": 0,
+     "help": "Smallest change that counts. Non-numeric values pass on any change.",
+     "key": "deadband",
+     "kind": "number",
+     "label": "Deadband",
+     "required": false
+    }
+   ],
+   "label": "On change",
+   "outputs": [
+    "changed",
+    "unchanged"
+   ],
+   "side_effect": false,
+   "type": "on_change"
+  },
+  {
+   "category": "transform",
+   "description": "Builds a new payload: each output field is set from an expression on the old one.",
+   "fields": [
+    {
+     "default": {},
+     "help": "Object of output field path -> expression.",
+     "key": "map",
+     "kind": "json",
+     "label": "Fields",
+     "required": false
+    }
+   ],
+   "label": "Transform",
+   "outputs": [
+    "out"
+   ],
+   "side_effect": false,
+   "type": "transform"
+  },
+  {
+   "category": "transform",
+   "description": "Sets one payload field to the result of an expression.",
+   "fields": [
+    {
+     "help": "",
+     "key": "output_field",
+     "kind": "string",
+     "label": "Output field",
+     "required": true
+    },
+    {
+     "help": "",
+     "key": "expr",
+     "kind": "expression",
+     "label": "Expression",
+     "required": true
+    }
+   ],
+   "label": "Expression",
+   "outputs": [
+    "out"
+   ],
+   "side_effect": false,
+   "type": "expression"
+  },
+  {
+   "category": "transform",
+   "description": "Looks a field's value up in a table and stores the match (or the default) in another field.",
+   "fields": [
+    {
+     "help": "",
+     "key": "field",
+     "kind": "string",
+     "label": "Field",
+     "required": true
+    },
+    {
+     "help": "",
+     "key": "output_field",
+     "kind": "string",
+     "label": "Output field",
+     "required": true
+    },
+    {
+     "default": {},
+     "help": "Object of value -> result.",
+     "key": "table",
+     "kind": "json",
+     "label": "Table",
+     "required": false
+    },
+    {
+     "help": "Result when the value is not in the table.",
+     "key": "default",
+     "kind": "json",
+     "label": "Default",
+     "required": false
+    }
+   ],
+   "label": "Lookup",
+   "outputs": [
+    "out"
+   ],
+   "side_effect": false,
+   "type": "lookup"
+  },
+  {
+   "category": "advanced",
+   "description": "Runs a small Voltrus DSL program on the payload. A program that returns nothing drops the message.",
+   "fields": [
+    {
+     "help": "",
+     "key": "source",
+     "kind": "code",
+     "label": "Program",
+     "required": true
+    }
+   ],
+   "label": "DSL",
+   "outputs": [
+    "out"
+   ],
+   "side_effect": false,
+   "type": "dsl"
+  },
+  {
+   "category": "advanced",
+   "description": "Runs a saved JavaScript script with the chosen payload fields as input and merges its result into the payload. A failing script sends the message to error.",
+   "fields": [
+    {
+     "help": "Id of a script from Scripts.",
+     "key": "script_id",
+     "kind": "number",
+     "label": "Script id",
+     "required": true
+    },
+    {
+     "default": [],
+     "help": "List of payload fields passed to the script.",
+     "key": "inputs",
+     "kind": "json",
+     "label": "Input fields",
+     "required": false
+    }
+   ],
+   "label": "Script",
+   "outputs": [
+    "out",
+    "error"
+   ],
+   "side_effect": false,
+   "type": "script"
+  },
+  {
+   "category": "timing",
+   "description": "Waits before sending the message on (at most one hour). The flow does not start another run while it waits. Test runs do not wait.",
+   "fields": [
+    {
+     "default": 1000,
+     "help": "",
+     "key": "duration_ms",
+     "kind": "duration_ms",
+     "label": "Delay",
+     "required": true
+    }
+   ],
+   "label": "Delay",
+   "outputs": [
+    "out"
+   ],
+   "side_effect": false,
+   "type": "delay"
+  },
+  {
+   "category": "timing",
+   "description": "Lets at most max messages through per period. Extra messages leave on dropped, or with keep latest the newest one is held and sent on when the period allows.",
+   "fields": [
+    {
+     "default": 1,
+     "help": "",
+     "key": "max",
+     "kind": "number",
+     "label": "Max messages",
+     "required": true
+    },
+    {
+     "default": 60000,
+     "help": "",
+     "key": "duration_ms",
+     "kind": "duration_ms",
+     "label": "Per",
+     "required": true
+    },
+    {
+     "default": "drop",
+     "help": "",
+     "key": "mode",
+     "kind": "select",
+     "label": "Extra messages",
+     "options": [
+      {
+       "label": "Drop (send on dropped)",
+       "value": "drop"
+      },
+      {
+       "label": "Keep the latest",
+       "value": "keep_latest"
+      }
+     ],
+     "required": false
+    }
+   ],
+   "label": "Rate limit",
+   "outputs": [
+    "out",
+    "dropped"
+   ],
+   "side_effect": false,
+   "type": "rate_limit"
+  },
+  {
+   "category": "output",
+   "description": "Writes a value to a tag through the command queue, under the tag's write policy (writable, range, deadband, rate, reason). A refused write goes to error.",
+   "fields": [
+    {
+     "help": "",
+     "key": "data_source_id",
+     "kind": "tag",
+     "label": "Tag",
+     "required": true
+    },
+    {
+     "help": "Expression for the value. Empty uses the first number in the payload.",
+     "key": "value_expr",
+     "kind": "expression",
+     "label": "Value",
+     "required": false
+    },
+    {
+     "help": "Shown in the command log; defaults to the flow.",
+     "key": "reason",
+     "kind": "string",
+     "label": "Reason",
+     "required": false
+    }
+   ],
+   "label": "Write tag",
+   "outputs": [
+    "out",
+    "error"
+   ],
+   "side_effect": true,
+   "type": "write_out"
+  },
+  {
+   "category": "output",
+   "description": "Raises an alarm.",
+   "fields": [
+    {
+     "default": "warning",
+     "help": "",
+     "key": "severity",
+     "kind": "severity",
+     "label": "Severity",
+     "required": true
+    },
+    {
+     "help": "",
+     "key": "source_key",
+     "kind": "string",
+     "label": "Source key",
+     "required": true
+    },
+    {
+     "help": "",
+     "key": "message",
+     "kind": "string",
+     "label": "Message",
+     "required": true
+    }
+   ],
+   "label": "Raise alarm",
+   "outputs": [
+    "out"
+   ],
+   "side_effect": true,
+   "type": "alarm_out"
+  },
+  {
+   "category": "output",
+   "description": "Sends a notification. Placeholders {{field.path}}, {{payload}}, {{flow_id}} and {{error}} are filled from the message. A failed delivery goes to error.",
+   "fields": [
+    {
+     "default": "settings",
+     "help": "",
+     "key": "channel",
+     "kind": "select",
+     "label": "Send through",
+     "options": [
+      {
+       "label": "Notification settings of a source",
+       "value": "settings"
+      },
+      {
+       "label": "Email",
+       "value": "email"
+      },
+      {
+       "label": "Webhook",
+       "value": "webhook"
+      }
+     ],
+     "required": true
+    },
+    {
+     "help": "Email addresses or webhook URLs, comma-separated (email and webhook).",
+     "key": "to",
+     "kind": "string",
+     "label": "To",
+     "required": false
+    },
+    {
+     "help": "Whose notification settings to use (settings channel); also shown as the source.",
+     "key": "source_key",
+     "kind": "string",
+     "label": "Source key",
+     "required": false
+    },
+    {
+     "default": "info",
+     "help": "",
+     "key": "severity",
+     "kind": "severity",
+     "label": "Severity",
+     "required": false
+    },
+    {
+     "help": "",
+     "key": "subject",
+     "kind": "string",
+     "label": "Subject",
+     "required": false
+    },
+    {
+     "help": "",
+     "key": "message",
+     "kind": "string",
+     "label": "Message",
+     "required": true
+    }
+   ],
+   "label": "Notify",
+   "outputs": [
+    "out",
+    "error"
+   ],
+   "side_effect": true,
+   "type": "notify"
+  },
+  {
+   "category": "output",
+   "description": "POSTs the payload as JSON to a URL. A failed request goes to error.",
+   "fields": [
+    {
+     "help": "",
+     "key": "url",
+     "kind": "string",
+     "label": "URL",
+     "required": true
+    },
+    {
+     "default": {},
+     "help": "",
+     "key": "headers",
+     "kind": "json",
+     "label": "Headers",
+     "required": false
+    },
+    {
+     "default": 5000,
+     "help": "",
+     "key": "timeout_ms",
+     "kind": "duration_ms",
+     "label": "Timeout",
+     "required": false
+    },
+    {
+     "default": 0,
+     "help": "",
+     "key": "retry_count",
+     "kind": "number",
+     "label": "Retries",
+     "required": false
+    }
+   ],
+   "label": "HTTP request",
+   "outputs": [
+    "out",
+    "error"
+   ],
+   "side_effect": true,
+   "type": "http_out"
+  },
+  {
+   "category": "output",
+   "description": "Publishes a numeric payload field as a live value under the device flow_<flow id>.",
+   "fields": [
+    {
+     "help": "",
+     "key": "value_field",
+     "kind": "string",
+     "label": "Value field",
+     "required": true
+    },
+    {
+     "help": "",
+     "key": "source_key",
+     "kind": "string",
+     "label": "Metric name",
+     "required": true
+    },
+    {
+     "help": "",
+     "key": "name",
+     "kind": "string",
+     "label": "Display name",
+     "required": false
+    },
+    {
+     "help": "",
+     "key": "unit",
+     "kind": "string",
+     "label": "Unit",
+     "required": false
+    },
+    {
+     "default": 2,
+     "help": "",
+     "key": "decimals",
+     "kind": "number",
+     "label": "Decimals",
+     "required": false
+    }
+   ],
+   "label": "Set flow tag",
+   "outputs": [
+    "out"
+   ],
+   "side_effect": true,
+   "type": "data_source_out"
+  },
+  {
+   "category": "advanced",
+   "description": "Records the message (or one field) in the run trace and sends it on unchanged.",
+   "fields": [
+    {
+     "help": "Payload path to record; empty records the whole message.",
+     "key": "field",
+     "kind": "string",
+     "label": "Field",
+     "required": false
+    }
+   ],
+   "label": "Debug",
+   "outputs": [
+    "out"
+   ],
+   "side_effect": false,
+   "type": "debug"
+  }
+ ],
+ "triggers": [
+  {
+   "description": "Runs only from the run button or POST /api/v1/flows/{id}/run.",
+   "fields": [],
+   "label": "Manual",
+   "type": "manual"
+  },
+  {
+   "description": "Fires when one of the tags (any protocol) changes by more than the deadband. Payload: data_source_id, key, device_id, metric, value, previous, quality, ts (ms). The first value seen after start only sets the baseline.",
+   "fields": [
+    {
+     "help": "",
+     "key": "data_source_ids",
+     "kind": "tag",
+     "label": "Tags",
+     "multiple": true,
+     "required": true
+    },
+    {
+     "default": 0,
+     "help": "Smallest change that fires.",
+     "key": "deadband",
+     "kind": "number",
+     "label": "Deadband",
+     "required": false
+    }
+   ],
+   "label": "Tag change",
+   "type": "tag_change"
+  },
+  {
+   "description": "Fires on every poll of a device (any protocol). Payload: device_id, status, timestamp, metrics, simulated.",
+   "fields": [
+    {
+     "help": "\"*\" for every device.",
+     "key": "device_id",
+     "kind": "device",
+     "label": "Device",
+     "required": true
+    },
+    {
+     "help": "Only fire when the poll has this metric.",
+     "key": "metric",
+     "kind": "string",
+     "label": "Metric",
+     "required": false
+    },
+    {
+     "help": "Minimum time between runs.",
+     "key": "debounce_ms",
+     "kind": "duration_ms",
+     "label": "Debounce",
+     "required": false
+    },
+    {
+     "default": false,
+     "help": "Skip polls where the metric (or all metrics) did not change.",
+     "key": "on_change_only",
+     "kind": "bool",
+     "label": "Only on change",
+     "required": false
+    }
+   ],
+   "label": "Device poll",
+   "type": "modbus"
+  },
+  {
+   "description": "Fires on messages to the built-in broker on a topic filter (+ and # wildcards). A JSON body becomes the payload; other bodies become {value}.",
+   "fields": [
+    {
+     "help": "",
+     "key": "topic",
+     "kind": "string",
+     "label": "Topic filter",
+     "required": true
+    },
+    {
+     "help": "",
+     "key": "debounce_ms",
+     "kind": "duration_ms",
+     "label": "Debounce",
+     "required": false
+    }
+   ],
+   "label": "MQTT message",
+   "type": "mqtt"
+  },
+  {
+   "description": "Fires when an alarm is raised, cleared or acknowledged. Payload: event, alarm_id, source_key, severity, message, value, state, actor, ts.",
+   "fields": [
+    {
+     "default": "raised",
+     "help": "",
+     "key": "on",
+     "kind": "select",
+     "label": "On",
+     "options": [
+      {
+       "label": "Raised",
+       "value": "raised"
+      },
+      {
+       "label": "Cleared",
+       "value": "cleared"
+      },
+      {
+       "label": "Acknowledged",
+       "value": "acknowledged"
+      },
+      {
+       "label": "Any of these",
+       "value": "any"
+      }
+     ],
+     "required": true
+    },
+    {
+     "help": "Only alarms of this severity.",
+     "key": "severity",
+     "kind": "severity",
+     "label": "Severity",
+     "required": false
+    },
+    {
+     "help": "Only alarms of this source.",
+     "key": "source_key",
+     "kind": "string",
+     "label": "Source key",
+     "required": false
+    }
+   ],
+   "label": "Alarm",
+   "type": "alarm"
+  },
+  {
+   "description": "Fires every interval (checked once a second). Payload: timestamp.",
+   "fields": [
+    {
+     "default": 60000,
+     "help": "",
+     "key": "interval_ms",
+     "kind": "duration_ms",
+     "label": "Every",
+     "required": true
+    }
+   ],
+   "label": "Interval",
+   "type": "timer"
+  },
+  {
+   "description": "Fires on a cron schedule in the server's local time (minute hour day month weekday, or @hourly, @daily, @weekly, @monthly). Payload: timestamp.",
+   "fields": [
+    {
+     "default": "0 * * * *",
+     "help": "",
+     "key": "cron",
+     "kind": "cron",
+     "label": "Cron",
+     "required": true
+    }
+   ],
+   "label": "Schedule",
+   "type": "schedule"
+  },
+  {
+   "description": "Fires on POST /api/v1/flows/{id}/webhook with the flow's token in the X-Flow-Token header (an admin creates it with POST /api/v1/flows/{id}/webhook-token). The JSON body becomes the payload. Rate-limited.",
+   "fields": [],
+   "label": "Webhook",
+   "type": "webhook"
+  }
+ ]
+}

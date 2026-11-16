@@ -349,7 +349,9 @@ pub static SECTIONS: &[SectionSpec] = &[
         title: "Flows",
         icon: Icon::Waypoints,
         group: SectionGroup::Engineering,
-        role: Role::Operator,
+        // Any signed-in user reads flows; the section is read-only below
+        // operator.
+        role: Role::Any,
         render: flows::render,
         on_open: Some(flows::on_open),
         focus: Some(flows::focus),

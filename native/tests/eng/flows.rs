@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use voltrus_scada_native::api::VoltrusApi;
 use voltrus_scada_native::api::eng_flows::{
     Catalogue, End, FieldKind, Flow, FlowGraph, NodeType, TEST_INPUT, TEST_PAYLOAD, config_id,
-    parse_input,
+    parse_input, refusal,
 };
 
 /// A value a required field without a default accepts.
@@ -25,7 +25,7 @@ fn placeholder(kind: FieldKind) -> Value {
         FieldKind::Number | FieldKind::DurationMs => json!(1000),
         FieldKind::Bool => json!(false),
         FieldKind::Json | FieldKind::Other => json!({}),
-        FieldKind::Expression => json!("true"),
+        FieldKind::Expression => json!("metrics.temp > 0"),
         FieldKind::Cron => json!("0 * * * * *"),
         _ => json!("e2e"),
     }
@@ -229,17 +229,37 @@ pub(crate) async fn round_trip(api: &VoltrusApi) {
     if graph_server {
         let input = parse_input(TEST_INPUT).expect("the default input");
         let run = api
-            .test_flow_draft(&read.trigger_config, &read.nodes, input)
+            .test_flow_draft(&read.trigger_config, &read.nodes, input.clone())
             .await
             .expect("POST /api/v1/flows/test")
             .expect("a graph server dry-runs drafts");
         let ran: Vec<&str> = run.trace.iter().map(|step| step.node_id.as_str()).collect();
-        assert!(!ran.is_empty(), "the trace lists the nodes that ran");
+        assert_eq!(ran.len(), 2, "both branches ran: {ran:?}");
+        assert!(run.ok, "the dry run went through: {:?}", run.error);
         println!("flows: dry-ran {id}: ok {} · {}", run.ok, ran.join(", "));
-        match api.run_flow_now(&id, None).await {
-            Ok(()) => println!("flows: ran {id} once on demand"),
-            Err(error) => println!("flows: run on demand refused: {error}"),
-        }
+        // A refusal names its node.
+        let mut broken = stored.clone();
+        broken
+            .edges
+            .push(voltrus_scada_native::api::eng_flows::Edge {
+                from: first_id.clone(),
+                port: 9,
+                to: second_id.clone(),
+            });
+        let error = api
+            .test_flow_draft(&read.trigger_config, &broken.nodes_json(), input.clone())
+            .await
+            .expect_err("a wire from a port the node lacks is refused");
+        let refusal = refusal(&error).expect("a 400 about the flow");
+        assert_eq!(refusal.node_id.as_deref(), Some(first_id.as_str()));
+        println!("flows: refused draft names {}", first_id);
+        // Run now: the saved flow, for real, with its trace.
+        let live = api
+            .run_flow_now(&id, Some(input))
+            .await
+            .expect("POST /api/v1/flows/{id}/run");
+        assert_eq!(live.trace.len(), 2, "the run's trace");
+        println!("flows: ran {id} once on demand");
     } else {
         let payload = serde_json::from_str(TEST_PAYLOAD).expect("the default payload");
         let result = api

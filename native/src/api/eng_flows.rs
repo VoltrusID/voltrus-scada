@@ -85,7 +85,7 @@ pub struct FlowCreated {
 }
 
 /// One node of a logged run's path.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct RunStep {
     #[serde(default)]
     pub node_id: String,
@@ -93,6 +93,12 @@ pub struct RunStep {
     pub port: Option<usize>,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default)]
+    pub input: Value,
+    #[serde(default)]
+    pub output: Value,
+    #[serde(default)]
+    pub duration_us: u64,
 }
 
 /// A run's trace as the server sends it: a list, a list as JSON text, or
@@ -107,7 +113,7 @@ fn lenient_trace<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<RunSt
 }
 
 /// `models::FlowRun`: one run the engine logged.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct FlowRun {
     pub id: i64,
     #[serde(default)]
@@ -219,6 +225,9 @@ pub struct TraceStep {
 pub struct TestRun {
     #[serde(default)]
     pub ok: bool,
+    /// Why the run failed, when it did.
+    #[serde(default)]
+    pub error: Option<String>,
     #[serde(default)]
     pub trace: Vec<TraceStep>,
     #[serde(default)]
@@ -231,6 +240,7 @@ impl TestRun {
     pub fn from_legacy(result: &TestResult) -> Self {
         Self {
             ok: result.success,
+            error: None,
             trace: result
                 .node_results
                 .iter()
@@ -385,6 +395,9 @@ pub fn validate_meta(id: &str, name: &str, taken: Option<&[Flow]>) -> Result<(),
     if id == "." || id == ".." {
         return Err("The ID can't be . or ..".into());
     }
+    if taken.is_some() && (id == "test" || id == "node-types") {
+        return Err(format!("The ID {id} is reserved"));
+    }
     if let Some(flows) = taken {
         if !id
             .chars()
@@ -484,6 +497,13 @@ pub struct FieldDef {
     pub options: Vec<FieldOption>,
     #[serde(default)]
     pub help: Option<String>,
+    /// A `tag` field that takes several tags (a list of ids).
+    #[serde(default)]
+    pub multiple: bool,
+    /// A `json` field holding a list of objects: one item's fields, for a
+    /// list form instead of raw JSON.
+    #[serde(default)]
+    pub item_fields: Vec<FieldDef>,
 }
 
 impl FieldDef {
@@ -493,6 +513,11 @@ impl FieldDef {
         } else {
             &self.label
         }
+    }
+
+    /// Its help text, when it has some.
+    pub fn help(&self) -> Option<&str> {
+        self.help.as_deref().filter(|help| !help.trim().is_empty())
     }
 
     /// The choices of a select or severity field (severity falls back to
@@ -634,9 +659,21 @@ pub struct NodeType {
     pub side_effect: bool,
     #[serde(default)]
     pub fields: Vec<FieldDef>,
+    /// The list field whose items each add an output before `outputs`
+    /// (`"rules"` for a switch).
+    #[serde(default)]
+    pub dynamic_outputs: Option<String>,
 }
 
 impl NodeType {
+    /// The field whose items add outputs: the catalogue's word, or a
+    /// switch's `rules`.
+    pub fn dynamic_key(&self) -> Option<&str> {
+        self.dynamic_outputs
+            .as_deref()
+            .or_else(|| (self.kind == "switch").then_some("rules"))
+    }
+
     pub fn category(&self) -> Category {
         Category::parse(&self.category)
     }
@@ -722,8 +759,7 @@ impl Catalogue {
                         kind: field.kind,
                         required: field.required,
                         default: (kind.defaults)().get(field.key).cloned(),
-                        options: Vec::new(),
-                        help: None,
+                        ..FieldDef::default()
                     })
                     .collect(),
             })
@@ -755,10 +791,10 @@ impl Catalogue {
                             required: required.contains(&key.as_str()),
                             key,
                             default: Some(value),
-                            options: Vec::new(),
-                            help: None,
+                            ..FieldDef::default()
                         })
                         .collect(),
+                    dynamic_outputs: None,
                 }
             })
             .collect();
@@ -1164,6 +1200,64 @@ pub fn parse_field(kind: FieldKind, text: &str) -> Result<Option<Value>, String>
     Ok(Some(Value::String(text.to_owned())))
 }
 
+/// A tag field's text as ids: each comma-separated entry is an id or a tag
+/// key `resolve` knows. One id, or a list for a `multiple` field; `None`
+/// when empty.
+pub fn parse_tags(
+    text: &str,
+    multiple: bool,
+    resolve: impl Fn(&str) -> Option<i64>,
+) -> Result<Option<Value>, String> {
+    let ids = text
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            entry
+                .parse::<i64>()
+                .ok()
+                .or_else(|| resolve(entry))
+                .ok_or_else(|| format!("no tag “{entry}”"))
+        })
+        .collect::<Result<Vec<i64>, String>>()?;
+    Ok(match (ids.as_slice(), multiple) {
+        ([], _) => None,
+        ([id], false) => Some(Value::from(*id)),
+        (_, false) => return Err("one tag only".into()),
+        (_, true) => Some(Value::from(ids)),
+    })
+}
+
+/// A tag field's value as text: its tags' keys (`name`), else their ids.
+pub fn tag_text(value: &Value, name: impl Fn(i64) -> Option<String>) -> String {
+    let one = |value: &Value| match value.as_i64() {
+        Some(id) => name(id).unwrap_or_else(|| id.to_string()),
+        None => field_text(value),
+    };
+    match value {
+        Value::Array(items) => items.iter().map(one).collect::<Vec<_>>().join(", "),
+        Value::Null => String::new(),
+        other => one(other),
+    }
+}
+
+/// One item of a list field from its fields' texts: numbers as numbers,
+/// JSON kinds as JSON, empty optional fields left out.
+pub fn parse_item(fields: &[FieldDef], texts: &[String]) -> Result<Value, String> {
+    let mut item = Map::new();
+    for (field, text) in fields.iter().zip(texts) {
+        match parse_field(field.kind, text) {
+            Ok(Some(Value::String(text))) if text.is_empty() && !field.required => {}
+            Ok(Some(value)) => {
+                item.insert(field.key.clone(), value);
+            }
+            Ok(None) => {}
+            Err(error) => return Err(format!("{}: {error}", field.label())),
+        }
+    }
+    Ok(Value::Object(item))
+}
+
 /// A switch's rules: `[{name, expression}]`.
 pub fn parse_rules(value: &Value) -> Result<Vec<(String, String)>, String> {
     let Some(rules) = value.as_array() else {
@@ -1468,10 +1562,14 @@ impl FlowGraph {
             return (1..=used).map(|port| format!("{port}")).collect();
         };
         let mut names = Vec::new();
-        if kind == "switch"
-            && let Some(Ok(rules)) = node.get("rules").map(parse_rules)
+        if let Some(key) = known.dynamic_key()
+            && let Some(items) = node.get(key).and_then(Value::as_array)
         {
-            names.extend(rules.into_iter().map(|(name, _)| name));
+            names.extend(items.iter().enumerate().map(|(at, item)| {
+                item.get("name")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| format!("{}", at + 1), str::to_owned)
+            }));
         }
         names.extend(known.outputs.iter().cloned());
         names
@@ -1650,6 +1748,34 @@ impl FlowGraph {
         self.edges
             .retain(|edge| ports.get(&edge.from).is_none_or(|count| edge.port < *count));
         before - self.edges.len()
+    }
+
+    /// Keep a switch's wires on the same outputs when its rules change
+    /// from `before` to `after` in number: rule `removed` went (its wires
+    /// with it, later ports move up), or rules were added or dropped at
+    /// the end (the fixed outputs after them move along).
+    pub fn renumber_rules(
+        &mut self,
+        index: usize,
+        before: usize,
+        after: usize,
+        removed: Option<usize>,
+    ) {
+        let id = self.id_of(End::Node(index));
+        self.edges.retain_mut(|edge| {
+            if edge.from != id {
+                return true;
+            }
+            match removed {
+                Some(rule) if edge.port == rule => return false,
+                Some(rule) if edge.port > rule => edge.port -= 1,
+                Some(_) => {}
+                None if edge.port >= before => edge.port = edge.port - before + after,
+                None if edge.port >= after => return false,
+                None => {}
+            }
+            true
+        });
     }
 
     /// Replace the trigger with `kind`'s defaults.
@@ -1921,14 +2047,38 @@ pub fn test_path(graph: &FlowGraph, run: &TestRun) -> Path {
 // ── Calls ────────────────────────────────────────────────────────────────
 
 /// Whether `error` is the server saying it has no such route (an older
-/// server): 404 or 405.
+/// server): 404 or 405, or the 500 "Flow not found" an older server
+/// answers when it reads `node-types` as a flow id.
 pub fn missing_route(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ServerError>().is_some_and(|error| {
         matches!(
             error.status,
             reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
-        )
+        ) || (error.status == reqwest::StatusCode::INTERNAL_SERVER_ERROR
+            && error.message.to_ascii_lowercase().contains("not found"))
     })
+}
+
+/// A refusal of a flow: the server's message and the node it names.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Refusal {
+    pub message: String,
+    pub node_id: Option<String>,
+}
+
+/// `error` as a refusal when the server answered 400 about the flow.
+pub fn refusal(error: &anyhow::Error) -> Option<Refusal> {
+    let error = error.downcast_ref::<ServerError>()?;
+    (error.status == reqwest::StatusCode::BAD_REQUEST).then(|| Refusal {
+        message: error.message.clone(),
+        node_id: error.node_id.clone(),
+    })
+}
+
+/// `POST /api/v1/flows/{id}/webhook-token`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WebhookToken {
+    pub token: String,
 }
 
 impl VoltrusApi {
@@ -1981,15 +2131,23 @@ impl VoltrusApi {
     }
 
     /// `POST /api/v1/flows/{id}/run`: one real run now, on `input` if
-    /// given.
-    pub async fn run_flow_now(&self, id: &str, input: Option<Value>) -> Result<()> {
+    /// given; its trace.
+    pub async fn run_flow_now(&self, id: &str, input: Option<Value>) -> Result<TestRun> {
         let body = match input {
             Some(input) => json!({ "input": input }),
             None => json!({}),
         };
-        self.send_json::<_, IgnoredAny>(Method::POST, &flow_action_path(id, "run"), &body)
+        self.send_json(Method::POST, &flow_action_path(id, "run"), &body)
+            .await
+    }
+
+    /// `POST /api/v1/flows/{id}/webhook-token` (admin): a new token for the
+    /// flow's webhook, shown once.
+    pub async fn flow_webhook_token(&self, id: &str) -> Result<String> {
+        let answer: WebhookToken = self
+            .send_empty(Method::POST, &flow_action_path(id, "webhook-token"))
             .await?;
-        Ok(())
+        Ok(answer.token)
     }
 
     /// The legacy `POST /api/v1/flows/{id}/test`.
@@ -2338,6 +2496,27 @@ pub(crate) mod tests {
         let problem = graph.validate(&catalogue).unwrap_err();
         assert_eq!(problem.at, Some(End::Node(0)));
         assert!(problem.message.contains("rule 1"), "{}", problem.message);
+        // Rules added or removed keep the wires on their outputs.
+        let ports = |graph: &FlowGraph| -> Vec<(usize, String)> {
+            graph
+                .edges
+                .iter()
+                .filter(|edge| edge.from == "s")
+                .map(|edge| (edge.port, edge.to.clone()))
+                .collect()
+        };
+        let mut rules = self::graph();
+        rules.renumber_rules(0, 1, 3, None);
+        assert_eq!(
+            ports(&rules),
+            [(0, "a".into()), (3, "d".into())],
+            "otherwise moved"
+        );
+        rules.renumber_rules(0, 3, 2, Some(0));
+        assert_eq!(ports(&rules), [(2, "d".into())], "the hot wire went");
+        rules.renumber_rules(0, 2, 0, None);
+        assert_eq!(ports(&rules), [(0, "d".into())]);
+
         // An unknown type keeps the ports its wires use.
         let mut odd = self::graph();
         odd.nodes[0].insert("type".into(), json!("mystery"));
@@ -2540,6 +2719,89 @@ pub(crate) mod tests {
         let mut config = Map::new();
         config.insert("duration_ms".into(), json!(250));
         assert_eq!(preview(&config), "duration_ms 250");
+    }
+
+    #[test]
+    fn list_fields_and_tag_fields_as_the_graph_server_declares_them() {
+        // As `GET /flows/node-types` sends them: help may be empty, a tag
+        // field may take several tags, a list field declares its items.
+        let rules: FieldDef = serde_json::from_value(json!({
+            "key": "rules", "label": "Rules", "kind": "json", "required": true, "help": "",
+            "default": [{"name": "high", "expression": "value > 50"}],
+            "item_fields": [
+                {"key": "name", "label": "Output name", "kind": "string", "required": true, "help": ""},
+                {"key": "expression", "label": "Condition", "kind": "expression", "required": true, "help": ""}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(rules.item_fields.len(), 2);
+        assert_eq!(rules.help(), None);
+        let tags: FieldDef = serde_json::from_value(json!({
+            "key": "data_source_ids", "label": "Tags", "kind": "tag", "required": true,
+            "help": "", "multiple": true
+        }))
+        .unwrap();
+        assert!(tags.multiple);
+
+        // Tags by key or id, one or several.
+        let resolve = |key: &str| match key {
+            "inv1.power" => Some(12),
+            "inv2.power" => Some(13),
+            _ => None,
+        };
+        assert_eq!(
+            parse_tags("inv1.power, 7", true, resolve).unwrap(),
+            Some(json!([12, 7]))
+        );
+        assert_eq!(parse_tags(" 13 ", false, resolve).unwrap(), Some(json!(13)));
+        assert_eq!(parse_tags("", true, resolve).unwrap(), None);
+        assert!(
+            parse_tags("nope", true, resolve)
+                .unwrap_err()
+                .contains("nope")
+        );
+        assert!(parse_tags("1, 2", false, resolve).is_err(), "one tag only");
+        let name = |id: i64| (id == 12).then(|| "inv1.power".to_owned());
+        assert_eq!(tag_text(&json!([12, 7]), name), "inv1.power, 7");
+        assert_eq!(tag_text(&json!(12), name), "inv1.power");
+
+        // An item from its fields' texts.
+        assert_eq!(
+            parse_item(&rules.item_fields, &["hot".into(), "temp > 80".into()]).unwrap(),
+            json!({"name": "hot", "expression": "temp > 80"})
+        );
+        let bounds: Vec<FieldDef> = serde_json::from_value(json!([
+            {"key": "gt", "label": "Greater than", "kind": "number"},
+            {"key": "lt", "label": "Less than", "kind": "number"},
+            {"key": "set", "label": "Set fields", "kind": "json"}
+        ]))
+        .unwrap();
+        assert_eq!(
+            parse_item(
+                &bounds,
+                &["50".into(), String::new(), r#"{"level": "high"}"#.into()]
+            )
+            .unwrap(),
+            json!({"gt": 50, "set": {"level": "high"}}),
+            "empty optional fields are left out"
+        );
+        assert!(
+            parse_item(&bounds, &["fast".into(), String::new(), String::new()])
+                .unwrap_err()
+                .starts_with("Greater than")
+        );
+        let run: TestRun = serde_json::from_value(json!({
+            "ok": false, "error": "boom", "trace": [], "outputs_reached": ["n2"]
+        }))
+        .unwrap();
+        assert_eq!(
+            (run.error.as_deref(), run.outputs_text().as_str()),
+            (Some("boom"), "1")
+        );
+        assert!(
+            validate_meta("node-types", "x", Some(&[])).is_err(),
+            "reserved"
+        );
     }
 
     #[test]

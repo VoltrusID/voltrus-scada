@@ -9,6 +9,10 @@
 //! (`GET /api/v1/flows/node-types`); a server without one runs the legacy
 //! straight-line engine, and the editor falls back to its built-in steps.
 //!
+//! Any signed-in user may read flows; changing them (and starting,
+//! testing, deleting) takes the operator role, so below it the list and
+//! the editor are read-only.
+//!
 //! The server's `start` and `stop` change the running engine only; the
 //! stored `enabled` flag (what the engine loads at start-up) changes in
 //! the settings form or the editor. The list shows both: what this console
@@ -352,7 +356,9 @@ fn activate_row(
         return;
     };
     if toggle {
-        toggle_run(console, &flow, cx);
+        if console.is_operator() {
+            toggle_run(console, &flow, cx);
+        }
     } else {
         editor::open(console, flow, window, cx);
     }
@@ -380,6 +386,9 @@ fn toggle_run(console: &mut Console, flow: &Flow, cx: &mut Context<Console>) {
 }
 
 fn ask_delete(console: &mut Console, flow: &Flow, window: &mut Window, cx: &mut Context<Console>) {
+    if !console.is_operator() {
+        return;
+    }
     let focus = cx.focus_handle();
     let state = console.state::<State>();
     state.confirm = Some((flow.id.clone(), flow.name.clone()));
@@ -420,7 +429,9 @@ fn set_sort(console: &mut Console, sort: Sort, cx: &mut Context<Console>) {
 }
 
 fn open_new(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    forms::open_meta(console, None, window, cx);
+    if console.is_operator() {
+        forms::open_meta(console, None, window, cx);
+    }
 }
 
 /// O: open the cursor's flow (or the first) on the canvas; before the list
@@ -525,7 +536,9 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             editor::catalogue_changed(console);
         }
         "data.flows.save" => editor::on_saved(console, key, reply, cx),
-        "data.flows.draft_test" | "data.flows.run_now" => editor::on_reply(console, key, reply, cx),
+        "data.flows.draft_test" | "data.flows.run_now" | "data.flows.webhook_token" => {
+            editor::on_reply(console, key, reply, cx);
+        }
         _ => forms::on_reply(console, key, reply, cx),
     }
     cx.notify();
@@ -682,7 +695,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             } else {
                 "Nothing has this text in its name, ID or trigger."
             },
-            if total == 0 {
+            if total == 0 && console.is_operator() {
                 vec![new_button("data-flows-first", cx)]
             } else {
                 Vec::new()
@@ -712,7 +725,12 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .into_any_element()
     };
 
-    let subtitle = if filtered {
+    let operator = console.is_operator();
+    let subtitle = if !operator {
+        format!(
+            "{total} flows · {active} running · read-only: changing flows needs the operator role · ↵ view · H runs"
+        )
+    } else if filtered {
         format!("{shown} of {total} flows match")
     } else {
         format!(
@@ -736,8 +754,14 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 cx.notify();
             }))
             .into_any_element(),
-        new_button("data-flows-new", cx),
     ];
+    let controls = if operator {
+        let mut controls = controls;
+        controls.push(new_button("data-flows-new", cx));
+        controls
+    } else {
+        controls
+    };
 
     div()
         .flex()
@@ -758,6 +782,9 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                     open_new(console, window, cx);
                 }))
                 .on_action(cx.listener(|console, _: &EngFlowsEdit, window, cx| {
+                    if !console.is_operator() {
+                        return;
+                    }
                     if let Some(flow) = cursor_flow(console, cx) {
                         forms::open_meta(console, Some(flow), window, cx);
                     }
@@ -811,6 +838,7 @@ fn flow_row(
     let is_running = running(state, flow);
     let busy = state.pending.values().any(|id| *id == flow.id);
     let drift = is_running != flow.enabled;
+    let operator = console.is_operator();
     let hover = theme.hover;
     let steps = flow
         .node_count()
@@ -943,24 +971,26 @@ fn flow_row(
                 .items_center()
                 .justify_end()
                 .gap(SPACE_1)
-                .child(
-                    Button::new(
-                        ("data-flow-run", row),
-                        if is_running { "Stop" } else { "Start" },
+                .when(operator, |this| {
+                    this.child(
+                        Button::new(
+                            ("data-flow-run", row),
+                            if is_running { "Stop" } else { "Start" },
+                        )
+                        .compact()
+                        .ghost()
+                        .icon(if is_running { Icon::Square } else { Icon::Play })
+                        .disabled(busy)
+                        .tooltip(if is_running {
+                            "Stop the flow in the engine  Space"
+                        } else {
+                            "Start the flow in the engine  Space"
+                        })
+                        .on_click(cx.listener(move |console, _, _, cx| {
+                            toggle_run(console, &run, cx);
+                        })),
                     )
-                    .compact()
-                    .ghost()
-                    .icon(if is_running { Icon::Square } else { Icon::Play })
-                    .disabled(busy)
-                    .tooltip(if is_running {
-                        "Stop the flow in the engine  Space"
-                    } else {
-                        "Start the flow in the engine  Space"
-                    })
-                    .on_click(cx.listener(move |console, _, _, cx| {
-                        toggle_run(console, &run, cx);
-                    })),
-                )
+                })
                 .child(
                     div()
                         .flex()
@@ -974,13 +1004,20 @@ fn flow_row(
                                     editor::open(console, edit.clone(), window, cx);
                                 })),
                         )
-                        .child(
-                            IconButton::new(("data-flow-settings", row), Icon::Pencil)
-                                .tooltip("Rename, enable  E")
-                                .on_click(cx.listener(move |console, _, window, cx| {
-                                    forms::open_meta(console, Some(settings.clone()), window, cx);
-                                })),
-                        )
+                        .when(operator, |this| {
+                            this.child(
+                                IconButton::new(("data-flow-settings", row), Icon::Pencil)
+                                    .tooltip("Rename, enable  E")
+                                    .on_click(cx.listener(move |console, _, window, cx| {
+                                        forms::open_meta(
+                                            console,
+                                            Some(settings.clone()),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                        })
                         .child(
                             IconButton::new(("data-flow-runs", row), Icon::History)
                                 .tooltip("Runs  H")
@@ -988,21 +1025,25 @@ fn flow_row(
                                     forms::open_runs(console, &runs, window, cx);
                                 })),
                         )
-                        .child(
-                            IconButton::new(("data-flow-test", row), Icon::Send)
-                                .tooltip("Test with an input  T")
-                                .on_click(cx.listener(move |console, _, window, cx| {
-                                    editor::open_testing(console, test.clone(), window, cx);
-                                })),
-                        )
-                        .child(
-                            IconButton::new(("data-flow-delete", row), Icon::Trash)
-                                .tooltip("Delete  ⌫")
-                                .color(theme.danger)
-                                .on_click(cx.listener(move |console, _, window, cx| {
-                                    ask_delete(console, &delete, window, cx);
-                                })),
-                        ),
+                        .when(operator, |this| {
+                            this.child(
+                                IconButton::new(("data-flow-test", row), Icon::Send)
+                                    .tooltip("Test with an input  T")
+                                    .on_click(cx.listener(move |console, _, window, cx| {
+                                        editor::open_testing(console, test.clone(), window, cx);
+                                    })),
+                            )
+                        })
+                        .when(operator, |this| {
+                            this.child(
+                                IconButton::new(("data-flow-delete", row), Icon::Trash)
+                                    .tooltip("Delete  ⌫")
+                                    .color(theme.danger)
+                                    .on_click(cx.listener(move |console, _, window, cx| {
+                                        ask_delete(console, &delete, window, cx);
+                                    })),
+                            )
+                        }),
                 ),
         )
         .into_any_element()

@@ -454,6 +454,15 @@ fn label(
     if text.is_empty() {
         return;
     }
+    // One line: a multi-line setting (a program, JSON) shows its first.
+    let first;
+    let text = match text.find(['\n', '\r']) {
+        Some(at) => {
+            first = SharedString::from(format!("{}…", text[..at].trim_end()));
+            &first
+        }
+        None => text,
+    };
     let run = |len: usize| TextRun {
         len,
         font: face.clone(),
