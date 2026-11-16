@@ -20,7 +20,7 @@ async fn test_flow_crud() {
     );
     let state = AppState {
         cache,
-        storage,
+        storage: storage.clone(),
         poller_manager,
         started_at: std::time::Instant::now(),
         auth_secret: "test-secret".to_string(),
@@ -146,7 +146,15 @@ async fn test_flow_crud() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["success"], true);
 
-    // Delete flow
+    // Delete flow (and its run log)
+    storage
+        .insert_flow_run("test_flow", 1, true, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        storage.list_flow_runs("test_flow", 20).await.unwrap().len(),
+        1
+    );
     let resp = app
         .clone()
         .oneshot(
@@ -161,6 +169,13 @@ async fn test_flow_crud() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert!(
+        storage
+            .list_flow_runs("test_flow", 20)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 /// SCADA-16 S13: start/stop changed only the running engine, so the stored

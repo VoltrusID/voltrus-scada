@@ -139,9 +139,18 @@ impl Storage {
         let conn = self.conn.clone();
         let id = id.to_string();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute("DELETE FROM flows WHERE id = ?1", rusqlite::params![id])
+            let mut conn = conn.lock().unwrap();
+            // Its run log goes too: a new flow that reuses the id must not
+            // show the old flow's runs and traces.
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM flows WHERE id = ?1", rusqlite::params![id])
                 .context("Delete flow failed")?;
+            tx.execute(
+                "DELETE FROM flow_runs WHERE flow_id = ?1",
+                rusqlite::params![id],
+            )
+            .context("Delete flow runs failed")?;
+            tx.commit()?;
             Ok(())
         })
         .await
