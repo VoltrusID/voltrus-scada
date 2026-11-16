@@ -26,5 +26,9 @@ pub async fn list_auth_providers(
         "label": "Local Authentication",
     })];
     providers.extend(state.ext.auth_providers());
-    Ok(Json(json!({"providers": providers})))
+    Ok(Json(json!({
+        "providers": providers,
+        // Plain text for the sign-in page, e.g. the public demo's credentials.
+        "login_hint": state.public_demo.login_hint,
+    })))
 }

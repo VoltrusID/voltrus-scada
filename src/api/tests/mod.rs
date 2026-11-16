@@ -31,6 +31,7 @@ mod scan_network;
 mod scripts;
 mod secrets;
 mod security_rules;
+mod shared_accounts;
 mod shift_report;
 mod shortcuts;
 mod status_codes;
