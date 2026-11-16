@@ -187,6 +187,7 @@ format is the same everywhere:
 | `mode_switch` | `POST /api/v1/devices/{id}/simulate` (body `{simulation_mode, …, signature?}`) | `device:<id>:simulation` | `{mode: "simulation"\|"live", device_id}` |
 | `mode_switch` | `POST /api/v1/devices/{id}/go-live`, `…/go-live/rollback` (optional body) | `device:<id>:go_live`, `device:<id>:go_live_rollback` | `{mode: "go_live"\|"go_live_rollback", device_id}` |
 | `mode_switch` | `POST /api/v1/flows/{id}/start`, `…/stop` (optional body); MCP `start_flow`/`stop_flow` | `flow:<id>` | `{mode: "start"\|"stop", flow_id, name}` |
+| `mode_switch` | `POST /api/v1/flows/{id}/run` (manual run; body `{input?, signature?}`) | `flow:<id>` | `{mode: "run", flow_id, name}` |
 | `mode_switch` | `PATCH /api/v1/data-sources/{id}/write-policy` (body fields plus `signature`) | `data_source:<id>:write_policy` | `{mode: "write_policy", tag_id, policy}` |
 
 "Optional body" means the route accepts no body (as before) or a JSON body
@@ -205,7 +206,14 @@ of the load. The individual writes are then queued without asking again.
 | `recipe` | a recipe load's per-tag question | the load is prompted |
 | `api_key` | `X-API-Key` / `?api_key=` / WebSocket key auth | refused, 403 `signature_not_possible` |
 | `mcp` | any MCP tool call, key or session | refused, 403 (tool error) |
-| `flow` | a flow's write node (`username` `flow:<id>`, `role` `flow`) | the write is refused and the node fails with "needs an electronic signature … which a flow cannot give" |
+| `flow` | a flow's write node (`username` `flow:<id>`, `role` `flow`), whatever started the run: its trigger (tag change, schedule, MQTT, webhook), a manual run (`POST /flows/{id}/run`) or start | the write is refused and the node fails with "needs an electronic signature … which a flow cannot give" |
+
+A manual run is signed as a `mode_switch` (`mode: "run"`) by the person who
+starts it, but that signature does not cover the writes the flow then makes:
+they are still asked as `flow` writes, because the run's content (payload,
+branches, values) is decided by the flow, not shown to the signer. Dry runs
+(`POST /flows/test`, `/flows/{id}/test`) write nothing and ask nothing; their
+preview of a write node does not report a signature refusal.
 
 The edition decides per origin: to let flows or MCP act unsigned, return
 `None` for those origins (for example for tags a validated flow owns). Returning
@@ -262,7 +270,7 @@ same value the deadband check uses.
 |---|---|
 | `admin` | everything, including users, roles, API keys, security, compliance |
 | `demo` | operate and configure (the public demo account) |
-| `operator` | operate: write tags within their write policy, cancel commands, acknowledge, shelve and unshelve alarms and read the alarm journal, summary, audit and analytics, list, view and load recipes, list and view flows, start and stop them and see their runs, shift handover, log and close downtime. Cannot change devices, tags, write policies, screens, flows, recipes or settings |
+| `operator` | operate: write tags within their write policy, cancel commands, acknowledge, shelve and unshelve alarms and read the alarm journal, summary, audit and analytics, list, view and load recipes, start, stop and run flows (any signed-in user may read flows and their runs), shift handover, log and close downtime. Cannot change devices, tags, write policies, screens, flows, recipes or settings |
 | `viewer`, `user` (legacy) | read only; cannot acknowledge alarms |
 | API key `integration` | like `demo` (scopes can narrow it to read-only) |
 | API key `api` | read only |

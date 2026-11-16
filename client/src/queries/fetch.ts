@@ -38,7 +38,7 @@ async function doRefresh(): Promise<boolean> {
   return refreshing
 }
 
-async function fetchWithRefresh(
+export async function fetchWithRefresh(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
@@ -61,7 +61,7 @@ async function fetchWithRefresh(
  * is sent again with the signature in its JSON body. Cancelling throws
  * SignatureCancelledError.
  */
-async function fetchSigned(url: string, init?: RequestInit): Promise<Response> {
+export async function fetchSigned(url: string, init?: RequestInit): Promise<Response> {
   const r = await fetchWithRefresh(url, init)
   if ((r.status !== 428 && r.status !== 403) || !canPromptForSignature()) return r
   return completeSignature(r, init, {

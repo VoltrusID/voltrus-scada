@@ -35,7 +35,11 @@ Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
   deadband, hourly and daily tiers with automatic downsampling and CSV archive,
   trends, SPC charts, annotations, CSV and Excel import and export. See
   [docs/historian.md](docs/historian.md).
-* **Automation:** visual flow engine, JavaScript scripts (QuickJS), recipes,
+* **Automation:** flows drawn as graphs (branching on switch and filter
+  ports, delay, rate limit, on-change, notify, debug nodes) started by tag
+  changes, alarms, cron schedules, webhooks, device polls, MQTT or the run
+  button, with dry-run testing and a per-node run trace
+  ([docs/flows.md](docs/flows.md)); JavaScript scripts (QuickJS), recipes,
   a command queue with retries, expiry and write read-back, simulation mode.
 * **API:** REST with an OpenAPI document and an interactive API reference at
   `/api/docs` (sign in first), live data over WebSocket (MessagePack) with a

@@ -535,6 +535,12 @@ pub(super) fn run_migrations(conn: &Connection) {
     // older rows fall back to created_at.
     let _ = conn.execute_batch("ALTER TABLE refresh_tokens ADD COLUMN session_started_at INTEGER");
     let _ = conn.execute_batch("ALTER TABLE refresh_tokens ADD COLUMN last_activity_at INTEGER");
+
+    // Migration: flow graphs. The per-node trace of a flow's recent runs (kept
+    // on the newest runs only, see insert_flow_run), and the SHA-256 of the
+    // flow's webhook token (the token itself is shown once and not stored).
+    let _ = conn.execute_batch("ALTER TABLE flow_runs ADD COLUMN trace TEXT");
+    let _ = conn.execute_batch("ALTER TABLE flows ADD COLUMN webhook_token_hash TEXT");
 }
 
 /// Any second-based timestamp before the year 5138 is below this; a rollup

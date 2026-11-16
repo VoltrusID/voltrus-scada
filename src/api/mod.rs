@@ -161,6 +161,19 @@ impl std::fmt::Display for Rejected {
 
 impl std::error::Error for Rejected {}
 
+/// Marker error answered with the given status and JSON body as is (for
+/// refusals that carry more than a message, like the node a flow error is about).
+#[derive(Debug)]
+pub struct RejectedJson(pub StatusCode, pub serde_json::Value);
+
+impl std::fmt::Display for RejectedJson {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.1)
+    }
+}
+
+impl std::error::Error for RejectedJson {}
+
 impl AppError {
     /// An error answered with 403 and `{"error": message}`.
     pub fn forbidden(message: impl Into<String>) -> Self {
@@ -197,6 +210,9 @@ pub fn check_poll_interval(interval_ms: u64) -> Result<(), AppError> {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
+        if let Some(RejectedJson(status, body)) = self.0.downcast_ref::<RejectedJson>() {
+            return (*status, Json(body.clone())).into_response();
+        }
         let status = if self.0.downcast_ref::<Forbidden>().is_some() {
             StatusCode::FORBIDDEN
         } else if let Some(Rejected(status, _)) = self.0.downcast_ref::<Rejected>() {
@@ -703,6 +719,8 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/api/license/status", get(license::get_license_status))
         .route("/api/v1/system/features", get(system::get_active_features))
+        // A flow's webhook trigger: its own token (X-Flow-Token) instead of a session.
+        .route("/api/v1/flows/{id}/webhook", post(flows::flow_webhook))
         .route("/api/v1/ws", get(websocket::websocket_handler));
     let public = public.merge(ext_routes.public);
 
@@ -717,6 +735,12 @@ pub fn create_router(state: AppState) -> Router {
             get(crate::network::handle_list_networks),
         )
         .route("/api/v1/live", get(system::get_live))
+        // Flows are readable by every signed-in user; changing or running them
+        // is operator tier (below).
+        .route("/api/v1/flows/node-types", get(flows::node_types))
+        .route("/api/v1/flows", get(flows::list_flows))
+        .route("/api/v1/flows/{id}", get(flows::get_flow))
+        .route("/api/v1/flows/{id}/runs", get(flows::list_flow_runs))
         // Live data as server-sent events: the fallback for networks that block WebSocket
         .route("/api/v1/stream", get(sse::sse_handler))
         .route(
@@ -989,12 +1013,11 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/recipes", get(recipes::list_recipes))
         .route("/api/v1/recipes/{id}", get(recipes::get_recipe))
         .route("/api/v1/recipes/{id}/load", post(recipes::load_recipe))
-        // Flows: an operator starts and stops them; editing is configuration.
-        .route("/api/v1/flows", get(flows::list_flows))
-        .route("/api/v1/flows/{id}", get(flows::get_flow))
+        // Flows: an operator starts, stops and runs them (reading them is
+        // open to any user); editing and dry runs are configuration.
         .route("/api/v1/flows/{id}/start", post(flows::start_flow))
         .route("/api/v1/flows/{id}/stop", post(flows::stop_flow))
-        .route("/api/v1/flows/{id}/runs", get(flows::list_flow_runs))
+        .route("/api/v1/flows/{id}/run", post(flows::run_flow))
         // Shift handover and downtime logging
         .route(
             "/api/v1/shift-handover",
@@ -1064,6 +1087,7 @@ pub fn create_router(state: AppState) -> Router {
             put(flows::update_flow).delete(flows::delete_flow),
         )
         .route("/api/v1/flows/{id}/test", post(flows::test_flow))
+        .route("/api/v1/flows/test", post(flows::test_flow_definition))
         .route(
             "/api/v1/notifications/settings",
             post(notifications::create_notification_setting),
@@ -1405,7 +1429,12 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/api-keys",
             post(api_keys::create_api_key).get(api_keys::list_api_keys),
         )
-        .route("/api/v1/api-keys/{id}", delete(api_keys::revoke_api_key));
+        .route("/api/v1/api-keys/{id}", delete(api_keys::revoke_api_key))
+        // A flow's webhook token lets anyone holding it run the flow.
+        .route(
+            "/api/v1/flows/{id}/webhook-token",
+            post(flows::create_webhook_token),
+        );
 
     let admin_protected = admin_protected
         .merge(

@@ -163,6 +163,17 @@ async fn an_operator_writes_tags_and_handles_alarms() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    // Running a flow is operator tier (the flow itself does not exist here).
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/flows/nope/run",
+        None,
+        Some(&olivia),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
     for uri in ["/api/v1/recipes", "/api/v1/flows", "/api/v1/shift-handover"] {
         let (status, _) = send_request(&app, "GET", uri, None, Some(&olivia), None).await;
         assert_eq!(status, StatusCode::OK, "{uri}");
@@ -244,6 +255,9 @@ async fn a_viewer_only_reads() {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{user} cannot acknowledge");
+        let (status, _) =
+            send_request(&app, "POST", "/api/v1/flows/nope/run", None, Some(&c), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{user} cannot run a flow");
         let (status, _) = send_request(&app, "GET", "/api/v1/alarms", None, Some(&c), None).await;
         assert_eq!(status, StatusCode::OK, "{user} reads alarms");
     }

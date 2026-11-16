@@ -124,37 +124,25 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     tracing::info!("Edition: {}", ext.name());
     crate::edition::install(ext.clone());
 
+    // SMTP settings, shared by the settings API and the flow engine's notify nodes.
+    let smtp_config = Arc::new(tokio::sync::RwLock::new(app_config.smtp.clone()));
+
     // FlowEngine (lazy: only spawns when enabled flows exist)
     let flow_engine = {
-        let engine = crate::flow_engine::engine::FlowEngine::new(storage.clone(), cache.clone());
+        let engine = crate::flow_engine::engine::FlowEngine::new(storage.clone(), cache.clone())
+            .with_smtp(smtp_config.clone())
+            .with_ws_manager(ws_manager.clone());
         let mut has_enabled_flows = false;
         if let Ok(flows) = storage.list_flows().await {
             for flow in &flows {
                 if flow.enabled {
-                    match (
-                        serde_json::from_str::<crate::flow_engine::trigger::TriggerConfig>(
-                            &flow.trigger_config,
-                        ),
-                        serde_json::from_str::<Vec<crate::flow_engine::node::NodeConfig>>(
-                            &flow.nodes,
-                        ),
-                    ) {
-                        (Ok(trigger), Ok(nodes)) => {
-                            let engine_flow = crate::flow_engine::engine::Flow {
-                                id: flow.id.clone(),
-                                name: flow.name.clone(),
-                                enabled: flow.enabled,
-                                trigger,
-                                nodes,
-                            };
+                    match crate::flow_engine::engine::Flow::from_db(flow) {
+                        Ok(engine_flow) => {
                             engine.add_flow(engine_flow).await;
                             has_enabled_flows = true;
                         }
-                        _ => {
-                            tracing::warn!(
-                                "Failed to deserialize flow {} config, skipping",
-                                flow.id
-                            );
+                        Err(e) => {
+                            tracing::warn!("Flow {} is not valid, skipping it: {}", flow.id, e);
                         }
                     }
                 }
@@ -747,7 +735,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         intrusion_detector,
         license_status,
         ext: ext.clone(),
-        smtp_config: Arc::new(tokio::sync::RwLock::new(app_config.smtp.clone())),
+        smtp_config,
         config_path: config_path.to_string(),
         ws_manager: ws_manager.clone(),
         mqtt_broker_state,

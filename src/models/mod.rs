@@ -265,6 +265,10 @@ pub struct FlowRun {
     pub success: bool,
     pub error: Option<String>,
     pub output: Option<String>,
+    /// Per-node trace (node_id, type, input, output, port, error, duration_us),
+    /// kept for the newest runs of each flow; values are truncated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<serde_json::Value>,
 }
 
 // ── AI Copilot types ──

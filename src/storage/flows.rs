@@ -3,8 +3,28 @@ use anyhow::{Context, Result};
 
 use crate::models::{Flow, FlowRun};
 
+/// Runs per flow that keep their per-node trace.
+pub const FLOW_RUN_TRACES_KEPT: i64 = 50;
+
 impl Storage {
     // ── Flows ──
+
+    /// Severity of an alarm, `None` when it does not exist.
+    pub async fn get_alarm_severity(&self, id: i64) -> Result<Option<String>> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            Ok(conn
+                .query_row(
+                    "SELECT severity FROM alarms WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .ok())
+        })
+        .await
+        .context("Task join failed")?
+    }
 
     pub async fn create_flow(
         &self,
@@ -119,10 +139,59 @@ impl Storage {
         let conn = self.conn.clone();
         let id = id.to_string();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute("DELETE FROM flows WHERE id = ?1", rusqlite::params![id])
+            let mut conn = conn.lock().unwrap();
+            // Its run log goes too: a new flow that reuses the id must not
+            // show the old flow's runs and traces.
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM flows WHERE id = ?1", rusqlite::params![id])
                 .context("Delete flow failed")?;
+            tx.execute(
+                "DELETE FROM flow_runs WHERE flow_id = ?1",
+                rusqlite::params![id],
+            )
+            .context("Delete flow runs failed")?;
+            tx.commit()?;
             Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Store the SHA-256 (hex) of a flow's webhook token. `false` when the
+    /// flow does not exist.
+    pub async fn set_flow_webhook_token_hash(&self, id: &str, hash: &str) -> Result<bool> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        let hash = hash.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let n = conn
+                .execute(
+                    "UPDATE flows SET webhook_token_hash = ?1 WHERE id = ?2",
+                    rusqlite::params![hash, id],
+                )
+                .context("Update webhook token failed")?;
+            Ok(n > 0)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// The stored webhook token hash of a flow, `None` when it has none (or
+    /// the flow does not exist).
+    pub async fn get_flow_webhook_token_hash(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.conn.clone();
+        let id = id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let hash: Option<Option<String>> = conn
+                .query_row(
+                    "SELECT webhook_token_hash FROM flows WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| row.get(0),
+                )
+                .ok();
+            Ok(hash.flatten())
         })
         .await
         .context("Task join failed")?
@@ -138,26 +207,55 @@ impl Storage {
         error: Option<String>,
         output: Option<serde_json::Value>,
     ) -> Result<()> {
+        self.insert_flow_run_traced(flow_id, duration_ms, success, error, output, None)
+            .await
+    }
+
+    /// Record a run with its per-node trace. Only the newest
+    /// [`FLOW_RUN_TRACES_KEPT`] runs of a flow keep their trace; older rows
+    /// keep their summary.
+    pub async fn insert_flow_run_traced(
+        &self,
+        flow_id: &str,
+        duration_ms: u64,
+        success: bool,
+        error: Option<String>,
+        output: Option<serde_json::Value>,
+        trace: Option<serde_json::Value>,
+    ) -> Result<()> {
         let conn = self.conn.clone();
         let flow_id = flow_id.to_string();
         let error = error.map(|s| s.to_string());
         let output = output.map(|v| v.to_string());
+        let trace = trace.map(|v| v.to_string());
         let now = crate::timeutil::now_secs();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
+            let has_trace = trace.is_some();
             conn.execute(
-                "INSERT INTO flow_runs (flow_id, started_at, duration_ms, success, error, output)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO flow_runs (flow_id, started_at, duration_ms, success, error, output, trace)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 rusqlite::params![
                     flow_id,
                     now,
                     duration_ms as i64,
                     success as i64,
                     error,
-                    output
+                    output,
+                    trace
                 ],
             )
             .context("Insert flow run failed")?;
+            if has_trace {
+                conn.execute(
+                    "UPDATE flow_runs SET trace = NULL
+                     WHERE flow_id = ?1 AND trace IS NOT NULL AND id NOT IN
+                       (SELECT id FROM flow_runs WHERE flow_id = ?1 AND trace IS NOT NULL
+                        ORDER BY id DESC LIMIT ?2)",
+                    rusqlite::params![flow_id, FLOW_RUN_TRACES_KEPT],
+                )
+                .context("Trim flow run traces failed")?;
+            }
             Ok(())
         })
         .await
@@ -170,7 +268,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT id, flow_id, started_at, duration_ms, success, error, output FROM flow_runs WHERE flow_id = ?1 ORDER BY started_at DESC LIMIT ?2")
+                .prepare("SELECT id, flow_id, started_at, duration_ms, success, error, output, trace FROM flow_runs WHERE flow_id = ?1 ORDER BY started_at DESC, id DESC LIMIT ?2")
                 .context("Prepare failed")?;
             let rows = stmt
                 .query_map(rusqlite::params![flow_id, limit], |row| {
@@ -182,6 +280,9 @@ impl Storage {
                         success: row.get::<_, i64>(4)? != 0,
                         error: row.get(5)?,
                         output: row.get(6)?,
+                        trace: row
+                            .get::<_, Option<String>>(7)?
+                            .and_then(|t| serde_json::from_str(&t).ok()),
                     })
                 })
                 .context("Query failed")?;

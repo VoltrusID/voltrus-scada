@@ -99,6 +99,13 @@ fn eval_expr(expr: &Expr, values: &HashMap<String, f64>) -> Result<f64, String> 
     }
 }
 
+/// Parse an expression without evaluating it, to report syntax errors when a
+/// flow is saved rather than when it first runs.
+pub fn check_syntax(input: &str) -> Result<(), String> {
+    let tokens = tokenize(input)?;
+    Parser::new(tokens).parse().map(|_| ())
+}
+
 pub fn evaluate_json(input: &str, context: &Value) -> Result<Value, String> {
     let tokens = tokenize(input)?;
     let mut parser = Parser::new(tokens);
