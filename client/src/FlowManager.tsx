@@ -83,9 +83,10 @@ function FlowRow({ flow, cat, canEdit, onEdit, onDuplicate, onDelete, onStart, o
 
 /**
  * Flows list and graph editor. `isAdmin` (admin or demo role) may edit; other
- * roles get a read-only view of the list and canvas.
+ * roles get a read-only view of the list and canvas. Only `isStrictAdmin`
+ * (admin) may create webhook tokens.
  */
-export function FlowManager({ isAdmin }: { isAdmin: boolean }) {
+export function FlowManager({ isAdmin, isStrictAdmin = isAdmin }: { isAdmin: boolean; isStrictAdmin?: boolean }) {
   const canEdit = isAdmin
   const [editing, setEditing] = useState<{ flow: Flow; saved: boolean } | null>(null)
   const [q, setQ] = useState('')
@@ -113,6 +114,7 @@ export function FlowManager({ isAdmin }: { isAdmin: boolean }) {
         saved={editing.saved}
         catalogue={cat}
         readOnly={!canEdit}
+        canManageWebhook={isStrictAdmin}
         onSave={async f => {
           if (editing.saved) await updateFlow.mutateAsync(f)
           else {

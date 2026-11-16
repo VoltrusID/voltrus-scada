@@ -36,6 +36,8 @@ export interface FlowEditorProps {
   /** The flow already exists on the server. */
   saved: boolean
   readOnly: boolean
+  /** May create webhook tokens (the server allows admins only); default true. */
+  canManageWebhook?: boolean
   /** Persist the flow; rejects with FlowApiError on a 400. */
   onSave: (flow: Flow) => Promise<void>
   onClose: () => void
@@ -77,7 +79,7 @@ function initialDoc(flow: Flow): Doc {
   return { trigger: parseTrigger(flow.trigger_config), nodes: g.nodes, edges: g.edges }
 }
 
-function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, onSave, onClose }: FlowEditorProps) {
+function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, canManageWebhook = true, onSave, onClose }: FlowEditorProps) {
   const rf = useReactFlow()
   const { resolvedTheme } = useTheme()
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -116,6 +118,12 @@ function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, onSave,
   const runMut = useRunFlow()
   const runsQ = useFlowRuns(flow.id, saved, { refetchInterval: panelOpen && panelTab === 'runs' ? 5000 : undefined })
   const showLatestRun = useRef(false)
+
+  // Runs from webhooks, timers or other users appear as soon as the tab opens, not on the next poll.
+  const refetchRuns = runsQ.refetch
+  useEffect(() => {
+    if (saved && panelOpen && panelTab === 'runs') refetchRuns()
+  }, [saved, panelOpen, panelTab, refetchRuns])
 
   useEffect(() => {
     if (showLatestRun.current && runsQ.data?.length) {
@@ -201,8 +209,13 @@ function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, onSave,
     setTriggerSelected(false)
     update(d => {
       const id = nextNodeId(d.nodes.map(n => n.id))
+      // Clicking the palette several times would stack nodes exactly; step each new one down and right.
+      let p = { x: snap(pos!.x), y: snap(pos!.y) }
+      for (let k = 0; !at && k < 50 && d.nodes.some(n => Math.abs(n.position.x - p.x) < GRID && Math.abs(n.position.y - p.y) < GRID); k++) {
+        p = { x: p.x + 2 * GRID, y: p.y + 2 * GRID }
+      }
       const node: EdNode = {
-        id, type: 'flow', selected: true, position: { x: snap(pos!.x), y: snap(pos!.y) },
+        id, type: 'flow', selected: true, position: p,
         data: { type, config: defaultConfig(def.fields) },
       }
       // A first node gets wired to the trigger, so a new flow works as soon as one node is in.
@@ -452,6 +465,7 @@ function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, onSave,
   let panel: React.ReactNode
   if (triggerSelected && selectedNodes.length === 0) {
     panel = <TriggerPanel trigger={doc.trigger} catalogue={catalogue} readOnly={readOnly} flowId={flow.id} saved={saved}
+      canManageWebhook={canManageWebhook}
       serverError={serverError?.nodeId === TRIGGER_ID ? serverError.message : undefined}
       onChange={setTrigger} onType={setTriggerType} />
   } else if (single) {

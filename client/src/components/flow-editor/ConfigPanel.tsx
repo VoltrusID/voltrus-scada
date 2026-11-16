@@ -114,11 +114,13 @@ interface TriggerPanelProps {
   flowId: string
   /** The flow exists on the server (webhook tokens need a saved flow). */
   saved: boolean
+  /** May create webhook tokens (admins only on the server). */
+  canManageWebhook?: boolean
   onChange: (key: string, value: unknown) => void
   onType: (type: string) => void
 }
 
-export function TriggerPanel({ trigger, catalogue, readOnly, serverError, flowId, saved, onChange, onType }: TriggerPanelProps) {
+export function TriggerPanel({ trigger, catalogue, readOnly, serverError, flowId, saved, canManageWebhook = true, onChange, onType }: TriggerPanelProps) {
   const def = catalogue.triggers.find(t => t.type === trigger.type)
   const fields = def?.fields ?? []
   const errors = validateFields(fields, trigger)
@@ -142,7 +144,7 @@ export function TriggerPanel({ trigger, catalogue, readOnly, serverError, flowId
       </div>
       {trigger.type === 'webhook' && (
         <div style={section}>
-          <WebhookPanel flowId={flowId} saved={saved} readOnly={readOnly} />
+          <WebhookPanel flowId={flowId} saved={saved} readOnly={readOnly || !canManageWebhook} />
         </div>
       )}
     </PanelShell>
