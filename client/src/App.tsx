@@ -518,7 +518,7 @@ export function AppInner() {
           )}
           {mode === 'flows' && (
             <OverlayScreen title="Flow Manager" onClose={() => setMode('live')}>
-              <Suspense fallback={null}><FlowManager isAdmin={isAdminOrDemo} /></Suspense>
+              <Suspense fallback={null}><FlowManager isAdmin={isAdminOrDemo} isStrictAdmin={isAdmin} /></Suspense>
             </OverlayScreen>
           )}
           {mode === 'tags' && (
