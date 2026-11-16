@@ -17,14 +17,31 @@ use gpui::{
 };
 use vt_ui::theme::{FONT_BODY, FONT_CAPTION, MONO};
 
+use voltrus_scada_native::api::eng_flows::End;
+
 use super::editor;
-use super::model::{Bezier, NODE_H, NODE_W, PORT_R, Vec2, View, input_port, output_port};
+use super::model::{self, Bezier, NODE_W, PORT_R, Vec2, View};
 use crate::console::Console;
 
-/// One step's card as drawn.
-pub(crate) struct Card {
+/// How a run's trace marks a card or a wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Mark {
+    /// No run shown.
+    #[default]
+    Plain,
+    /// The run went through it.
+    Taken,
+    /// The run failed here.
+    Failed,
+    /// A run is shown and did not come here.
+    Dim,
+}
+
+/// One node's card as drawn.
+pub(crate) struct Drawn {
     /// Top-left corner, world units.
     pub at: Vec2,
+    pub height: f32,
     pub color: Hsla,
     pub kicker: SharedString,
     pub title: SharedString,
@@ -33,7 +50,18 @@ pub(crate) struct Card {
     /// A wire being dragged would land here.
     pub target: bool,
     pub input: bool,
-    pub output: bool,
+    /// The output ports' labels (drawn when they say something).
+    pub outputs: Vec<SharedString>,
+    pub mark: Mark,
+    /// A required setting is unset.
+    pub invalid: bool,
+}
+
+/// One wire as drawn.
+pub(crate) struct DrawnWire {
+    pub curve: Bezier,
+    pub selected: bool,
+    pub mark: Mark,
 }
 
 pub(crate) struct Colors {
@@ -45,14 +73,15 @@ pub(crate) struct Colors {
     pub fg_dim: Hsla,
     pub wire: Hsla,
     pub accent: Hsla,
+    pub success: Hsla,
+    pub danger: Hsla,
 }
 
 /// What one frame of the canvas draws.
 pub(crate) struct Scene {
     pub view: View,
-    pub cards: Vec<Card>,
-    /// Curves in world units; selected or not.
-    pub wires: Vec<(Bezier, bool)>,
+    pub cards: Vec<Drawn>,
+    pub wires: Vec<DrawnWire>,
     /// A wire being dragged: from a port to the pointer, world units.
     pub pending: Option<(Vec2, Vec2)>,
     /// While the pointer drags: the cursor to show.
@@ -160,24 +189,19 @@ fn paint(scene: &Scene, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Ap
     window.paint_quad(fill(bounds, colors.bg));
     paint_grid(view, bounds, colors.grid, window);
 
-    for (curve, selected) in &scene.wires {
-        let color = if *selected {
-            colors.accent
-        } else {
-            colors.wire
+    for wire in &scene.wires {
+        let (color, width) = match (wire.selected, wire.mark) {
+            (true, _) => (colors.accent, 3.0),
+            (false, Mark::Taken) => (colors.success, 3.0),
+            (false, Mark::Failed) => (colors.danger, 3.0),
+            (false, Mark::Dim) => (colors.wire.opacity(0.35), 2.0),
+            (false, Mark::Plain) => (colors.wire, 2.0),
         };
-        stroke(
-            *curve,
-            if *selected { 3.0 } else { 2.0 },
-            color,
-            None,
-            &screen,
-            window,
-        );
-        arrow(screen(curve.to), color, window);
+        stroke(wire.curve, width, color, None, &screen, window);
+        arrow(screen(wire.curve.to), color, window);
     }
     if let Some((from, to)) = scene.pending {
-        let curve = super::model::wire_curve(from, to);
+        let curve = model::wire_curve(from, to);
         stroke(
             curve,
             2.0,
@@ -196,67 +220,135 @@ fn paint(scene: &Scene, bounds: Bounds<Pixels>, window: &mut Window, cx: &mut Ap
     };
     let mono = font(MONO);
     for card in &scene.cards {
-        let top_left = screen(card.at);
-        let card_size = size(px(NODE_W * zoom), px(NODE_H * zoom));
-        let radius = px(8.0 * zoom);
-        let (border, width) = if card.selected {
-            (card.color, 2.0)
-        } else if card.target {
-            (colors.accent, 2.0)
-        } else {
-            (colors.border, 1.0)
-        };
+        paint_card(
+            card,
+            colors,
+            zoom,
+            [&ui, &title_font, &mono],
+            &screen,
+            window,
+            cx,
+        );
+    }
+}
+
+fn paint_card(
+    card: &Drawn,
+    colors: &Colors,
+    zoom: f32,
+    [ui, title_font, mono]: [&Font; 3],
+    screen: &impl Fn(Vec2) -> Point<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let top_left = screen(card.at);
+    let card_size = size(px(NODE_W * zoom), px(card.height * zoom));
+    let radius = px(8.0 * zoom);
+    let (border, width) = if card.selected {
+        (card.color, 2.0)
+    } else if card.target {
+        (colors.accent, 2.0)
+    } else {
+        match card.mark {
+            Mark::Taken => (colors.success, 2.0),
+            Mark::Failed => (colors.danger, 2.0),
+            Mark::Plain | Mark::Dim => (colors.border, 1.0),
+        }
+    };
+    window.paint_quad(quad(
+        Bounds::new(top_left, card_size),
+        radius,
+        colors.surface,
+        px(width),
+        border,
+        BorderStyle::Solid,
+    ));
+    window.paint_quad(quad(
+        Bounds::new(top_left, size(card_size.width, px((4.0 * zoom).max(2.0)))),
+        Corners {
+            top_left: radius,
+            top_right: radius,
+            bottom_left: px(0.0),
+            bottom_right: px(0.0),
+        },
+        card.color,
+        px(0.0),
+        transparent_black(),
+        BorderStyle::Solid,
+    ));
+    // Below 45 % the words are too small to read: colours and shapes only.
+    if zoom >= 0.45 {
+        let left = top_left.x + px(12.0 * zoom);
+        let room = px((NODE_W - 24.0) * zoom);
+        let lines = [
+            (&card.kicker, ui, FONT_CAPTION, colors.fg_dim, 10.0),
+            (&card.title, title_font, FONT_BODY, colors.fg, 26.0),
+            (&card.preview, mono, FONT_CAPTION, colors.fg_dim, 48.0),
+        ];
+        for (text, face, text_size, color, top) in lines {
+            let at = point(left, top_left.y + px(top * zoom));
+            label(text, face, text_size * zoom, color, at, room, window, cx);
+        }
+    }
+    if card.invalid {
+        let dot = px(8.0 * zoom.max(0.6));
         window.paint_quad(quad(
-            Bounds::new(top_left, card_size),
-            radius,
-            colors.surface,
-            px(width),
-            border,
-            BorderStyle::Solid,
-        ));
-        window.paint_quad(quad(
-            Bounds::new(top_left, size(card_size.width, px((4.0 * zoom).max(2.0)))),
-            Corners {
-                top_left: radius,
-                top_right: radius,
-                bottom_left: px(0.0),
-                bottom_right: px(0.0),
-            },
-            card.color,
+            Bounds::new(
+                point(
+                    top_left.x + card_size.width - dot - px(8.0 * zoom),
+                    top_left.y + px(10.0 * zoom),
+                ),
+                size(dot, dot),
+            ),
+            dot / 2.0,
+            colors.danger,
             px(0.0),
             transparent_black(),
             BorderStyle::Solid,
         ));
-        // Below 45 % the words are too small to read: colours and shapes only.
-        if zoom >= 0.45 {
-            let left = top_left.x + px(12.0 * zoom);
-            let room = px((NODE_W - 24.0) * zoom);
-            let lines = [
-                (&card.kicker, &ui, FONT_CAPTION, colors.fg_dim, 10.0),
-                (&card.title, &title_font, FONT_BODY, colors.fg, 26.0),
-                (&card.preview, &mono, FONT_CAPTION, colors.fg_dim, 48.0),
-            ];
-            for (text, face, text_size, color, top) in lines {
-                let at = point(left, top_left.y + px(top * zoom));
-                label(text, face, text_size * zoom, color, at, room, window, cx);
-            }
-        }
-        if card.input {
-            port(
-                screen(input_port(card.at)),
-                card.color,
-                colors.surface,
+    }
+    let shape = model::Card {
+        end: End::Trigger,
+        at: card.at,
+        height: card.height,
+        outputs: card.outputs.len(),
+        input: card.input,
+    };
+    if card.input {
+        port(
+            screen(shape.input_port()),
+            card.color,
+            colors.surface,
+            window,
+        );
+    }
+    let named = card.outputs.len() > 1;
+    for (index, name) in card.outputs.iter().enumerate() {
+        let center = screen(shape.output_port(index));
+        port(center, card.color, colors.surface, window);
+        if named && zoom >= 0.6 {
+            let at = point(center.x + px(8.0), center.y - px(16.0 * zoom));
+            label(
+                name,
+                ui,
+                FONT_CAPTION * zoom,
+                colors.fg_dim,
+                at,
+                px(120.0 * zoom),
                 window,
+                cx,
             );
         }
-        if card.output {
-            port(
-                screen(output_port(card.at)),
-                card.color,
-                colors.surface,
-                window,
-            );
-        }
+    }
+    if card.mark == Mark::Dim {
+        window.paint_quad(quad(
+            Bounds::new(top_left, card_size),
+            radius,
+            colors.bg.opacity(0.55),
+            px(0.0),
+            transparent_black(),
+            BorderStyle::Solid,
+        ));
     }
 }
 
@@ -362,6 +454,15 @@ fn label(
     if text.is_empty() {
         return;
     }
+    // One line: a multi-line setting (a program, JSON) shows its first.
+    let first;
+    let text = match text.find(['\n', '\r']) {
+        Some(at) => {
+            first = SharedString::from(format!("{}…", text[..at].trim_end()));
+            &first
+        }
+        None => text,
+    };
     let run = |len: usize| TextRun {
         len,
         font: face.clone(),

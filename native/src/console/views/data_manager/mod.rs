@@ -351,7 +351,9 @@ pub static SECTIONS: &[SectionSpec] = &[
         title: "Flows",
         icon: Icon::Waypoints,
         group: SectionGroup::Engineering,
-        role: Role::Operate,
+        // Any signed-in user reads flows; starting and stopping is operator
+        // tier, editing is configuration.
+        role: Role::Any,
         render: flows::render,
         on_open: Some(flows::on_open),
         focus: Some(flows::focus),
@@ -742,10 +744,13 @@ mod tests {
             .iter()
             .map(|spec| spec.id)
             .collect();
-        for id in ["system", "mqtt", "edr"] {
+        for id in ["system", "mqtt", "edr", "flows"] {
             assert!(any.contains(&id), "{id} is open to every user");
         }
-        assert!(!any.contains(&"sources") && !any.contains(&"flows"));
+        assert!(
+            !any.contains(&"sources"),
+            "flows are readable by any user; sources not"
+        );
         let operator: Vec<_> = visible(SECTIONS, Some(Role::Configure))
             .iter()
             .map(|spec| spec.id)

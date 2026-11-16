@@ -46,6 +46,8 @@ pub struct ServerError {
     /// What an electronic signature would have to state, when the server
     /// asks for one (see [`crate::signature`]).
     pub signature_required: Option<SignatureRequired>,
+    /// The node a refused flow's error is about (`{"error", "node_id"}`).
+    pub node_id: Option<String>,
 }
 
 impl ServerError {
@@ -59,6 +61,7 @@ impl ServerError {
         };
         let message = field("error").unwrap_or_else(|| format!("HTTP {status}: {body}"));
         let code = field("code");
+        let node_id = field("node_id");
         let signature_required = value
             .as_ref()
             .and_then(|value| value.get("signature_required"))
@@ -68,6 +71,7 @@ impl ServerError {
             message,
             code,
             signature_required,
+            node_id,
         }
     }
 
