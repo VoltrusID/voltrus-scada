@@ -203,6 +203,23 @@ pub async fn cookie_auth_middleware(
             .and_then(|v| v.strip_prefix("Bearer "))
         && let Some(identity) = state.ext.authenticate_bearer(token).await
     {
+        // A local account of the same name that an admin disabled keeps the
+        // provider's token out too. Fails closed on a storage error.
+        let disabled = match state.storage.get_user_by_username(&identity.username).await {
+            Ok(user) => user.is_some_and(|user| user.disabled),
+            Err(_) => true,
+        };
+        if disabled {
+            state
+                .intrusion_detector
+                .record_401_with_storage(&client_ip, &state.storage)
+                .await;
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "unauthorized"})),
+            )
+                .into_response();
+        }
         req.extensions_mut().insert(AuthUser {
             username: identity.username,
             role: identity.role,
