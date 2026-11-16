@@ -20,7 +20,8 @@
 //! the canvas is this editor's own (the server stores none). ⌘S saves
 //! (`PUT`): a v2 graph, or, for a server without the graph engine, the
 //! legacy array when the graph is a straight line. Users who may not edit
-//! (below operator) see the flow read-only.
+//! (below configure) see the flow read-only; operators among them may
+//! still Run now, on the Test panel's input.
 
 use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
@@ -38,6 +39,7 @@ use voltrus_scada_native::api::eng_flows::{
     parse_item, parse_tags, pretty, preview, refusal, tag_text, test_path, value_kind,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
+use voltrus_scada_native::signature::{self, Ask, Signable};
 use vt_ui::Icon;
 use vt_ui::components::{Button, IconButton, Segment, kbd, pill, segmented};
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
@@ -56,7 +58,7 @@ use crate::console::keys::{
 use crate::console::overlay::Overlay;
 use crate::console::text_area::TextArea;
 use crate::console::views::mimic::{listen_for_pinches, pinch::Gesture};
-use crate::console::views::{ListKeys, focus_ring, keyboard_list};
+use crate::console::views::{ListKeys, focus_ring, keyboard_list, sign};
 
 /// The palette's keyboard list.
 const PALETTE_LIST: &str = "data.flows.palette";
@@ -241,8 +243,11 @@ pub(crate) struct Editor {
     /// Run now was pressed once: the next press runs.
     run_armed: bool,
     running_now: bool,
-    /// The user may look but not change (below operator).
+    /// The user may look but not change (below configure).
     read_only: bool,
+    /// Operators and up may run the stored flow once (Run now), read-only
+    /// or not.
+    may_run: bool,
     /// Admins may make a webhook trigger's token.
     admin: bool,
     /// The webhook token last made (shown once), to copy.
@@ -278,6 +283,7 @@ pub(super) fn open(
     cx: &mut Context<Console>,
 ) {
     let read_only = !console.may_configure();
+    let may_run = console.may_operate();
     let admin = console.is_admin();
     let state = console.state::<State>();
     let catalogue = catalogue_of(state);
@@ -389,6 +395,7 @@ pub(super) fn open(
         run_armed: false,
         running_now: false,
         read_only,
+        may_run,
         admin,
         webhook,
         webhook_state: Some(Ok(())),
@@ -1313,8 +1320,17 @@ fn run_test(console: &mut Console, cx: &mut Context<Console>) {
     cx.notify();
 }
 
+/// What came of Run now: the run (or why not), or the server wants it
+/// signed first.
+enum LiveRun {
+    Done(Result<(TestRun, Source), Refusal>),
+    Sign(Signable, Ask),
+}
+
 /// Run now: one real run of the stored flow (`POST …/{id}/run`), on the
-/// second press; its trace shows in the test panel.
+/// second press; its trace shows in the test panel. Operators may run a
+/// flow they cannot change; an edition may want the run signed, which the
+/// shared signature prompt asks for.
 fn run_now(console: &mut Console, cx: &mut Context<Console>) {
     let state = console.state::<State>();
     state.seq += 1;
@@ -1322,7 +1338,7 @@ fn run_now(console: &mut Console, cx: &mut Context<Console>) {
     let Some(editor) = state.editor.as_mut() else {
         return;
     };
-    if editor.running_now || locked(editor) {
+    if editor.running_now || !editor.may_run {
         cx.notify();
         return;
     }
@@ -1340,17 +1356,25 @@ fn run_now(console: &mut Console, cx: &mut Context<Console>) {
     editor.running_now = true;
     editor.test.seq = seq;
     let input = parse_input(editor.test.input.read(cx).value()).ok();
-    let id = editor.flow.id.clone();
+    let (id, name) = (editor.flow.id.clone(), editor.flow.name.clone());
     console.call(
         CallKey::new("data.flows.run_now").with(seq),
         Call::new(move |api| async move {
-            match api.run_flow_now(&id, input).await {
-                Ok(run) => anyhow::Ok(Ok((run, Source::Live))),
-                Err(error) if missing_route(&error) => Ok(Err(Refusal::text(
-                    "This server cannot run a flow on demand",
-                ))),
-                Err(error) => Ok(Err(refused(error)?)),
-            }
+            let answer = match api.run_flow_now(&id, input.clone(), None).await {
+                Ok(run) => Ok((run, Source::Live)),
+                Err(error) => {
+                    if let Some(ask) = signature::ask(&error) {
+                        let action = Signable::FlowRun { id, name, input };
+                        return anyhow::Ok(LiveRun::Sign(action, ask));
+                    }
+                    if missing_route(&error) {
+                        Err(Refusal::text("This server cannot run a flow on demand"))
+                    } else {
+                        Err(refused(error)?)
+                    }
+                }
+            };
+            Ok(LiveRun::Done(answer))
         }),
     );
     cx.notify();
@@ -1377,9 +1401,23 @@ pub(super) fn on_reply(
             if editor.test.seq != key.arg {
                 return;
             }
-            let answer = reply
-                .take::<Result<(TestRun, Source), Refusal>>()
-                .unwrap_or_else(|message| Err(Refusal::text(message)));
+            let answer = if live {
+                match reply.take::<LiveRun>() {
+                    Ok(LiveRun::Done(answer)) => answer,
+                    Ok(LiveRun::Sign(action, ask)) => {
+                        // The prompt sends the run again, signed; its
+                        // outcome is a toast.
+                        sign::queue(console, action, ask);
+                        cx.notify();
+                        return;
+                    }
+                    Err(message) => Err(Refusal::text(message)),
+                }
+            } else {
+                reply
+                    .take::<Result<(TestRun, Source), Refusal>>()
+                    .unwrap_or_else(|message| Err(Refusal::text(message)))
+            };
             if let Err(refusal) = &answer {
                 show_refusal(editor, refusal);
             }
@@ -2209,7 +2247,12 @@ pub(super) fn render(
         editor.legacy,
         editor.graph_server,
     );
-    let (side, run_armed, running_now) = (editor.side, editor.run_armed, editor.running_now);
+    let (side, run_armed, running_now, may_run) = (
+        editor.side,
+        editor.run_armed,
+        editor.running_now,
+        editor.may_run,
+    );
     let (can_undo, can_redo) = (!editor.past.is_empty(), !editor.future.is_empty());
     let filter_text = filter.read(cx).value().to_owned();
     let items = palette_items(&catalogue, &filter_text);
@@ -2303,7 +2346,9 @@ pub(super) fn render(
                         cx,
                     )),
             )
-            .child(
+        })
+        .when(may_run, |this| {
+            this.child(
                 Button::new(
                     "data-flow-run-now",
                     if running_now {
@@ -2317,7 +2362,7 @@ pub(super) fn render(
                 .ghost()
                 .icon(Icon::Play)
                 .disabled(running_now)
-                .tooltip("Run the saved flow once, for real")
+                .tooltip("Run the saved flow once, for real (input: the Test panel's)")
                 .on_click(cx.listener(|console, _, _, cx| run_now(console, cx))),
             )
         })
@@ -4361,6 +4406,74 @@ mod tests {
         h.commands();
         h.update(|console, _, cx| save(console, cx));
         assert!(h.calls().is_empty(), "no save from a read-only editor");
+    }
+
+    #[gpui::test]
+    fn an_operator_runs_a_read_only_flow_once_and_signs_when_asked(cx: &mut TestAppContext) {
+        use voltrus_scada_native::runtime::Command;
+        use voltrus_scada_native::signature::SignatureRequired;
+
+        let mut h = opened(cx, "operator");
+        assert!(with(&mut h, |editor| editor.read_only && editor.may_run));
+        h.commands();
+        h.update(|console, _, cx| run_now(console, cx));
+        assert!(h.calls().is_empty(), "the first press only arms");
+        h.update(|console, _, cx| run_now(console, cx));
+        let seq = with(&mut h, |editor| {
+            assert!(editor.running_now);
+            editor.test.seq
+        });
+        assert_eq!(
+            h.calls(),
+            vec![CallKey::new("data.flows.run_now").with(seq)]
+        );
+        let input = h.update(|console, _, cx| {
+            let editor = editor_mut(console).unwrap();
+            parse_input(editor.test.input.read(cx).value()).ok()
+        });
+        let action = Signable::FlowRun {
+            id: "f".into(),
+            name: "Boiler".into(),
+            input,
+        };
+        let ask = Ask {
+            request: SignatureRequired {
+                action: "flow_run".into(),
+                meaning: "I start this flow run".into(),
+            },
+            error: None,
+        };
+        h.reply(
+            CallKey::new("data.flows.run_now").with(seq),
+            Reply::ok(LiveRun::Sign(action.clone(), ask)),
+        );
+        assert!(with(&mut h, |editor| !editor.running_now));
+        assert!(h.update(|console, _, _| console.overlay_is(sign::ID)));
+        h.update(|console, window, cx| sign::sign_with(console, "secret", "batch 7", window, cx));
+        let sent = h.commands();
+        let [
+            Command::Sign {
+                action: signed,
+                signature,
+            },
+        ] = sent.as_slice()
+        else {
+            panic!("expected the signed run: {sent:?}");
+        };
+        assert_eq!(*signed, action);
+        assert_eq!(signature.meaning, "I start this flow run");
+        assert_eq!(signature.reason, "batch 7");
+    }
+
+    #[gpui::test]
+    fn a_viewer_cannot_run_a_flow(cx: &mut TestAppContext) {
+        let mut h = opened(cx, "viewer");
+        assert!(with(&mut h, |editor| !editor.may_run));
+        h.commands();
+        h.update(|console, _, cx| run_now(console, cx));
+        h.update(|console, _, cx| run_now(console, cx));
+        assert!(h.calls().is_empty());
+        assert!(with(&mut h, |editor| !editor.run_armed && !editor.running_now));
     }
 
     #[gpui::test]

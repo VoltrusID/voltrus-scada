@@ -15,6 +15,8 @@ import { GraphNode, FlowViewContext, type FlowView } from './GraphNode'
 import { Palette, DND_TYPE } from './Palette'
 import { NodePanel, TriggerPanel, EmptyPanel } from './ConfigPanel'
 import { TestPanel, type TraceSource } from './TestPanel'
+import { RunOnceDialog } from './RunOnceDialog'
+import { isSignatureCancelled } from '../../signature/logic'
 import type { PortMap } from './FieldForm'
 import { useHistory } from './useHistory'
 import {
@@ -38,6 +40,11 @@ export interface FlowEditorProps {
   readOnly: boolean
   /** May create webhook tokens (the server allows admins only); default true. */
   canManageWebhook?: boolean
+  /**
+   * May run the saved flow once though it is read-only (operators): a
+   * "Run once" action in the toolbar. Editors have Run instead.
+   */
+  canRun?: boolean
   /** Persist the flow; rejects with FlowApiError on a 400. */
   onSave: (flow: Flow) => Promise<void>
   onClose: () => void
@@ -79,7 +86,7 @@ function initialDoc(flow: Flow): Doc {
   return { trigger: parseTrigger(flow.trigger_config), nodes: g.nodes, edges: g.edges }
 }
 
-function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, canManageWebhook = true, onSave, onClose }: FlowEditorProps) {
+function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, canManageWebhook = true, canRun = false, onSave, onClose }: FlowEditorProps) {
   const rf = useReactFlow()
   const { resolvedTheme } = useTheme()
   const wrapRef = useRef<HTMLDivElement>(null)
@@ -99,6 +106,7 @@ function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, canMana
   )
   const [serverError, setServerError] = useState<{ nodeId: string; message: string } | null>(null)
   const [helpOpen, setHelpOpen] = useState(false)
+  const [runOnceOpen, setRunOnceOpen] = useState(false)
 
   const [baseline, setBaseline] = useState(() => {
     const d = initialDoc(flow)
@@ -402,8 +410,18 @@ function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, canMana
       setBanner({ kind: 'ok', text: 'Run started.' })
       runsQ.refetch()
     } catch (err) {
+      if (isSignatureCancelled(err)) return
       setBanner({ kind: 'error', text: showServerError(err, 'Run failed') })
     }
+  }
+
+  const ranOnce = () => {
+    setRunOnceOpen(false)
+    showLatestRun.current = true
+    setPanelTab('runs')
+    setPanelOpen(true)
+    setBanner({ kind: 'ok', text: 'Run started.' })
+    runsQ.refetch()
   }
 
   const close = useCallback(() => {
@@ -526,6 +544,12 @@ function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, canMana
               </button>
             </>
           )}
+          {readOnly && canRun && saved && (
+            <button type="button" style={{ ...tb, borderColor: 'var(--green)', color: 'var(--green)' }}
+              onClick={() => setRunOnceOpen(true)} title="Run the saved flow once, for real">
+              Run once
+            </button>
+          )}
         </div>
 
         {banner && (
@@ -604,6 +628,9 @@ function EditorInner({ flow, catalogue, saved: savedInitially, readOnly, canMana
         />
 
         {helpOpen && <ShortcutsHelp onClose={() => setHelpOpen(false)} />}
+        {runOnceOpen && (
+          <RunOnceDialog flowId={flow.id} flowName={flow.name} onClose={() => setRunOnceOpen(false)} onDone={ranOnce} />
+        )}
       </div>
     </FlowViewContext.Provider>
   )

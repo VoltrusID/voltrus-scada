@@ -1157,6 +1157,16 @@ impl Actor {
                     .shelve_alarm(*alarm, *seconds, reason, signature)
                     .await
                     .map(|()| None),
+                Signable::FlowRun { id, input, .. } => api
+                    .run_flow_now(id, input.clone(), signature)
+                    .await
+                    .map(|run| {
+                        Some(match (run.ok, run.error) {
+                            (true, _) => "ran".to_owned(),
+                            (false, Some(error)) => format!("the run failed: {error}"),
+                            (false, None) => "the run failed".to_owned(),
+                        })
+                    }),
                 Signable::TagWrite {
                     tag,
                     value,

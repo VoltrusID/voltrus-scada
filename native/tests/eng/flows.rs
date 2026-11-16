@@ -255,7 +255,7 @@ pub(crate) async fn round_trip(api: &VoltrusApi) {
         println!("flows: refused draft names {}", first_id);
         // Run now: the saved flow, for real, with its trace.
         let live = api
-            .run_flow_now(&id, Some(input))
+            .run_flow_now(&id, Some(input), None)
             .await
             .expect("POST /api/v1/flows/{id}/run");
         assert_eq!(live.trace.len(), 2, "the run's trace");

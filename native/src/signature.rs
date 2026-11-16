@@ -108,6 +108,13 @@ pub enum Signable {
         seconds: u64,
         reason: String,
     },
+    /// One manual run of the stored flow `id` (a mode switch), on `input`
+    /// if given; `name` is for the prompt.
+    FlowRun {
+        id: String,
+        name: String,
+        input: Option<serde_json::Value>,
+    },
 }
 
 impl Signable {
@@ -118,6 +125,7 @@ impl Signable {
             Self::Acknowledge(alarm) => format!("Acknowledge alarm {alarm}"),
             Self::AcknowledgeAll => "Acknowledge all alarms".to_owned(),
             Self::Shelve { alarm, .. } => format!("Shelve alarm {alarm}"),
+            Self::FlowRun { name, .. } => format!("Run flow {name} once"),
         }
     }
 }
