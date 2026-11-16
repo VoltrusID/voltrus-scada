@@ -37,7 +37,18 @@ pub async fn websocket_handler(
         .and_then(|v| v.to_str().ok())
         .filter(|k| !k.is_empty())
         .map(str::to_string);
+    // A browser session that must change its password first is refused
+    // before the upgrade, with the same 403 as the REST API.
+    if header_key.is_none()
+        && let Some(token) = &cookie_token
+        && let Some((_, user)) =
+            crate::api::auth_middleware::verify_session_user(&state, token).await
+        && crate::api::auth_middleware::password_change_pending(&state, &user)
+    {
+        return crate::api::auth_middleware::password_change_required_response();
+    }
     ws.on_upgrade(move |socket| handle_socket(socket, state, cookie_token, header_key))
+        .into_response()
 }
 
 /// How often an open socket re-reads its user or key, so a disabled or deleted
@@ -67,7 +78,11 @@ impl WsPrincipal {
         match self {
             WsPrincipal::User(username) => {
                 let user = state.storage.get_user_by_username(username).await.ok()??;
-                (!user.disabled).then_some(user.role)
+                // A user who must change their password (flagged after the
+                // socket opened) loses the feed like a disabled one.
+                let usable = !user.disabled
+                    && !crate::api::auth_middleware::password_change_pending(state, &user);
+                usable.then_some(user.role)
             }
             WsPrincipal::ApiKey(id) => {
                 let (permissions, role) = state.storage.api_key_access(*id).await.ok()??;
@@ -159,8 +174,23 @@ async fn handle_socket(
 
     // 3. Validate the credentials and read the current role.
     let principal = if header_key.is_none()
-        && let Some(claims) = crate::api::auth_middleware::verify_session(&state, &token).await
+        && let Some((claims, user)) =
+            crate::api::auth_middleware::verify_session_user(&state, &token).await
     {
+        if crate::api::auth_middleware::password_change_pending(&state, &user) {
+            let _ = send_msg(
+                &mut sink,
+                &ServerMessage::AuthError {
+                    message: format!(
+                        "{}: {}",
+                        crate::api::auth_middleware::PASSWORD_CHANGE_REQUIRED,
+                        crate::api::auth_middleware::PASSWORD_CHANGE_REQUIRED_MESSAGE
+                    ),
+                },
+            )
+            .await;
+            return;
+        }
         Some(WsPrincipal::User(claims.username))
     } else {
         crate::api::auth_middleware::authenticate_api_key(&state, &token)

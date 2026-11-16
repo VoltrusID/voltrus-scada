@@ -694,6 +694,9 @@ struct Session {
     /// wants it changed (the change needs it); renewals use the refresh
     /// token.
     password: Option<String>,
+    /// The server holds the session until the password is changed: no
+    /// socket and no data yet.
+    held: bool,
     socket: Option<mpsc::Sender<ClientMessage>>,
     /// Identifies the current socket; events from older ones are ignored.
     generation: u64,
@@ -712,6 +715,10 @@ struct Session {
     /// The closed socket to reopen once the renewal on its way ends.
     reopen: Option<u64>,
 }
+
+/// How the server starts the refusal (WebSocket `AuthError`, REST 403 `code`)
+/// of a session that must change its password first.
+pub const PASSWORD_CHANGE_REQUIRED: &str = "password_change_required";
 
 pub fn ws_url(base: &str) -> String {
     let base = base.trim_end_matches('/');
@@ -1042,31 +1049,51 @@ impl Actor {
 
     /// Start a session after a successful sign-in; `password` only when the
     /// server wants it changed.
+    ///
+    /// A session that must change its password first opens no socket and
+    /// loads nothing: the server answers everything but the change with 403
+    /// `password_change_required` (and refuses the socket), so the feed
+    /// starts once the change is done ([`Self::open_feed`]).
     fn begin(&mut self, api: VoltrusApi, password: Option<String>) {
         self.subscribed.clear();
         let id = self.next_id();
         let generation = self.next_id();
-        let token = api.token.clone().unwrap_or_default();
-        let reader = spawn_socket(self.inputs.clone(), generation, ws_url(&api.base), token);
-        let tags = api.clone();
-        spawn_rest(&self.inputs, id, async move {
-            Rest::Tags(tags.data_sources().await.map_err(|error| error.to_string()))
-        });
+        let held = password.is_some();
         // The server's tokens last 15 minutes; renew well before.
         schedule(&self.inputs, RENEW_EVERY, Input::Renew(id, 0));
         self.session = Some(Session {
             id,
             api,
             password,
+            held,
             socket: None,
             generation,
-            reader,
+            reader: AbortOnDrop(tokio::spawn(async {})),
             failures: 0,
             alarms: Refresh::default(),
             writes: Writes::new(nonce()),
             renewing: false,
             renewal: 0,
             reopen: None,
+        });
+        if !held {
+            self.open_feed();
+        }
+    }
+
+    /// Open the session's socket and load its tags and alarms.
+    fn open_feed(&mut self) {
+        let generation = self.next_id();
+        let Some(s) = self.session.as_mut() else {
+            return;
+        };
+        s.held = false;
+        s.generation = generation;
+        let token = s.api.token.clone().unwrap_or_default();
+        s.reader = spawn_socket(self.inputs.clone(), generation, ws_url(&s.api.base), token);
+        let tags = s.api.clone();
+        spawn_rest(&self.inputs, s.id, async move {
+            Rest::Tags(tags.data_sources().await.map_err(|error| error.to_string()))
         });
         self.refresh_alarms();
     }
@@ -1091,6 +1118,15 @@ impl Actor {
                 });
             }
         }
+        // The server holds a session whose password must be changed (it
+        // expired, or an admin reset it, while signed in): signing in again
+        // leads to the change-password screen.
+        if reason.starts_with(PASSWORD_CHANGE_REQUIRED) {
+            self.out.send(Event::Link(Link::Failed(
+                "Your password must be changed. Sign in again to change it.".into(),
+            )));
+            return;
+        }
         let reason = reason.trim_end_matches('.');
         self.out.send(Event::Link(Link::Failed(format!(
             "Not authorised: {reason}. Sign in again."
@@ -1099,6 +1135,7 @@ impl Actor {
 
     fn refresh_alarms(&mut self) {
         if let Some(s) = self.session.as_mut()
+            && !s.held
             && s.alarms.request()
         {
             fetch_alarms(&self.inputs, s);
@@ -1334,13 +1371,18 @@ impl Actor {
                 self.refresh_alarms();
             }
             Rest::PasswordChanged(result) => {
+                let mut release = false;
                 if result.is_ok()
                     && let Some(s) = self.session.as_mut()
                 {
                     // Changed: the password is not needed any more.
                     s.password = None;
+                    release = s.held;
                 }
                 self.out.send(Event::PasswordChanged(result));
+                if release {
+                    self.open_feed();
+                }
             }
             Rest::Renewed(result) => self.renewed(result),
             Rest::Reply { key, reply } => self.out.send(Event::Reply { key, reply }),
@@ -2162,6 +2204,57 @@ mod tests {
             is_failed(h.events().last(), "Invalid token"),
             "not overwritten by the close"
         );
+    }
+
+    #[test]
+    fn a_session_held_for_a_password_change_opens_its_feed_once_changed() {
+        let mut h = Harness::new();
+        let mut api = VoltrusApi::new("http://127.0.0.1:9");
+        api.token = Some("token".into());
+        api.refresh = Some("refresh".into());
+        {
+            let _entered = h.runtime.enter();
+            h.actor.begin(api, Some("generated".into()));
+        }
+        let id = h.session().id;
+        let generation = h.session().generation;
+        assert!(h.session().held);
+        // Nothing asks the server for data the session may not have yet.
+        h.feed(Input::Command(Command::RefreshAlarms));
+        h.run_for(Duration::from_millis(50));
+        assert!(
+            std::iter::from_fn(|| h.inputs.try_recv().ok())
+                .all(|input| !matches!(input, Input::Rest(_, Rest::Tags(_) | Rest::Alarms(_)))),
+            "no tags or alarms loaded while held"
+        );
+
+        h.feed(Input::Rest(
+            id,
+            Rest::PasswordChanged(Err("Current password is incorrect".into())),
+        ));
+        assert!(h.session().held, "still held after a failed change");
+        h.feed(Input::Rest(id, Rest::PasswordChanged(Ok(()))));
+        assert!(!h.session().held);
+        assert_ne!(h.session().generation, generation, "the socket opened");
+    }
+
+    #[test]
+    fn a_password_change_required_mid_session_says_so() {
+        let mut h = Harness::new();
+        h.sign_in();
+        let generation = h.session().generation;
+        h.socket(Socket::Message(
+            generation,
+            ServerMessage::AuthError {
+                message: "password_change_required: Change your password before you continue"
+                    .into(),
+            },
+        ));
+        assert!(h.actor.session.is_none());
+        assert!(is_failed(
+            h.events().last(),
+            "Your password must be changed. Sign in again to change it."
+        ));
     }
 
     #[test]

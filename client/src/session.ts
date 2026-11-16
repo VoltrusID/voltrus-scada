@@ -55,3 +55,27 @@ export function sessionEndMessage(reason: SessionEndReason, idleTimeoutSecs: num
   }
   return 'You were signed out after a period of inactivity.'
 }
+
+/** The `code` of the 403 a session gets while its user must change their password. */
+export const PASSWORD_CHANGE_REQUIRED = 'password_change_required'
+
+/** Whether a response (status and parsed JSON body) says the password must be changed first. */
+export function isPasswordChangeRequired(status: number, body: unknown): boolean {
+  if (status !== 403 || !body || typeof body !== 'object') return false
+  return (body as Record<string, unknown>).code === PASSWORD_CHANGE_REQUIRED
+}
+
+/**
+ * Thrown for a request the server refused until the password is changed. The
+ * app shows the change-password screen instead, so nothing should be reported.
+ */
+export class PasswordChangeRequiredError extends Error {
+  constructor(message = 'Change your password before you continue') {
+    super(message)
+    this.name = 'PasswordChangeRequiredError'
+  }
+}
+
+export function isPasswordChangeRequiredError(err: unknown): boolean {
+  return err instanceof PasswordChangeRequiredError || (err instanceof Error && err.name === 'PasswordChangeRequiredError')
+}

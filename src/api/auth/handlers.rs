@@ -236,6 +236,15 @@ async fn check_password_and_login(
     // An expired password (add-on password policy) is answered like a
     // password the admin asked to change.
     let password_expired = !shared && state.ext.password_expired(&user).await;
+    // Kept on the account until the password is changed, so every session of
+    // the user (this one, others already open, the WebSocket) is held to the
+    // change, not only this sign-in's answer.
+    if password_expired && !user.must_change_password {
+        let _ = state
+            .storage
+            .set_must_change_password(&body.username, true)
+            .await;
+    }
     let policy = state.ext.session_policy(&body.username, &user.role).await;
     let jar = issue_session_with_policy(
         &state.storage,
@@ -381,18 +390,25 @@ pub async fn auth_me(State(state): State<AppState>, jar: CookieJar) -> impl Into
     if token.is_empty() {
         return Json(json!({"authenticated": false}));
     }
-    match crate::api::auth_middleware::verify_session(&state, token).await {
-        Some(claims) => {
+    match crate::api::auth_middleware::verify_session_user(&state, token).await {
+        Some((claims, user)) => {
             let shared = state.public_demo.is_shared(&claims.username, &claims.role);
             let policy = state
                 .ext
                 .session_policy(&claims.username, &claims.role)
                 .await;
+            // A reloaded page learns here that the session may only change
+            // the password (every other call answers 403
+            // `password_change_required`).
+            let must_change = crate::api::auth_middleware::password_change_pending(&state, &user);
+            let password_expired = must_change && state.ext.password_expired(&user).await;
             Json(json!({
                 "authenticated": true,
                 "username": claims.username,
                 "role": claims.role,
                 "shared": shared,
+                "must_change_password": must_change,
+                "password_expired": password_expired,
                 "session": super::session_json(&policy),
             }))
         }

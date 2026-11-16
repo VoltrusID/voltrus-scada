@@ -19,7 +19,7 @@ paths, so keep them fast: read your settings from memory or one indexed query.
 |---|---|---|
 | `validate_new_password(&PasswordCheck) -> Result<(), String>` | before a password is stored | `Ok(())` |
 | `password_changed(username, password_hash, PasswordChangeKind)` | after a password is stored | nothing |
-| `password_expired(&User) -> bool` | at sign-in, after the password checked out | `false` |
+| `password_expired(&User) -> bool` | at sign-in, after the password checked out (and by `/auth/me` while `must_change_password` is set) | `false` |
 | `session_policy(username, role) -> SessionPolicy` | at sign-in, `/auth/me`, every refresh and activity ping | no limits |
 | `signature_required(&ActionContext) -> Option<SignatureRequirement>` | before every signable action | `None` |
 | `record_signature(&SignatureRecord) -> anyhow::Result<Option<String>>` | after the core verified a signature, before the action runs | `Ok(None)` |
@@ -58,11 +58,27 @@ Where it is called:
 * `password_expired` is asked at sign-in once the password is verified and
   the account is enabled; never for a shared demo account. `true` makes the
   sign-in answer `must_change_password: true` and `password_expired: true`
-  (the session is still opened, exactly as for an admin-forced change). The
+  (the session is still opened, exactly as for an admin-forced change), and
+  core sets `must_change_password` on the account until the password is
+  changed, so every session of that user is held, not only this one. The
   web client then shows the change-password screen with "Your password has
-  expired". Core does not refuse other requests of such a session; if the
-  policy needs that, refuse them in your own middleware or keep
-  `must_change_password` set in the users table.
+  expired".
+* A session whose user has `must_change_password` set (generated first admin
+  password, CLI `--reset-admin-password`, or an expired password) may only
+  change the password and leave: `POST /api/v1/auth/change-password`,
+  `GET /api/v1/version` and the public routes (`/auth/me`, `/auth/refresh`,
+  `/auth/activity`, `/auth/logout`, login, health). Every other request,
+  including the SSE stream, MCP and add-on routes behind the core's
+  authentication, answers
+  `403 {"code": "password_change_required", "error": "Change your password before you continue"}`.
+  The WebSocket refuses the upgrade with the same 403 when the session comes
+  in the cookie, answers `AuthError` with a message starting
+  `password_change_required` when it comes in the `Auth` message, and closes
+  an open socket at its next check (30 s). `/auth/me` reports
+  `must_change_password` and `password_expired` so a reloaded page returns
+  to the change-password screen. API keys and sign-in-provider bearer tokens
+  are not held; neither is a shared demo account (`shared_accounts`).
+  Changing the password clears the flag and the same session goes on.
 
 Implementation notes for the add-on: store the policy (minimum length,
 character classes, history depth, maximum age) in your own settings table;
@@ -179,8 +195,8 @@ format is the same everywhere:
 
 | Action | Requests | `resource` | `details` |
 |---|---|---|---|
-| `tag_write` | `POST /api/v1/tags/{id}/write` (body field `signature`); WebSocket `TagWrite`; MCP `write_tag`; flow write nodes | `data_source:<id>` | `{key, device_id, value, previous}` (`previous` is the live value or `null`) |
-| `tag_write` (origin `recipe`) | asked once per tag before a recipe load | `data_source:<id>` | `{key, device_id, value, recipe_id}` |
+| `tag_write` | `POST /api/v1/tags/{id}/write` (body field `signature`); WebSocket `TagWrite`; MCP `write_tag`; flow write nodes | `data_source:<id>` | `{tag_id, key, device_id, value, previous}` (`tag_id` is the `<id>` of `resource`; `previous` is the live value or `null`) |
+| `tag_write` (origin `recipe`) | asked once per tag before a recipe load | `data_source:<id>` | `{tag_id, key, device_id, value, recipe_id}` |
 | `recipe_load` | `POST /api/v1/recipes/{id}/load` (optional body `{signature}`) | `recipe:<id>` | `{recipe_id, name, version, device_id, values}` |
 | `alarm_ack` | `POST /api/v1/alarms/{id}/acknowledge`, `POST /api/v1/alarms` (all), optional body `{signature}`; MCP `acknowledge_alarm` | `alarm:<id>` or `alarm:*` | `{alarm_id}` or `{all: true}` |
 | `alarm_shelve` | `POST /api/v1/alarms/{id}/shelf` (body `{duration_secs, reason, signature?}`), `POST /api/v1/alarms/{id}/unshelf` (optional body) | `alarm:<id>` | `{alarm_id, shelve: true, duration_secs, reason}` / `{alarm_id, shelve: false}` |

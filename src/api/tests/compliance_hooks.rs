@@ -274,6 +274,7 @@ async fn a_write_the_edition_wants_signed_is_answered_428_then_runs_once_signed(
     assert_eq!(record.reason, "Batch 42 setpoint");
     assert_eq!(record.details["previous"], 21.5);
     assert_eq!(record.details["value"], 30.0);
+    assert_eq!(record.details["tag_id"], tag);
 
     let entries = drain(&mut f.audit);
     let write = entries
@@ -796,6 +797,29 @@ async fn an_expired_password_is_answered_like_must_change_password() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["must_change_password"], true);
     assert_eq!(body["password_expired"], true);
+
+    // The session may only change the password until it has.
+    let stale = cookie(&f.app, "stale", "old-password-1").await;
+    let (status, body) =
+        send_request(&f.app, "GET", "/api/v1/screens", None, Some(&stale), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "password_change_required");
+    let (_, me) = send_request(&f.app, "GET", "/api/v1/auth/me", None, Some(&stale), None).await;
+    assert_eq!(me["must_change_password"], true);
+    assert_eq!(me["password_expired"], true);
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/auth/change-password",
+        None,
+        Some(&stale),
+        Some(json!({"old_password": "old-password-1", "new_password": "a-much-newer-pass-2"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) =
+        send_request(&f.app, "GET", "/api/v1/screens", None, Some(&stale), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     let (_, body) = send_request(
         &f.app,

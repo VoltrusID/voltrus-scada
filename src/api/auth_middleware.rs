@@ -256,8 +256,11 @@ pub async fn cookie_auth_middleware(
         )
             .into_response();
     }
-    match verify_session(&state, token).await {
-        Some(claims) => {
+    match verify_session_user(&state, token).await {
+        Some((claims, user)) => {
+            if password_change_pending(&state, &user) && !allowed_before_password_change(&req) {
+                return password_change_required_response();
+            }
             req.extensions_mut().insert(AuthUser {
                 username: claims.username,
                 role: claims.role,
@@ -286,6 +289,16 @@ pub(crate) async fn verify_session(
     state: &AppState,
     token: &str,
 ) -> Option<crate::models::TokenClaims> {
+    verify_session_user(state, token)
+        .await
+        .map(|(claims, _)| claims)
+}
+
+/// [`verify_session`] plus the user it read.
+pub(crate) async fn verify_session_user(
+    state: &AppState,
+    token: &str,
+) -> Option<(crate::models::TokenClaims, crate::models::User)> {
     let mut claims = super::auth::verify_token(token, &state.auth_secret)?;
     let user = state
         .storage
@@ -295,8 +308,47 @@ pub(crate) async fn verify_session(
     if user.disabled {
         return None;
     }
-    claims.role = user.role;
-    Some(claims)
+    claims.role = user.role.clone();
+    Some((claims, user))
+}
+
+/// The `code` of the 403 answered to a session whose user must change their
+/// password first.
+pub const PASSWORD_CHANGE_REQUIRED: &str = "password_change_required";
+
+/// The message of that 403 (and of the WebSocket's `AuthError`).
+pub const PASSWORD_CHANGE_REQUIRED_MESSAGE: &str = "Change your password before you continue";
+
+/// Whether the user signs in to a session that may only change the password
+/// and sign out: `must_change_password` is set (a generated or reset
+/// password, or one the edition reported expired at sign-in). Never for a
+/// shared demo account, whose password nobody may change.
+pub(crate) fn password_change_pending(state: &AppState, user: &crate::models::User) -> bool {
+    user.must_change_password && !state.public_demo.is_shared(&user.username, &user.role)
+}
+
+/// What a session that must change its password may still call behind the
+/// authentication middleware. The rest of what it needs (`/auth/me`,
+/// `/auth/refresh`, `/auth/activity`, `/auth/logout` and the public routes)
+/// does not pass through the middleware.
+fn allowed_before_password_change(req: &Request) -> bool {
+    let method = req.method();
+    match req.uri().path() {
+        "/api/v1/auth/change-password" => method == axum::http::Method::POST,
+        "/api/v1/version" => method == axum::http::Method::GET,
+        _ => false,
+    }
+}
+
+pub(crate) fn password_change_required_response() -> axum::response::Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "code": PASSWORD_CHANGE_REQUIRED,
+            "error": PASSWORD_CHANGE_REQUIRED_MESSAGE,
+        })),
+    )
+        .into_response()
 }
 
 /// API key authentication info, inserted for requests authenticated via
