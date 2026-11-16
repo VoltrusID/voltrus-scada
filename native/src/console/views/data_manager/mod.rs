@@ -96,9 +96,10 @@ pub struct SectionSpec {
     pub title: &'static str,
     pub icon: Icon,
     pub group: SectionGroup,
-    /// Who sees it: the web client's `admin` items are [`Role::Operator`]
+    /// Who sees it: the web client's `admin` items are [`Role::Configure`]
     /// (the server's `demo_protected` routes), `strictAdmin` ones
-    /// [`Role::Admin`].
+    /// [`Role::Admin`]; sections an operator works in (recipes, flows) are
+    /// [`Role::Operate`] and refuse their configuration actions themselves.
     pub role: Role,
     /// Draws the section beside the sidebar, header included.
     pub render: Render,
@@ -119,7 +120,7 @@ pub static SECTIONS: &[SectionSpec] = &[
         title: "Sources",
         icon: Icon::Database,
         group: SectionGroup::Data,
-        role: Role::Operator,
+        role: Role::Configure,
         render: sources::render,
         on_open: Some(sources::on_open),
         focus: Some(sources::focus),
@@ -155,7 +156,7 @@ pub static SECTIONS: &[SectionSpec] = &[
         title: "Recipes",
         icon: Icon::Layers,
         group: SectionGroup::Insights,
-        role: Role::Operator,
+        role: Role::Operate,
         render: recipes::render,
         on_open: Some(recipes::on_open),
         focus: Some(recipes::focus),
@@ -163,7 +164,8 @@ pub static SECTIONS: &[SectionSpec] = &[
         search: Some(recipes::search),
     },
     // Protocols: Modbus reads are open to every signed-in user (writes need
-    // an operator); the other protocols' handlers all check for admin.
+    // admin, demo or integration); the other protocols' handlers all check
+    // for admin.
     SectionSpec {
         id: "modbus",
         title: "Modbus",
@@ -265,7 +267,7 @@ pub static SECTIONS: &[SectionSpec] = &[
         title: "Notifications",
         icon: Icon::Send,
         group: SectionGroup::Admin,
-        role: Role::Operator,
+        role: Role::Configure,
         render: notification_rules::render,
         on_open: Some(notification_rules::on_open),
         focus: Some(notification_rules::focus),
@@ -301,7 +303,7 @@ pub static SECTIONS: &[SectionSpec] = &[
         title: "Config snapshots",
         icon: Icon::History,
         group: SectionGroup::Engineering,
-        role: Role::Operator,
+        role: Role::Configure,
         render: snapshots::render,
         on_open: Some(snapshots::on_open),
         focus: Some(snapshots::focus),
@@ -337,7 +339,7 @@ pub static SECTIONS: &[SectionSpec] = &[
         title: "Import",
         icon: Icon::Upload,
         group: SectionGroup::Engineering,
-        role: Role::Operator,
+        role: Role::Configure,
         render: imports::render,
         on_open: Some(imports::on_open),
         focus: Some(imports::focus),
@@ -349,7 +351,7 @@ pub static SECTIONS: &[SectionSpec] = &[
         title: "Flows",
         icon: Icon::Waypoints,
         group: SectionGroup::Engineering,
-        role: Role::Operator,
+        role: Role::Operate,
         render: flows::render,
         on_open: Some(flows::on_open),
         focus: Some(flows::focus),
@@ -361,7 +363,7 @@ pub static SECTIONS: &[SectionSpec] = &[
         title: "Scripts",
         icon: Icon::Terminal,
         group: SectionGroup::Engineering,
-        role: Role::Operator,
+        role: Role::Configure,
         render: scripts::render,
         on_open: Some(scripts::on_open),
         focus: Some(scripts::focus),
@@ -531,7 +533,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         return empty_state(
             Icon::Lock,
             "No sections for your role",
-            "Ask an administrator for the operator role to manage data.",
+            "Ask an administrator for a role that may configure (admin, demo or integration) to manage data.",
             Vec::new(),
             cx,
         )
@@ -710,8 +712,8 @@ mod tests {
     static TABLE: &[SectionSpec] = &[
         row("users", SectionGroup::Admin, Role::Admin),
         row("oee", SectionGroup::Insights, Role::Any),
-        row("sources", SectionGroup::Data, Role::Operator),
-        row("modbus", SectionGroup::Protocols, Role::Operator),
+        row("sources", SectionGroup::Data, Role::Configure),
+        row("modbus", SectionGroup::Protocols, Role::Configure),
     ];
 
     fn ids(role: Option<Role>) -> Vec<&'static str> {
@@ -726,7 +728,7 @@ mod tests {
             ["oee"],
             "a viewer sees only open sections"
         );
-        assert_eq!(ids(Some(Role::Operator)), ["sources", "modbus", "oee"]);
+        assert_eq!(ids(Some(Role::Configure)), ["sources", "modbus", "oee"]);
         assert_eq!(
             ids(Some(Role::Admin)),
             ["sources", "modbus", "oee", "users"],
@@ -744,7 +746,7 @@ mod tests {
             assert!(any.contains(&id), "{id} is open to every user");
         }
         assert!(!any.contains(&"sources") && !any.contains(&"flows"));
-        let operator: Vec<_> = visible(SECTIONS, Some(Role::Operator))
+        let operator: Vec<_> = visible(SECTIONS, Some(Role::Configure))
             .iter()
             .map(|spec| spec.id)
             .collect();
@@ -829,8 +831,23 @@ mod tests {
     #[test]
     fn the_page_is_offered_only_with_a_section_to_show() {
         assert!(!has_sections(None));
-        for role in [Role::Any, Role::Operator, Role::Admin] {
+        for role in [Role::Any, Role::Operate, Role::Configure, Role::Admin] {
             assert!(has_sections(Some(role)), "{role:?} sees a section");
+        }
+        // An operator works in recipes and flows, and configures nothing.
+        let operate: Vec<_> = visible(SECTIONS, Some(Role::Operate))
+            .iter()
+            .map(|spec| spec.id)
+            .collect();
+        assert!(operate.contains(&"recipes") && operate.contains(&"flows"));
+        for id in [
+            "sources",
+            "snapshots",
+            "imports",
+            "scripts",
+            "notifications",
+        ] {
+            assert!(!operate.contains(&id), "{id} is configuration");
         }
     }
 

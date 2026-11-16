@@ -372,9 +372,9 @@ fn rows(console: &mut Console) -> Vec<TreeRow> {
 
 /// Move the selection's tags to the path field's path.
 fn apply_path(console: &mut Console, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         console.show_toast(
-            "Moving tags needs the operator role (admin, demo or integration)",
+            "Moving tags needs the admin, demo or integration role",
             true,
             cx,
         );
@@ -454,9 +454,9 @@ fn start_moves(console: &mut Console, moves: Vec<(i64, Option<String>)>, to: Opt
 }
 
 fn save_naming(console: &mut Console, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         console.show_toast(
-            "The naming convention needs the operator role (admin, demo or integration)",
+            "The naming convention needs the admin, demo or integration role",
             true,
             cx,
         );
@@ -716,7 +716,7 @@ fn tree_row(
 /// The panel on the right: the selection, its path, the naming convention.
 fn side(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let state = console.state::<TreeState>();
     let selection = state.selection.clone();
     let node_tags: Option<usize> = match &selection {
@@ -798,7 +798,7 @@ fn side(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
             if !operator {
                 return this.child(note_line(
                     Icon::Lock,
-                    "Moving tags needs the operator role (admin, demo or integration).".to_owned(),
+                    "Moving tags needs the admin, demo or integration role.".to_owned(),
                     theme.fg_dim,
                 ));
             }

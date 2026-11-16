@@ -20,6 +20,8 @@ pub use reqwest::Method;
 use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Serialize};
 
+use crate::ws_types::{Signature, SignatureRequired};
+
 pub mod admin;
 pub mod eng_edr;
 pub mod eng_flows;
@@ -38,16 +40,35 @@ pub struct ServerError {
     pub status: reqwest::StatusCode,
     /// The server's `{"error": …}` text, or the status and body.
     pub message: String,
+    /// The server's machine-readable `code`, when it gave one
+    /// (`signature_required`, `signature_invalid`, `account_locked`, …).
+    pub code: Option<String>,
+    /// What an electronic signature would have to state, when the server
+    /// asks for one (see [`crate::signature`]).
+    pub signature_required: Option<SignatureRequired>,
 }
 
 impl ServerError {
-    fn new(status: reqwest::StatusCode, body: &str) -> Self {
-        // Server errors are `{"error": "..."}` JSON.
-        let message = serde_json::from_str::<serde_json::Value>(body)
-            .ok()
-            .and_then(|value| value.get("error")?.as_str().map(str::to_owned))
-            .unwrap_or_else(|| format!("HTTP {status}: {body}"));
-        Self { status, message }
+    pub fn new(status: reqwest::StatusCode, body: &str) -> Self {
+        // Server errors are `{"error": "...", "code": "..."}` JSON.
+        let value = serde_json::from_str::<serde_json::Value>(body).ok();
+        let field = |name: &str| {
+            value
+                .as_ref()
+                .and_then(|value| value.get(name)?.as_str().map(str::to_owned))
+        };
+        let message = field("error").unwrap_or_else(|| format!("HTTP {status}: {body}"));
+        let code = field("code");
+        let signature_required = value
+            .as_ref()
+            .and_then(|value| value.get("signature_required"))
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
+        Self {
+            status,
+            message,
+            code,
+            signature_required,
+        }
     }
 
     /// The server refused the credentials: a wrong password (401) or a
@@ -139,6 +160,14 @@ struct HistoryResponse {
 struct ShelveBody<'a> {
     duration_secs: u64,
     reason: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<&'a Signature>,
+}
+
+/// The body of an alarm acknowledge that carries an electronic signature.
+#[derive(Debug, Serialize)]
+struct SignedBody<'a> {
+    signature: &'a Signature,
 }
 
 /// Mirrors `voltrus::models::DataSource`, the full row `GET
@@ -489,29 +518,49 @@ impl VoltrusApi {
             .await
     }
 
-    /// POST /api/v1/alarms/{id}/acknowledge
-    pub async fn ack_alarm(&self, id: i64) -> Result<()> {
-        self.send_empty::<IgnoredAny>(Method::POST, &format!("/api/v1/alarms/{id}/acknowledge"))
-            .await?;
+    /// `POST path` without a body, or with `{"signature": …}` when there
+    /// is one.
+    async fn post_signed(&self, path: &str, signature: Option<&Signature>) -> Result<()> {
+        match signature {
+            Some(signature) => {
+                self.send_json::<_, IgnoredAny>(Method::POST, path, &SignedBody { signature })
+                    .await?;
+            }
+            None => {
+                self.send_empty::<IgnoredAny>(Method::POST, path).await?;
+            }
+        }
         Ok(())
+    }
+
+    /// POST /api/v1/alarms/{id}/acknowledge, signed when the server asked.
+    pub async fn ack_alarm(&self, id: i64, signature: Option<&Signature>) -> Result<()> {
+        self.post_signed(&format!("/api/v1/alarms/{id}/acknowledge"), signature)
+            .await
     }
 
     /// POST /api/v1/alarms: the server's acknowledge-all (the same route the
-    /// web client and the Python SDK use).
-    pub async fn ack_all(&self) -> Result<()> {
-        self.send_empty::<IgnoredAny>(Method::POST, "/api/v1/alarms")
-            .await?;
-        Ok(())
+    /// web client and the Python SDK use), signed when the server asked.
+    pub async fn ack_all(&self, signature: Option<&Signature>) -> Result<()> {
+        self.post_signed("/api/v1/alarms", signature).await
     }
 
-    /// POST /api/v1/alarms/{id}/shelf — hide an alarm for `duration_secs`.
-    pub async fn shelve_alarm(&self, id: i64, duration_secs: u64, reason: &str) -> Result<()> {
+    /// POST /api/v1/alarms/{id}/shelf — hide an alarm for `duration_secs`,
+    /// signed when the server asked.
+    pub async fn shelve_alarm(
+        &self,
+        id: i64,
+        duration_secs: u64,
+        reason: &str,
+        signature: Option<&Signature>,
+    ) -> Result<()> {
         self.send_json::<_, IgnoredAny>(
             Method::POST,
             &format!("/api/v1/alarms/{id}/shelf"),
             &ShelveBody {
                 duration_secs,
                 reason,
+                signature,
             },
         )
         .await?;

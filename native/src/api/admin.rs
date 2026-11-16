@@ -8,7 +8,8 @@
 //! (checked here the way the server checks them, so a form says what is
 //! wrong before it asks), and the rules that keep an admin from locking
 //! themselves out. Users, roles and keys are strictly admin routes;
-//! notification writes are operator routes, their list any user's.
+//! notification writes need admin, demo or integration, their list any
+//! user's.
 
 use std::fmt;
 
@@ -60,23 +61,25 @@ pub struct UserRole {
     pub reach: &'static str,
 }
 
-/// Least to most access. Only `admin` and `demo` pass the server's
-/// operator routes; `operator`, `viewer` and `user` read and acknowledge.
+/// Least to most access. `viewer` and `user` read only; `operator` also
+/// operates (writes tags, acknowledges and shelves alarms, cancels
+/// commands, loads recipes, runs flows, hands over shifts); `demo` and
+/// `admin` also configure.
 pub const USER_ROLES: [UserRole; 5] = [
     UserRole {
         id: "viewer",
         label: "Viewer",
-        reach: "Reads and acknowledges alarms",
+        reach: "Reads only",
     },
     UserRole {
         id: "user",
         label: "User",
-        reach: "Reads and acknowledges alarms",
+        reach: "Reads only",
     },
     UserRole {
         id: "operator",
         label: "Operator",
-        reach: "Reads and acknowledges alarms; the server's operator routes need demo or admin",
+        reach: "Operates: writes tags, acknowledges and shelves alarms, loads recipes, runs flows; configures nothing",
     },
     UserRole {
         id: "demo",
@@ -355,7 +358,7 @@ pub const KEY_ROLES: [KeyRole; 2] = [
     KeyRole {
         id: "integration",
         label: "Integration",
-        reach: "Also passes the operator routes: writes, screens, devices",
+        reach: "Also operates and configures: writes, screens, devices",
     },
 ];
 

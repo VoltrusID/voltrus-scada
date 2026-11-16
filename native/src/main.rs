@@ -44,7 +44,7 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --alarms           open the Alarms page with this view or dialog once signed in
   --screen           the dashboard's and the mimic's screen: its id, or 1 for the overview,
                      2 for the first
-  --edit             open the dashboard in edit mode (operator roles); with
+  --edit             open the dashboard in edit mode (admin, demo, integration); with
                      --page mimic, the mimic's editor
   --section          the Data Manager's section to show (with --page data), e.g. flows
   --window           the window's size in points, e.g. 1280x800 (screenshots; the

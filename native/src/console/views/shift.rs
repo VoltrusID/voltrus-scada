@@ -2,7 +2,8 @@
 //! by date and shift, with new entries written in a dialog (multi-line
 //! notes; @mentions notify the named users), and the server's automatic
 //! report of the current shift, fetched again every 30 s while it is on
-//! screen. Every route is an operator route, so the page is too.
+//! screen. Every route is open to the roles that operate (operator, demo,
+//! integration, admin), so the page is too.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -342,7 +343,7 @@ fn activate_card(_: &mut Console, _: usize, _: bool, _: &mut Window, _: &mut Con
 /// Open the dialog for a new entry (`n`, the palette, the New button):
 /// on the Shift page, with the draft kept from last time, if any.
 pub fn new_entry(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_operate() {
         console.show_toast("Shift handover needs an operator role", true, cx);
         return;
     }

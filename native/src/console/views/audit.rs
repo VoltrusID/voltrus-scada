@@ -1,7 +1,7 @@
 //! The audit log: who did what on the server, searchable and filtered by
 //! action, user and time, sorted by time, action or user, a page of 50 at
-//! a time, and exported as CSV to a file the operator picks. The log is an
-//! operator route, so the page is too. Replies to the data export dialog
+//! a time, and exported as CSV to a file the operator picks. The log is a
+//! `demo_protected` route (admin, demo, integration), so the page is too. Replies to the data export dialog
 //! (`views::export`) come here as well: its calls are scoped to this page.
 
 use std::ops::Range;
@@ -242,8 +242,12 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
 /// E, the palette or the button: the log with the filters on screen, as
 /// CSV, to a file the operator picks.
 pub fn export_csv(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if !console.is_operator() {
-        console.show_toast("The audit log needs an operator role", true, cx);
+    if !console.may_configure() {
+        console.show_toast(
+            "The audit log needs the admin, demo or integration role",
+            true,
+            cx,
+        );
         return;
     }
     if console.page != Page::Audit {

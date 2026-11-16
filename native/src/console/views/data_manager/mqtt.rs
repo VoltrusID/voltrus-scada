@@ -56,7 +56,7 @@ const DETAIL: f32 = 360.0;
 const LOG_LIMIT: usize = 200;
 /// A payload shows at most this many lines; the rest are counted.
 const PAYLOAD_LINES: usize = 40;
-const OPERATORS: &str = "Operators only (admin, demo, integration)";
+const OPERATORS: &str = "Admin, demo or integration only";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
@@ -252,7 +252,7 @@ fn fetch_messages(console: &mut Console) {
 
 /// Whether the operator routes may be asked now.
 fn live(console: &mut Console) -> bool {
-    console.is_operator() && console.state::<State>().running()
+    console.may_configure() && console.state::<State>().running()
 }
 
 fn tick_status(console: &mut Console, _: &mut Context<Console>) {
@@ -288,7 +288,7 @@ fn refresh(console: &mut Console, cx: &mut Context<Console>) {
 // ── Tabs ─────────────────────────────────────────────────────────────────
 
 fn set_tab(console: &mut Console, tab: Tab, window: &mut Window, cx: &mut Context<Console>) {
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let running = console.state::<State>().running();
     if let Some(reason) = tab_blocked(tab, operator, running) {
         console.show_toast(format!("{}: {reason}", tab.label()), false, cx);
@@ -308,7 +308,7 @@ fn set_tab(console: &mut Console, tab: Tab, window: &mut Window, cx: &mut Contex
 }
 
 fn step_tab(console: &mut Console, forward: bool, window: &mut Window, cx: &mut Context<Console>) {
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let running = console.state::<State>().running();
     let current = console.state::<State>().tab;
     let at = Tab::ALL.iter().position(|tab| *tab == current).unwrap_or(0);
@@ -330,7 +330,7 @@ fn step_tab(console: &mut Console, forward: bool, window: &mut Window, cx: &mut 
 // ── Start, stop ──────────────────────────────────────────────────────────
 
 fn start_stop(console: &mut Console, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         console.show_toast(
             format!("Starting and stopping the broker: {OPERATORS}"),
             true,
@@ -385,7 +385,7 @@ fn number_field(text: String, cx: &mut Context<Console>) -> Entity<TextInput> {
 }
 
 fn open_config(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         console.show_toast(format!("The broker's configuration: {OPERATORS}"), true, cx);
         return;
     }
@@ -528,7 +528,7 @@ fn ensure_publish(console: &mut Console, window: &mut Window, cx: &mut Context<C
 }
 
 fn publish(console: &mut Console, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         return;
     }
     let state = console.state::<State>();
@@ -861,7 +861,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         console.state::<State>().form = None;
     }
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let state = console.state::<State>();
     let tab = state.tab;
     let running = state.running();

@@ -149,7 +149,7 @@ pub(super) fn render(
 ) -> AnyElement {
     let theme = theme(cx).clone();
     let server = console.server.clone();
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let intro = div()
         .flex()
         .flex_col()
@@ -239,7 +239,7 @@ pub(super) fn render(
                     .child(if enabled {
                         item.action()
                     } else {
-                        "Needs the operator role"
+                        "Needs the admin, demo or integration role"
                     }),
             )
             .into_any_element()

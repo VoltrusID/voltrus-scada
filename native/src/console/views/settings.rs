@@ -231,7 +231,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         .user
         .as_ref()
         .map_or_else(String::new, |(name, _)| name.clone());
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let history_agg = console.history_agg();
     let (mode, pinned, lang, cooldown, cooldown_input, prefs, license, bound, kept) = {
         let shell = console.state::<Shell>();
@@ -343,7 +343,7 @@ pub fn render(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) 
         if operator {
             "After an acknowledgement the same alarm waits this long before it is raised again; 0 turns it off. For every user."
         } else {
-            "After an acknowledgement the same alarm waits this long before it is raised again. Operators (admin, demo, integration) change it."
+            "After an acknowledgement the same alarm waits this long before it is raised again. The admin, demo and integration roles change it."
         },
         cooldown_control,
         &theme,

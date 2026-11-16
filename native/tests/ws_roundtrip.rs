@@ -2,7 +2,9 @@
 //! Mirrors the server's `src/ws_types.rs` tests — if these and the server's
 //! pass against the same bytes, the two enums have not drifted.
 
-use voltrus_scada_native::ws_types::{ClientMessage, ServerMessage, TagUpdateEntry};
+use voltrus_scada_native::ws_types::{
+    ClientMessage, ServerMessage, Signature, SignatureRequired, TagUpdateEntry,
+};
 
 fn enc(msg: &ClientMessage) -> Vec<u8> {
     // The wire encoding the client actually uses (see runtime.rs): named
@@ -116,6 +118,7 @@ fn all_client_message_types_roundtrip() {
             tag_id: "t1".to_string(),
             value: 42.0,
             command_id: None,
+            signature: None,
         },
         ClientMessage::Ping,
     ];
@@ -156,6 +159,7 @@ fn all_server_message_types_roundtrip() {
             status: "acked".to_string(),
             device_response: None,
             latency_ms: Some(50),
+            signature_required: None,
         },
         ServerMessage::DeviceStatus {
             device_id: "d1".to_string(),
@@ -224,5 +228,68 @@ fn named_map_decode_preserves_token_value() {
             assert_eq!(token, tok, "token value corrupted by named-map decode")
         }
         _ => panic!("wrong variant"),
+    }
+}
+
+#[test]
+fn signatures_are_optional_on_the_wire() {
+    // Unsigned: the field is left out, as an older server sends and expects.
+    let bytes = enc(&ClientMessage::TagWrite {
+        tag_id: "t1".to_string(),
+        value: 1.0,
+        command_id: Some("c1".to_string()),
+        signature: None,
+    });
+    assert_eq!(bytes[0], 0x84, "type, tag_id, value, command_id");
+    let signed = ClientMessage::TagWrite {
+        tag_id: "t1".to_string(),
+        value: 1.0,
+        command_id: Some("c1".to_string()),
+        signature: Some(Signature {
+            password: "secret".to_string(),
+            meaning: "I approve".to_string(),
+            reason: "batch 7".to_string(),
+        }),
+    };
+    match rmp_serde::from_slice(&enc(&signed)).unwrap() {
+        ClientMessage::TagWrite {
+            signature: Some(signature),
+            ..
+        } => assert_eq!(signature.reason, "batch 7"),
+        other => panic!("wrong variant: {other:?}"),
+    }
+    // An acknowledgement without the field decodes, and one with it keeps it.
+    let plain = ServerMessage::CommandAck {
+        command_id: "c1".to_string(),
+        status: "acked".to_string(),
+        device_response: None,
+        latency_ms: None,
+        signature_required: None,
+    };
+    let bytes = rmp_serde::to_vec_named(&plain).unwrap();
+    assert!(matches!(
+        rmp_serde::from_slice(&bytes).unwrap(),
+        ServerMessage::CommandAck {
+            signature_required: None,
+            ..
+        }
+    ));
+    let asks = ServerMessage::CommandAck {
+        command_id: "c1".to_string(),
+        status: "signature_required".to_string(),
+        device_response: None,
+        latency_ms: None,
+        signature_required: Some(SignatureRequired {
+            action: "tag_write".to_string(),
+            meaning: "I approve".to_string(),
+        }),
+    };
+    let bytes = rmp_serde::to_vec_named(&asks).unwrap();
+    match rmp_serde::from_slice(&bytes).unwrap() {
+        ServerMessage::CommandAck {
+            signature_required: Some(required),
+            ..
+        } => assert_eq!(required.meaning, "I approve"),
+        other => panic!("wrong variant: {other:?}"),
     }
 }

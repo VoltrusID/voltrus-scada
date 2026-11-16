@@ -242,10 +242,10 @@ fn wanted_lines(
         .collect()
 }
 
-/// Ask for the open tag's annotations (operators: the server's route is
+/// Ask for the open tag's annotations (admin, demo, integration: the route is
 /// `demo_protected`, reads included).
 fn ensure_notes(console: &mut Console, key: &str) {
-    if console.stress.is_some() || !console.is_operator() {
+    if console.stress.is_some() || !console.may_configure() {
         return;
     }
     let state = console.state::<DetailState>();
@@ -548,12 +548,8 @@ fn open_note(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    if !console.is_operator() {
-        console.show_toast(
-            "Notes need the operator role (admin, demo or integration)",
-            true,
-            cx,
-        );
+    if !console.may_configure() {
+        console.show_toast("Notes need the admin, demo or integration role", true, cx);
         return;
     }
     if console.state::<DetailState>().note_text.is_none() {
@@ -1165,7 +1161,7 @@ pub(crate) fn panel(
                     open_dialog(console, TagDialog::Compare, window, cx);
                 })),
         )
-        .when(console.is_operator(), |this| {
+        .when(console.may_configure(), |this| {
             this.child(
                 IconButton::new("tag-note", Icon::Pencil)
                     .tooltip(format!(
@@ -1269,7 +1265,7 @@ pub(crate) fn panel(
         )
         .child(div().flex().flex_wrap().gap(SPACE_3).children(legend))
         .child(chart)
-        .when(console.is_operator(), |this| {
+        .when(console.may_configure(), |this| {
             this.child(
                 div()
                     .text_size(FONT_CAPTION)
@@ -1434,12 +1430,12 @@ fn notes_section(
         .py(SPACE_7)
         .border_t_1()
         .border_color(theme.border);
-    if !console.is_operator() {
+    if !console.may_configure() {
         return section
             .child(section_label("Notes", cx))
             .child(note_line(
                 Icon::Lock,
-                "Notes need the operator role (admin, demo or integration).".to_owned(),
+                "Notes need the admin, demo or integration role.".to_owned(),
                 theme.fg_dim,
             ))
             .into_any_element();
@@ -1700,7 +1696,7 @@ fn note_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
     let error = state.note_error.clone();
     dialog(
         format!("Note on {name}"),
-        "Everyone with the operator role sees it on this tag's chart; @name mentions notify.",
+        "Everyone with the admin, demo or integration role sees it on this tag's chart; @name mentions notify.",
         vec![
             field("At", time, cx).into_any_element(),
             field("Note", text, cx).into_any_element(),

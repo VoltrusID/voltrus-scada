@@ -763,6 +763,9 @@ fn close_now(console: &mut Console, window: &mut Window, cx: &mut Context<Consol
 
 /// ⌘S: `PUT /api/v1/flows/{id}` with the canvas's graph.
 fn save(console: &mut Console, cx: &mut Context<Console>) {
+    if super::cannot_configure(console, cx) {
+        return;
+    }
     let state = console.state::<State>();
     state.seq += 1;
     let seq = state.seq;

@@ -556,7 +556,7 @@ fn faceplate_commands_follow_the_equipment_and_the_role() {
     assert_eq!(
         write_route(false, true),
         Some(WriteMode::Immediate),
-        "operator: REST"
+        "operator, demo, integration: REST"
     );
     assert_eq!(write_route(false, false), None);
     let now = Instant::now();

@@ -399,7 +399,7 @@ pub(crate) static PROTOCOL: Protocol = Protocol {
     calls: calls!("modbus"),
     base: "/api/v1/modbus-devices",
     decode: rows::<ModbusDeviceRow>,
-    write_role: Role::Operator,
+    write_role: Role::Configure,
     link,
     columns: &[
         col("Name", 0.0, Cell::Fn(name_of), false, 0),

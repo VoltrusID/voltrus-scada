@@ -343,7 +343,7 @@ pub(super) fn launch_ready(console: &mut Console, window: &mut Window, cx: &mut 
     if ready {
         console.state::<Launch>().edit = false;
         cx.defer_in(window, |console, window, cx| {
-            if console.is_operator() && !editing(console) {
+            if console.may_configure() && !editing(console) {
                 enter(console, window, cx);
             }
             let queued = std::mem::take(&mut console.state::<Launch>().queued);
@@ -462,9 +462,9 @@ fn toggle(console: &mut Console, window: &mut Window, cx: &mut Context<Console>)
         }
         return;
     }
-    if !console.is_operator() {
+    if !console.may_configure() {
         console.show_toast(
-            "Editing a screen needs an operator role (admin, demo or integration)",
+            "Editing a screen needs the admin, demo or integration role",
             true,
             cx,
         );
@@ -663,8 +663,12 @@ fn screen_name(console: &Console, id: &str) -> String {
 
 /// ⌘S: `PUT` the layout's rows; `after` runs once the server has them.
 fn save(console: &mut Console, after: Option<Leave>, cx: &mut Context<Console>) {
-    if !console.is_operator() {
-        console.show_toast("Saving a screen needs an operator role", true, cx);
+    if !console.may_configure() {
+        console.show_toast(
+            "Saving a screen needs the admin, demo or integration role",
+            true,
+            cx,
+        );
         return;
     }
     let Some(editor) = edits_ref(console) else {
