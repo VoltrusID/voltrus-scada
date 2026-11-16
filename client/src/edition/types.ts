@@ -30,7 +30,7 @@ export interface DataManagerTab {
 
 export interface LoginProvidersProps {
   /** Called after a non-password login succeeded; core re-reads the session. */
-  onLoggedIn: (session: { username?: string; role?: string; must_change_password?: boolean }) => void
+  onLoggedIn: (session: { username?: string; role?: string; must_change_password?: boolean; shared?: boolean }) => void
 }
 
 export interface BrandingProvider {

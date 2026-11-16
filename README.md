@@ -153,6 +153,11 @@ reverse proxy or tunnel on the same machine that sends `X-Forwarded-Proto: https
 (or Cloudflare's `CF-Visitor`) it is set with `Secure`. `cookie_secure: true` or
 `false` in the config forces either; the default is `auto`.
 
+For a public demo with one shared read-only login, create a `viewer` account and
+set `shared_accounts: [guest]` and `login_hint: "Demo: sign in as guest / ..."`:
+the hint appears under the sign-in form, and visitors can neither change that
+account's password or preferences nor lock it with wrong passwords.
+
 Open <http://localhost:3000>. The first start generates a random admin
 password and writes it to `initial-admin-password` next to the database
 (readable by the owner only); the log shows the path, never the password.

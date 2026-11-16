@@ -26,6 +26,7 @@ async fn test_flow_crud() {
         auth_secret: "test-secret".to_string(),
         cors_origin: None,
         cookie_secure: crate::models::CookieSecure::Never,
+        public_demo: Default::default(),
         retention_config: crate::models::RetentionConfig::default(),
         flow_engine: None,
         login_rate_limiter: crate::security::LoginRateLimiter::new(),
