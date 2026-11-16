@@ -1,9 +1,13 @@
 //! Data Manager › Flows: the web client's `FlowManager.tsx` and its flow
 //! editor. The list (virtualised, `/` search, sort header) starts and
 //! stops flows, opens the settings form (new flow, rename, enabled),
-//! the runs history, the test run with a JSON payload and the delete
-//! confirmation; Enter opens a flow on the native canvas editor
-//! ([`editor`], drawn by [`canvas`], its geometry in [`model`]).
+//! the runs history and the delete confirmation; Enter opens a flow on the
+//! native graph editor ([`editor`], drawn by [`canvas`], its geometry in
+//! [`model`]), T opens it on its test panel.
+//!
+//! On opening, the section asks the server for its node-type catalogue
+//! (`GET /api/v1/flows/node-types`); a server without one runs the legacy
+//! straight-line engine, and the editor falls back to its built-in steps.
 //!
 //! The server's `start` and `stop` change the running engine only; the
 //! stored `enabled` flag (what the engine loads at start-up) changes in
@@ -25,7 +29,7 @@ use gpui::{
     AnyElement, AnyWindowHandle, Context, Entity, FocusHandle, FontWeight, Hsla, KeyDownEvent,
     SharedString, Subscription, Window, div, px, uniform_list,
 };
-use voltrus_scada_native::api::eng_flows::{Flow, Tone, trigger_kind};
+use voltrus_scada_native::api::eng_flows::{Catalogue, Flow, Tone, trigger_kind};
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use vt_ui::Icon;
 use vt_ui::components::{Button, IconButton, empty_state, kbd, pill};
@@ -125,9 +129,14 @@ pub(crate) struct State {
     window: Option<AnyWindowHandle>,
     form: Option<forms::MetaForm>,
     runs: Option<forms::Runs>,
-    test: Option<forms::Test>,
-    /// The last test payload typed, offered again.
+    /// The last test input typed, offered again.
     test_payload: Option<String>,
+    /// The server's node-type catalogue, or the built-in one.
+    catalogue: Option<Rc<Catalogue>>,
+    /// Whether the server has the graph engine (`/node-types`); `None`
+    /// until it answered.
+    graph_server: Option<bool>,
+    catalogue_asked: bool,
     editor: Option<editor::Editor>,
     /// O came before the list: open its first flow when it arrives.
     open_pending: bool,
@@ -141,10 +150,26 @@ pub(crate) struct State {
 type TableKey = (String, Sort, bool, u64);
 
 pub fn on_open(console: &mut Console, _: &mut Context<Console>) {
+    if !console.state::<State>().catalogue_asked {
+        fetch_catalogue(console);
+    }
     if console.state::<State>().asked {
         return;
     }
     fetch(console);
+}
+
+/// `GET /api/v1/flows/node-types`: what the editor's palette and forms
+/// offer, and whether the server runs graphs.
+fn fetch_catalogue(console: &mut Console) {
+    if console.stress.is_some() {
+        return;
+    }
+    console.state::<State>().catalogue_asked = true;
+    console.call(
+        CallKey::new("data.flows.catalogue"),
+        Call::new(|api| async move { api.flow_node_types().await }),
+    );
 }
 
 /// After a config rollback: the flows list afresh when next opened.
@@ -480,7 +505,27 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 Err(error) => console.show_toast(format!("Delete failed: {error}"), true, cx),
             }
         }
+        "data.flows.catalogue" => {
+            let state = console.state::<State>();
+            match reply.take::<Option<Catalogue>>() {
+                Ok(Some(catalogue)) => {
+                    state.catalogue = Some(Rc::new(catalogue));
+                    state.graph_server = Some(true);
+                }
+                Ok(None) => {
+                    state.catalogue = Some(Rc::new(Catalogue::builtin()));
+                    state.graph_server = Some(false);
+                }
+                // Ask again next time the section opens.
+                Err(error) => {
+                    state.catalogue_asked = false;
+                    console.show_toast(format!("Flow node types: {error}"), true, cx);
+                }
+            }
+            editor::catalogue_changed(console);
+        }
         "data.flows.save" => editor::on_saved(console, key, reply, cx),
+        "data.flows.draft_test" | "data.flows.run_now" => editor::on_reply(console, key, reply, cx),
         _ => forms::on_reply(console, key, reply, cx),
     }
     cx.notify();
@@ -729,7 +774,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 }))
                 .on_action(cx.listener(|console, _: &EngFlowsTest, window, cx| {
                     if let Some(flow) = cursor_flow(console, cx) {
-                        forms::open_test(console, &flow, false, window, cx);
+                        editor::open_testing(console, flow, window, cx);
                     }
                 }))
                 .on_action(cx.listener(|console, _: &EngFlowsRefresh, _, cx| {
@@ -945,9 +990,9 @@ fn flow_row(
                         )
                         .child(
                             IconButton::new(("data-flow-test", row), Icon::Send)
-                                .tooltip("Test with a payload  T")
+                                .tooltip("Test with an input  T")
                                 .on_click(cx.listener(move |console, _, window, cx| {
-                                    forms::open_test(console, &test, false, window, cx);
+                                    editor::open_testing(console, test.clone(), window, cx);
                                 })),
                         )
                         .child(
@@ -1077,7 +1122,7 @@ mod tests {
 
     #[test]
     fn running_follows_this_consoles_start_and_stop() {
-        let flow = Flow::blank("f", "F", true, trigger_kind("timer").unwrap(), 1);
+        let flow = Flow::blank("f", "F", true, &Catalogue::builtin().triggers[1], 1);
         let mut state = State::default();
         assert!(
             running(&state, &flow),
@@ -1095,7 +1140,7 @@ mod tests {
             "newest first"
         );
         // Stopped here: a running flow sorts first.
-        let other = Flow::blank("g", "G", true, trigger_kind("timer").unwrap(), 1);
+        let other = Flow::blank("g", "G", true, &Catalogue::builtin().triggers[1], 1);
         assert_eq!(compare(&state, &other, &flow, Sort::Status), Ordering::Less);
     }
 }
@@ -1112,7 +1157,7 @@ mod table_tests {
         let mut h = Harness::new(cx);
         h.sign_in("admin");
         h.update(|console, _, cx| {
-            let timer = trigger_kind("timer").unwrap();
+            let timer = &Catalogue::builtin().triggers[1];
             let state = console.state::<State>();
             state.sort = Sort::Status;
             state.flows = Some(Ok(vec![

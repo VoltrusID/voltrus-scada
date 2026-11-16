@@ -137,8 +137,8 @@ actions!(
         EngFlowsZoomOut,
         EngFlowsFit,
         EngFlowsArrange,
-        EngFlowsEarlier,
-        EngFlowsLater,
+        EngFlowsRedo,
+        EngFlowsDuplicate,
         EngFlowsAddStep,
         EngFlowsInspect,
         EngFlowsOpen,
@@ -2353,7 +2353,25 @@ pub static COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!(
-        "Flow editor: remove the step",
+        "Flow editor: redo",
+        Data,
+        History,
+        ["secondary-shift-z", "secondary-y"],
+        ENG_FLOW_CANVAS,
+        EngFlowsRedo,
+        false
+    ),
+    command!(
+        "Flow editor: duplicate the node",
+        Data,
+        Copy,
+        ["secondary-d"],
+        ENG_FLOW_CANVAS,
+        EngFlowsDuplicate,
+        false
+    ),
+    command!(
+        "Flow editor: remove the node or wire",
         Data,
         Trash,
         ["backspace", "delete"],
@@ -2362,7 +2380,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!(
-        "Flow editor: move the step left (⇧ further)",
+        "Flow editor: move the node left (⇧ further)",
         Data,
         ChevronLeft,
         ["left", "shift-left"],
@@ -2371,7 +2389,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!(
-        "Flow editor: move the step right (⇧ further)",
+        "Flow editor: move the node right (⇧ further)",
         Data,
         ChevronRight,
         ["right", "shift-right"],
@@ -2380,7 +2398,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!(
-        "Flow editor: move the step up (⇧ further)",
+        "Flow editor: move the node up (⇧ further)",
         Data,
         ChevronUp,
         ["up", "shift-up"],
@@ -2389,7 +2407,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!(
-        "Flow editor: move the step down (⇧ further)",
+        "Flow editor: move the node down (⇧ further)",
         Data,
         ChevronDown,
         ["down", "shift-down"],
@@ -2425,7 +2443,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!(
-        "Flow editor: arrange the steps",
+        "Flow editor: arrange the nodes",
         Data,
         Layers,
         ["a"],
@@ -2434,25 +2452,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!(
-        "Flow editor: run the step earlier",
-        Data,
-        ChevronLeft,
-        ["alt-left"],
-        ENG_FLOW_CANVAS,
-        EngFlowsEarlier,
-        false
-    ),
-    command!(
-        "Flow editor: run the step later",
-        Data,
-        ChevronRight,
-        ["alt-right"],
-        ENG_FLOW_CANVAS,
-        EngFlowsLater,
-        false
-    ),
-    command!(
-        "Flow editor: add a step from the palette",
+        "Flow editor: add a node from the palette",
         Data,
         Plus,
         ["n"],
@@ -2461,7 +2461,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!(
-        "Flow editor: edit the step's settings",
+        "Flow editor: edit the node's settings",
         Data,
         Settings,
         ["enter"],

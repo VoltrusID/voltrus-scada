@@ -1,35 +1,30 @@
 //! The Flows section's dialogs: the settings form (a new flow: ID, name,
-//! enabled, trigger; an existing one: name and enabled), the runs history
-//! (a sheet) and the test run (a JSON payload, the steps' results).
+//! enabled, trigger; an existing one: name and enabled) and the runs
+//! history (a sheet, with the path each run took when the server logs it).
+//! Tests run in the editor's test panel.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use gpui::prelude::*;
-use gpui::{
-    AnyElement, Context, Entity, EntityInputHandler, FontWeight, Hsla, KeyDownEvent, Subscription,
-    Window, div, px,
-};
+use gpui::{AnyElement, Context, Entity, FontWeight, KeyDownEvent, Subscription, Window, div, px};
 use voltrus_scada_native::api::eng_flows::{
-    Category, Flow, FlowGraph, FlowRun, TEST_PAYLOAD, TRIGGER_KINDS, TestResult, TriggerKind,
-    category_of, label_of, parse_json, pretty, validate_meta,
+    Flow, FlowGraph, FlowRun, TriggerType, parse_json, pretty, validate_meta,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use vt_ui::Icon;
-use vt_ui::components::{Button, IconButton, Segment, empty_state, field, kbd, pill, segmented};
+use vt_ui::components::{Button, IconButton, Segment, empty_state, field, kbd, segmented};
 use vt_ui::text_input::{InputEvent, TextInput};
 use vt_ui::theme::*;
 
 use super::{State, editor, now_millis, now_secs, refresh, with_window};
 use crate::console::Console;
 use crate::console::overlay::Overlay;
-use crate::console::text_area::TextArea;
 use crate::console::views::ops_kit::notice;
 use crate::console::views::{LIST_TAIL, ListKeys, focus_ring, keyboard_list, local_time};
 
 const FORM: &str = "data-flow-form";
 const RUNS: &str = "data-flow-runs";
 const RUNS_LIST: &str = "data.flows.runs";
-const TEST: &str = "data-flow-test";
 
 // ── Settings form ────────────────────────────────────────────────────────
 
@@ -41,7 +36,7 @@ pub(crate) struct MetaForm {
     name: Entity<TextInput>,
     enabled: bool,
     /// A new flow's trigger.
-    trigger: &'static TriggerKind,
+    trigger: TriggerType,
     error: Option<String>,
     saving: bool,
     /// The save the form waits for.
@@ -95,13 +90,18 @@ pub(super) fn open_meta(
     let subscriptions = vec![subscribe(&id, window, cx), subscribe(&name, window, cx)];
     let enabled = original.as_ref().is_none_or(|flow| flow.enabled);
     let state = console.state::<State>();
+    let trigger = editor::catalogue_of(state)
+        .triggers
+        .first()
+        .cloned()
+        .unwrap_or_default();
     state.window = Some(window.window_handle());
     state.form = Some(MetaForm {
         original,
         id,
         name: name.clone(),
         enabled,
-        trigger: &TRIGGER_KINDS[0],
+        trigger,
         error: None,
         saving: false,
         seq: 0,
@@ -120,6 +120,7 @@ fn save_meta(console: &mut Console, cx: &mut Context<Console>) {
         Some(Ok(flows)) => flows.clone(),
         _ => Vec::new(),
     };
+    let graph_server = state.graph_server == Some(true);
     let Some(form) = state.form.as_mut() else {
         return;
     };
@@ -136,11 +137,14 @@ fn save_meta(console: &mut Console, cx: &mut Context<Console>) {
     }
     let now = now_secs();
     let (key, flow, created) = match &form.original {
-        None => (
-            "data.flows.create",
-            Flow::blank(&id, &name, form.enabled, form.trigger, now),
-            true,
-        ),
+        None => {
+            let mut flow = Flow::blank(&id, &name, form.enabled, &form.trigger, now);
+            // A graph server gets an empty graph; an older one an empty list.
+            if graph_server {
+                flow.nodes = FlowGraph::default().nodes_json();
+            }
+            ("data.flows.create", flow, true)
+        }
         Some(original) => (
             "data.flows.meta",
             original.with_meta(&name, form.enabled, now),
@@ -215,7 +219,7 @@ fn render_meta(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         form.id.clone(),
         form.name.clone(),
         form.enabled,
-        form.trigger.id,
+        form.trigger.kind.clone(),
         form.error.clone(),
         form.saving,
     );
@@ -275,15 +279,19 @@ fn render_meta(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         .into_any_element(),
     );
     if editing.is_none() {
-        let triggers = TRIGGER_KINDS
-            .iter()
+        let kinds = editor::catalogue_of(console.state::<State>())
+            .triggers
+            .clone();
+        let triggers = kinds
+            .into_iter()
             .map(|kind| {
+                let chosen = kind.kind == trigger;
                 Segment::new(
-                    kind.label,
-                    kind.id == trigger,
+                    kind.label().to_owned(),
+                    chosen,
                     cx.listener(move |console, _, _, cx| {
                         if let Some(form) = console.state::<State>().form.as_mut() {
-                            form.trigger = kind;
+                            form.trigger = kind.clone();
                         }
                         cx.notify();
                     }),
@@ -299,7 +307,7 @@ fn render_meta(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
                     .gap(SPACE_2)
                     .child(segmented("data-flow-form-trigger", triggers, cx))
                     .child(note(
-                        "Its settings and the steps are edited on the canvas next.",
+                        "Its settings and the nodes are edited on the canvas next.",
                     )),
                 cx,
             )
@@ -609,6 +617,17 @@ fn render_runs(
                                     .child(summary),
                             ),
                     )
+                    .when(!run.trace.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .pl(px(30.0))
+                                .truncate()
+                                .font_family(MONO)
+                                .text_size(FONT_CAPTION)
+                                .text_color(theme.fg_dim)
+                                .child(run.path_text()),
+                        )
+                    })
                     .when(expanded, |this| {
                         let detail = match (&run.error, &run.output) {
                             (Some(error), _) => error.clone(),
@@ -702,373 +721,6 @@ fn render_runs(
         .into_any_element()
 }
 
-// ── Test ─────────────────────────────────────────────────────────────────
-
-/// The test dialog while it is open.
-pub(crate) struct Test {
-    id: String,
-    name: String,
-    payload: Entity<TextArea>,
-    result: Option<Result<TestResult, String>>,
-    running: bool,
-    seq: i64,
-    /// Step labels by id, to name the results.
-    labels: HashMap<String, String>,
-    /// The editor has changes the server does not have yet.
-    unsaved: bool,
-    /// The labels of the output steps (writes, HTTP, alarms): a test runs
-    /// them for real, so it needs a second, explicit "Run anyway".
-    outputs: Vec<String>,
-    /// The operator saw the outputs warning; the next run goes.
-    armed: bool,
-    _subscription: Subscription,
-}
-
-/// Open the test of `flow` with the last payload typed (or the web
-/// client's default).
-pub(super) fn open_test(
-    console: &mut Console,
-    flow: &Flow,
-    unsaved: bool,
-    window: &mut Window,
-    cx: &mut Context<Console>,
-) {
-    let text = console
-        .state::<State>()
-        .test_payload
-        .clone()
-        .unwrap_or_else(|| TEST_PAYLOAD.to_owned());
-    let payload = cx.new(|cx| TextArea::new(6, cx).placeholder("{\"metrics\": {…}}   ⌘↵ run"));
-    payload.update(cx, |area, cx| {
-        area.replace_text_in_range(None, &text, window, cx);
-    });
-    let subscription = cx.subscribe_in(
-        &payload,
-        window,
-        |console, _, event: &InputEvent, window, cx| match event {
-            InputEvent::Submitted => run_test(console, cx),
-            InputEvent::Cancelled => console.close_overlay(window, cx),
-            InputEvent::Changed => {
-                if let Some(test) = console.state::<State>().test.as_mut()
-                    && test.armed
-                {
-                    test.armed = false;
-                    cx.notify();
-                }
-            }
-            InputEvent::Blurred => {}
-        },
-    );
-    let nodes = FlowGraph::of(flow)
-        .map(|graph| graph.nodes)
-        .unwrap_or_default();
-    let labels = nodes
-        .iter()
-        .map(|node| {
-            let id = node.get("id").and_then(|id| id.as_str()).unwrap_or("");
-            (id.to_owned(), label_of(node))
-        })
-        .collect();
-    let outputs = nodes
-        .iter()
-        .filter(|node| category_of(node) == Category::Output)
-        .map(label_of)
-        .collect();
-    let state = console.state::<State>();
-    state.window = Some(window.window_handle());
-    state.test = Some(Test {
-        id: flow.id.clone(),
-        name: flow.name.clone(),
-        payload: payload.clone(),
-        result: None,
-        running: false,
-        seq: 0,
-        labels,
-        unsaved,
-        outputs,
-        armed: false,
-        _subscription: subscription,
-    });
-    let overlay = Overlay::modal(TEST, px(640.0), render_test, cx);
-    console.open_overlay(overlay, window, cx);
-    payload.read(cx).focus(window);
-}
-
-/// `POST /api/v1/flows/{id}/test` with the payload typed.
-fn run_test(console: &mut Console, cx: &mut Context<Console>) {
-    let state = console.state::<State>();
-    let Some(test) = state.test.as_ref() else {
-        return;
-    };
-    if test.running {
-        return;
-    }
-    if !test.outputs.is_empty() && !test.armed {
-        // The first ⌘↵ only warns: outputs act on the plant.
-        if let Some(test) = state.test.as_mut() {
-            test.armed = true;
-        }
-        cx.notify();
-        return;
-    }
-    let text = test.payload.read(cx).value().to_owned();
-    state.test_payload = Some(text.clone());
-    state.seq += 1;
-    let seq = state.seq;
-    let Some(test) = state.test.as_mut() else {
-        return;
-    };
-    let payload = match parse_json(&text) {
-        Ok(payload) => payload,
-        Err(error) => {
-            test.result = Some(Err(format!("The payload is {error}")));
-            cx.notify();
-            return;
-        }
-    };
-    test.running = true;
-    test.armed = false;
-    test.seq = seq;
-    test.result = None;
-    let id = test.id.clone();
-    console.call(
-        CallKey::new("data.flows.test").with(seq),
-        Call::new(move |api| async move { api.test_flow(&id, payload).await }),
-    );
-    cx.notify();
-}
-
-fn outcome_color(outcome: &str, theme: &Theme) -> Hsla {
-    match outcome {
-        "continue" => theme.success,
-        "filter_reject" => theme.warning,
-        "error" => theme.danger,
-        _ => theme.fg_dim,
-    }
-}
-
-fn render_test(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> AnyElement {
-    let theme = theme(cx).clone();
-    let Some(test) = console.state::<State>().test.as_ref() else {
-        return div().into_any_element();
-    };
-    let (name, payload, result, running, labels, unsaved) = (
-        test.name.clone(),
-        test.payload.clone(),
-        test.result.clone(),
-        test.running,
-        test.labels.clone(),
-        test.unsaved,
-    );
-    let (outputs, armed) = (test.outputs.join(", "), test.armed);
-
-    let result_view = match result {
-        None if running => Some(notice("Running the stored steps…", false, &theme)),
-        None => None,
-        Some(Err(error)) => Some(
-            div()
-                .p(SPACE_5)
-                .rounded(RADIUS_MD)
-                .bg(theme.danger.opacity(0.08))
-                .text_size(FONT_SMALL)
-                .text_color(theme.danger)
-                .child(error)
-                .into_any_element(),
-        ),
-        Some(Ok(result)) => {
-            let steps = result.node_results.len();
-            Some(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(SPACE_4)
-                    .child(
-                        div()
-                            .text_size(FONT_SMALL)
-                            .text_color(theme.fg_muted)
-                            .child(match steps {
-                                0 => "No steps ran: the flow has none.".to_owned(),
-                                1 => "1 step ran, in the stored order:".to_owned(),
-                                steps => format!("{steps} steps ran, in the stored order:"),
-                            }),
-                    )
-                    .children(result.node_results.iter().enumerate().map(|(index, step)| {
-                        let outcome = step.outcome().to_owned();
-                        let label = labels
-                            .get(&step.node_id)
-                            .cloned()
-                            .unwrap_or_else(|| "Step".to_owned());
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(SPACE_4)
-                            .child(
-                                div()
-                                    .w(px(20.0))
-                                    .flex_none()
-                                    .font_family(MONO)
-                                    .text_size(FONT_SMALL)
-                                    .text_color(theme.fg_dim)
-                                    .child(format!("{}", index + 1)),
-                            )
-                            .child(div().w(px(120.0)).flex_none().truncate().child(label))
-                            .child(
-                                div()
-                                    .w(px(140.0))
-                                    .flex_none()
-                                    .truncate()
-                                    .font_family(MONO)
-                                    .text_size(FONT_SMALL)
-                                    .text_color(theme.fg_muted)
-                                    .child(step.node_id.clone()),
-                            )
-                            .child(pill(outcome.clone(), outcome_color(&outcome, &theme)))
-                            .when_some(step.error.clone(), |this, error| {
-                                this.child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_size(FONT_SMALL)
-                                        .text_color(theme.danger)
-                                        .child(error),
-                                )
-                            })
-                    }))
-                    .child(
-                        div()
-                            .text_size(FONT_CAPTION)
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(theme.fg_dim)
-                            .child("OUTPUT"),
-                    )
-                    .child(
-                        div()
-                            .id("data-flow-test-output")
-                            .max_h(px(200.0))
-                            .overflow_y_scroll()
-                            .p(SPACE_4)
-                            .rounded(RADIUS_MD)
-                            .bg(theme.surface)
-                            .border_1()
-                            .border_color(theme.border)
-                            .font_family(MONO)
-                            .text_size(FONT_SMALL)
-                            .child(pretty(&result.output)),
-                    )
-                    .into_any_element(),
-            )
-        }
-    };
-
-    div()
-        .flex()
-        .flex_col()
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(SPACE_5)
-                .h(px(56.0))
-                .px(SPACE_8)
-                .border_b_1()
-                .border_color(theme.border)
-                .child(vt_ui::icon(Icon::Send, ICON_LG, theme.accent))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(FONT_TITLE)
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(format!("Test {name}")),
-                ),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(SPACE_6)
-                .px(SPACE_8)
-                .py(SPACE_7)
-                .child(field("Payload JSON", payload, cx))
-                .when(unsaved, |this| {
-                    this.child(
-                        div()
-                            .text_size(FONT_SMALL)
-                            .text_color(theme.warning)
-                            .child("The editor has unsaved changes: the server tests the stored steps. Save with ⌘S first."),
-                    )
-                })
-                .when(!outputs.is_empty(), |this| {
-                    this.child(
-                        div()
-                            .id("data-flow-test-outputs")
-                            .p(SPACE_5)
-                            .rounded(RADIUS_MD)
-                            .bg(theme.warning.opacity(0.08))
-                            .text_size(FONT_SMALL)
-                            .text_color(theme.warning)
-                            .child(if armed {
-                                format!("Run anyway? The output steps ({outputs}) will act for real. Press ⌘↵ again to run.")
-                            } else {
-                                format!("This flow has output steps ({outputs}): a test writes, posts and raises alarms for real.")
-                            }),
-                    )
-                })
-                .children(result_view),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(SPACE_4)
-                .h(px(56.0))
-                .px(SPACE_8)
-                .border_t_1()
-                .border_color(theme.border)
-                .child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .gap(SPACE_2)
-                        .text_size(FONT_CAPTION)
-                        .text_color(theme.fg_dim)
-                        .child(kbd("⌘↵", cx))
-                        .child("run")
-                        .child(kbd("Esc", cx))
-                        .child("close"),
-                )
-                .child(
-                    Button::new("data-flow-test-close", "Close")
-                        .ghost()
-                        .on_click(cx.listener(|console, _, window, cx| {
-                            console.close_overlay(window, cx);
-                        })),
-                )
-                .child(
-                    Button::new(
-                        "data-flow-test-run",
-                        if running {
-                            "Running…"
-                        } else if armed {
-                            "Run anyway"
-                        } else {
-                            "Run test"
-                        },
-                    )
-                    .primary()
-                    .icon(Icon::Play)
-                    .disabled(running)
-                    .on_click(cx.listener(|console, _, _, cx| run_test(console, cx))),
-                ),
-        )
-        .into_any_element()
-}
-
 /// Answers to the dialogs' calls.
 pub(super) fn on_reply(
     console: &mut Console,
@@ -1086,71 +738,6 @@ pub(super) fn on_reply(
                 runs.runs = Some(reply.take::<Vec<FlowRun>>());
             }
         }
-        "data.flows.test" => {
-            if let Some(test) = console.state::<State>().test.as_mut()
-                && test.seq == key.arg
-            {
-                test.running = false;
-                test.result = Some(reply.take::<TestResult>());
-            }
-        }
         _ => {}
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use gpui::TestAppContext;
-    use voltrus_scada_native::api::eng_flows::trigger_kind;
-
-    use super::*;
-    use crate::console::testing::Harness;
-
-    const RUN: &str = if cfg!(target_os = "macos") {
-        "cmd-enter"
-    } else {
-        "ctrl-enter"
-    };
-
-    fn flow(nodes: &str) -> Flow {
-        Flow {
-            nodes: nodes.to_owned(),
-            ..Flow::blank("f", "F", true, trigger_kind("timer").unwrap(), 1)
-        }
-    }
-
-    fn tests_sent(h: &mut Harness) -> usize {
-        h.calls()
-            .iter()
-            .filter(|key| key.name == "data.flows.test")
-            .count()
-    }
-
-    #[gpui::test]
-    fn a_test_with_outputs_runs_only_after_run_anyway(cx: &mut TestAppContext) {
-        let mut h = Harness::new(cx);
-        h.sign_in("admin");
-        let with_outputs = flow(r#"[{"id": "w", "type": "write_out"}]"#);
-        h.update(|console, window, cx| open_test(console, &with_outputs, false, window, cx));
-        h.draw();
-        h.keys(RUN);
-        assert_eq!(tests_sent(&mut h), 0, "the first ⌘↵ only warns");
-        assert!(h.update(|console, _, _| {
-            console
-                .state::<State>()
-                .test
-                .as_ref()
-                .is_some_and(|test| test.armed && test.outputs.len() == 1)
-        }));
-        h.draw();
-        h.keys(RUN);
-        assert_eq!(tests_sent(&mut h), 1, "Run anyway runs it");
-        h.update(|console, window, cx| console.close_overlay(window, cx));
-
-        let plain = flow(r#"[{"id": "t", "type": "filter"}]"#);
-        h.update(|console, window, cx| open_test(console, &plain, false, window, cx));
-        h.draw();
-        h.keys(RUN);
-        assert_eq!(tests_sent(&mut h), 1, "no outputs: no second ask");
     }
 }
