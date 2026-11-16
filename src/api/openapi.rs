@@ -174,6 +174,11 @@ use utoipa::{Modify, OpenApi};
         crate::api::flows::start_flow,
         crate::api::flows::stop_flow,
         crate::api::flows::test_flow,
+        crate::api::flows::test_flow_definition,
+        crate::api::flows::run_flow,
+        crate::api::flows::node_types,
+        crate::api::flows::create_webhook_token,
+        crate::api::flows::flow_webhook,
         crate::api::flows::list_flow_runs,
         // Notifications
         crate::api::notifications::list_notification_settings,
@@ -328,6 +333,10 @@ use utoipa::{Modify, OpenApi};
         // Flow schemas
         crate::models::Flow,
         crate::models::FlowRun,
+        crate::api::flows::FlowInput,
+        crate::api::flows::RunInput,
+        crate::api::flows::TestFlowRequest,
+        crate::api::flows::TestFlowDefinition,
         // Notification schemas
         crate::models::NotificationSetting,
         crate::models::CreateNotificationSettingRequest,
