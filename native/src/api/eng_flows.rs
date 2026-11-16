@@ -32,6 +32,7 @@ use serde_json::{Map, Value, json};
 
 use super::ops::encode;
 use super::{Method, ServerError, VoltrusApi};
+use crate::signature::Signature;
 
 /// The list route.
 pub const FLOWS: &str = "/api/v1/flows";
@@ -2147,12 +2148,20 @@ impl VoltrusApi {
     }
 
     /// `POST /api/v1/flows/{id}/run`: one real run now, on `input` if
-    /// given; its trace.
-    pub async fn run_flow_now(&self, id: &str, input: Option<Value>) -> Result<TestRun> {
-        let body = match input {
+    /// given; its trace. An edition may want it signed (a mode switch).
+    pub async fn run_flow_now(
+        &self,
+        id: &str,
+        input: Option<Value>,
+        signature: Option<&Signature>,
+    ) -> Result<TestRun> {
+        let mut body = match input {
             Some(input) => json!({ "input": input }),
             None => json!({}),
         };
+        if let Some(signature) = signature {
+            body["signature"] = serde_json::to_value(signature)?;
+        }
         self.send_json(Method::POST, &flow_action_path(id, "run"), &body)
             .await
     }

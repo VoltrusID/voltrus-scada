@@ -18,8 +18,9 @@
 //! the settings form or the editor. The list shows both: what this console
 //! last started or stopped, and the stored flag when they differ.
 //!
-//! Listing, viewing, starting and stopping flows and reading their runs is
-//! for operators; creating, changing, test-running and deleting them is
+//! Listing, viewing, starting and stopping flows, running one once (the
+//! editor's Run now, signed when an edition asks) and reading their runs
+//! is for operators; creating, changing, test-running and deleting them is
 //! configuration (admin, demo, integration).
 
 pub(crate) mod canvas;
@@ -745,9 +746,14 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     };
 
     let operator = console.may_configure();
+    let view = if console.may_operate() {
+        "↵ view and run once"
+    } else {
+        "↵ view"
+    };
     let subtitle = if !operator {
         format!(
-            "{total} flows · {active} running · read-only: changing flows needs the admin, demo or integration role · ↵ view · H runs"
+            "{total} flows · {active} running · read-only: changing flows needs the admin, demo or integration role · {view} · H runs"
         )
     } else if filtered {
         format!("{shown} of {total} flows match")

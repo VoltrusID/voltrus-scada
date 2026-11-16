@@ -9,8 +9,10 @@ import { FlowEditor } from './components/flow-editor/FlowEditor'
 import { FALLBACK_CATALOGUE, colorFor, defaultConfig, iconFor } from './components/flow-editor/catalogue'
 import { countNodes, parseTrigger, triggerSummary } from './components/flow-editor/model'
 import { fmtWhen } from './components/flow-editor/TestPanel'
+import { RunOnceDialog } from './components/flow-editor/RunOnceDialog'
 
 const small: React.CSSProperties = { ...btnStyle, padding: '5px 10px', fontSize: 12 }
+const COLUMNS = '36px minmax(160px, 1.4fr) minmax(140px, 1fr) 80px minmax(110px, .8fr) 420px'
 
 export function newFlow(cat: FlowCatalogue): Flow {
   const t = cat.triggers[0]
@@ -38,17 +40,18 @@ function LastRun({ flowId }: { flowId: string }) {
   )
 }
 
-function FlowRow({ flow, cat, canEdit, canRun, onEdit, onDuplicate, onDelete, onStart, onStop }: {
+function FlowRow({ flow, cat, canEdit, canRun, onEdit, onDuplicate, onDelete, onStart, onStop, onRunOnce }: {
   flow: Flow; cat: FlowCatalogue; canEdit: boolean
-  /** Start and stop: operators too, not only those who may edit. */
+  /** Start, stop and run once: operators too, not only those who may edit. */
   canRun: boolean
   onEdit: () => void; onDuplicate: () => void; onDelete: () => void; onStart: () => void; onStop: () => void
+  onRunOnce: () => void
 }) {
   const trigger = parseTrigger(flow.trigger_config)
   const nodes = countNodes(flow.nodes)
   return (
     <div role="row" onClick={onEdit} className="vf-flow-row" style={{
-      display: 'grid', gridTemplateColumns: '36px minmax(160px, 1.4fr) minmax(140px, 1fr) 80px minmax(110px, .8fr) 340px',
+      display: 'grid', gridTemplateColumns: COLUMNS,
       alignItems: 'center', gap: 14, padding: '10px 14px', borderBottom: '1px solid var(--border)', cursor: 'pointer',
     }}>
       <span style={{
@@ -75,6 +78,7 @@ function FlowRow({ flow, cat, canEdit, canRun, onEdit, onDuplicate, onDelete, on
         {canRun && (flow.enabled
           ? <button type="button" style={{ ...small, color: 'var(--warn)' }} onClick={onStop}>Stop</button>
           : <button type="button" style={{ ...small, color: 'var(--green)' }} onClick={onStart}>Start</button>)}
+        {canRun && <button type="button" style={small} onClick={onRunOnce} title="Run the saved flow once, for real">Run once</button>}
         <button type="button" style={small} onClick={onEdit}>{canEdit ? 'Edit' : 'View'}</button>
         {canEdit && <button type="button" style={small} onClick={onDuplicate}>Duplicate</button>}
         {canEdit && <button type="button" style={{ ...small, color: 'var(--crit)' }} onClick={onDelete}>Delete</button>}
@@ -85,12 +89,16 @@ function FlowRow({ flow, cat, canEdit, canRun, onEdit, onDuplicate, onDelete, on
 
 /**
  * Flows list and graph editor. `isAdmin` (admin or demo role) may edit; other
- * roles get a read-only view of the list and canvas. Only `isStrictAdmin`
- * (admin) may create webhook tokens.
+ * roles get a read-only view of the list and canvas. `canOperate`
+ * (operators and up) may start, stop and run a flow once, from the list or
+ * the read-only canvas. Only `isStrictAdmin` (admin) may create webhook
+ * tokens.
  */
 export function FlowManager({ isAdmin, isStrictAdmin = isAdmin, canOperate = isAdmin }: { isAdmin: boolean; isStrictAdmin?: boolean; canOperate?: boolean }) {
   const canEdit = isAdmin
   const [editing, setEditing] = useState<{ flow: Flow; saved: boolean } | null>(null)
+  const [runOnce, setRunOnce] = useState<Flow | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const [q, setQ] = useState('')
   const flowsQ = useFlows(true)
   const flows = flowsQ.data ?? []
@@ -117,6 +125,7 @@ export function FlowManager({ isAdmin, isStrictAdmin = isAdmin, canOperate = isA
         catalogue={cat}
         readOnly={!canEdit}
         canManageWebhook={isStrictAdmin}
+        canRun={canOperate}
         onSave={async f => {
           if (editing.saved) await updateFlow.mutateAsync(f)
           else {
@@ -171,7 +180,7 @@ export function FlowManager({ isAdmin, isStrictAdmin = isAdmin, canOperate = isA
       ) : (
         <div role="table" aria-label="Flows" style={{ border: '1px solid var(--border)', borderRadius: 10, background: 'var(--card)', overflow: 'hidden' }}>
           <div role="row" style={{
-            display: 'grid', gridTemplateColumns: '36px minmax(160px, 1.4fr) minmax(140px, 1fr) 80px minmax(110px, .8fr) 340px',
+            display: 'grid', gridTemplateColumns: COLUMNS,
             gap: 14, padding: '8px 14px', borderBottom: '1px solid var(--border)', fontSize: 10.5, fontWeight: 700,
             textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)',
           }}>
@@ -186,10 +195,18 @@ export function FlowManager({ isAdmin, isStrictAdmin = isAdmin, canOperate = isA
               })}
               onDelete={() => { if (confirm(`Delete flow “${f.name}”? This cannot be undone.`)) deleteFlow.mutate(f.id) }}
               onStart={() => startFlow.mutate(f.id)}
-              onStop={() => stopFlow.mutate(f.id)} />
+              onStop={() => stopFlow.mutate(f.id)}
+              onRunOnce={() => { setNotice(null); setRunOnce(f) }} />
           ))}
           {shown.length === 0 && <div style={{ padding: 18, fontSize: 13, color: 'var(--muted)' }}>No flow matches “{q}”.</div>}
         </div>
+      )}
+      {notice && (
+        <div role="status" style={{ marginTop: 10, fontSize: 12.5, color: 'var(--green)' }}>{notice}</div>
+      )}
+      {runOnce && (
+        <RunOnceDialog flowId={runOnce.id} flowName={runOnce.name} onClose={() => setRunOnce(null)}
+          onDone={() => { setNotice(`Ran “${runOnce.name}” once.`); setRunOnce(null) }} />
       )}
       <style>{'.vf-flow-row:hover{background:var(--hover-overlay)}.vf-flow-row:last-child{border-bottom:none!important}'}</style>
     </div>
