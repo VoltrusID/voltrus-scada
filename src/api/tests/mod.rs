@@ -26,6 +26,7 @@ mod mcp;
 mod mqtt_broker;
 mod naming_convention;
 mod notifications;
+mod password_change_gate;
 mod poll_interval;
 mod project;
 mod protocol_routes;

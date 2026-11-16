@@ -1,7 +1,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  activityIntervalMs, createActivityThrottle, parseSessionPolicy, sessionEndMessage, sessionEndReason,
+  activityIntervalMs, createActivityThrottle, isPasswordChangeRequired, isPasswordChangeRequiredError,
+  parseSessionPolicy, PasswordChangeRequiredError, sessionEndMessage, sessionEndReason,
 } from '../src/session.ts'
 
 test('the session policy is read from the login and /auth/me bodies', () => {
@@ -42,4 +43,19 @@ test('the login screen explains the sign-out', () => {
   assert.equal(sessionEndMessage('session_idle', 60), 'You were signed out after 1 minute of inactivity.')
   assert.match(sessionEndMessage('session_idle', null), /inactivity/)
   assert.match(sessionEndMessage('session_expired', 900), /maximum length/)
+})
+
+test('a 403 password_change_required is told apart from other refusals', () => {
+  assert.equal(isPasswordChangeRequired(403, { code: 'password_change_required', error: 'Change your password' }), true)
+  assert.equal(isPasswordChangeRequired(403, { error: 'Current password is incorrect' }), false)
+  assert.equal(isPasswordChangeRequired(403, { code: 'signature_invalid' }), false)
+  assert.equal(isPasswordChangeRequired(401, { code: 'password_change_required' }), false)
+  assert.equal(isPasswordChangeRequired(403, null), false)
+})
+
+test('the password-change error is recognised so nothing toasts it', () => {
+  assert.equal(isPasswordChangeRequiredError(new PasswordChangeRequiredError()), true)
+  const copy = new Error('x'); copy.name = 'PasswordChangeRequiredError'
+  assert.equal(isPasswordChangeRequiredError(copy), true)
+  assert.equal(isPasswordChangeRequiredError(new Error('Request failed: 403')), false)
 })

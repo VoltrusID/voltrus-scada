@@ -264,6 +264,7 @@ pub(crate) async fn unattended_write_allowed(
 
 /// A write that passed the tag's policy, ready to be queued.
 pub struct CheckedWrite {
+    tag_id: i64,
     reason: Option<String>,
     target: CommandTarget,
     command_id: String,
@@ -277,6 +278,7 @@ impl CheckedWrite {
     /// Details of the write for the edition's signature hook.
     pub fn details(&self, value: f64) -> serde_json::Value {
         json!({
+            "tag_id": self.tag_id,
             "key": self.key,
             "device_id": self.device_ref,
             "value": value,
@@ -409,6 +411,7 @@ pub async fn check_write(
     };
     let (key, device_ref) = source.map(|s| (s.key, s.device_id)).unwrap_or_default();
     Ok(CheckedWrite {
+        tag_id,
         reason: reason.map(str::to_string),
         target,
         command_id,

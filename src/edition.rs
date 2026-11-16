@@ -275,7 +275,9 @@ pub struct ActionContext {
     /// `data_source:<id>:write_policy`.
     pub resource: String,
     /// Details per action, listed in docs/edition-hooks.md (a tag write has
-    /// `tag_id`, `key`, `device_id`, `value` and `previous`).
+    /// `tag_id` (the same id as in `resource`), `key`, `device_id`, `value`
+    /// and `previous`, or `recipe_id` instead of `previous` when a recipe load
+    /// asks).
     pub details: serde_json::Value,
 }
 
@@ -393,7 +395,10 @@ pub trait Extension: Send + Sync + 'static {
 
     /// Whether the user's password has expired. Asked at sign-in once the
     /// password is verified; `true` answers the sign-in like
-    /// `must_change_password` (plus `password_expired: true`).
+    /// `must_change_password` (plus `password_expired: true`) and sets
+    /// `must_change_password` on the account, so the user's sessions may only
+    /// change the password until they have (403 `password_change_required`
+    /// otherwise). Also asked by `/auth/me` while that flag is set.
     fn password_expired<'a>(&'a self, _user: &'a crate::models::User) -> BoxFuture<'a, bool> {
         Box::pin(async { false })
     }

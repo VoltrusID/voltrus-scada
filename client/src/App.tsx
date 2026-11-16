@@ -33,7 +33,7 @@ import { RoleContext } from './RoleContext'
 import { SignatureDialog } from './signature/SignatureDialog'
 import { cancelAllSignaturePrompts } from './signature/prompt'
 import { NO_SESSION_POLICY, parseSessionPolicy, sessionEndMessage, type SessionPolicy } from './session'
-import { onSessionEnded } from './queries/fetch'
+import { onPasswordChangeRequired, onSessionEnded } from './queries/fetch'
 import { useSessionActivity } from './hooks/useSessionActivity'
 import { extractDashboardWidgets, withDashboardWidgets, type DashboardWidget } from './dashboardWidgets'
 import { dashboardSizeOf, getScreenWidget } from './edition/widgets'
@@ -72,6 +72,8 @@ export function AppInner() {
   const [mustChangePassword, setMustChangePassword] = useState(false)
   const [passwordExpired, setPasswordExpired] = useState(false)
   const [sessionPolicy, setSessionPolicy] = useState<SessionPolicy>(NO_SESSION_POLICY)
+  // Signed in and not held to a password change: the app may load its data.
+  const sessionReady = authed && !mustChangePassword
 
   // ── UI state ─────────────────────────────────────────────────────
   const [editMode, setEditMode] = useState(false)
@@ -161,26 +163,26 @@ export function AppInner() {
   // ── URL sync is owned by @tanstack/react-router (see router.tsx) ──
 
   // ── Query hooks ──────────────────────────────────────────────────
-  const { data: sensors = [] } = useSensors(authed)
-  const { data: screenSensors = [] } = useScreenSensors(activeScreen, authed)
-  const { data: screens = [] } = useScreens(authed)
-  const { data: serverLayouts } = useLayouts(activeScreen, authed)
+  const { data: sensors = [] } = useSensors(sessionReady)
+  const { data: screenSensors = [] } = useScreenSensors(activeScreen, sessionReady)
+  const { data: screens = [] } = useScreens(sessionReady)
+  const { data: serverLayouts } = useLayouts(activeScreen, sessionReady)
   const screenLayouts = localLayouts ?? (serverLayouts ?? { lg: [], md: [], sm: [], xs: [] })
-  const { data: twinLayoutsData } = useTwinLayouts(activeScreen, authed)
+  const { data: twinLayoutsData } = useTwinLayouts(activeScreen, sessionReady)
   const twinLayouts = twinLayoutsData?.items ?? []
   const twinCamera = twinLayoutsData?.camera
-  const { data: twinConnections = [] } = useTwinConnections(activeScreen, authed)
-  const { data: scadaEquipment = [], isFetched: scadaEquipmentFetched } = useScadaEquipment(activeScreen, authed && (viewMode === 'scada' || viewMode === 'twin'))
-  const { data: scadaConnections = [], isFetched: scadaConnectionsFetched } = useScadaConnections(activeScreen, authed && (viewMode === 'scada' || viewMode === 'twin'))
-  const { data: serverCanvasLayouts = [] } = useCanvasLayouts(activeScreen, authed)
+  const { data: twinConnections = [] } = useTwinConnections(activeScreen, sessionReady)
+  const { data: scadaEquipment = [], isFetched: scadaEquipmentFetched } = useScadaEquipment(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
+  const { data: scadaConnections = [], isFetched: scadaConnectionsFetched } = useScadaConnections(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
+  const { data: serverCanvasLayouts = [] } = useCanvasLayouts(activeScreen, sessionReady)
   const canvasLayouts = localCanvasLayouts ?? serverCanvasLayouts
-  const { data: shortcuts = {} } = useShortcuts(authed)
-  const { data: navShortcuts = {} } = useNavShortcuts(authed)
+  const { data: shortcuts = {} } = useShortcuts(sessionReady)
+  const { data: navShortcuts = {} } = useNavShortcuts(sessionReady)
   const licenseInfo = useLicenseStatus()
   const branding = useEditionBranding(licenseInfo) ?? DEFAULT_BRANDING
   // Tab title and favicon follow the brand (Voltrus defaults when none is set).
   useEffect(() => { applyBrandToDocument(document, branding) }, [branding])
-  const { data: activeAlarms = { count: 0 } } = useActiveAlarmCount(authed)
+  const { data: activeAlarms = { count: 0 } } = useActiveAlarmCount(sessionReady)
 
   // ── Mutation hooks ───────────────────────────────────────────────
   const updateSensorMut = useUpdateSensor()
@@ -202,7 +204,7 @@ export function AppInner() {
 
   // ── Dashboard data hook (now store-backed) ───────────────────────
   const detailSensor = selectedSensor != null ? sensors.find(x => x.id === selectedSensor) : undefined
-  const { systemInfo } = useDashboardData(authed, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo, detailSensor)
+  const { systemInfo } = useDashboardData(sessionReady, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo, detailSensor)
   const storeSystemInfo = useDashboardSystemInfo()
   const storeActions = useDashboardStoreActions()
   const effectiveSystemInfo = systemInfo ?? storeSystemInfo
@@ -289,8 +291,9 @@ export function AppInner() {
   // ── Auth ─────────────────────────────────────────────────────────
   useEffect(() => {
     fetchJson<any>('/api/v1/auth/me').then(d => {
-      if (d.authenticated) connectWS()
       setSharedAccount(d.shared === true)
+      // A reload while the password must still be changed comes back to that screen.
+      setMustChangePassword(d.must_change_password === true); setPasswordExpired(d.password_expired === true)
       setAuthed(d.authenticated === true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setSessionPolicy(parseSessionPolicy(d)); setAuthLoading(false)
     }).catch(() => { setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser(''); setAuthLoading(false) })
   }, [])
@@ -305,13 +308,13 @@ export function AppInner() {
         const body = await r.json().catch(() => ({}))
         throw new Error(body.error || `Login failed: ${r.status}`)
       }
-      const d = await r.json(); setSharedAccount(d.shared === true); connectWS(); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || username); setMustChangePassword(!!d.must_change_password)
+      const d = await r.json(); setSharedAccount(d.shared === true); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || username); setMustChangePassword(!!d.must_change_password)
       setPasswordExpired(d.password_expired === true); setSessionPolicy(parseSessionPolicy(d))
     } catch (e: any) { setLoginError(e.message || 'Login failed') }
   }
 
   const handleExternalLogin = (d: { username?: string; role?: string; must_change_password?: boolean; shared?: boolean }) => {
-    setSharedAccount(d.shared === true); connectWS(); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setMustChangePassword(!!d.must_change_password)
+    setSharedAccount(d.shared === true); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setMustChangePassword(!!d.must_change_password)
   }
 
   const handleLogout = async () => { cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData(); await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser('') }
@@ -325,6 +328,16 @@ export function AppInner() {
     setLoginError(sessionEndMessage(reason, idleTimeoutRef.current))
   }), [disconnectWS, storeActions])
   useSessionActivity(sessionPolicy.idleTimeoutSecs, authed)
+
+  // The live feed runs while the session may use the app; the server refuses
+  // it until a required password change is done.
+  useEffect(() => { if (sessionReady) connectWS(); else disconnectWS() }, [sessionReady, connectWS, disconnectWS])
+  // Any request the server refused until the password is changed (it expired,
+  // or an admin reset it, while the app was open): show the change-password screen.
+  useEffect(() => onPasswordChangeRequired(() => {
+    cancelAllSignaturePrompts(); setMustChangePassword(true)
+    fetchJson<any>('/api/v1/auth/me').then(d => setPasswordExpired(d.password_expired === true)).catch(() => {})
+  }), [])
 
   // ── Handlers ─────────────────────────────────────────────────────
 

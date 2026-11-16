@@ -1,12 +1,37 @@
 import { completeSignature } from '../signature/logic'
 import { canPromptForSignature, requestSignature } from '../signature/prompt'
-import { sessionEndReason, type SessionEndReason } from '../session'
+import {
+  isPasswordChangeRequired, PasswordChangeRequiredError, sessionEndReason, type SessionEndReason,
+} from '../session'
 
 // Global in-flight refresh promise to prevent multiple simultaneous refresh attempts
 let refreshing: Promise<boolean> | null = null
 
 type SessionEndedListener = (reason: SessionEndReason) => void
 const sessionEndedListeners = new Set<SessionEndedListener>()
+
+type PasswordChangeListener = () => void
+const passwordChangeListeners = new Set<PasswordChangeListener>()
+
+/** Called when the server refuses a request until the user changes their password. */
+export function onPasswordChangeRequired(fn: PasswordChangeListener): () => void {
+  passwordChangeListeners.add(fn)
+  return () => { passwordChangeListeners.delete(fn) }
+}
+
+/**
+ * A 403 `password_change_required` (an admin-forced change, or a password the
+ * edition reports expired): tell the app, which shows the change-password
+ * screen, and throw so callers do not report it as an error.
+ */
+export async function checkPasswordChange(r: Response): Promise<Response> {
+  if (r.status !== 403) return r
+  const body = await r.clone().json().catch(() => null)
+  if (!isPasswordChangeRequired(r.status, body)) return r
+  passwordChangeListeners.forEach(fn => fn())
+  const message = typeof body?.error === 'string' && body.error ? body.error : undefined
+  throw new PasswordChangeRequiredError(message)
+}
 
 /** Called when a refresh is refused because the session hit its idle or absolute limit. */
 export function onSessionEnded(fn: SessionEndedListener): () => void {
@@ -46,13 +71,13 @@ export async function fetchWithRefresh(
   if (r.status === 401) {
     const ok = await doRefresh()
     if (ok) {
-      return fetch(url, { credentials: 'include', ...init })
+      return checkPasswordChange(await fetch(url, { credentials: 'include', ...init }))
     }
     // Don't hard-redirect — throw so React Query handles it gracefully.
     // The App component's auth gate will show the login screen.
     throw new Error('Session expired')
   }
-  return r
+  return checkPasswordChange(r)
 }
 
 /**

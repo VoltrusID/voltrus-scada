@@ -232,6 +232,7 @@ pub async fn load_recipe(
                 role: user.role.clone(),
                 resource: format!("data_source:{}", ds.id),
                 details: serde_json::json!({
+                    "tag_id": ds.id,
                     "key": ds.key,
                     "device_id": ds.device_id,
                     "value": value,
