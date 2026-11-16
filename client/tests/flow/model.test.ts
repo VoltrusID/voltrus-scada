@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { FlowGraphV2, FlowNodeTypeDef } from '../../src/types'
+import type { FlowField, FlowGraphV2, FlowNodeTypeDef } from '../../src/types'
 import {
   TRIGGER_ID, autoLayout, copySelection, editorToGraph, findErrorNode, graphToEditor, legacyToV2, outputsFor,
   parseGraph, pasteClip, portOf, remapPorts, runTrace, toEdge, traceHighlight, triggerPosition, validateFields,
@@ -66,7 +66,7 @@ describe('v2 JSON <-> editor graph', () => {
 })
 
 describe('legacy array fallback', () => {
-  it('converts the old step list to a chain from the trigger, laid out vertically', () => {
+  it('converts the old step list to a chain from the trigger, laid out left to right', () => {
     const legacy = [
       { id: 'f', type: 'filter', condition: 'payload.a > 1' },
       { type: 'expression', output_field: 'payload.b', expr: '1' },
@@ -74,10 +74,10 @@ describe('legacy array fallback', () => {
     ]
     const g = parseGraph(JSON.stringify(legacy))
     expect(g.nodes.map(n => n.id)).toEqual(['f', 'n2', 'n3'])
-    expect(g.nodes[0]).toMatchObject({ type: 'filter', condition: 'payload.a > 1', x: 0 })
-    expect(new Set(g.nodes.map(n => n.x))).toEqual(new Set([0]))
-    expect(g.nodes[0].y).toBeLessThan(g.nodes[1].y)
-    expect(g.nodes[1].y).toBeLessThan(g.nodes[2].y)
+    expect(g.nodes[0]).toMatchObject({ type: 'filter', condition: 'payload.a > 1', y: 0 })
+    expect(new Set(g.nodes.map(n => n.y))).toEqual(new Set([0]))
+    expect(g.nodes[0].x).toBeLessThan(g.nodes[1].x)
+    expect(g.nodes[1].x).toBeLessThan(g.nodes[2].x)
     expect(g.edges).toEqual([
       { from: 'trigger', port: 0, to: 'f' },
       { from: 'f', port: 0, to: 'n2' },
@@ -101,6 +101,16 @@ describe('trace -> highlight', () => {
     expect(h.taken.has('e:n1:1:n4')).toBe(false)
     expect(h.ports.get('n2')).toEqual(new Set([2]))
     expect(h.errors.get('n4')).toBe('timeout')
+  })
+
+  it('follows every port in `ports` (switch in all mode)', () => {
+    const h = traceHighlight([
+      { node_id: 'n1', port: 0, ports: [0], error: null },
+      { node_id: 'n2', port: 0, ports: [0, 1], error: null },
+      { node_id: 'n3', port: 0, error: null },
+    ], edges)
+    expect(h.ports.get('n2')).toEqual(new Set([0, 1]))
+    expect(h.taken.has('e:n2:0:n3')).toBe(true)
   })
 
   it('reads run traces stored as JSON text', () => {
@@ -164,6 +174,25 @@ describe('field validation', () => {
     expect(validateFields(fields, { url: 'x', retries: undefined, timeout_ms: -5 }))
       .toEqual({ retries: 'Retries is required', timeout_ms: 'Timeout cannot be negative' })
     expect(validateFields(fields, { url: 'x', retries: 1 })).toEqual({})
+  })
+  it('checks required item fields of list fields (catalogue item_fields)', () => {
+    const rules: FlowField = {
+      key: 'rules', label: 'Rules', kind: 'json', required: true,
+      item_fields: [
+        { key: 'name', label: 'Output name', kind: 'string' },
+        { key: 'expression', label: 'Condition', kind: 'expression', required: true },
+      ],
+    }
+    expect(validateFields([rules], { rules: [{ name: 'a', expression: 'x > 1' }, { name: '' }] })).toEqual({ rules: 'Rule 2 needs an expression' })
+    const threshold: FlowField = {
+      key: 'rules', label: 'Rules', kind: 'json', required: true,
+      item_fields: [{ key: 'gt', label: 'Greater than', kind: 'number' }, { key: 'set', label: 'Set fields', kind: 'json' }],
+    }
+    // Threshold rules have no expression: nothing to complain about.
+    expect(validateFields([threshold], { rules: [{ gt: 50, set: { level: 'high' } }] })).toEqual({})
+    const tags: FlowField = { key: 'data_source_ids', label: 'Tags', kind: 'tag', required: true, multiple: true }
+    expect(validateFields([tags], { data_source_ids: [] })).toEqual({ data_source_ids: 'Tags is required' })
+    expect(validateFields([tags], { data_source_ids: [3] })).toEqual({})
   })
   it('needs an expression on each switch rule', () => {
     expect(validateFields(switchDef.fields, { rules: [] })).toEqual({ rules: 'Add at least one rule' })

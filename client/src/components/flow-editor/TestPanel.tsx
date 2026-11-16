@@ -52,6 +52,33 @@ export function fmtWhen(ts: number): string {
   return d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+/** "2 outputs reached: Write tag, Debug"; early servers sent only a count. */
+export function reachedText(reached: string[] | number | undefined, nodes: EdNode[]): string {
+  const ids = Array.isArray(reached) ? reached : []
+  const n = Array.isArray(reached) ? reached.length : Number(reached) || 0
+  const head = `${n} output${n === 1 ? '' : 's'} reached`
+  if (!ids.length) return head
+  const names = ids.map(id => nodes.find(x => x.id === id)?.data.name || id)
+  return `${head}: ${names.join(', ')}`
+}
+
+/** What a skipped side-effect node would have done, from the server's `would_*` output. */
+export function wouldFromOutput(output: unknown): string | null {
+  if (!output || typeof output !== 'object') return null
+  const o = output as Record<string, Record<string, unknown> | undefined>
+  const w = o.would_write
+  if (w) return `would write ${JSON.stringify(w.value)} to tag ${w.data_source_id}`
+  const n = o.would_notify
+  if (n) return `would notify via ${n.channel}${n.to ? ` to ${n.to}` : ''}: ${n.message}`
+  const p = o.would_post
+  if (p) return `would POST to ${p.url}`
+  const a = o.would_raise_alarm
+  if (a) return `would raise ${a.severity ?? ''} alarm "${a.message ?? ''}"`.replace('  ', ' ')
+  const s = o.would_set
+  if (s) return `would set ${s.source_key ?? s.metric ?? 'a flow tag'} to ${JSON.stringify(s.value)}`
+  return null
+}
+
 export function TestPanel(p: Props) {
   return (
     <section aria-label="Test and runs" style={{
@@ -115,8 +142,13 @@ function TestTab(p: Props) {
             <div style={{ padding: '8px 12px', fontSize: 12, display: 'flex', gap: 12, borderBottom: '1px solid var(--border)' }}>
               <b style={{ color: p.source.result.ok ? 'var(--green)' : 'var(--crit)' }}>{p.source.result.ok ? 'Passed' : 'Failed'}</b>
               <span style={{ color: 'var(--muted)' }}>{steps.length} step{steps.length === 1 ? '' : 's'}</span>
-              <span style={{ color: 'var(--muted)' }}>{p.source.result.outputs_reached} output{p.source.result.outputs_reached === 1 ? '' : 's'} reached</span>
+              <span style={{ color: 'var(--muted)' }}>{reachedText(p.source.result.outputs_reached, p.nodes)}</span>
             </div>
+            {!p.source.result.ok && p.source.result.error && (
+              <div role="alert" style={{ padding: '8px 12px', fontSize: 12, color: 'var(--crit)', borderBottom: '1px solid var(--border)' }}>
+                {p.source.result.error}
+              </div>
+            )}
             <TraceList steps={steps} {...p} />
           </>
         )}
@@ -162,7 +194,7 @@ export function TraceList({ steps, catalogue, nodes, selectedNodeId, onSelectNod
                 <span style={{ color: 'var(--muted)', fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>{s.node_id}</span>
                 {s.error ? <span style={{ color: 'var(--crit)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.error}</span>
                   : skipped ? <span style={{ color: 'var(--warn)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      skipped (dry run): {wouldText(type, node?.data.config ?? {}, def)}</span>
+                      skipped (dry run): {wouldFromOutput(full?.output) ?? wouldText(type, node?.data.config ?? {}, def)}</span>
                   : null}
               </span>
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10.5, color: portName ? 'var(--green)' : 'var(--muted)' }}>
@@ -223,7 +255,7 @@ function RunsTab(p: Props) {
                   {r.error && <div style={{ color: 'var(--crit)', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.error}</div>}
                 </span>
                 <span style={{ color: 'var(--muted)', fontFamily: 'var(--font-mono)', fontSize: 10.5 }}>{r.duration_ms} ms</span>
-                <span style={{ color: 'var(--muted)', fontSize: 10.5 }}>{steps.length ? `${steps.length} steps` : ''}</span>
+                <span style={{ color: 'var(--muted)', fontSize: 10.5 }}>{steps.length ? `${steps.length} step${steps.length === 1 ? '' : 's'}` : ''}</span>
               </button>
             </li>
           )

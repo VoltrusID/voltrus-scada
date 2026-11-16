@@ -96,6 +96,45 @@ describe('FieldForm', () => {
     expect(onChange).toHaveBeenCalledWith('headers', { x: 2 })
   })
 
+  it('edits list fields with item_fields as a form per item', () => {
+    const onChange = vi.fn()
+    const rules: FlowField = {
+      key: 'rules', label: 'Rules', kind: 'json', required: true,
+      item_fields: [
+        { key: 'gt', label: 'Greater than', kind: 'number' },
+        { key: 'lt', label: 'Less than', kind: 'number' },
+        { key: 'set', label: 'Set fields', kind: 'json' },
+      ],
+    }
+    wrap(<FieldForm fields={[rules]} config={{ rules: [{ gt: 50, set: { level: 'high' }, keep: 1 }] }} errors={{}} onChange={onChange} />)
+    expect(screen.getAllByTestId('item-row')).toHaveLength(1)
+    expect((screen.getByLabelText('Greater than') as HTMLInputElement).value).toBe('50')
+    expect((screen.getByLabelText('Set fields') as HTMLTextAreaElement).value).toContain('"level": "high"')
+    fireEvent.change(screen.getByLabelText('Less than'), { target: { value: '90' } })
+    expect(onChange).toHaveBeenLastCalledWith('rules', [{ gt: 50, lt: 90, set: { level: 'high' }, keep: 1 }])
+    fireEvent.click(screen.getByRole('button', { name: '+ Add rule' }))
+    expect(onChange).toHaveBeenLastCalledWith('rules', [{ gt: 50, set: { level: 'high' }, keep: 1 }, {}])
+    fireEvent.click(screen.getByRole('button', { name: 'Remove rule 1' }))
+    expect(onChange).toHaveBeenLastCalledWith('rules', [])
+  })
+
+  it('picks several tags for a `multiple` tag field', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([
+      { id: 3, name: 'Temp', key: 'temp', unit: 'C' }, { id: 4, name: 'Flow', key: 'flow' }, { id: 5, name: 'Level', key: 'level' },
+    ]), { status: 200 })))
+    const onChange = vi.fn()
+    const tags: FlowField = { key: 'data_source_ids', label: 'Tags', kind: 'tag', required: true, multiple: true }
+    // A single id (older flows) shows as one chosen tag.
+    wrap(<FieldForm fields={[tags]} config={{ data_source_ids: 3 }} errors={{}} onChange={onChange} />)
+    await waitFor(() => expect(screen.getAllByTestId('tag-chip')[0].textContent).toContain('Temp (C)'))
+    const select = screen.getByLabelText(/Tags/) as HTMLSelectElement
+    expect(within(select).queryByText(/Temp/)).toBeNull()
+    fireEvent.change(select, { target: { value: '5' } })
+    expect(onChange).toHaveBeenLastCalledWith('data_source_ids', [3, 5])
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Temp (C)' }))
+    expect(onChange).toHaveBeenLastCalledWith('data_source_ids', [])
+  })
+
   it('edits switch rules as rows and reports how ports move', () => {
     const onRules = vi.fn()
     const rules = [{ name: 'a', expression: 'x > 1' }, { name: 'b', expression: 'x > 2' }]
@@ -177,7 +216,7 @@ describe('FlowEditor', () => {
   it('highlights the path of a test run and lists the trace', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       if (String(url).endsWith('/flows/test')) {
-        return new Response(JSON.stringify({ ok: true, outputs_reached: 1, trace: [
+        return new Response(JSON.stringify({ ok: true, outputs_reached: ['n3'], trace: [
           { node_id: 'n1', type: 'filter', input: {}, output: {}, port: 0, error: null, duration_us: 12, side_effect_skipped: false },
           { node_id: 'n2', type: 'switch', input: {}, output: {}, port: 1, error: null, duration_us: 30, side_effect_skipped: false },
           { node_id: 'n3', type: 'http_out', input: {}, output: null, port: null, error: null, duration_us: 2, side_effect_skipped: true },
@@ -191,8 +230,29 @@ describe('FlowEditor', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Run test (dry run)' }))
     await waitFor(() => expect(screen.getByTestId('flow-node-n3').getAttribute('data-ran')).toBe('true'))
     expect(screen.getByText(/skipped \(dry run\): would POST to https:\/\/x.test/)).toBeTruthy()
+    expect(screen.getByText('1 output reached: n3')).toBeTruthy()
     expect(screen.getByTestId('port-n2-1').style.fontWeight).toBe('700')
     fireEvent.click(screen.getByTestId('trace-row-n2'))
     await waitFor(() => expect(screen.getByRole('complementary', { name: 'Node settings' }).textContent).toContain('switch · n2'))
+  })
+  it('shows why a dry run failed and what skipped nodes would have done', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).endsWith('/flows/test')) {
+        return new Response(JSON.stringify({ ok: false, error: "node 'n3': refused", outputs_reached: ['n3'], trace: [
+          { node_id: 'n1', type: 'filter', input: {}, output: {}, port: 0, ports: [0], error: null, duration_us: 12, side_effect_skipped: false },
+          { node_id: 'n2', type: 'switch', input: {}, output: {}, port: 1, ports: [1], error: null, duration_us: 30, side_effect_skipped: false },
+          { node_id: 'n3', type: 'http_out', input: {}, output: { would_post: { url: 'https://server.test/x', headers: [] } }, port: 0, ports: [0],
+            error: null, duration_us: 2, side_effect_skipped: true },
+        ] }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ runs: [] }), { status: 200 })
+    }))
+    wrap(<FlowEditor flow={flow} catalogue={catalogue} saved readOnly={false} onSave={async () => {}} onClose={() => {}} />)
+    await waitFor(() => expect(screen.getByTestId('flow-node-n1')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Run test (dry run)' }))
+    await waitFor(() => expect(screen.getByText('Failed')).toBeTruthy())
+    expect(screen.getByText("node 'n3': refused")).toBeTruthy()
+    expect(screen.getByText(/would POST to https:\/\/server.test\/x/)).toBeTruthy()
   })
 })

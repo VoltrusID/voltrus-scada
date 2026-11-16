@@ -39,8 +39,11 @@ export function FieldForm({ fields, config, errors, readOnly, nodeType, onChange
         nodeType === 'switch' && f.key === 'rules'
           ? <RulesEditor key={f.key} field={f} rules={switchRules(config)} error={errors[f.key]} readOnly={readOnly}
               onChange={(rules, map) => onRules ? onRules(rules, map) : onChange('rules', rules)} />
-          : <FieldRow key={f.key} field={f} value={config[f.key]} error={errors[f.key]} readOnly={readOnly}
-              onChange={v => onChange(f.key, v)} />
+          : f.kind === 'json' && f.item_fields?.length
+            ? <ItemListEditor key={f.key} field={f} value={config[f.key]} error={errors[f.key]} readOnly={readOnly}
+                onChange={v => onChange(f.key, v)} />
+            : <FieldRow key={f.key} field={f} value={config[f.key]} error={errors[f.key]} readOnly={readOnly}
+                onChange={v => onChange(f.key, v)} />
       ))}
     </div>
   )
@@ -127,7 +130,9 @@ function FieldInput({ id, field, value, readOnly, invalid, errId, onChange }: {
     case 'json':
       return <JsonInput aria={aria} style={mono} value={value} readOnly={readOnly} onChange={onChange} />
     case 'tag':
-      return <TagPicker aria={aria} style={base} value={value} readOnly={readOnly} onChange={onChange} />
+      return field.multiple
+        ? <MultiTagPicker aria={aria} value={value} readOnly={readOnly} onChange={onChange} />
+        : <TagPicker aria={aria} style={base} value={value} readOnly={readOnly} onChange={onChange} />
     case 'device':
       return <DevicePicker aria={aria} style={base} value={str} readOnly={readOnly} onChange={onChange} />
     default:
@@ -178,6 +183,54 @@ function TagPicker({ aria, style, value, readOnly, onChange }: {
       {!known && str && str !== '0' && <option value={str}>#{str} (not found)</option>}
       {sensors.map(s => <option key={s.id} value={String(s.id)}>{s.name}{s.unit ? ` (${s.unit})` : ''} · {s.key}</option>)}
     </select>
+  )
+}
+
+/** Tag ids of a `multiple` tag field; accepts one id or a list. */
+export function tagIds(value: unknown): number[] {
+  const list = Array.isArray(value) ? value : value === undefined || value === null || value === '' ? [] : [value]
+  return list.map(Number).filter(n => Number.isFinite(n) && n > 0)
+}
+
+/** Several tags: chips for the chosen ones plus a picker to add more. Stores a list of ids. */
+function MultiTagPicker({ aria, value, readOnly, onChange }: {
+  aria: Aria; value: unknown; readOnly?: boolean; onChange: (v: unknown) => void
+}) {
+  const { data: sensors = [], isLoading } = useSensors(true)
+  const ids = tagIds(value)
+  const label = (id: number) => {
+    const s = sensors.find(x => x.id === id)
+    return s ? `${s.name}${s.unit ? ` (${s.unit})` : ''}` : `#${id} (not found)`
+  }
+  const free = sensors.filter(s => !ids.includes(s.id))
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {ids.length > 0 && (
+        <ul aria-label="Chosen tags" style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {ids.map(id => (
+            <li key={id} data-testid="tag-chip" style={{
+              display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, padding: '2px 4px 2px 8px',
+              border: '1px solid var(--border)', borderRadius: 999, background: 'var(--bg)',
+            }}>
+              {label(id)}
+              {!readOnly && (
+                <button type="button" aria-label={`Remove ${label(id)}`} onClick={() => onChange(ids.filter(x => x !== id))}
+                  style={{ ...iconBtn, width: 18, height: 18, border: 'none', fontSize: 10 }}>✕</button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {!readOnly && (
+        <select {...aria} style={inputStyle} value="" onChange={e => {
+          if (e.target.value) onChange([...ids, Number(e.target.value)])
+        }}>
+          <option value="">{isLoading ? 'Loading tags…' : ids.length ? 'Add another tag…' : 'Choose tags…'}</option>
+          {free.map(s => <option key={s.id} value={String(s.id)}>{s.name}{s.unit ? ` (${s.unit})` : ''} · {s.key}</option>)}
+        </select>
+      )}
+      {readOnly && !ids.length && <div style={helpStyle}>No tags.</div>}
+    </div>
   )
 }
 
@@ -253,6 +306,75 @@ function RulesEditor({ field, rules, error, readOnly, onChange }: {
         <button type="button" onClick={add} style={{
           ...iconBtn, width: '100%', height: 30, borderStyle: 'dashed', fontSize: 12, fontWeight: 600, gap: 6,
         }}>+ Add rule</button>
+      )}
+      {error ? <div role="alert" style={errStyle}>{error}</div> : field.help ? <div style={helpStyle}>{field.help}</div> : null}
+    </div>
+  )
+}
+
+/**
+ * A `json` field holding a list of objects whose fields the catalogue lists in
+ * `item_fields` (threshold rules): one card per item with a form for its fields.
+ * Values the form does not cover are kept.
+ */
+function ItemListEditor({ field, value, error, readOnly, onChange }: {
+  field: FlowField; value: unknown; error?: string; readOnly?: boolean; onChange: (v: unknown) => void
+}) {
+  const items: Record<string, unknown>[] = Array.isArray(value)
+    ? value.map(x => (x && typeof x === 'object' && !Array.isArray(x) ? x as Record<string, unknown> : {}))
+    : []
+  const itemFields = field.item_fields ?? []
+  const noun = field.key === 'rules' ? 'Rule' : 'Item'
+  const n = items.length
+  const setItem = (i: number, key: string, v: unknown) => onChange(items.map((it, j) => {
+    if (j !== i) return it
+    const next = { ...it }
+    if (v === undefined) delete next[key]
+    else next[key] = v
+    return next
+  }))
+  const move = (i: number, d: -1 | 1) => {
+    const j = i + d
+    if (j < 0 || j >= n) return
+    const next = [...items]
+    ;[next[i], next[j]] = [next[j], next[i]]
+    onChange(next)
+  }
+  // Number fields sit side by side; everything else takes a full row.
+  const compact = (f: FlowField) => f.kind === 'number' || f.kind === 'duration_ms'
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }} data-field={field.key}>
+      <div style={fieldLabel}>
+        {field.label}
+        {field.required && <span style={{ color: 'var(--crit)' }} aria-hidden>*</span>}
+      </div>
+      {items.map((item, i) => (
+        <div key={i} data-testid="item-row" style={{
+          border: '1px solid var(--border)', borderRadius: 8, padding: 8, display: 'flex', flexDirection: 'column', gap: 8,
+          background: 'var(--bg)',
+        }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span style={{ fontSize: 11, color: 'var(--muted)', fontWeight: 600, flex: 1 }}>{noun} {i + 1}</span>
+            {!readOnly && <>
+              <button type="button" style={iconBtn} title="Move up" aria-label={`Move ${noun.toLowerCase()} ${i + 1} up`} disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
+              <button type="button" style={iconBtn} title="Move down" aria-label={`Move ${noun.toLowerCase()} ${i + 1} down`} disabled={i === n - 1} onClick={() => move(i, 1)}>↓</button>
+              <button type="button" style={{ ...iconBtn, color: 'var(--crit)' }} title={`Remove ${noun.toLowerCase()}`}
+                aria-label={`Remove ${noun.toLowerCase()} ${i + 1}`} onClick={() => onChange(items.filter((_, j) => j !== i))}>✕</button>
+            </>}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
+            {itemFields.map(f => (
+              <div key={f.key} style={{ gridColumn: compact(f) ? 'auto' : '1 / -1', minWidth: 0 }}>
+                <FieldRow field={f} value={item[f.key]} readOnly={readOnly} onChange={v => setItem(i, f.key, v)} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+      {!readOnly && (
+        <button type="button" onClick={() => onChange([...items, {}])} style={{
+          ...iconBtn, width: '100%', height: 30, borderStyle: 'dashed', fontSize: 12, fontWeight: 600, gap: 6,
+        }}>+ Add {noun.toLowerCase()}</button>
       )}
       {error ? <div role="alert" style={errStyle}>{error}</div> : field.help ? <div style={helpStyle}>{field.help}</div> : null}
     </div>

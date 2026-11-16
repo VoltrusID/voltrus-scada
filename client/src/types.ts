@@ -288,6 +288,8 @@ export interface FlowRun {
 export interface FlowRunTraceStep {
   node_id: string
   port: number | null
+  /** Every port the message left on (a switch in `all` mode may use several). */
+  ports?: number[]
   error: string | null
 }
 
@@ -299,6 +301,8 @@ export interface FlowTraceStep {
   output: unknown
   /** Output port the message left on; null when the node emitted nothing. */
   port: number | null
+  /** Every port the message left on (a switch in `all` mode may use several). */
+  ports?: number[]
   error: string | null
   duration_us: number
   side_effect_skipped: boolean
@@ -306,8 +310,11 @@ export interface FlowTraceStep {
 
 export interface FlowTestResult {
   ok: boolean
+  /** Why the run failed (`ok` false). */
+  error?: string | null
   trace: FlowTraceStep[]
-  outputs_reached: number
+  /** Ids of the nodes where a message ended (a count from early servers). */
+  outputs_reached: string[] | number
 }
 
 export interface FlowTestInput {
@@ -364,6 +371,10 @@ export interface FlowField {
   default?: unknown
   options?: { value: string; label: string }[]
   help?: string
+  /** The field takes several values (a list of tag ids for `tag`). */
+  multiple?: boolean
+  /** For a `json` list of objects: the fields of one item, edited as a list form. */
+  item_fields?: FlowField[]
 }
 
 export type FlowNodeCategory = 'logic' | 'transform' | 'output' | 'timing' | 'advanced'
@@ -382,6 +393,8 @@ export interface FlowNodeTypeDef {
   description?: string
   outputs: string[]
   side_effect?: boolean
+  /** Config key whose list adds one output per item before `outputs` (switch: `rules`). */
+  dynamic_outputs?: string
   fields: FlowField[]
 }
 

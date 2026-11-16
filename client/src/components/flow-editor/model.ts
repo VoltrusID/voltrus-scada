@@ -27,7 +27,6 @@ export const GRID = 20
 export const NODE_W = 200
 export const COL_GAP = 280
 export const ROW_GAP = 120
-const LEGACY_ROW_GAP = 140
 
 // ── Ports ──
 
@@ -94,8 +93,8 @@ export function emptyGraph(): FlowGraphV2 {
 
 /**
  * Parse the `nodes` string of a flow. Version 2 is used as is; a legacy JSON
- * array (older server) becomes a chain from the trigger, laid out top to
- * bottom; anything else is an empty graph.
+ * array (older server) becomes a chain from the trigger, laid out left to
+ * right like the server's own conversion; anything else is an empty graph.
  */
 export function parseGraph(nodesJson: string | null | undefined): FlowGraphV2 {
   let raw: unknown
@@ -123,7 +122,7 @@ export function legacyToV2(arr: unknown[]): FlowGraphV2 {
     let nid = typeof id === 'string' && id && id !== TRIGGER_ID && !used.has(id) ? id : ''
     if (!nid) { let k = i + 1; while (used.has(`n${k}`)) k++; nid = `n${k}` }
     used.add(nid)
-    nodes.push({ ...config, id: nid, type, x: 0, y: (nodes.length + 1) * LEGACY_ROW_GAP })
+    nodes.push({ ...config, id: nid, type, x: (nodes.length + 1) * COL_GAP, y: 0 })
   })
   const edges: FlowGraphEdgeV2[] = []
   let prev = TRIGGER_ID
@@ -326,16 +325,36 @@ export function validateFields(fields: FlowField[], config: Record<string, unkno
   for (const fd of fields) {
     const v = config[fd.key]
     if (fd.required && isEmptyValue(v)) { errs[fd.key] = `${fd.label} is required`; continue }
-    if (fd.required && fd.key === 'rules' && Array.isArray(v) && v.length === 0) { errs[fd.key] = 'Add at least one rule'; continue }
+    if (fd.required && Array.isArray(v) && v.length === 0) {
+      errs[fd.key] = fd.key === 'rules' ? 'Add at least one rule' : `${fd.label} is required`
+      continue
+    }
     if (fd.kind === 'number' || fd.kind === 'duration_ms') {
       if (!isEmptyValue(v) && typeof v !== 'number') errs[fd.key] = `${fd.label} must be a number`
       else if (fd.kind === 'duration_ms' && typeof v === 'number' && v < 0) errs[fd.key] = `${fd.label} cannot be negative`
     }
   }
-  if (Array.isArray(config.rules)) {
-    switchRules(config).forEach((r, i) => {
-      if (!r.expression.trim()) errs.rules ??= `Rule ${i + 1} needs an expression`
-    })
+  for (const fd of fields) {
+    const v = config[fd.key]
+    if (errs[fd.key] || !Array.isArray(v)) continue
+    if (fd.item_fields?.length) {
+      // List of objects described by the catalogue: required item fields.
+      const noun = fd.key === 'rules' ? 'Rule' : 'Item'
+      v.forEach((item, i) => {
+        const obj = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+        for (const it of fd.item_fields!) {
+          if (!it.required || !isEmptyValue(obj[it.key])) continue
+          errs[fd.key] ??= it.key === 'expression' ? `${noun} ${i + 1} needs an expression` : `${noun} ${i + 1}: ${it.label} is required`
+        }
+      })
+    } else if (fd.key === 'rules') {
+      // Older catalogues without item fields: switch rules ({name, expression}).
+      v.forEach((r, i) => {
+        if (r && typeof r === 'object' && 'expression' in r && !String((r as SwitchRule).expression ?? '').trim()) {
+          errs.rules ??= `Rule ${i + 1} needs an expression`
+        }
+      })
+    }
   }
   return errs
 }
@@ -371,7 +390,7 @@ export interface Highlight {
   errors: Map<string, string>
 }
 
-type AnyStep = Pick<FlowTraceStep, 'node_id' | 'port' | 'error'> | FlowRunTraceStep
+type AnyStep = Pick<FlowTraceStep, 'node_id' | 'port' | 'ports' | 'error'> | FlowRunTraceStep
 
 export function traceHighlight(trace: AnyStep[], edges: EdEdge[]): Highlight {
   const ran = new Set<string>()
@@ -380,9 +399,12 @@ export function traceHighlight(trace: AnyStep[], edges: EdEdge[]): Highlight {
   for (const s of trace) {
     ran.add(s.node_id)
     if (s.error) errors.set(s.node_id, s.error)
-    if (s.port !== null && s.port !== undefined) {
+    // `ports` lists every port the message left on (switch in `all` mode); older
+    // servers only send `port`.
+    const left = Array.isArray(s.ports) ? s.ports : s.port !== null && s.port !== undefined ? [s.port] : []
+    for (const p of left) {
       if (!ports.has(s.node_id)) ports.set(s.node_id, new Set())
-      ports.get(s.node_id)!.add(Number(s.port))
+      ports.get(s.node_id)!.add(Number(p))
     }
   }
   if (trace.length && !ran.has(TRIGGER_ID)) {
@@ -427,22 +449,34 @@ export function sampleInput(trigger: FlowTriggerConfig): { payload: unknown; met
     case 'modbus':
       return {
         payload: { device_id: trigger.device_id && trigger.device_id !== '*' ? trigger.device_id : 'plc-1', metrics: { [trigger.metric || 'temp']: 85 } },
-        metadata: { trigger: 'modbus' },
+        metadata: { source: 'modbus' },
       }
     case 'mqtt':
-      return { payload: { value: 42.5, unit: 'C' }, metadata: { trigger: 'mqtt', topic: String(trigger.topic || 'sensors/line1/temp').replace(/[+#]/g, 'line1') } }
+      return { payload: { value: 42.5, unit: 'C' }, metadata: { source: 'mqtt', topic: String(trigger.topic || 'sensors/line1/temp').replace(/[+#]/g, 'line1') } }
     case 'timer':
+    case 'schedule':
     case 'cron':
-      return { payload: {}, metadata: { trigger: trigger.type } }
+      return { payload: { timestamp: Math.floor(Date.now() / 1000) }, metadata: { source: trigger.type } }
+    case 'manual':
+      return { payload: { value: 42 }, metadata: { source: 'manual' } }
     case 'webhook':
-      return { payload: { event: 'batch_complete', batch: 'B-1042', count: 120 }, metadata: { trigger: 'webhook' } }
+      return { payload: { event: 'batch_complete', batch: 'B-1042', count: 120 }, metadata: { source: 'webhook' } }
     case 'tag_change':
-    case 'data_source':
-      return { payload: { value: 73.2, previous: 70.1, quality: 'good' }, metadata: { trigger: trigger.type } }
+    case 'data_source': {
+      const ids = trigger.data_source_ids
+      const id = Array.isArray(ids) ? ids[0] : ids
+      return {
+        payload: {
+          data_source_id: typeof id === 'number' ? id : 1, key: 'temperature', device_id: 'plc-1', metric: 'temperature',
+          value: 73.2, previous: 70.1, quality: 'good', ts: Date.now(),
+        },
+        metadata: { source: 'tag_change' },
+      }
+    }
     case 'alarm':
-      return { payload: { source_key: 'boiler_temp', severity: 'critical', message: 'High temperature' }, metadata: { trigger: 'alarm' } }
+      return { payload: { source_key: 'boiler_temp', severity: 'critical', message: 'High temperature' }, metadata: { source: 'alarm' } }
     default:
-      return { payload: { value: 42 }, metadata: { trigger: trigger.type } }
+      return { payload: { value: 42 }, metadata: { source: trigger.type } }
   }
 }
 
@@ -461,9 +495,16 @@ export function triggerSummary(trigger: FlowTriggerConfig, cat: FlowCatalogue): 
     trigger.type === 'timer' ? (trigger.interval_ms ? `every ${fmtDuration(trigger.interval_ms)}` : '')
     : trigger.type === 'mqtt' ? trigger.topic
     : trigger.type === 'modbus' ? (trigger.device_id === '*' ? 'any device' : trigger.device_id)
-    : trigger.type === 'cron' ? (trigger.cron ?? trigger.schedule ?? trigger.expression)
+    : trigger.type === 'cron' || trigger.type === 'schedule' ? (trigger.cron ?? trigger.schedule ?? trigger.expression)
+    : trigger.type === 'tag_change' ? tagCount(trigger.data_source_ids)
+    : trigger.type === 'alarm' ? [trigger.on ?? 'raised', trigger.severity, trigger.source_key].filter(Boolean).join(' ')
     : ''
   return detail ? `${label} · ${detail}` : label
+}
+
+function tagCount(v: unknown): string {
+  const n = Array.isArray(v) ? v.length : v === undefined || v === null || v === '' ? 0 : 1
+  return n ? `${n} tag${n === 1 ? '' : 's'}` : ''
 }
 
 /** "would …" text for a side-effect node skipped in a dry run. */

@@ -30,7 +30,11 @@ function preview(config: Record<string, unknown>, fields: FlowField[]): string {
     const v = config[f.key]
     if (v === undefined || v === null || v === '' || f.kind === 'bool' || f.kind === 'json') continue
     if (f.kind === 'duration_ms') return `${f.label.toLowerCase()} ${fmtDuration(v)}`
-    if (f.kind === 'tag') return `tag #${v}`
+    if (f.kind === 'tag') {
+      const ids = Array.isArray(v) ? v : [v]
+      if (!ids.length) continue
+      return ids.length === 1 ? `tag #${ids[0]}` : `${ids.length} tags`
+    }
     if (f.kind === 'code') return String(v).split('\n')[0]
     return typeof v === 'object' ? JSON.stringify(v) : String(v)
   }
