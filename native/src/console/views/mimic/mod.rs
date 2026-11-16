@@ -29,7 +29,7 @@ mod banner;
 pub(crate) mod editor;
 mod faceplate;
 mod paint;
-mod pinch;
+pub(crate) mod pinch;
 mod scene;
 mod symbols;
 mod widgets;
@@ -318,7 +318,7 @@ pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Cons
 }
 
 /// Start reading trackpad pinches (once per session).
-fn listen_for_pinches(console: &mut Console, cx: &mut Context<Console>) {
+pub(crate) fn listen_for_pinches(console: &mut Console, cx: &mut Context<Console>) {
     let state = console.state::<State>();
     if state.pinch_listening {
         return;
@@ -339,7 +339,12 @@ fn listen_for_pinches(console: &mut Console, cx: &mut Context<Console>) {
 }
 
 fn on_gesture(console: &mut Console, gesture: pinch::Gesture, cx: &mut Context<Console>) {
-    if console.page != Page::Mimic || console.phase != Phase::Console {
+    if console.phase != Phase::Console {
+        return;
+    }
+    // The one listener serves the flow editor's canvas too.
+    if console.page != Page::Mimic {
+        crate::console::views::data_manager::flows::editor::pinch(console, gesture, cx);
         return;
     }
     let state = console.state::<State>();

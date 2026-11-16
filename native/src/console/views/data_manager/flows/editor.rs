@@ -1,39 +1,41 @@
-//! The native flow editor: the web client's `FlowEditor.tsx` (palette,
-//! canvas, configuration panel, test) on a GPUI canvas.
+//! The native flow editor: a branching graph on a GPUI canvas, Node-RED
+//! style, laid out like the console's other editors.
 //!
-//! - Palette (left): the triggers and the step types of the server's
-//!   engine, as the web client lists them. Enter or a click adds the
-//!   type after the selected step (or into the selected wire); drag one
+//! - Palette (left): the server's node types (`GET …/flows/node-types`,
+//!   or the legacy engine's steps from an older server) grouped by
+//!   category, with a filter box, and the trigger types. Enter or a click
+//!   adds a node, wired from the selected node's first output; drag one
 //!   onto the canvas to place it there. A trigger type replaces the
 //!   trigger with its defaults.
 //! - Canvas (centre, [`super::canvas`]): drag the background or scroll to
-//!   pan, ⌘-scroll or + − 0 to zoom about the pointer, drag a card to
-//!   move it, drag from a card's output port onto another card to wire
-//!   them, click a card or a wire to select it.
-//! - Configuration (right): the selected step's settings, one field per
-//!   setting by its JSON type as the web client's `ConfigPanel`, the
-//!   trigger's per type.
+//!   pan, ⌘-scroll or + − 0 to zoom about the pointer, drag a card to move
+//!   it, drag from an output port onto another card to wire them, click a
+//!   card or a wire to select it, ⌫ removes it, ⌘D duplicates a node,
+//!   ⌘Z / ⇧⌘Z undo and redo.
+//! - Right panel: Settings (the selection's fields, from the catalogue's
+//!   field definitions, required ones checked) or Test (a dry run of the
+//!   canvas as it is, its trace listed and its path lit on the canvas).
 //!
-//! The stored flow has no wires: the engine runs the process steps in
-//! order, then the outputs from the last one. A wire drawn from A to B
-//! makes B run right after A (the steps reorder); a wire into an output
-//! can only come from the chain's end. Positions are this editor's own,
-//! laid out as the web client lays them out, and A arranges them again.
-//! ⌘S saves (`PUT`), ⌘Z undoes a structural edit or a move.
+//! The trigger is the graph's virtual source node `trigger`; its place on
+//! the canvas is this editor's own (the server stores none). ⌘S saves
+//! (`PUT`): a v2 graph, or, for a server without the graph engine, the
+//! legacy array when the graph is a straight line. Users who may not edit
+//! (below operator) see the flow read-only.
 
 use std::cell::Cell;
+use std::collections::{BTreeSet, HashMap};
 use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, Bounds, Context, Entity, EntityInputHandler, FocusHandle, FontWeight, Hsla,
-    KeyDownEvent, Pixels, Subscription, Window, div, px,
+    AnyElement, Bounds, Context, Entity, EntityInputHandler, FocusHandle, Focusable, FontWeight,
+    Hsla, KeyDownEvent, Pixels, SharedString, Subscription, Window, div, px,
 };
 use serde_json::Value;
 use voltrus_scada_native::api::eng_flows::{
-    Category, End, FieldKind, Flow, FlowGraph, NodeKind, Order, TRIGGER_KINDS, TriggerKind,
-    category_of, config_id, config_type, field_text, label_of, node_fields, node_kind, palette,
-    parse_json, parse_number, preview, trigger_fields, trigger_kind, trigger_value,
+    Catalogue, Category, End, FieldDef, FieldKind, Flow, FlowGraph, Path, RESERVED, TEST_INPUT,
+    TestRun, config_id, config_type, field_text, missing_route, parse_field, parse_input,
+    parse_item, parse_tags, pretty, preview, refusal, tag_text, test_path, value_kind,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use vt_ui::Icon;
@@ -41,18 +43,19 @@ use vt_ui::components::{Button, IconButton, Segment, kbd, pill, segmented};
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
 use vt_ui::theme::*;
 
-use super::canvas::{self, Card, Colors, Scene};
-use super::model::{self, Hit, Layout, NODE_H, NODE_W, Vec2, View, node_rect};
+use super::canvas::{self, Colors, Drawn, DrawnWire, Mark, Scene};
+use super::model::{self, Geometry, Hit, NODE_H, NODE_W, Vec2, View, snap};
 use super::{LIST, State, forms, now_millis, now_secs, refresh, tone_color};
 use crate::console::Console;
 use crate::console::keys::{
-    Dismiss, EngFlowsAddStep, EngFlowsArrange, EngFlowsDeleteSelection, EngFlowsEarlier,
-    EngFlowsFit, EngFlowsInspect, EngFlowsLater, EngFlowsNudgeDown, EngFlowsNudgeLeft,
-    EngFlowsNudgeRight, EngFlowsNudgeUp, EngFlowsRuns, EngFlowsSave, EngFlowsTest, EngFlowsUndo,
+    Dismiss, EngFlowsAddStep, EngFlowsArrange, EngFlowsDeleteSelection, EngFlowsDuplicate,
+    EngFlowsFit, EngFlowsInspect, EngFlowsNudgeDown, EngFlowsNudgeLeft, EngFlowsNudgeRight,
+    EngFlowsNudgeUp, EngFlowsRedo, EngFlowsRuns, EngFlowsSave, EngFlowsTest, EngFlowsUndo,
     EngFlowsZoomIn, EngFlowsZoomOut, FocusNext, FocusPrevious,
 };
 use crate::console::overlay::Overlay;
 use crate::console::text_area::TextArea;
+use crate::console::views::mimic::{listen_for_pinches, pinch::Gesture};
 use crate::console::views::{ListKeys, focus_ring, keyboard_list};
 
 /// The palette's keyboard list.
@@ -62,8 +65,8 @@ const PALETTE_LIST: &str = "data.flows.palette";
 const EDITOR_CONTEXT: &str = "EngFlowEditor";
 const CANVAS_CONTEXT: &str = "EngFlowCanvas";
 const DISCARD: &str = "data-flow-discard";
-const PALETTE_W: f32 = 200.0;
-const INSPECTOR_W: f32 = 300.0;
+const PALETTE_W: f32 = 210.0;
+const INSPECTOR_W: f32 = 320.0;
 /// What the editor's chrome takes from the window's height, for the
 /// canvas's size before it was first laid out.
 const CHROME_H: f32 = 200.0;
@@ -72,19 +75,15 @@ const NUDGE: f32 = 10.0;
 const NUDGE_FAR: f32 = 50.0;
 const PAN_STEP: f32 = 60.0;
 const UNDO_DEPTH: usize = 100;
-/// The palette's groups, as the web client's: input, process, output.
-const GROUPS: [(&str, Category); 3] = [
-    ("INPUT", Category::Input),
-    ("PROCESS", Category::Process),
-    ("OUTPUT", Category::Output),
-];
+/// Suggestions shown under a tag or device field.
+const SUGGESTIONS: usize = 6;
 
 /// What is selected on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Selection {
     None,
-    Step(End),
-    /// The wire into step `to`.
+    Node(End),
+    /// Edge `n` of the graph.
     Wire(usize),
 }
 
@@ -96,41 +95,30 @@ enum Drag {
     Pan { from: Vec2, pan: Vec2 },
     /// Moving a card: where on it it was taken (world).
     Move { end: End, grab: Vec2, moved: bool },
-    /// A new wire from `from`'s output to the pointer (world), and the step
-    /// it would land on.
+    /// A new wire from `from`'s output `port` to the pointer (world), and
+    /// the node it would land on.
     Wire {
         from: End,
+        port: usize,
         to: Vec2,
         target: Option<usize>,
     },
 }
 
-/// One palette entry.
-#[derive(Clone, Copy)]
+/// One palette entry: a catalogue trigger or node type, by position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Item {
-    Trigger(&'static TriggerKind),
-    Step(&'static NodeKind),
-}
-
-impl Item {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Trigger(kind) => kind.label,
-            Self::Step(kind) => kind.label,
-        }
-    }
-
-    fn color(self, theme: &Theme) -> Hsla {
-        match self {
-            Self::Trigger(kind) => tone_color(kind.tone, theme),
-            Self::Step(kind) => tone_color(kind.tone, theme),
-        }
-    }
+    Trigger(usize),
+    Node(usize),
 }
 
 /// A palette entry on its way to the canvas.
 #[derive(Clone)]
-pub(crate) struct PaletteDrag(Item);
+pub(crate) struct PaletteDrag {
+    item: Item,
+    label: SharedString,
+    color: Hsla,
+}
 
 impl Render for PaletteDrag {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -144,13 +132,20 @@ impl Render for PaletteDrag {
             .rounded(RADIUS_MD)
             .bg(theme.elevated)
             .border_1()
-            .border_color(self.0.color(theme))
+            .border_color(self.color)
             .shadow(theme.shadow(Elevation::Popover))
             .text_size(FONT_SMALL)
             .text_color(theme.fg)
-            .child(div().size(px(8.0)).rounded(px(4.0)).bg(self.0.color(theme)))
-            .child(self.0.label())
+            .child(div().size(px(8.0)).rounded(px(4.0)).bg(self.color))
+            .child(self.label.clone())
     }
+}
+
+/// The right panel's tab.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Side {
+    Settings,
+    Test,
 }
 
 /// The settings panel's fields for one selection.
@@ -163,10 +158,9 @@ struct Inspector {
 }
 
 struct Field {
-    key: String,
-    label: String,
-    kind: FieldKind,
+    def: FieldDef,
     input: Input,
+    /// The text does not read as the field's kind.
     error: Option<String>,
 }
 
@@ -175,13 +169,36 @@ enum Input {
     Area(Entity<TextArea>),
     /// A true/false setting: Off/On, read from the graph.
     Switch,
+    /// One of the field's choices, read from the graph.
+    Choice,
+    /// Read-only: the value as text.
+    Fixed,
+    /// A list of objects: per item, one line per item field.
+    Items(Vec<Vec<Entity<TextInput>>>),
 }
 
-/// The graph, the layout and the selection before an edit.
+/// The graph, the trigger's place and the selection before an edit.
+#[derive(Clone)]
 struct Snapshot {
     graph: FlowGraph,
-    layout: Layout,
+    trigger_at: Vec2,
     selection: Selection,
+}
+
+/// The test panel.
+pub(crate) struct TestPanel {
+    input: Entity<TextArea>,
+    /// The last run (and whether it was the legacy, stored-flow test), or
+    /// why it failed.
+    result: Option<Result<(TestRun, Source), Refusal>>,
+    running: bool,
+    seq: i64,
+    /// The trace row whose input and output show.
+    picked: Option<usize>,
+    /// A legacy test runs the stored outputs for real: the first press
+    /// only warns.
+    armed: bool,
+    _subscription: Subscription,
 }
 
 /// The editor while a flow is open.
@@ -193,12 +210,18 @@ pub(crate) struct Editor {
     /// Why the stored texts could not be read (the canvas starts empty
     /// and saving replaces them).
     broken: Option<String>,
+    /// The server stored the legacy array: shown converted.
+    legacy: bool,
     graph: FlowGraph,
-    layout: Layout,
+    trigger_at: Vec2,
     view: View,
     selection: Selection,
     drag: Option<Drag>,
-    undo: Vec<Snapshot>,
+    past: Vec<Snapshot>,
+    future: Vec<Snapshot>,
+    /// Consecutive edits with this key (typing in one field) are one undo
+    /// step.
+    last_key: Option<String>,
     name: Entity<TextInput>,
     enabled: bool,
     canvas_focus: FocusHandle,
@@ -212,14 +235,39 @@ pub(crate) struct Editor {
     saving: bool,
     /// The save the editor waits for.
     save_seq: i64,
-    /// Palette groups folded away.
-    folded: [bool; 3],
+    filter: Entity<TextInput>,
+    side: Side,
+    test: TestPanel,
+    /// Run now was pressed once: the next press runs.
+    run_armed: bool,
+    running_now: bool,
+    /// The user may look but not change (below operator).
+    read_only: bool,
+    /// Admins may make a webhook trigger's token.
+    admin: bool,
+    /// The webhook token last made (shown once), to copy.
+    webhook: Entity<TextInput>,
+    /// The token call: on its way (`None` after asking), done or failed.
+    webhook_state: Option<Result<(), String>>,
+    catalogue: Rc<Catalogue>,
+    /// Whether the server has the graph engine; `None` until it answered.
+    graph_server: Option<bool>,
     discard_focus: Option<FocusHandle>,
+    /// The window's height, to place trackpad gestures.
+    window_height: f32,
     _subscriptions: Vec<Subscription>,
 }
 
 fn editor_mut(console: &mut Console) -> Option<&mut Editor> {
     console.state::<State>().editor.as_mut()
+}
+
+/// The catalogue the section knows: the server's, else the built-in.
+pub(super) fn catalogue_of(state: &mut State) -> Rc<Catalogue> {
+    state
+        .catalogue
+        .get_or_insert_with(|| Rc::new(Catalogue::builtin()))
+        .clone()
 }
 
 /// Open `flow` on the canvas.
@@ -229,43 +277,97 @@ pub(super) fn open(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    let (graph, broken) = match FlowGraph::of(&flow) {
-        Ok(graph) => (graph, None),
+    let read_only = !console.is_operator();
+    let admin = console.is_admin();
+    let state = console.state::<State>();
+    let catalogue = catalogue_of(state);
+    let graph_server = state.graph_server;
+    let input_text = state
+        .test_payload
+        .clone()
+        .unwrap_or_else(|| TEST_INPUT.to_owned());
+    let (graph, legacy, broken) = match FlowGraph::of(&flow) {
+        Ok((graph, legacy)) => (graph, legacy, None),
         Err(error) => {
             let mut graph = FlowGraph::default();
-            graph.set_trigger_kind(&TRIGGER_KINDS[0]);
-            (graph, Some(error))
+            if let Some(trigger) = catalogue.triggers.first() {
+                graph.set_trigger_kind(trigger);
+            }
+            (graph, false, Some(error))
         }
     };
-    let layout = Layout::arrange(&graph);
+    let (x, y) = graph.trigger_spot();
+    #[allow(clippy::cast_possible_truncation)]
+    let trigger_at = Vec2::new(x as f32, y as f32);
     let name_text = flow.name.clone();
     let name = cx.new(|cx| TextInput::new(cx).text(name_text).placeholder("Flow name"));
-    let subscription = cx.subscribe_in(
-        &name,
+    let filter = cx.new(|cx| TextInput::new(cx).placeholder("Filter nodes"));
+    let webhook = cx.new(|cx| {
+        TextInput::new(cx)
+            .mono()
+            .placeholder("No token made here yet")
+    });
+    let input = cx.new(|cx| TextArea::new(6, cx).placeholder("{\"payload\": …}   ⌘↵ run"));
+    input.update(cx, |area, cx| {
+        area.replace_text_in_range(None, &input_text, window, cx);
+    });
+    let subscriptions = vec![
+        cx.subscribe_in(
+            &name,
+            window,
+            |console, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Submitted | InputEvent::Cancelled => focus_canvas(console, window),
+                InputEvent::Changed => cx.notify(),
+                InputEvent::Blurred => {}
+            },
+        ),
+        cx.subscribe_in(
+            &filter,
+            window,
+            |console, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Changed => {
+                    console.list(PALETTE_LIST, cx).cursor = None;
+                    cx.notify();
+                }
+                // Enter adds the first match.
+                InputEvent::Submitted => palette_activate(console, 0, false, window, cx),
+                InputEvent::Cancelled => focus_canvas(console, window),
+                InputEvent::Blurred => {}
+            },
+        ),
+    ];
+    let test_subscription = cx.subscribe_in(
+        &input,
         window,
         |console, _, event: &InputEvent, window, cx| match event {
-            InputEvent::Submitted | InputEvent::Cancelled => focus_canvas(console, window),
-            InputEvent::Changed => cx.notify(),
+            InputEvent::Submitted => run_test(console, cx),
+            InputEvent::Cancelled => focus_canvas(console, window),
+            InputEvent::Changed => {
+                if let Some(editor) = editor_mut(console)
+                    && editor.test.armed
+                {
+                    editor.test.armed = false;
+                    cx.notify();
+                }
+            }
             InputEvent::Blurred => {}
         },
     );
-    let size = estimated_size(window);
-    let view = View::fit(layout.bounds(), size);
-    let enabled = flow.enabled;
-    let state = console.state::<State>();
-    state.window = Some(window.window_handle());
-    state.editor = Some(Editor {
+    let mut editor = Editor {
         flow,
         saved: graph.clone(),
         broken,
+        legacy,
         graph,
-        layout,
-        view,
+        trigger_at,
+        view: View::default(),
         selection: Selection::None,
         drag: None,
-        undo: Vec::new(),
+        past: Vec::new(),
+        future: Vec::new(),
+        last_key: None,
         name,
-        enabled,
+        enabled: false,
         canvas_focus: cx.focus_handle(),
         bounds: Rc::new(Cell::new(None)),
         inspector: Inspector::default(),
@@ -273,18 +375,70 @@ pub(super) fn open(
         message: None,
         saving: false,
         save_seq: 0,
-        folded: [false; 3],
+        filter,
+        side: Side::Settings,
+        test: TestPanel {
+            input,
+            result: None,
+            running: false,
+            seq: 0,
+            picked: None,
+            armed: false,
+            _subscription: test_subscription,
+        },
+        run_armed: false,
+        running_now: false,
+        read_only,
+        admin,
+        webhook,
+        webhook_state: Some(Ok(())),
+        catalogue,
+        graph_server,
         discard_focus: None,
-        _subscriptions: vec![subscription],
-    });
+        window_height: f32::from(window.viewport_size().height),
+        _subscriptions: subscriptions,
+    };
+    editor.enabled = editor.flow.enabled;
+    editor.view = View::fit(geometry(&editor).bounds(), estimated_size(window));
+    let state = console.state::<State>();
+    state.window = Some(window.window_handle());
+    state.editor = Some(editor);
     console.list(PALETTE_LIST, cx).cursor = None;
+    listen_for_pinches(console, cx);
     focus_canvas(console, window);
     cx.notify();
+}
+
+/// Open `flow` with the test panel showing (T in the list).
+pub(super) fn open_testing(
+    console: &mut Console,
+    flow: Flow,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) {
+    open(console, flow, window, cx);
+    if let Some(editor) = editor_mut(console) {
+        editor.side = Side::Test;
+        let input = editor.test.input.clone();
+        input.read(cx).focus(window);
+    }
 }
 
 pub(super) fn focus_canvas(console: &mut Console, window: &mut Window) {
     if let Some(editor) = editor_mut(console) {
         window.focus(&editor.canvas_focus);
+    }
+}
+
+/// The server's catalogue arrived (or it has none): an open editor uses it.
+pub(super) fn catalogue_changed(console: &mut Console) {
+    let state = console.state::<State>();
+    let catalogue = catalogue_of(state);
+    let graph_server = state.graph_server;
+    if let Some(editor) = state.editor.as_mut() {
+        editor.catalogue = catalogue;
+        editor.graph_server = graph_server;
+        editor.inspector.shows = None;
     }
 }
 
@@ -306,6 +460,10 @@ fn canvas_size(editor: &Editor, window: &Window) -> Vec2 {
     )
 }
 
+fn geometry(editor: &Editor) -> Geometry {
+    Geometry::build(&editor.graph, editor.trigger_at, &editor.catalogue)
+}
+
 /// Focus the panel's first text field; false when it has none.
 fn focus_first_field(editor: &Editor, window: &mut Window, cx: &gpui::App) -> bool {
     for field in &editor.inspector.fields {
@@ -318,7 +476,7 @@ fn focus_first_field(editor: &Editor, window: &mut Window, cx: &gpui::App) -> bo
                 area.read(cx).focus(window);
                 return true;
             }
-            Input::Switch => {}
+            Input::Switch | Input::Choice | Input::Fixed | Input::Items(_) => {}
         }
     }
     false
@@ -337,208 +495,264 @@ fn select(editor: &mut Editor, selection: Selection) {
     if editor.selection != selection {
         editor.selection = selection;
         editor.inspector.shows = None;
+        editor.last_key = None;
     }
 }
 
-/// Keep the graph, the layout and the selection for ⌘Z.
-fn remember(editor: &mut Editor) {
-    if editor.undo.len() == UNDO_DEPTH {
-        editor.undo.remove(0);
-    }
-    editor.undo.push(Snapshot {
+fn snapshot(editor: &Editor) -> Snapshot {
+    Snapshot {
         graph: editor.graph.clone(),
-        layout: editor.layout.clone(),
+        trigger_at: editor.trigger_at,
         selection: editor.selection,
-    });
-}
-
-/// The selection after a structural edit moved the steps.
-fn remap(selection: Selection, order: &[Option<usize>]) -> Selection {
-    let find = |old: usize| order.iter().position(|before| *before == Some(old));
-    match selection {
-        Selection::Step(End::Node(old)) => {
-            find(old).map_or(Selection::None, |new| Selection::Step(End::Node(new)))
-        }
-        Selection::Wire(old) => find(old).map_or(Selection::None, Selection::Wire),
-        other => other,
     }
 }
 
-/// Run a structural edit; when it changed something, keep the state
-/// before it for ⌘Z, move the positions and the selection along.
-fn restructure(editor: &mut Editor, edit: impl FnOnce(&mut FlowGraph) -> Option<Order>) -> bool {
-    let before = Snapshot {
-        graph: editor.graph.clone(),
-        layout: editor.layout.clone(),
-        selection: editor.selection,
-    };
-    let Some(order) = edit(&mut editor.graph) else {
-        return false;
-    };
-    if editor.undo.len() == UNDO_DEPTH {
-        editor.undo.remove(0);
-    }
-    editor.undo.push(before);
-    editor.layout.reorder(&order, Vec2::default());
-    editor.selection = remap(editor.selection, &order);
-    editor.inspector.shows = None;
-    true
-}
-
-fn say(editor: &mut Editor, text: impl Into<String>, error: bool) {
-    editor.message = Some((text.into(), error));
-}
-
-/// Wire `from` into step `to`.
-fn connect(editor: &mut Editor, from: End, to: usize) {
-    let (what, after) = (
-        editor.graph.end_label(End::Node(to)),
-        editor.graph.end_label(from),
-    );
-    let mut refused = None;
-    let mut same = false;
-    let changed = restructure(editor, |graph| match graph.connect(from, to) {
-        Ok(Some(order)) => Some(order),
-        Ok(None) => {
-            same = true;
-            None
-        }
-        Err(error) => {
-            refused = Some(error);
-            None
-        }
-    });
-    match (changed, refused) {
-        (true, _) => say(
-            editor,
-            format!("{what} now runs right after {after}"),
-            false,
-        ),
-        (false, Some(error)) => say(editor, error, true),
-        (false, None) if same => say(editor, format!("{after} already feeds {what}"), false),
-        (false, None) => {}
-    }
-}
-
-/// Add a palette entry: a step after the selected one (or into the
-/// selected wire) at `at`, or the trigger's type.
-fn add_item(editor: &mut Editor, item: Item, at: Option<Vec2>, size: Vec2) {
-    match item {
-        Item::Trigger(kind) => {
-            remember(editor);
-            editor.graph.set_trigger_kind(kind);
-            editor.inspector.shows = None;
-            select(editor, Selection::Step(End::Trigger));
-            say(
-                editor,
-                format!("The trigger is now {} (its defaults)", kind.label),
-                false,
-            );
-        }
-        Item::Step(kind) => {
-            let after = match editor.selection {
-                Selection::Step(end) => Some(end),
-                Selection::Wire(to) => editor.graph.source_of(to),
-                Selection::None => None,
-            };
-            let near = match (at, after) {
-                (Some(at), _) => at,
-                (None, Some(end)) => editor.layout.at(end) + Vec2::new(NODE_W + 48.0, 0.0),
-                (None, None) => {
-                    editor.view.visible(size).center() - Vec2::new(NODE_W / 2.0, NODE_H / 2.0)
-                }
-            };
-            let place = if at.is_some() {
-                near
-            } else {
-                editor.layout.free_spot(near)
-            };
-            let id = editor.graph.fresh_id(now_millis());
-            remember(editor);
-            let (index, order) = editor.graph.add(kind, after, id);
-            editor.layout.reorder(&order, place);
-            editor.inspector.shows = None;
-            editor.selection = Selection::Step(End::Node(index));
-            editor.view = editor.view.reveal(node_rect(place), size);
-            let source = editor
-                .graph
-                .source_of(index)
-                .map(|from| editor.graph.end_label(from))
-                .unwrap_or_default();
-            say(
-                editor,
-                format!("Added {}, fed by {source}", kind.label),
-                false,
-            );
-        }
-    }
-}
-
-fn delete_selection(editor: &mut Editor) {
-    match editor.selection {
-        Selection::Step(End::Trigger) => say(
-            editor,
-            "A flow keeps its trigger: change its type in the settings on the right",
-            true,
-        ),
-        Selection::Step(End::Node(index)) => {
-            let label = editor.graph.end_label(End::Node(index));
-            if restructure(editor, |graph| graph.remove(index)) {
-                editor.selection = Selection::None;
-                say(editor, format!("Removed {label}"), false);
-            }
-        }
-        Selection::Wire(_) => say(
-            editor,
-            "Wires are the order the steps run in: drag from another step's output onto this step to rewire it, or remove a step",
-            true,
-        ),
-        Selection::None => {}
-    }
-}
-
-fn shift(editor: &mut Editor, earlier: bool) {
-    let Selection::Step(End::Node(index)) = editor.selection else {
-        say(editor, "Select a step to move it in the run order", true);
+/// Keep the state before an edit for ⌘Z. Edits with the same `key` in a
+/// row (typing in one field) are one step.
+fn remember(editor: &mut Editor, key: Option<String>) {
+    if key.is_some() && key == editor.last_key {
         return;
-    };
-    let label = editor.graph.end_label(End::Node(index));
-    if restructure(editor, |graph| graph.shift(index, earlier)) {
-        let when = if earlier { "earlier" } else { "later" };
-        say(editor, format!("{label} runs one place {when}"), false);
-    } else {
-        let end = if earlier { "first" } else { "last" };
-        let among = match editor.graph.category(index) {
-            Category::Output => "outputs",
-            _ => "process steps",
-        };
-        say(
-            editor,
-            format!("{label} already runs {end} among the {among}"),
-            true,
-        );
     }
+    if editor.past.len() == UNDO_DEPTH {
+        editor.past.remove(0);
+    }
+    editor.past.push(snapshot(editor));
+    editor.future.clear();
+    editor.last_key = key;
+}
+
+fn restore(editor: &mut Editor, to: Snapshot) {
+    editor.graph = to.graph;
+    editor.trigger_at = to.trigger_at;
+    editor.selection = to.selection;
+    editor.inspector.shows = None;
+    editor.drag = None;
+    editor.last_key = None;
 }
 
 fn undo(editor: &mut Editor) {
-    match editor.undo.pop() {
-        Some(snapshot) => {
-            editor.graph = snapshot.graph;
-            editor.layout = snapshot.layout;
-            editor.selection = snapshot.selection;
-            editor.inspector.shows = None;
-            editor.drag = None;
+    if editor.read_only {
+        return;
+    }
+    match editor.past.pop() {
+        Some(before) => {
+            editor.future.push(snapshot(editor));
+            restore(editor, before);
             say(editor, "Undone", false);
         }
         None => say(editor, "Nothing to undo", true),
     }
 }
 
-fn set_trigger_kind(console: &mut Console, kind: &'static TriggerKind, cx: &mut Context<Console>) {
-    if let Some(editor) = editor_mut(console)
-        && editor.graph.trigger_type() != kind.id
+fn redo(editor: &mut Editor) {
+    if editor.read_only {
+        return;
+    }
+    match editor.future.pop() {
+        Some(after) => {
+            editor.past.push(snapshot(editor));
+            restore(editor, after);
+            say(editor, "Redone", false);
+        }
+        None => say(editor, "Nothing to redo", true),
+    }
+}
+
+fn say(editor: &mut Editor, text: impl Into<String>, error: bool) {
+    editor.message = Some((text.into(), error));
+}
+
+/// Refuse an edit in a read-only editor, saying why.
+fn locked(editor: &mut Editor) -> bool {
+    if editor.read_only {
+        say(
+            editor,
+            "Read-only: changing flows needs the operator role",
+            true,
+        );
+    }
+    editor.read_only
+}
+
+/// Wire `from`'s output `port` into node `to`.
+fn connect(editor: &mut Editor, from: End, port: usize, to: usize) {
+    let catalogue = Rc::clone(&editor.catalogue);
+    let mut graph = editor.graph.clone();
+    match graph.connect(from, port, to, &catalogue) {
+        Ok(true) => {
+            remember(editor, None);
+            editor.graph = graph;
+            let edge = editor.graph.edges.len() - 1;
+            select(editor, Selection::Wire(edge));
+            say(
+                editor,
+                format!(
+                    "{} now feeds {}",
+                    port_label(&editor.graph, from, port, &catalogue),
+                    editor.graph.label(End::Node(to), &catalogue)
+                ),
+                false,
+            );
+        }
+        Ok(false) => say(editor, "That wire is there already", false),
+        Err(error) => say(editor, error, true),
+    }
+}
+
+/// `Switch · hot`, `Filter`.
+fn port_label(graph: &FlowGraph, end: End, port: usize, catalogue: &Catalogue) -> String {
+    let label = graph.label(end, catalogue);
+    let outputs = graph.outputs(end, catalogue);
+    match outputs.get(port) {
+        Some(name) if outputs.len() > 1 && !name.is_empty() => format!("{label} · {name}"),
+        _ => label,
+    }
+}
+
+/// Add a palette entry: a node at `at` (or near the selection, wired from
+/// its first output), or the trigger's type.
+fn add_item(editor: &mut Editor, item: Item, at: Option<Vec2>, size: Vec2) {
+    if locked(editor) {
+        return;
+    }
+    let catalogue = Rc::clone(&editor.catalogue);
+    match item {
+        Item::Trigger(index) => {
+            let Some(kind) = catalogue.triggers.get(index) else {
+                return;
+            };
+            remember(editor, None);
+            editor.graph.set_trigger_kind(kind);
+            editor.graph.prune_ports(&catalogue);
+            editor.inspector.shows = None;
+            select(editor, Selection::Node(End::Trigger));
+            say(
+                editor,
+                format!("The trigger is now {} (its defaults)", kind.label()),
+                false,
+            );
+        }
+        Item::Node(index) => {
+            let Some(kind) = catalogue.nodes.get(index) else {
+                return;
+            };
+            let geometry = geometry(editor);
+            let after = match editor.selection {
+                Selection::Node(end) => Some(end),
+                _ => None,
+            };
+            let place = match (at, after.and_then(|end| geometry.card(end))) {
+                (Some(at), _) => snap(at),
+                (None, Some(card)) => {
+                    geometry.free_spot(snap(card.at + Vec2::new(NODE_W + 70.0, 0.0)))
+                }
+                (None, None) => geometry.free_spot(snap(
+                    editor.view.visible(size).center() - Vec2::new(NODE_W / 2.0, NODE_H / 2.0),
+                )),
+            };
+            let id = editor.graph.fresh_id(now_millis());
+            remember(editor, None);
+            let index = editor
+                .graph
+                .add(kind, id, f64::from(place.x), f64::from(place.y));
+            let mut fed = String::new();
+            if at.is_none()
+                && let Some(from) = after
+                && !editor.graph.outputs(from, &catalogue).is_empty()
+                && editor.graph.connect(from, 0, index, &catalogue) == Ok(true)
+            {
+                fed = format!(
+                    ", fed by {}",
+                    port_label(&editor.graph, from, 0, &catalogue)
+                );
+            }
+            editor.inspector.shows = None;
+            editor.selection = Selection::Node(End::Node(index));
+            if let Some(card) = self::geometry(editor).card(End::Node(index)) {
+                editor.view = editor.view.reveal(card.rect(), size);
+            }
+            say(editor, format!("Added {}{fed}", kind.label()), false);
+        }
+    }
+}
+
+fn delete_selection(editor: &mut Editor) {
+    if locked(editor) {
+        return;
+    }
+    let catalogue = Rc::clone(&editor.catalogue);
+    match editor.selection {
+        Selection::Node(End::Trigger) => say(
+            editor,
+            "A flow keeps its trigger: change its type in the settings on the right",
+            true,
+        ),
+        Selection::Node(End::Node(index)) => {
+            let label = editor.graph.label(End::Node(index), &catalogue);
+            remember(editor, None);
+            if editor.graph.remove(index) {
+                select(editor, Selection::None);
+                say(editor, format!("Removed {label}"), false);
+            }
+        }
+        Selection::Wire(edge) if edge < editor.graph.edges.len() => {
+            remember(editor, None);
+            editor.graph.edges.remove(edge);
+            select(editor, Selection::None);
+            say(editor, "Removed the wire", false);
+        }
+        Selection::Wire(_) | Selection::None => {}
+    }
+}
+
+/// ⌘D: a copy of the selected node beside it, unwired.
+fn duplicate(editor: &mut Editor, size: Vec2) {
+    if locked(editor) {
+        return;
+    }
+    let Selection::Node(End::Node(index)) = editor.selection else {
+        say(editor, "Select a node to duplicate it", true);
+        return;
+    };
+    let id = editor.graph.fresh_id(now_millis());
+    let mut graph = editor.graph.clone();
+    let Some(copy) = graph.duplicate(index, id) else {
+        return;
+    };
+    remember(editor, None);
+    editor.graph = graph;
+    select(editor, Selection::Node(End::Node(copy)));
+    if let Some(card) = geometry(editor).card(End::Node(copy)) {
+        editor.view = editor.view.reveal(card.rect(), size);
+    }
+    let label = editor.graph.label(End::Node(copy), &editor.catalogue);
+    say(editor, format!("Duplicated {label}"), false);
+}
+
+fn arrange(editor: &mut Editor, size: Vec2) {
+    if locked(editor) {
+        return;
+    }
+    remember(editor, None);
+    let (x, y) = editor.graph.arrange();
+    #[allow(clippy::cast_possible_truncation)]
     {
-        add_item(editor, Item::Trigger(kind), None, Vec2::default());
+        editor.trigger_at = Vec2::new(x as f32, y as f32);
+    }
+    editor.view = View::fit(geometry(editor).bounds(), size);
+}
+
+fn set_trigger_kind(console: &mut Console, index: usize, cx: &mut Context<Console>) {
+    if let Some(editor) = editor_mut(console) {
+        let current = editor.graph.trigger_type().to_owned();
+        if editor
+            .catalogue
+            .triggers
+            .get(index)
+            .is_some_and(|kind| kind.kind != current)
+        {
+            add_item(editor, Item::Trigger(index), None, Vec2::default());
+        }
     }
     cx.notify();
 }
@@ -553,26 +767,33 @@ pub(super) fn press(console: &mut Console, at: Vec2, clicks: usize) -> bool {
     };
     editor.message = None;
     let world = editor.view.to_world(at);
-    match model::hit(&editor.graph, &editor.layout, world, editor.view.zoom) {
-        Hit::Output(from) => {
+    let geometry = geometry(editor);
+    match model::hit(&geometry, world, editor.view.zoom) {
+        Hit::Output(from, port) if !editor.read_only => {
             editor.drag = Some(Drag::Wire {
                 from,
+                port,
                 to: world,
                 target: None,
             });
         }
-        Hit::Node(end) => {
-            select(editor, Selection::Step(end));
+        Hit::Output(end, _) | Hit::Node(end) => {
+            select(editor, Selection::Node(end));
             if clicks >= 2 {
+                editor.side = Side::Settings;
                 editor.focus_inspector = true;
             }
-            editor.drag = Some(Drag::Move {
-                end,
-                grab: world - editor.layout.at(end),
-                moved: false,
-            });
+            if !editor.read_only
+                && let Some(card) = geometry.card(end)
+            {
+                editor.drag = Some(Drag::Move {
+                    end,
+                    grab: world - card.at,
+                    moved: false,
+                });
+            }
         }
-        Hit::Wire(to) => select(editor, Selection::Wire(to)),
+        Hit::Wire(edge) => select(editor, Selection::Wire(edge)),
         Hit::Empty => {
             select(editor, Selection::None);
             editor.drag = Some(Drag::Pan {
@@ -600,20 +821,29 @@ pub(super) fn drag_to(console: &mut Console, at: Vec2) -> bool {
         }
         Drag::Move { end, grab, moved } => {
             if !moved {
-                remember(editor);
+                remember(editor, None);
             }
-            editor.layout.set(end, world - grab);
+            let place = snap(world - grab);
+            match end {
+                End::Trigger => editor.trigger_at = place,
+                End::Node(index) => {
+                    editor
+                        .graph
+                        .set_position(index, f64::from(place.x), f64::from(place.y));
+                }
+            }
             Drag::Move {
                 end,
                 grab,
                 moved: true,
             }
         }
-        Drag::Wire { from, .. } => {
-            let target = model::drop_target(&editor.graph, &editor.layout, world, editor.view.zoom)
+        Drag::Wire { from, port, .. } => {
+            let target = model::drop_target(&geometry(editor), world, editor.view.zoom)
                 .filter(|target| End::Node(*target) != from);
             Drag::Wire {
                 from,
+                port,
                 to: world,
                 target,
             }
@@ -628,14 +858,14 @@ pub(super) fn release(console: &mut Console, at: Vec2) {
     let Some(editor) = editor_mut(console) else {
         return;
     };
-    let Some(Drag::Wire { from, .. }) = editor.drag.take() else {
+    let Some(Drag::Wire { from, port, .. }) = editor.drag.take() else {
         return;
     };
     let world = editor.view.to_world(at);
-    if let Some(target) = model::drop_target(&editor.graph, &editor.layout, world, editor.view.zoom)
+    if let Some(target) = model::drop_target(&geometry(editor), world, editor.view.zoom)
         && End::Node(target) != from
     {
-        connect(editor, from, target);
+        connect(editor, from, port, target);
     }
 }
 
@@ -651,6 +881,40 @@ pub(super) fn scroll(console: &mut Console, at: Vec2, delta: Vec2, zoom: bool) {
     } else {
         editor.view.panned(delta)
     };
+}
+
+/// A trackpad pinch (macOS, through the mimic's gesture listener): zoom
+/// about the fingers; a two-finger double tap fits the flow.
+pub(crate) fn pinch(console: &mut Console, gesture: Gesture, cx: &mut Context<Console>) {
+    let Some(editor) = editor_mut(console) else {
+        return;
+    };
+    let Some(bounds) = editor.bounds.get() else {
+        return;
+    };
+    let (x, y) = match gesture {
+        Gesture::Magnify { x, y, .. } | Gesture::SmartMagnify { x, y } => (x, y),
+    };
+    // AppKit counts from the window's bottom-left corner, GPUI from its
+    // top-left.
+    #[allow(clippy::cast_possible_truncation)]
+    let local = Vec2::new(
+        x as f32 - f32::from(bounds.origin.x),
+        editor.window_height - y as f32 - f32::from(bounds.origin.y),
+    );
+    let size = Vec2::new(f32::from(bounds.size.width), f32::from(bounds.size.height));
+    if local.x < 0.0 || local.y < 0.0 || local.x > size.x || local.y > size.y {
+        return;
+    }
+    match gesture {
+        Gesture::Magnify { amount, .. } => {
+            #[allow(clippy::cast_possible_truncation)]
+            let factor = (1.0 + amount as f32).clamp(0.5, 2.0);
+            editor.view = editor.view.zoom_about(local, factor);
+        }
+        Gesture::SmartMagnify { .. } => fit(editor, size),
+    }
+    cx.notify();
 }
 
 /// A palette entry dropped on the canvas, where the pointer is.
@@ -691,17 +955,29 @@ fn with_editor(
 fn nudge(console: &mut Console, dx: f32, dy: f32, window: &mut Window, cx: &mut Context<Console>) {
     let far = window.modifiers().shift;
     with_editor(console, window, cx, |editor, size| match editor.selection {
-        Selection::Step(end) => {
+        Selection::Node(end) if !editor.read_only => {
             let step = if far { NUDGE_FAR } else { NUDGE };
-            remember(editor);
-            let at = editor.layout.at(end) + Vec2::new(dx * step, dy * step);
-            editor.layout.set(end, at);
-            editor.view = editor.view.reveal(node_rect(at), size);
+            remember(editor, Some(format!("nudge {end:?}")));
+            let Some(card) = geometry(editor).card(end).copied() else {
+                return;
+            };
+            let at = card.at + Vec2::new(dx * step, dy * step);
+            match end {
+                End::Trigger => editor.trigger_at = at,
+                End::Node(index) => {
+                    editor
+                        .graph
+                        .set_position(index, f64::from(at.x), f64::from(at.y));
+                }
+            }
+            if let Some(card) = geometry(editor).card(end) {
+                editor.view = editor.view.reveal(card.rect(), size);
+            }
         }
         _ => {
             editor.view = editor
                 .view
-                .panned(Vec2::new(-dx * PAN_STEP, -dy * PAN_STEP))
+                .panned(Vec2::new(-dx * PAN_STEP, -dy * PAN_STEP));
         }
     });
 }
@@ -709,13 +985,20 @@ fn nudge(console: &mut Console, dx: f32, dy: f32, window: &mut Window, cx: &mut 
 fn cycle(console: &mut Console, forward: bool, window: &mut Window, cx: &mut Context<Console>) {
     with_editor(console, window, cx, |editor, size| {
         let from = match editor.selection {
-            Selection::Step(end) => Some(end),
-            Selection::Wire(to) => Some(End::Node(to)),
+            Selection::Node(end) => Some(end),
+            Selection::Wire(edge) => editor
+                .graph
+                .edges
+                .get(edge)
+                .and_then(|edge| editor.graph.index_of(&edge.to))
+                .map(End::Node),
             Selection::None => None,
         };
-        let next = model::cycle(&editor.graph, from, forward);
-        select(editor, Selection::Step(next));
-        editor.view = editor.view.reveal(node_rect(editor.layout.at(next)), size);
+        let next = model::cycle(editor.graph.nodes.len(), from, forward);
+        select(editor, Selection::Node(next));
+        if let Some(card) = geometry(editor).card(next) {
+            editor.view = editor.view.reveal(card.rect(), size);
+        }
     });
 }
 
@@ -739,7 +1022,7 @@ fn close(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
     let Some(editor) = console.state::<State>().editor.as_ref() else {
         return;
     };
-    if !dirty(editor, cx) {
+    if editor.read_only || !dirty(editor, cx) {
         close_now(console, window, cx);
         return;
     }
@@ -761,6 +1044,27 @@ fn close_now(console: &mut Console, window: &mut Window, cx: &mut Context<Consol
     cx.notify();
 }
 
+/// The node an error from the server names (by its id), if any.
+fn named_node(graph: &FlowGraph, error: &str) -> Option<usize> {
+    graph
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| config_id(node).len() >= 2 && error.contains(config_id(node)))
+        .max_by_key(|(_, node)| config_id(node).len())
+        .map(|(index, _)| index)
+}
+
+/// The texts to save: v2, or the legacy array for a server without the
+/// graph engine.
+fn save_texts(editor: &Editor) -> Result<(String, String), String> {
+    let nodes = match editor.graph_server {
+        Some(false) => editor.graph.legacy_json(&editor.catalogue)?,
+        _ => editor.graph.nodes_json(),
+    };
+    Ok((editor.graph.trigger_json(), nodes))
+}
+
 /// ⌘S: `PUT /api/v1/flows/{id}` with the canvas's graph.
 fn save(console: &mut Console, cx: &mut Context<Console>) {
     let state = console.state::<State>();
@@ -769,7 +1073,8 @@ fn save(console: &mut Console, cx: &mut Context<Console>) {
     let Some(editor) = state.editor.as_mut() else {
         return;
     };
-    if editor.saving {
+    if editor.saving || locked(editor) {
+        cx.notify();
         return;
     }
     let name = editor.name.read(cx).value().trim().to_owned();
@@ -782,20 +1087,32 @@ fn save(console: &mut Console, cx: &mut Context<Console>) {
         .inspector
         .fields
         .iter()
-        .find_map(|field| Some((field.label.clone(), field.error.clone()?)))
+        .find_map(|field| Some((field.def.label().to_owned(), field.error.clone()?)))
     {
         say(editor, format!("{label}: {error}"), true);
         cx.notify();
         return;
     }
-    if let Err(error) = editor.graph.validate() {
-        say(editor, error, true);
+    if let Err(problem) = editor.graph.validate(&editor.catalogue) {
+        if let Some(end) = problem.at {
+            select(editor, Selection::Node(end));
+            editor.side = Side::Settings;
+        }
+        say(editor, problem.message, true);
         cx.notify();
         return;
     }
+    let (trigger_config, nodes) = match save_texts(editor) {
+        Ok(texts) => texts,
+        Err(error) => {
+            say(editor, error, true);
+            cx.notify();
+            return;
+        }
+    };
     let body = editor
         .flow
-        .with_graph(&name, editor.enabled, &editor.graph, now_secs());
+        .with_texts(&name, editor.enabled, trigger_config, nodes, now_secs());
     let graph = editor.graph.clone();
     editor.saving = true;
     editor.save_seq = seq;
@@ -803,8 +1120,10 @@ fn save(console: &mut Console, cx: &mut Context<Console>) {
     console.call(
         CallKey::new("data.flows.save").with(seq),
         Call::new(move |api| async move {
-            api.update_flow(&body).await?;
-            anyhow::Ok((body, graph))
+            match api.update_flow(&body).await {
+                Ok(()) => anyhow::Ok(Ok((body, graph))),
+                Err(error) => Ok(Err(refused(error)?)),
+            }
         }),
     );
     cx.notify();
@@ -815,17 +1134,48 @@ fn saving_editor(console: &mut Console, seq: i64) -> Option<&mut Editor> {
     editor_mut(console).filter(|editor| editor.save_seq == seq)
 }
 
+/// Point at what a refusal names: its node (the trigger when it names
+/// none), or a node whose id the message holds.
+fn show_refusal(editor: &mut Editor, refusal: &Refusal) {
+    let at = match &refusal.node_id {
+        Some(id) => editor.graph.end_of(id),
+        None if refusal.from_server => Some(End::Trigger),
+        None => named_node(&editor.graph, &refusal.message).map(End::Node),
+    };
+    if let Some(end) = at {
+        select(editor, Selection::Node(end));
+    }
+}
+
+/// A call's failure as a refusal: the server's 400 with the node it
+/// names, or any other error as text.
+fn refused(error: anyhow::Error) -> anyhow::Result<Refusal> {
+    match refusal(&error) {
+        Some(refusal) => Ok(Refusal {
+            message: refusal.message,
+            node_id: refusal.node_id,
+            from_server: true,
+        }),
+        None => Err(error),
+    }
+}
+
 /// The answer to a save; an editor saving again since waits for that one.
+/// A refusal naming a node selects it.
 pub(super) fn on_saved(
     console: &mut Console,
     key: CallKey,
     reply: Reply,
     cx: &mut Context<Console>,
 ) {
-    match reply.take::<(Flow, FlowGraph)>() {
+    let answer = reply
+        .take::<Result<(Flow, FlowGraph), Refusal>>()
+        .unwrap_or_else(|message| Err(Refusal::text(message)));
+    match answer {
         Ok((flow, graph)) => {
             let name = flow.name.clone();
             if let Some(editor) = saving_editor(console, key.arg) {
+                editor.legacy = editor.graph_server == Some(false);
                 editor.flow = flow;
                 editor.saved = graph;
                 editor.broken = None;
@@ -835,20 +1185,387 @@ pub(super) fn on_saved(
             console.show_toast(format!("Saved {name}"), false, cx);
             refresh(console);
         }
-        Err(error) => match saving_editor(console, key.arg) {
+        Err(refusal) => match saving_editor(console, key.arg) {
             Some(editor) => {
                 editor.saving = false;
-                say(editor, format!("Saving failed: {error}"), true);
+                show_refusal(editor, &refusal);
+                editor.side = Side::Settings;
+                say(editor, format!("Saving failed: {}", refusal.message), true);
             }
-            None => console.show_toast(format!("Saving the flow failed: {error}"), true, cx),
+            None => console.show_toast(
+                format!("Saving the flow failed: {}", refusal.message),
+                true,
+                cx,
+            ),
         },
+    }
+}
+
+// ── Test and run ─────────────────────────────────────────────────────────
+
+/// Where a shown run came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Source {
+    /// A dry run of the canvas.
+    Dry,
+    /// An older server's test of the saved flow.
+    Saved,
+    /// Run now: the saved flow, for real.
+    Live,
+}
+
+/// Why a call about the flow failed, and the node the server named.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Refusal {
+    pub message: String,
+    pub node_id: Option<String>,
+    /// The server refused the flow (400), as opposed to a failed call.
+    pub from_server: bool,
+}
+
+impl Refusal {
+    fn text(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            node_id: None,
+            from_server: false,
+        }
+    }
+}
+
+/// Run test: a dry run of the canvas (`POST /api/v1/flows/test`). A server
+/// without it tests the stored flow (`POST …/{id}/test`), outputs for
+/// real: saved first, and only on a second press.
+fn run_test(console: &mut Console, cx: &mut Context<Console>) {
+    let unsaved = console
+        .state::<State>()
+        .editor
+        .as_ref()
+        .is_some_and(|editor| dirty(editor, cx));
+    let state = console.state::<State>();
+    state.seq += 1;
+    let seq = state.seq;
+    let Some(editor) = state.editor.as_mut() else {
+        return;
+    };
+    editor.side = Side::Test;
+    if editor.test.running || editor.read_only {
+        cx.notify();
+        return;
+    }
+    let text = editor.test.input.read(cx).value().to_owned();
+    let input = match parse_input(&text) {
+        Ok(input) => input,
+        Err(error) => {
+            editor.test.result = Some(Err(Refusal::text(format!("The input is {error}"))));
+            cx.notify();
+            return;
+        }
+    };
+    let legacy = editor.graph_server == Some(false);
+    if legacy {
+        if unsaved {
+            editor.test.result = Some(Err(Refusal::text(
+                "This server tests the saved flow only: save with ⌘S first",
+            )));
+            cx.notify();
+            return;
+        }
+        let acts = editor.graph.nodes.iter().any(|node| {
+            editor
+                .catalogue
+                .node(config_type(node))
+                .is_some_and(|kind| kind.side_effect)
+        });
+        if acts && !editor.test.armed {
+            editor.test.armed = true;
+            cx.notify();
+            return;
+        }
+    }
+    editor.test.armed = false;
+    editor.test.running = true;
+    editor.test.seq = seq;
+    editor.test.picked = None;
+    let (trigger_config, nodes) = (editor.graph.trigger_json(), editor.graph.nodes_json());
+    let id = editor.flow.id.clone();
+    let payload = input.get("payload").cloned().unwrap_or(Value::Null);
+    state.test_payload = Some(text);
+    console.call(
+        CallKey::new("data.flows.draft_test").with(seq),
+        Call::new(move |api| async move {
+            if !legacy {
+                match api.test_flow_draft(&trigger_config, &nodes, input).await {
+                    Ok(Some(run)) => return anyhow::Ok(Ok((run, Source::Dry))),
+                    Ok(None) => {}
+                    Err(error) => return Ok(Err(refused(error)?)),
+                }
+            }
+            match api.test_flow(&id, payload).await {
+                Ok(result) => Ok(Ok((TestRun::from_legacy(&result), Source::Saved))),
+                Err(error) => Ok(Err(refused(error)?)),
+            }
+        }),
+    );
+    cx.notify();
+}
+
+/// Run now: one real run of the stored flow (`POST …/{id}/run`), on the
+/// second press; its trace shows in the test panel.
+fn run_now(console: &mut Console, cx: &mut Context<Console>) {
+    let state = console.state::<State>();
+    state.seq += 1;
+    let seq = state.seq;
+    let Some(editor) = state.editor.as_mut() else {
+        return;
+    };
+    if editor.running_now || locked(editor) {
+        cx.notify();
+        return;
+    }
+    if !editor.run_armed {
+        editor.run_armed = true;
+        say(
+            editor,
+            "Run now runs the saved flow once, for real: writes, alarms and webhooks act. Press Run now again to go.",
+            true,
+        );
+        cx.notify();
+        return;
+    }
+    editor.run_armed = false;
+    editor.running_now = true;
+    editor.test.seq = seq;
+    let input = parse_input(editor.test.input.read(cx).value()).ok();
+    let id = editor.flow.id.clone();
+    console.call(
+        CallKey::new("data.flows.run_now").with(seq),
+        Call::new(move |api| async move {
+            match api.run_flow_now(&id, input).await {
+                Ok(run) => anyhow::Ok(Ok((run, Source::Live))),
+                Err(error) if missing_route(&error) => Ok(Err(Refusal::text(
+                    "This server cannot run a flow on demand",
+                ))),
+                Err(error) => Ok(Err(refused(error)?)),
+            }
+        }),
+    );
+    cx.notify();
+}
+
+/// Answers to the test, run and webhook-token calls.
+pub(super) fn on_reply(
+    console: &mut Console,
+    key: CallKey,
+    reply: Reply,
+    cx: &mut Context<Console>,
+) {
+    match key.name {
+        "data.flows.draft_test" | "data.flows.run_now" => {
+            let live = key.name == "data.flows.run_now";
+            let Some(editor) = editor_mut(console) else {
+                return;
+            };
+            if live {
+                editor.running_now = false;
+            } else {
+                editor.test.running = false;
+            }
+            if editor.test.seq != key.arg {
+                return;
+            }
+            let answer = reply
+                .take::<Result<(TestRun, Source), Refusal>>()
+                .unwrap_or_else(|message| Err(Refusal::text(message)));
+            if let Err(refusal) = &answer {
+                show_refusal(editor, refusal);
+            }
+            editor.side = Side::Test;
+            editor.test.picked = None;
+            editor.test.result = Some(answer);
+            if live {
+                let name = editor.flow.name.clone();
+                console.show_toast(format!("Ran {name} once"), false, cx);
+            }
+        }
+        "data.flows.webhook_token" => {
+            if let Some(editor) = editor_mut(console) {
+                let token = reply.take::<String>();
+                if let Ok(token) = &token {
+                    let token = token.clone();
+                    editor
+                        .webhook
+                        .update(cx, |line, cx| line.set_text(token, cx));
+                }
+                editor.webhook_state = Some(token.map(|_| ()));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Ask for a new webhook token (admin).
+fn new_webhook_token(console: &mut Console, cx: &mut Context<Console>) {
+    let Some(editor) = editor_mut(console) else {
+        return;
+    };
+    let id = editor.flow.id.clone();
+    editor.webhook_state = None;
+    console.call(
+        CallKey::new("data.flows.webhook_token"),
+        Call::new(move |api| async move { api.flow_webhook_token(&id).await }),
+    );
+    cx.notify();
+}
+
+/// The path the shown run took.
+fn shown_path(editor: &Editor) -> Option<Path> {
+    match &editor.test.result {
+        Some(Ok((run, _))) => Some(test_path(&editor.graph, run)),
+        _ => None,
     }
 }
 
 // ── Settings fields ──────────────────────────────────────────────────────
 
+/// A node's optional label, when its type has no `name` setting itself.
+fn name_def() -> FieldDef {
+    FieldDef {
+        key: "name".into(),
+        label: "Name".into(),
+        kind: FieldKind::String,
+        help: Some("A label on the canvas (optional)".into()),
+        ..FieldDef::default()
+    }
+}
+
+/// The fields of `selection`: its type's, then the settings it has that
+/// the type does not declare (as JSON, so nothing is lost).
+fn field_defs(graph: &FlowGraph, selection: Selection, catalogue: &Catalogue) -> Vec<FieldDef> {
+    let (config, declared, skip): (_, Vec<FieldDef>, &[&str]) = match selection {
+        Selection::Node(End::Trigger) => (
+            &graph.trigger,
+            catalogue
+                .trigger(graph.trigger_type())
+                .map(|kind| kind.fields.clone())
+                .unwrap_or_default(),
+            &["type"],
+        ),
+        Selection::Node(End::Node(index)) => {
+            let Some(node) = graph.nodes.get(index) else {
+                return Vec::new();
+            };
+            let declared = catalogue
+                .node(config_type(node))
+                .map(|kind| kind.fields.clone())
+                .unwrap_or_default();
+            let mut defs = Vec::new();
+            if !declared.iter().any(|field| field.key == "name") {
+                defs.push(name_def());
+            }
+            defs.extend(declared);
+            (node, defs, &RESERVED)
+        }
+        Selection::Wire(_) | Selection::None => return Vec::new(),
+    };
+    let mut defs = declared;
+    for (key, value) in config {
+        if skip.contains(&key.as_str()) || defs.iter().any(|field| field.key == *key) {
+            continue;
+        }
+        let kind = value_kind(value);
+        defs.push(FieldDef {
+            key: key.clone(),
+            label: key.replace('_', " "),
+            kind: if kind == FieldKind::String {
+                kind
+            } else {
+                FieldKind::Json
+            },
+            ..FieldDef::default()
+        });
+    }
+    defs
+}
+
+/// The settings map the panel edits.
+fn config_of(editor: &Editor, selection: Selection) -> Option<&serde_json::Map<String, Value>> {
+    match selection {
+        Selection::Node(End::Trigger) => Some(&editor.graph.trigger),
+        Selection::Node(End::Node(index)) => editor.graph.nodes.get(index),
+        _ => None,
+    }
+}
+
+/// The tags the console knows: key by id, id by key.
+fn tag_maps(console: &Console) -> (HashMap<i64, String>, HashMap<String, i64>) {
+    let names = console
+        .store
+        .tags
+        .iter()
+        .map(|tag| (tag.info.id, tag.info.key.clone()))
+        .collect::<HashMap<_, _>>();
+    let ids = names.iter().map(|(id, key)| (key.clone(), *id)).collect();
+    (names, ids)
+}
+
+/// A setting as one line of text: objects and lists compact.
+fn line_text(value: &Value) -> String {
+    match value {
+        Value::Object(_) | Value::Array(_) => value.to_string(),
+        other => field_text(other),
+    }
+}
+
+/// A list field's items as stored (objects), or none.
+fn items_of(value: Option<&Value>) -> Vec<serde_json::Map<String, Value>> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .map(|item| item.as_object().cloned().unwrap_or_default())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A line input for a field of `kind`.
+fn line_input(
+    kind: FieldKind,
+    text: String,
+    placeholder: String,
+    cx: &mut Context<Console>,
+) -> Entity<TextInput> {
+    cx.new(|cx| {
+        let line = TextInput::new(cx).text(text).placeholder(placeholder);
+        let line = if matches!(
+            kind,
+            FieldKind::Expression
+                | FieldKind::Cron
+                | FieldKind::Tag
+                | FieldKind::Device
+                | FieldKind::Number
+                | FieldKind::DurationMs
+                | FieldKind::Json
+                | FieldKind::Other
+        ) {
+            line.mono()
+        } else {
+            line
+        };
+        if kind.is_number() {
+            line.kind(InputKind::Number)
+        } else {
+            line
+        }
+    })
+}
+
 /// Make the panel's fields for the selection, once per selection.
+#[allow(clippy::too_many_lines)]
 fn ensure_inspector(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    let (tag_names, _) = tag_maps(console);
     let Some(editor) = editor_mut(console) else {
         return;
     };
@@ -856,37 +1573,12 @@ fn ensure_inspector(console: &mut Console, window: &mut Window, cx: &mut Context
         return;
     }
     let selection = editor.selection;
-    let specs: Vec<(String, String, FieldKind, Value)> = match selection {
-        Selection::Step(End::Trigger) => trigger_fields(editor.graph.trigger_type())
-            .iter()
-            .map(|field| {
-                (
-                    field.key.to_owned(),
-                    field.label.to_owned(),
-                    field.kind,
-                    trigger_value(&editor.graph.trigger, field.key),
-                )
-            })
-            .collect(),
-        Selection::Step(End::Node(index)) => editor
-            .graph
-            .nodes
-            .get(index)
-            .map(|config| {
-                node_fields(config)
-                    .into_iter()
-                    .map(|(key, kind)| {
-                        let value = config.get(&key).cloned().unwrap_or(Value::Null);
-                        (key.clone(), key, kind, value)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        Selection::Wire(_) | Selection::None => Vec::new(),
-    };
-    let mut fields = Vec::with_capacity(specs.len());
-    let mut subscriptions = Vec::with_capacity(specs.len());
-    for (index, (key, label, kind, value)) in specs.into_iter().enumerate() {
+    let defs = field_defs(&editor.graph, selection, &editor.catalogue);
+    let config = config_of(editor, selection).cloned().unwrap_or_default();
+    let read_only = editor.read_only;
+    let mut fields = Vec::with_capacity(defs.len());
+    let mut subscriptions = Vec::with_capacity(defs.len());
+    for (index, def) in defs.into_iter().enumerate() {
         let on_event = move |console: &mut Console,
                              event: &InputEvent,
                              window: &mut Window,
@@ -895,46 +1587,82 @@ fn ensure_inspector(console: &mut Console, window: &mut Window, cx: &mut Context
             InputEvent::Submitted | InputEvent::Cancelled => focus_canvas(console, window),
             InputEvent::Blurred => {}
         };
-        let text = field_text(&value);
-        let input = match kind {
-            FieldKind::Bool => Input::Switch,
-            FieldKind::Json => {
-                let area = cx.new(|cx| TextArea::new(4, cx));
-                area.update(cx, |area, cx| {
-                    area.replace_text_in_range(None, &text, window, cx);
-                });
-                subscriptions.push(cx.subscribe_in(
-                    &area,
-                    window,
-                    move |console, _, event: &InputEvent, window, cx| {
-                        on_event(console, event, window, cx);
-                    },
-                ));
-                Input::Area(area)
+        let value = config.get(&def.key);
+        let text = match (def.kind, value) {
+            (FieldKind::Tag, Some(value)) => tag_text(value, |id| tag_names.get(&id).cloned()),
+            (_, Some(value)) => field_text(value),
+            (_, None) => String::new(),
+        };
+        let placeholder = def.default.as_ref().map(line_text).unwrap_or_default();
+        let listed = !def.item_fields.is_empty()
+            && value.is_none_or(|value| {
+                value
+                    .as_array()
+                    .is_some_and(|items| items.iter().all(Value::is_object))
+            });
+        let input = if read_only {
+            Input::Fixed
+        } else if def.kind == FieldKind::Bool {
+            Input::Switch
+        } else if matches!(def.kind, FieldKind::Select | FieldKind::Severity)
+            && !def.choices().is_empty()
+        {
+            Input::Choice
+        } else if listed {
+            let mut rows = Vec::new();
+            for item in items_of(value) {
+                let mut row = Vec::new();
+                for item_field in &def.item_fields {
+                    let text = item.get(&item_field.key).map(line_text).unwrap_or_default();
+                    let hint = item_field
+                        .default
+                        .as_ref()
+                        .map(line_text)
+                        .unwrap_or_default();
+                    let line = line_input(item_field.kind, text, hint, cx);
+                    subscriptions.push(cx.subscribe_in(
+                        &line,
+                        window,
+                        move |console, _, event: &InputEvent, window, cx| match event {
+                            InputEvent::Changed => items_changed(console, index, cx),
+                            InputEvent::Submitted | InputEvent::Cancelled => {
+                                focus_canvas(console, window);
+                            }
+                            InputEvent::Blurred => {}
+                        },
+                    ));
+                    row.push(line);
+                }
+                rows.push(row);
             }
-            FieldKind::Text | FieldKind::Number => {
-                let line = cx.new(|cx| {
-                    let line = TextInput::new(cx).text(text).mono();
-                    if kind == FieldKind::Number {
-                        line.kind(InputKind::Number)
-                    } else {
-                        line
-                    }
-                });
-                subscriptions.push(cx.subscribe_in(
-                    &line,
-                    window,
-                    move |console, _, event: &InputEvent, window, cx| {
-                        on_event(console, event, window, cx);
-                    },
-                ));
-                Input::Line(line)
-            }
+            Input::Items(rows)
+        } else if def.kind.is_json() || def.kind == FieldKind::Code {
+            let rows = if def.kind == FieldKind::Code { 8 } else { 4 };
+            let area = cx.new(|cx| TextArea::new(rows, cx).placeholder(placeholder));
+            area.update(cx, |area, cx| {
+                area.replace_text_in_range(None, &text, window, cx);
+            });
+            subscriptions.push(cx.subscribe_in(
+                &area,
+                window,
+                move |console, _, event: &InputEvent, window, cx| {
+                    on_event(console, event, window, cx);
+                },
+            ));
+            Input::Area(area)
+        } else {
+            let line = line_input(def.kind, text, placeholder, cx);
+            subscriptions.push(cx.subscribe_in(
+                &line,
+                window,
+                move |console, _, event: &InputEvent, window, cx| {
+                    on_event(console, event, window, cx);
+                },
+            ));
+            Input::Line(line)
         };
         fields.push(Field {
-            key,
-            label,
-            kind,
+            def,
             input,
             error: None,
         });
@@ -946,23 +1674,86 @@ fn ensure_inspector(console: &mut Console, window: &mut Window, cx: &mut Context
     };
 }
 
-/// Write `value` to the setting `key` of what the panel shows.
-fn set_value(editor: &mut Editor, key: &str, value: Value) {
-    match editor.inspector.shows {
-        Some(Selection::Step(End::Trigger)) => {
-            editor.graph.trigger.insert(key.to_owned(), value);
+/// Write `value` (or remove the setting) to `key` of what the panel shows.
+fn set_value(editor: &mut Editor, key: &str, value: Option<Value>) {
+    set_value_removing(editor, key, value, None);
+}
+
+/// [`set_value`]; for a switch's `rules`, `removed` is the rule that went
+/// (else rules came or went at the end), so its wires stay on their
+/// outputs.
+fn set_value_removing(
+    editor: &mut Editor,
+    key: &str,
+    value: Option<Value>,
+    removed: Option<usize>,
+) {
+    let Some(selection) = editor.inspector.shows else {
+        return;
+    };
+    let catalogue = Rc::clone(&editor.catalogue);
+    let config = match selection {
+        Selection::Node(End::Trigger) => &mut editor.graph.trigger,
+        Selection::Node(End::Node(index)) => match editor.graph.nodes.get_mut(index) {
+            Some(node) => node,
+            None => return,
+        },
+        _ => return,
+    };
+    // An empty label is no label.
+    let value = value.filter(|value| !(key == "name" && value.as_str() == Some("")));
+    if config.get(key) == value.as_ref() {
+        return;
+    }
+    // A switch's rules (the catalogue's dynamic outputs) decide its ports.
+    let dynamic = catalogue
+        .node(config_type(config))
+        .and_then(|kind| kind.dynamic_key())
+        == Some(key);
+    let count = |config: &serde_json::Map<String, Value>| {
+        config
+            .get(key)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    let before = count(config);
+    match value {
+        Some(value) => {
+            config.insert(key.to_owned(), value);
         }
-        Some(Selection::Step(End::Node(index))) => {
-            if let Some(config) = editor.graph.nodes.get_mut(index) {
-                config.insert(key.to_owned(), value);
-            }
+        None => {
+            config.shift_remove(key);
         }
-        _ => {}
+    }
+    let after = count(config);
+    if dynamic {
+        if let Selection::Node(End::Node(index)) = selection
+            && (before != after || removed.is_some())
+        {
+            editor.graph.renumber_rules(index, before, after, removed);
+        }
+        editor.graph.prune_ports(&catalogue);
     }
 }
 
-/// A field's text changed: store it if it reads as its type.
+/// Store `value` for field `index` as one undo step per field while typing.
+fn store_field(editor: &mut Editor, index: usize, value: Option<Value>, text_empty: bool) {
+    let Some(field) = editor.inspector.fields.get(index) else {
+        return;
+    };
+    let key = field.def.key.clone();
+    let key_tag = format!("{:?}/{key}", editor.inspector.shows);
+    let before = config_of(editor, editor.selection).and_then(|config| config.get(&key));
+    let same = before == value.as_ref() || (key == "name" && before.is_none() && text_empty);
+    if !same {
+        remember(editor, Some(key_tag));
+        set_value(editor, &key, value);
+    }
+}
+
+/// A field's text changed: store it if it reads as its kind.
 fn field_changed(console: &mut Console, index: usize, cx: &mut Context<Console>) {
+    let (_, tag_ids) = tag_maps(console);
     let Some(editor) = editor_mut(console) else {
         return;
     };
@@ -972,18 +1763,16 @@ fn field_changed(console: &mut Console, index: usize, cx: &mut Context<Console>)
     let text = match &field.input {
         Input::Line(line) => line.read(cx).value().to_owned(),
         Input::Area(area) => area.read(cx).value().to_owned(),
-        Input::Switch => return,
+        Input::Switch | Input::Choice | Input::Fixed | Input::Items(_) => return,
     };
-    let parsed = match field.kind {
-        FieldKind::Text => Ok(Value::String(text)),
-        FieldKind::Number => parse_number(&text),
-        FieldKind::Json => parse_json(&text),
-        FieldKind::Bool => return,
+    let parsed = if field.def.kind == FieldKind::Tag {
+        parse_tags(&text, field.def.multiple, |key| tag_ids.get(key).copied())
+    } else {
+        parse_field(field.def.kind, &text)
     };
-    let key = field.key.clone();
     let error = match parsed {
         Ok(value) => {
-            set_value(editor, &key, value);
+            store_field(editor, index, value, text.is_empty());
             None
         }
         Err(error) => Some(error),
@@ -994,26 +1783,177 @@ fn field_changed(console: &mut Console, index: usize, cx: &mut Context<Console>)
     cx.notify();
 }
 
-fn set_switch(console: &mut Console, key: &str, on: bool, cx: &mut Context<Console>) {
-    if let Some(editor) = editor_mut(console) {
-        set_value(editor, key, Value::Bool(on));
+/// A list field's item changed: store the whole list if every item reads.
+fn items_changed(console: &mut Console, index: usize, cx: &mut Context<Console>) {
+    let Some(editor) = editor_mut(console) else {
+        return;
+    };
+    let Some(field) = editor.inspector.fields.get(index) else {
+        return;
+    };
+    let Input::Items(rows) = &field.input else {
+        return;
+    };
+    let parsed = rows
+        .iter()
+        .enumerate()
+        .map(|(row, lines)| {
+            let texts: Vec<String> = lines
+                .iter()
+                .map(|line| line.read(cx).value().to_owned())
+                .collect();
+            parse_item(&field.def.item_fields, &texts)
+                .map_err(|error| format!("item {}: {error}", row + 1))
+        })
+        .collect::<Result<Vec<Value>, String>>();
+    let error = match parsed {
+        Ok(items) => {
+            store_field(editor, index, Some(Value::Array(items)), false);
+            None
+        }
+        Err(error) => Some(error),
+    };
+    if let Some(field) = editor.inspector.fields.get_mut(index) {
+        field.error = error;
     }
     cx.notify();
 }
 
+/// Add an item (its fields' defaults) to list field `index`, or remove
+/// item `remove`.
+fn edit_items(
+    console: &mut Console,
+    index: usize,
+    remove: Option<usize>,
+    cx: &mut Context<Console>,
+) {
+    if let Some(editor) = editor_mut(console)
+        && !locked(editor)
+        && let Some(field) = editor.inspector.fields.get(index)
+    {
+        let def = field.def.clone();
+        let mut items: Vec<Value> =
+            items_of(config_of(editor, editor.selection).and_then(|config| config.get(&def.key)))
+                .into_iter()
+                .map(Value::Object)
+                .collect();
+        match remove {
+            Some(row) if row < items.len() => {
+                items.remove(row);
+            }
+            Some(_) => return,
+            None => {
+                let mut item = serde_json::Map::new();
+                for item_field in &def.item_fields {
+                    match &item_field.default {
+                        Some(value) => {
+                            item.insert(item_field.key.clone(), value.clone());
+                        }
+                        None if item_field.required && item_field.kind.is_text() => {
+                            let value = if item_field.key == "name" {
+                                format!("rule {}", items.len() + 1)
+                            } else {
+                                String::new()
+                            };
+                            item.insert(item_field.key.clone(), Value::String(value));
+                        }
+                        None => {}
+                    }
+                }
+                items.push(Value::Object(item));
+            }
+        }
+        remember(editor, None);
+        set_value_removing(editor, &def.key, Some(Value::Array(items)), remove);
+        editor.inspector.shows = None;
+    }
+    cx.notify();
+}
+
+/// A switch or a choice was clicked.
+fn set_field(console: &mut Console, key: &str, value: Value, cx: &mut Context<Console>) {
+    if let Some(editor) = editor_mut(console)
+        && !locked(editor)
+    {
+        let current = config_of(editor, editor.selection).and_then(|config| config.get(key));
+        if current != Some(&value) {
+            remember(editor, None);
+            set_value(editor, key, Some(value));
+        }
+    }
+    cx.notify();
+}
+
+/// A suggestion was picked for the line field `index`: it replaces the
+/// entry being typed (the last one of a list).
+fn pick_suggestion(
+    console: &mut Console,
+    index: usize,
+    text: String,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) {
+    let line = editor_mut(console)
+        .and_then(|editor| editor.inspector.fields.get(index))
+        .and_then(|field| match &field.input {
+            Input::Line(line) => Some(line.clone()),
+            _ => None,
+        });
+    if let Some(line) = line {
+        let typed = line.read(cx).value().to_owned();
+        let picked = match typed.rfind(',') {
+            Some(at) => format!("{}, {text}", typed[..at].trim_end()),
+            None => text,
+        };
+        line.update(cx, |line, cx| line.set_text(picked, cx));
+        field_changed(console, index, cx);
+        line.read(cx).focus(window);
+    }
+}
+
+/// Up to [`SUGGESTIONS`] of `candidates` holding the entry being typed
+/// (the last of a comma-separated list), the ones already there left out.
+pub(crate) fn suggestions(candidates: &BTreeSet<String>, typed: &str) -> Vec<String> {
+    let entries: Vec<&str> = typed.split(',').map(str::trim).collect();
+    let last = entries.last().copied().unwrap_or("");
+    if candidates.contains(last) {
+        return Vec::new();
+    }
+    let last = last.to_lowercase();
+    candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.to_lowercase().contains(&last) && !entries.contains(&candidate.as_str())
+        })
+        .take(SUGGESTIONS)
+        .cloned()
+        .collect()
+}
+
 // ── Palette ──────────────────────────────────────────────────────────────
 
-/// The entries the palette lists, its folded groups left out.
-fn palette_items(folded: [bool; 3]) -> Vec<Item> {
-    let mut items = Vec::new();
-    for (group, (_, category)) in GROUPS.iter().enumerate() {
-        if folded[group] {
-            continue;
-        }
-        match category {
-            Category::Input => items.extend(TRIGGER_KINDS.iter().map(Item::Trigger)),
-            category => items.extend(palette(*category).map(Item::Step)),
-        }
+/// The palette's entries matching `filter`: the triggers, then the node
+/// types by category.
+pub(crate) fn palette_items(catalogue: &Catalogue, filter: &str) -> Vec<Item> {
+    let mut items: Vec<Item> = catalogue
+        .trigger_palette(filter)
+        .into_iter()
+        .filter_map(|trigger| {
+            catalogue
+                .triggers
+                .iter()
+                .position(|other| std::ptr::eq(other, trigger))
+                .map(Item::Trigger)
+        })
+        .collect();
+    for (_, nodes) in catalogue.palette(filter) {
+        items.extend(nodes.into_iter().filter_map(|node| {
+            catalogue
+                .nodes
+                .iter()
+                .position(|other| std::ptr::eq(other, node))
+                .map(Item::Node)
+        }));
     }
     items
 }
@@ -1028,7 +1968,8 @@ fn palette_activate(
     let Some(editor) = editor_mut(console) else {
         return;
     };
-    let Some(item) = palette_items(editor.folded).get(row).copied() else {
+    let filter = editor.filter.read(cx).value().to_owned();
+    let Some(item) = palette_items(&editor.catalogue, &filter).get(row).copied() else {
         return;
     };
     let size = canvas_size(editor, window);
@@ -1037,110 +1978,140 @@ fn palette_activate(
     cx.notify();
 }
 
+fn item_look(catalogue: &Catalogue, item: Item, theme: &Theme) -> (SharedString, Hsla) {
+    match item {
+        Item::Trigger(index) => (
+            catalogue
+                .triggers
+                .get(index)
+                .map_or_else(String::new, |kind| kind.label().to_owned())
+                .into(),
+            theme.accent,
+        ),
+        Item::Node(index) => catalogue.nodes.get(index).map_or_else(
+            || (SharedString::default(), theme.fg_dim),
+            |kind| {
+                (
+                    kind.label().to_owned().into(),
+                    tone_color(kind.category().tone(), theme),
+                )
+            },
+        ),
+    }
+}
+
 // ── Drawing ──────────────────────────────────────────────────────────────
 
-/// The line on a trigger's card: what it listens to.
+/// The line on the trigger's card: its first settings.
 fn trigger_summary(graph: &FlowGraph) -> String {
-    let text = |key: &str| {
-        graph
-            .trigger
-            .get(key)
-            .map(|value| match value {
-                Value::String(text) => text.clone(),
-                other => other.to_string(),
-            })
-            .unwrap_or_default()
-    };
-    match graph.trigger_type() {
-        "modbus" => {
-            let metric = text("metric");
-            if metric.is_empty() {
-                format!("device {}", text("device_id"))
-            } else {
-                format!("device {} · {metric}", text("device_id"))
-            }
-        }
-        "timer" => format!("every {} ms", text("interval_ms")),
-        "mqtt" => text("topic"),
-        other => other.to_owned(),
+    let shown = preview(&graph.trigger);
+    if !shown.is_empty() {
+        return shown;
+    }
+    graph
+        .trigger
+        .iter()
+        .filter(|(key, _)| key.as_str() != "type")
+        .take(2)
+        .map(|(key, value)| format!("{key} {}", field_text(value)))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// A node's colour: its category's.
+fn node_color(graph: &FlowGraph, end: End, catalogue: &Catalogue, theme: &Theme) -> Hsla {
+    match end {
+        End::Trigger => theme.accent,
+        End::Node(index) => graph
+            .nodes
+            .get(index)
+            .and_then(|node| catalogue.node(config_type(node)))
+            .map_or(theme.fg_dim, |kind| {
+                tone_color(kind.category().tone(), theme)
+            }),
     }
 }
 
 /// What the canvas draws this frame: only what is in view.
 fn scene(editor: &Editor, size: Vec2, theme: &Theme) -> Scene {
     let graph = &editor.graph;
+    let catalogue = &editor.catalogue;
+    let geometry = geometry(editor);
     let visible = editor.view.visible(size).inflate(32.0);
+    let path = shown_path(editor);
     let target = match editor.drag {
         Some(Drag::Wire { target, .. }) => target,
         _ => None,
     };
     let mut cards = Vec::new();
-    let mut step = 0;
-    for end in model::ends(graph) {
-        let category = match end {
-            End::Trigger => Category::Input,
-            End::Node(index) => graph.category(index),
-        };
-        if category == Category::Process {
-            step += 1;
-        }
-        let at = editor.layout.at(end);
-        if !node_rect(at).intersects(&visible) {
+    for card in &geometry.cards {
+        if !card.rect().inflate(130.0).intersects(&visible) {
             continue;
         }
-        let (kicker, title, preview_text, color) = match end {
-            End::Trigger => {
-                let kind = trigger_kind(graph.trigger_type());
-                (
-                    "TRIGGER".to_owned(),
-                    kind.map_or_else(
-                        || graph.trigger_type().to_owned(),
-                        |kind| kind.label.to_owned(),
-                    ),
-                    trigger_summary(graph),
-                    kind.map_or(theme.fg_dim, |kind| tone_color(kind.tone, theme)),
-                )
-            }
+        let end = card.end;
+        let (kicker, title, preview_text) = match end {
+            End::Trigger => (
+                "TRIGGER".to_owned(),
+                graph.label(End::Trigger, catalogue),
+                trigger_summary(graph),
+            ),
             End::Node(index) => {
                 let config = &graph.nodes[index];
-                let kind = node_kind(config_type(config));
+                let kind = config_type(config);
+                let category = catalogue
+                    .node(kind)
+                    .map_or(Category::Other, |known| known.category());
                 (
-                    match category {
-                        Category::Output => "OUTPUT".to_owned(),
-                        _ => format!("STEP {step}"),
-                    },
-                    label_of(config),
+                    format!("{} · {kind}", category.label().to_uppercase()),
+                    graph.label(end, catalogue),
                     preview(config),
-                    kind.map_or(theme.fg_dim, |kind| tone_color(kind.tone, theme)),
                 )
             }
         };
-        let (input, output) = model::ports(graph, end);
-        cards.push(Card {
-            at,
-            color,
+        let mark = match (&path, end) {
+            (None, _) => Mark::Plain,
+            (Some(_), End::Trigger) => Mark::Taken,
+            (Some(path), End::Node(index)) if path.errors.contains(&index) => Mark::Failed,
+            (Some(path), End::Node(index)) if path.nodes.contains(&index) => Mark::Taken,
+            (Some(_), End::Node(_)) => Mark::Dim,
+        };
+        cards.push(Drawn {
+            at: card.at,
+            height: card.height,
+            color: node_color(graph, end, catalogue, theme),
             kicker: kicker.into(),
             title: title.into(),
             preview: preview_text.into(),
-            selected: editor.selection == Selection::Step(end),
+            selected: editor.selection == Selection::Node(end),
             target: matches!(end, End::Node(index) if Some(index) == target),
-            input,
-            output,
+            input: card.input,
+            outputs: graph
+                .outputs(end, catalogue)
+                .into_iter()
+                .map(SharedString::from)
+                .collect(),
+            mark,
+            invalid: !graph.missing(end, catalogue).is_empty(),
         });
     }
-    let wires = graph
-        .wires()
-        .into_iter()
-        .map(|wire| {
-            (
-                editor.layout.curve(wire),
-                editor.selection == Selection::Wire(wire.to),
-            )
+    let wires = (0..geometry.edges.len())
+        .filter_map(|edge| {
+            let curve = geometry.curve(edge)?;
+            curve.bounds().intersects(&visible).then(|| DrawnWire {
+                curve,
+                selected: editor.selection == Selection::Wire(edge),
+                mark: match &path {
+                    None => Mark::Plain,
+                    Some(path) if path.edges.contains(&edge) => Mark::Taken,
+                    Some(_) => Mark::Dim,
+                },
+            })
         })
-        .filter(|(curve, _)| curve.bounds().intersects(&visible))
         .collect();
     let pending = match editor.drag {
-        Some(Drag::Wire { from, to, .. }) => Some((model::output_port(editor.layout.at(from)), to)),
+        Some(Drag::Wire { from, port, to, .. }) => {
+            geometry.card(from).map(|card| (card.output_port(port), to))
+        }
         _ => None,
     };
     let dragging = match editor.drag {
@@ -1163,8 +2134,30 @@ fn scene(editor: &Editor, size: Vec2, theme: &Theme) -> Scene {
             fg_dim: theme.fg_dim,
             wire: theme.fg_dim,
             accent: theme.accent,
+            success: theme.success,
+            danger: theme.danger,
         },
     }
+}
+
+/// The tag keys and device ids the console knows, for suggestions.
+fn candidates(console: &Console) -> (BTreeSet<String>, BTreeSet<String>) {
+    let tags = console
+        .store
+        .tags
+        .iter()
+        .map(|tag| tag.info.key.clone())
+        .collect();
+    let mut devices: BTreeSet<String> = console.devices.keys().cloned().collect();
+    devices.extend(
+        console
+            .store
+            .tags
+            .iter()
+            .map(|tag| tag.info.device_id.clone())
+            .filter(|id| !id.is_empty()),
+    );
+    (tags, devices)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1179,6 +2172,7 @@ pub(super) fn render(
     let weak = cx.entity().downgrade();
     let palette_focused = console.list(PALETTE_LIST, cx).focus.is_focused(window);
     let palette_cursor = console.list(PALETTE_LIST, cx).cursor;
+    let lists = candidates(console);
     let Some(editor) = editor_mut(console) else {
         return div().into_any_element();
     };
@@ -1191,6 +2185,7 @@ pub(super) fn render(
         }
     }
 
+    editor.window_height = f32::from(window.viewport_size().height);
     let size = canvas_size(editor, window);
     let scene = scene(editor, size, &theme);
     let is_dirty = dirty(editor, cx);
@@ -1198,16 +2193,23 @@ pub(super) fn render(
     let canvas_focused = canvas_focus.is_focused(window);
     let bounds = Rc::clone(&editor.bounds);
     let name = editor.name.clone();
+    let filter = editor.filter.clone();
     let flow = editor.flow.clone();
-    let (enabled, saving, message, broken, folded, zoom) = (
+    let catalogue = Rc::clone(&editor.catalogue);
+    let (enabled, saving, message, broken, zoom, read_only, legacy, graph_server) = (
         editor.enabled,
         editor.saving,
         editor.message.clone(),
         editor.broken.clone(),
-        editor.folded,
         editor.view.zoom,
+        editor.read_only,
+        editor.legacy,
+        editor.graph_server,
     );
-    let items = palette_items(folded);
+    let (side, run_armed, running_now) = (editor.side, editor.run_armed, editor.running_now);
+    let (can_undo, can_redo) = (!editor.past.is_empty(), !editor.future.is_empty());
+    let filter_text = filter.read(cx).value().to_owned();
+    let items = palette_items(&catalogue, &filter_text);
 
     // ── Toolbar ──
     fn set_enabled(
@@ -1215,7 +2217,9 @@ pub(super) fn render(
         cx: &mut Context<Console>,
     ) -> impl Fn(&gpui::ClickEvent, &mut gpui::Window, &mut gpui::App) + 'static {
         cx.listener(move |console: &mut Console, _: &gpui::ClickEvent, _, cx| {
-            if let Some(editor) = editor_mut(console) {
+            if let Some(editor) = editor_mut(console)
+                && !locked(editor)
+            {
                 editor.enabled = on;
             }
             cx.notify();
@@ -1235,7 +2239,17 @@ pub(super) fn render(
                 .tooltip("Back to the flows  Esc")
                 .on_click(cx.listener(|console, _, window, cx| close(console, window, cx))),
         )
-        .child(div().w(px(240.0)).child(name))
+        .map(|this| {
+            if read_only {
+                this.child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(flow.name.clone()),
+                )
+            } else {
+                this.child(div().w(px(240.0)).child(name))
+            }
+        })
         .child(
             div()
                 .min_w_0()
@@ -1245,32 +2259,65 @@ pub(super) fn render(
                 .text_color(theme.fg_dim)
                 .child(flow.id.clone()),
         )
-        .when(is_dirty, |this| this.child(pill("Unsaved", theme.warning)))
+        .when(read_only, |this| {
+            this.child(pill("Read-only", theme.fg_dim))
+        })
+        .when(!read_only && is_dirty, |this| {
+            this.child(pill("Unsaved", theme.warning))
+        })
         .child(div().flex_1())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(SPACE_3)
-                .text_size(FONT_SMALL)
-                .text_color(theme.fg_muted)
-                .child("Enabled")
-                .child(segmented(
-                    "data-flow-enabled",
-                    vec![
-                        Segment::new("Off", !enabled, set_enabled(false, cx)),
-                        Segment::new("On", enabled, set_enabled(true, cx)),
-                    ],
-                    cx,
-                )),
-        )
-        .child(
-            Button::new("data-flow-editor-test", "Test")
+        .when(!read_only, |this| {
+            this.child(
+                IconButton::new("data-flow-undo", Icon::ChevronLeft)
+                    .tooltip("Undo  ⌘Z")
+                    .disabled(!can_undo)
+                    .on_click(cx.listener(|console, _, window, cx| {
+                        with_editor(console, window, cx, |editor, _| undo(editor));
+                    })),
+            )
+            .child(
+                IconButton::new("data-flow-redo", Icon::ChevronRight)
+                    .tooltip("Redo  ⇧⌘Z")
+                    .disabled(!can_redo)
+                    .on_click(cx.listener(|console, _, window, cx| {
+                        with_editor(console, window, cx, |editor, _| redo(editor));
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_3)
+                    .text_size(FONT_SMALL)
+                    .text_color(theme.fg_muted)
+                    .child("Enabled")
+                    .child(segmented(
+                        "data-flow-enabled",
+                        vec![
+                            Segment::new("Off", !enabled, set_enabled(false, cx)),
+                            Segment::new("On", enabled, set_enabled(true, cx)),
+                        ],
+                        cx,
+                    )),
+            )
+            .child(
+                Button::new(
+                    "data-flow-run-now",
+                    if running_now {
+                        "Running…"
+                    } else if run_armed {
+                        "Run now?"
+                    } else {
+                        "Run now"
+                    },
+                )
                 .ghost()
-                .icon(Icon::Send)
-                .tooltip("Test the stored flow with a payload  T")
-                .on_click(cx.listener(|console, _, window, cx| open_test(console, window, cx))),
-        )
+                .icon(Icon::Play)
+                .disabled(running_now)
+                .tooltip("Run the saved flow once, for real")
+                .on_click(cx.listener(|console, _, _, cx| run_now(console, cx))),
+            )
+        })
         .child(
             Button::new("data-flow-editor-runs", "Runs")
                 .ghost()
@@ -1278,14 +2325,16 @@ pub(super) fn render(
                 .tooltip("The engine's latest runs  H")
                 .on_click(cx.listener(|console, _, window, cx| open_runs(console, window, cx))),
         )
-        .child(
-            Button::new("data-flow-save", if saving { "Saving…" } else { "Save" })
-                .primary()
-                .icon(Icon::Check)
-                .tooltip("⌘S")
-                .disabled(saving || !is_dirty)
-                .on_click(cx.listener(|console, _, _, cx| save(console, cx))),
-        );
+        .when(!read_only, |this| {
+            this.child(
+                Button::new("data-flow-save", if saving { "Saving…" } else { "Save" })
+                    .primary()
+                    .icon(Icon::Check)
+                    .tooltip("⌘S")
+                    .disabled(saving || !is_dirty)
+                    .on_click(cx.listener(|console, _, _, cx| save(console, cx))),
+            )
+        });
 
     let bar = |text: String, color: Hsla, glyph: Icon| {
         div()
@@ -1305,84 +2354,90 @@ pub(super) fn render(
     };
 
     // ── Palette ──
-    let mut groups: Vec<AnyElement> = Vec::new();
-    let mut row = 0;
-    for (group, (title, category)) in GROUPS.iter().enumerate() {
-        let open = !folded[group];
-        let group_items: Vec<Item> = match category {
-            Category::Input => TRIGGER_KINDS.iter().map(Item::Trigger).collect(),
-            category => palette(*category).map(Item::Step).collect(),
+    let mut rows: Vec<AnyElement> = Vec::new();
+    let mut group: Option<String> = None;
+    for (at, item) in items.iter().copied().enumerate() {
+        let heading = match item {
+            Item::Trigger(_) => "TRIGGERS".to_owned(),
+            Item::Node(index) => catalogue.nodes[index].category().label().to_uppercase(),
         };
-        groups.push(
-            div()
-                .id(("data-flow-palette-group", group))
-                .flex()
-                .items_center()
-                .justify_between()
-                .h(px(30.0))
-                .px(SPACE_6)
-                .cursor_pointer()
-                .text_size(FONT_CAPTION)
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme.fg_dim)
-                .hover(|style| style.text_color(theme.fg))
-                .on_click(cx.listener(move |console, _, _, cx| {
-                    if let Some(editor) = editor_mut(console) {
-                        editor.folded[group] = !editor.folded[group];
-                    }
-                    console.list(PALETTE_LIST, cx).cursor = None;
-                    cx.notify();
-                }))
-                .child(*title)
-                .child(if open { "▾" } else { "▸" })
-                .into_any_element(),
-        );
-        if !open {
-            continue;
-        }
-        for item in group_items {
-            let at = row;
-            row += 1;
-            let color = item.color(&theme);
-            let current = palette_cursor == Some(at);
-            let hover = theme.hover;
-            groups.push(
+        if group.as_deref() != Some(heading.as_str()) {
+            rows.push(
                 div()
-                    .id(("data-flow-palette-item", at))
-                    .relative()
                     .flex()
                     .items_center()
-                    .gap(SPACE_4)
                     .h(px(28.0))
-                    .mx(SPACE_3)
-                    .px(SPACE_4)
-                    .rounded(RADIUS_MD)
-                    .cursor_grab()
-                    .when(current, |this| this.bg(theme.selected))
-                    .when(!current, |this| this.hover(move |style| style.bg(hover)))
-                    .when(palette_focused && current, |this| {
-                        this.child(focus_ring(&theme))
-                    })
-                    .on_drag(PaletteDrag(item), |dragged, _, _, cx| {
-                        cx.new(|_| dragged.clone())
-                    })
-                    .on_click(cx.listener(move |console, _, window, cx| {
-                        console.list(PALETTE_LIST, cx).select(at);
-                        palette_activate(console, at, false, window, cx);
-                    }))
-                    .child(div().flex_none().size(px(8.0)).rounded(px(4.0)).bg(color))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(FONT_SMALL)
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(item.label()),
-                    )
+                    .px(SPACE_6)
+                    .text_size(FONT_CAPTION)
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme.fg_dim)
+                    .child(heading.clone())
                     .into_any_element(),
             );
+            group = Some(heading);
         }
+        let (label, color) = item_look(&catalogue, item, &theme);
+        let tip = match item {
+            Item::Trigger(index) => catalogue.triggers[index].description.clone(),
+            Item::Node(index) => catalogue.nodes[index].description.clone(),
+        };
+        let current = palette_cursor == Some(at);
+        let hover = theme.hover;
+        let dragged = PaletteDrag {
+            item,
+            label: label.clone(),
+            color,
+        };
+        rows.push(
+            div()
+                .id(("data-flow-palette-item", at))
+                .relative()
+                .flex()
+                .items_center()
+                .gap(SPACE_4)
+                .h(px(28.0))
+                .mx(SPACE_3)
+                .px(SPACE_4)
+                .rounded(RADIUS_MD)
+                .cursor_grab()
+                .when(current, |this| this.bg(theme.selected))
+                .when(!current, |this| this.hover(move |style| style.bg(hover)))
+                .when(palette_focused && current, |this| {
+                    this.child(focus_ring(&theme))
+                })
+                .when(!tip.is_empty(), |this| {
+                    this.tooltip(move |_, cx| {
+                        vt_ui::components::Tooltip::view(tip.clone().into(), cx)
+                    })
+                })
+                .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                .on_click(cx.listener(move |console, _, window, cx| {
+                    console.list(PALETTE_LIST, cx).select(at);
+                    palette_activate(console, at, false, window, cx);
+                }))
+                .child(div().flex_none().size(px(8.0)).rounded(px(4.0)).bg(color))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(FONT_SMALL)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(label),
+                )
+                .into_any_element(),
+        );
+    }
+    if items.is_empty() {
+        rows.push(
+            div()
+                .px(SPACE_6)
+                .py(SPACE_5)
+                .text_size(FONT_SMALL)
+                .text_color(theme.fg_dim)
+                .child("No node type matches")
+                .into_any_element(),
+        );
     }
     let palette_list = keyboard_list(
         ListKeys {
@@ -1409,6 +2464,7 @@ pub(super) fn render(
             .flex()
             .flex_col()
             .flex_none()
+            .gap(SPACE_3)
             .px(SPACE_6)
             .py(SPACE_5)
             .border_b_1()
@@ -1420,6 +2476,7 @@ pub(super) fn render(
                     .text_color(theme.fg_dim)
                     .child("PALETTE"),
             )
+            .child(filter)
             .child(
                 div()
                     .text_size(FONT_CAPTION)
@@ -1427,7 +2484,7 @@ pub(super) fn render(
                     .child("↵ add · drag onto the canvas"),
             ),
     )
-    .children(groups);
+    .children(rows);
 
     // ── Canvas ──
     let accent_soft = theme.accent_soft;
@@ -1476,40 +2533,48 @@ pub(super) fn render(
             });
         }))
         .on_action(cx.listener(|console, _: &EngFlowsFit, window, cx| {
-            with_editor(console, window, cx, |editor, size| {
-                editor.view = View::fit(editor.layout.bounds(), size);
-            });
+            with_editor(console, window, cx, fit);
         }))
         .on_action(cx.listener(|console, _: &EngFlowsArrange, window, cx| {
             with_editor(console, window, cx, arrange);
         }))
-        .on_action(cx.listener(|console, _: &EngFlowsEarlier, window, cx| {
-            with_editor(console, window, cx, |editor, _| shift(editor, true));
-        }))
-        .on_action(cx.listener(|console, _: &EngFlowsLater, window, cx| {
-            with_editor(console, window, cx, |editor, _| shift(editor, false));
+        .on_action(cx.listener(|console, _: &EngFlowsDuplicate, window, cx| {
+            with_editor(console, window, cx, duplicate);
         }))
         .on_action(cx.listener(|console, _: &EngFlowsUndo, window, cx| {
             with_editor(console, window, cx, |editor, _| undo(editor));
         }))
+        .on_action(cx.listener(|console, _: &EngFlowsRedo, window, cx| {
+            with_editor(console, window, cx, |editor, _| redo(editor));
+        }))
         .on_action(cx.listener(|console, _: &EngFlowsAddStep, window, cx| {
-            console.focus_list(PALETTE_LIST, window, cx);
+            let filter = editor_mut(console).map(|editor| editor.filter.clone());
+            match filter {
+                Some(filter) => filter.read(cx).focus(window),
+                None => console.focus_list(PALETTE_LIST, window, cx),
+            }
             cx.notify();
         }))
         .on_action(cx.listener(|console, _: &EngFlowsInspect, _, cx| {
             if let Some(editor) = editor_mut(console) {
+                editor.side = Side::Settings;
                 editor.focus_inspector = true;
             }
             cx.notify();
         }))
         .on_action(cx.listener(|console, _: &EngFlowsTest, window, cx| {
-            open_test(console, window, cx);
+            if let Some(editor) = editor_mut(console) {
+                editor.side = Side::Test;
+                let input = editor.test.input.clone();
+                input.read(cx).focus(window);
+            }
+            cx.notify();
         }))
         .on_action(cx.listener(|console, _: &EngFlowsRuns, window, cx| {
             open_runs(console, window, cx);
         }))
         .on_drop(cx.listener(|console, dragged: &PaletteDrag, window, cx| {
-            drop_item(console, dragged.0, window, cx);
+            drop_item(console, dragged.item, window, cx);
         }))
         .drag_over::<PaletteDrag>(move |style, _, _, _| style.bg(accent_soft))
         .child(canvas::element(
@@ -1528,6 +2593,11 @@ pub(super) fn render(
                     .border_color(theme.accent.opacity(0.6)),
             )
         });
+    let hints = if read_only {
+        "Read-only · drag the background to pan · ⌘-scroll or + − 0 zoom · Tab next node · Esc back"
+    } else {
+        "Drag a port onto a node to wire · ⌫ remove · ⌘D duplicate · arrows move · Tab next · + − 0 zoom · A arrange · N add · ↵ settings · T test · ⌘Z ⇧⌘Z undo, redo · ⌘S save · Esc back"
+    };
     let strip = div()
         .flex()
         .flex_none()
@@ -1545,7 +2615,7 @@ pub(super) fn render(
                 .truncate()
                 .text_size(FONT_CAPTION)
                 .text_color(theme.fg_dim)
-                .child("Drag a port onto a step to wire · ⌫ remove · arrows move · ⌥←→ run earlier/later · Tab next · + − 0 zoom · A arrange · N add · ↵ settings · ⌘Z undo · ⌘S save · Esc back"),
+                .child(hints),
         )
         .child(
             div()
@@ -1556,19 +2626,111 @@ pub(super) fn render(
                 .text_color(theme.fg_muted)
                 .child(format!("{:.0}%", zoom * 100.0)),
         )
-        .child(strip_button("data-flow-zoom-out", "−", "Zoom out  −", cx, |editor, size| {
-            editor.view = editor.view.zoom_about(size.scale(0.5), 1.0 / model::ZOOM_STEP);
-        }))
-        .child(strip_button("data-flow-zoom-in", "+", "Zoom in  +", cx, |editor, size| {
-            editor.view = editor.view.zoom_about(size.scale(0.5), model::ZOOM_STEP);
-        }))
-        .child(strip_button("data-flow-fit", "Fit", "Fit the flow in view  0", cx, |editor, size| {
-            editor.view = View::fit(editor.layout.bounds(), size);
-        }))
-        .child(strip_button("data-flow-arrange", "Arrange", "Lay the steps out again  A", cx, arrange));
+        .child(strip_button(
+            "data-flow-zoom-out",
+            "−",
+            "Zoom out  −",
+            cx,
+            |editor, size| {
+                editor.view = editor
+                    .view
+                    .zoom_about(size.scale(0.5), 1.0 / model::ZOOM_STEP);
+            },
+        ))
+        .child(strip_button(
+            "data-flow-zoom-in",
+            "+",
+            "Zoom in  +",
+            cx,
+            |editor, size| {
+                editor.view = editor.view.zoom_about(size.scale(0.5), model::ZOOM_STEP);
+            },
+        ))
+        .child(strip_button(
+            "data-flow-fit",
+            "Fit",
+            "Fit the flow in view  0",
+            cx,
+            fit,
+        ))
+        .when(!read_only, |this| {
+            this.child(strip_button(
+                "data-flow-arrange",
+                "Arrange",
+                "Lay the nodes out by distance from the trigger  A",
+                cx,
+                arrange,
+            ))
+        });
 
-    // ── Settings panel ──
-    let inspector = inspector_panel(console, &theme, cx);
+    // ── Right panel ──
+    let tabs = segmented(
+        "data-flow-side",
+        vec![
+            Segment::new(
+                "Settings",
+                side == Side::Settings,
+                cx.listener(|console, _, _, cx| {
+                    if let Some(editor) = editor_mut(console) {
+                        editor.side = Side::Settings;
+                    }
+                    cx.notify();
+                }),
+            ),
+            Segment::new(
+                "Test",
+                side == Side::Test,
+                cx.listener(|console, _, _, cx| {
+                    if let Some(editor) = editor_mut(console) {
+                        editor.side = Side::Test;
+                    }
+                    cx.notify();
+                }),
+            ),
+        ],
+        cx,
+    );
+    let panel_body = match side {
+        Side::Settings => inspector_panel(console, &theme, &lists, window, cx),
+        Side::Test => test_panel(console, &theme, cx),
+    };
+    let panel = div()
+        .id("data-flow-inspector")
+        .flex()
+        .flex_col()
+        .flex_none()
+        .w(px(INSPECTOR_W))
+        .h_full()
+        .overflow_y_scroll()
+        .bg(theme.chrome)
+        .border_l_1()
+        .border_color(theme.border)
+        .child(
+            div()
+                .flex_none()
+                .px(SPACE_7)
+                .py(SPACE_4)
+                .border_b_1()
+                .border_color(theme.border)
+                .child(tabs),
+        )
+        .child(panel_body);
+
+    let notice = match (broken, legacy, graph_server) {
+        (Some(error), _, _) => Some((
+            format!("The stored flow could not be read ({error}); saving replaces it with this canvas"),
+            theme.warning,
+        )),
+        (None, _, Some(false)) => Some((
+            "This server runs flows in a straight line (no node-type catalogue): the built-in steps are shown, and branches cannot be saved".to_owned(),
+            theme.fg_muted,
+        )),
+        (None, true, _) if !read_only => Some((
+            "Stored in the older straight-line format: shown as a graph, saved as one".to_owned(),
+            theme.fg_muted,
+        )),
+        _ => None,
+    };
 
     div()
         .key_context(EDITOR_CONTEXT)
@@ -1582,12 +2744,8 @@ pub(super) fn render(
             cx.notify();
         }))
         .child(toolbar)
-        .when_some(broken, |this, error| {
-            this.child(bar(
-                format!("The stored flow could not be read ({error}); saving replaces it with this canvas"),
-                theme.warning,
-                Icon::CircleAlert,
-            ))
+        .when_some(notice, |this, (text, color)| {
+            this.child(bar(text, color, Icon::Info))
         })
         .when_some(message, |this, (text, error)| {
             this.child(bar(
@@ -1601,7 +2759,7 @@ pub(super) fn render(
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(palette_list)
+                .when(!read_only, |this| this.child(palette_list))
                 .child(
                     div()
                         .flex()
@@ -1612,15 +2770,13 @@ pub(super) fn render(
                         .child(canvas_area)
                         .child(strip),
                 )
-                .child(inspector),
+                .child(panel),
         )
         .into_any_element()
 }
 
-fn arrange(editor: &mut Editor, size: Vec2) {
-    remember(editor);
-    editor.layout = Layout::arrange(&editor.graph);
-    editor.view = View::fit(editor.layout.bounds(), size);
+fn fit(editor: &mut Editor, size: Vec2) {
+    editor.view = View::fit(geometry(editor).bounds(), size);
 }
 
 fn strip_button(
@@ -1640,14 +2796,6 @@ fn strip_button(
         .into_any_element()
 }
 
-fn open_test(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    let Some(editor) = console.state::<State>().editor.as_ref() else {
-        return;
-    };
-    let (flow, unsaved) = (editor.flow.clone(), dirty(editor, cx));
-    forms::open_test(console, &flow, unsaved, window, cx);
-}
-
 fn open_runs(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
     let Some(flow) = console
         .state::<State>()
@@ -1660,103 +2808,134 @@ fn open_runs(console: &mut Console, window: &mut Window, cx: &mut Context<Consol
     forms::open_runs(console, &flow, window, cx);
 }
 
-/// One field as the panel draws it: its control (none for a switch).
+fn caption(text: String, theme: &Theme) -> gpui::Div {
+    div()
+        .text_size(FONT_CAPTION)
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(theme.fg_dim)
+        .child(text)
+}
+
+fn dim(text: String, theme: &Theme) -> gpui::Div {
+    div()
+        .text_size(FONT_SMALL)
+        .text_color(theme.fg_muted)
+        .child(text)
+}
+
+fn heading(color: Hsla, title: String) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(SPACE_4)
+        .child(div().flex_none().size(px(8.0)).rounded(px(4.0)).bg(color))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(FONT_EMPHASIS)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title),
+        )
+}
+
+/// One field as the panel draws it.
 struct Shown {
-    key: String,
-    label: String,
-    kind: FieldKind,
+    at: usize,
+    def: FieldDef,
     control: Option<AnyElement>,
+    line: Option<Entity<TextInput>>,
+    items: Option<Vec<Vec<Entity<TextInput>>>>,
+    fixed: bool,
     error: Option<String>,
 }
 
 /// The settings panel: the selection's settings, or what is selected.
 #[allow(clippy::too_many_lines)]
-fn inspector_panel(console: &mut Console, theme: &Theme, cx: &mut Context<Console>) -> AnyElement {
+fn inspector_panel(
+    console: &mut Console,
+    theme: &Theme,
+    (tags, devices): &(BTreeSet<String>, BTreeSet<String>),
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) -> AnyElement {
     let Some(editor) = editor_mut(console) else {
         return div().into_any_element();
     };
     let graph = editor.graph.clone();
+    let catalogue = Rc::clone(&editor.catalogue);
     let selection = editor.selection;
+    let read_only = editor.read_only;
+    let (admin, webhook, webhook_state, flow_id) = (
+        editor.admin,
+        editor.webhook.clone(),
+        editor.webhook_state.clone(),
+        editor.flow.id.clone(),
+    );
     let fields: Vec<Shown> = editor
         .inspector
         .fields
         .iter()
-        .map(|field| Shown {
-            key: field.key.clone(),
-            label: field.label.clone(),
-            kind: field.kind,
+        .enumerate()
+        .map(|(at, field)| Shown {
+            at,
+            def: field.def.clone(),
             control: match &field.input {
                 Input::Line(line) => Some(line.clone().into_any_element()),
                 Input::Area(area) => Some(area.clone().into_any_element()),
-                Input::Switch => None,
+                Input::Switch | Input::Choice | Input::Fixed | Input::Items(_) => None,
             },
+            line: match &field.input {
+                Input::Line(line) => Some(line.clone()),
+                _ => None,
+            },
+            items: match &field.input {
+                Input::Items(rows) => Some(rows.clone()),
+                _ => None,
+            },
+            fixed: matches!(field.input, Input::Fixed),
             error: field.error.clone(),
         })
         .collect();
-    let caption = |text: String| {
-        div()
-            .text_size(FONT_CAPTION)
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(theme.fg_dim)
-            .child(text)
-    };
-    let dim = |text: String| {
-        div()
-            .text_size(FONT_SMALL)
-            .text_color(theme.fg_muted)
-            .child(text)
-    };
-    let heading = |color: Hsla, title: String| {
-        div()
-            .flex()
-            .items_center()
-            .gap(SPACE_4)
-            .child(div().flex_none().size(px(8.0)).rounded(px(4.0)).bg(color))
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(FONT_EMPHASIS)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(title),
-            )
-    };
 
     let mut body: Vec<AnyElement> = Vec::new();
     match selection {
         Selection::None => {
-            let steps = graph
-                .nodes
-                .iter()
-                .filter(|node| category_of(node) != Category::Output)
-                .count();
-            let outputs = graph.nodes.len() - steps;
             body.push(heading(theme.accent, "Flow".to_owned()).into_any_element());
             body.push(
-                dim(format!(
-                    "Trigger {} · {steps} process steps · {outputs} outputs",
-                    graph
-                        .end_label(End::Trigger)
-                        .trim_start_matches("Trigger · ")
-                ))
+                dim(
+                    format!(
+                        "Trigger {} · {} nodes · {} wires",
+                        graph.label(End::Trigger, &catalogue),
+                        graph.nodes.len(),
+                        graph.edges.len()
+                    ),
+                    theme,
+                )
                 .into_any_element(),
             );
             body.push(
-                dim("Select a step or the trigger to edit its settings. The engine runs the process steps in order, then every output.".to_owned())
+                dim("Select a node, the trigger or a wire. A message leaves a node by one of its outputs and goes on along every wire from that output.".to_owned(), theme)
                     .into_any_element(),
             );
-            for (keys, what) in [
-                ("Tab", "next step"),
-                ("↵", "edit its settings"),
-                ("N", "add from the palette"),
-                ("⌫", "remove the step"),
-                ("⌥← ⌥→", "run earlier, later"),
-                ("← ↑ ↓ →", "move it (⇧ further)"),
-                ("+ − 0", "zoom, fit"),
-                ("⌘Z", "undo"),
-                ("⌘S", "save"),
-            ] {
+            let keys: &[(&str, &str)] = if read_only {
+                &[("Tab", "next node"), ("+ − 0", "zoom, fit"), ("H", "runs")]
+            } else {
+                &[
+                    ("Tab", "next node"),
+                    ("↵", "edit its settings"),
+                    ("N", "add from the palette"),
+                    ("⌫", "remove the node or wire"),
+                    ("⌘D", "duplicate the node"),
+                    ("← ↑ ↓ →", "move it (⇧ further)"),
+                    ("+ − 0", "zoom, fit"),
+                    ("T", "test"),
+                    ("⌘Z ⇧⌘Z", "undo, redo"),
+                    ("⌘S", "save"),
+                ]
+            };
+            for (keys, what) in keys {
                 body.push(
                     div()
                         .flex()
@@ -1764,118 +2943,167 @@ fn inspector_panel(console: &mut Console, theme: &Theme, cx: &mut Context<Consol
                         .gap(SPACE_3)
                         .text_size(FONT_SMALL)
                         .text_color(theme.fg_muted)
-                        .child(div().w(px(64.0)).flex_none().child(kbd(keys, cx)))
-                        .child(what)
+                        .child(div().w(px(72.0)).flex_none().child(kbd(*keys, cx)))
+                        .child(*what)
                         .into_any_element(),
                 );
             }
         }
-        Selection::Wire(to) => {
-            let from = graph
-                .source_of(to)
-                .map(|from| graph.end_label(from))
-                .unwrap_or_default();
+        Selection::Wire(edge) => {
+            let Some(wire) = graph.edges.get(edge) else {
+                return div().into_any_element();
+            };
+            let from = graph.end_of(&wire.from).map_or_else(
+                || wire.from.clone(),
+                |end| port_label(&graph, end, wire.port, &catalogue),
+            );
+            let to = graph.index_of(&wire.to).map_or_else(
+                || wire.to.clone(),
+                |index| graph.label(End::Node(index), &catalogue),
+            );
             body.push(heading(theme.fg_dim, "Wire".to_owned()).into_any_element());
-            body.push(
-                dim(format!("{from} → {}", graph.end_label(End::Node(to)))).into_any_element(),
-            );
-            body.push(
-                dim("The server stores no wires: the steps run in their stored order. Drag from another step's output port onto this step to change what feeds it; ⌫ on a step removes it.".to_owned())
-                    .into_any_element(),
-            );
+            body.push(dim(format!("{from} → {to}"), theme).into_any_element());
+            if !read_only {
+                body.push(
+                    Button::new("data-flow-remove-wire", "Remove")
+                        .danger()
+                        .compact()
+                        .icon(Icon::Trash)
+                        .tooltip("⌫")
+                        .on_click(cx.listener(|console, _, window, cx| {
+                            with_editor(console, window, cx, |editor, _| {
+                                delete_selection(editor);
+                            });
+                        }))
+                        .into_any_element(),
+                );
+            }
         }
-        Selection::Step(end) => {
+        Selection::Node(end) => {
+            let color = node_color(&graph, end, &catalogue, theme);
             match end {
                 End::Trigger => {
-                    let kind = trigger_kind(graph.trigger_type());
                     body.push(
                         heading(
-                            kind.map_or(theme.fg_dim, |kind| tone_color(kind.tone, theme)),
-                            format!(
-                                "Trigger · {}",
-                                kind.map_or(graph.trigger_type(), |kind| kind.label)
-                            ),
+                            color,
+                            format!("Trigger · {}", graph.label(End::Trigger, &catalogue)),
                         )
                         .into_any_element(),
                     );
-                    let segments = TRIGGER_KINDS
-                        .iter()
-                        .map(|choice| {
-                            Segment::new(
-                                choice.label,
-                                choice.id == graph.trigger_type(),
-                                cx.listener(move |console, _, _, cx| {
-                                    set_trigger_kind(console, choice, cx);
-                                }),
-                            )
-                        })
-                        .collect();
-                    body.push(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(SPACE_2)
-                            .child(caption("TRIGGER TYPE".to_owned()))
-                            .child(segmented("data-flow-trigger-type", segments, cx))
-                            .into_any_element(),
-                    );
+                    if let Some(kind) = catalogue.trigger(graph.trigger_type())
+                        && !kind.description.is_empty()
+                    {
+                        body.push(dim(kind.description.clone(), theme).into_any_element());
+                    }
+                    if !read_only {
+                        let current = graph.trigger_type().to_owned();
+                        let choices = catalogue.triggers.iter().enumerate().map(|(index, kind)| {
+                            let chosen = kind.kind == current;
+                            Button::new(("data-flow-trigger-type", index), kind.label().to_owned())
+                                .compact()
+                                .map(|button| {
+                                    if chosen {
+                                        button.primary()
+                                    } else {
+                                        button.ghost()
+                                    }
+                                })
+                                .on_click(cx.listener(move |console, _, _, cx| {
+                                    set_trigger_kind(console, index, cx);
+                                }))
+                        });
+                        body.push(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap(SPACE_2)
+                                .child(caption("TRIGGER TYPE".to_owned(), theme))
+                                .child(div().flex().flex_wrap().gap(SPACE_2).children(choices))
+                                .into_any_element(),
+                        );
+                    }
+                    if graph.trigger_type() == "webhook" {
+                        body.push(webhook_section(
+                            &flow_id,
+                            admin,
+                            webhook,
+                            webhook_state,
+                            theme,
+                            cx,
+                        ));
+                    }
                 }
                 End::Node(index) => {
                     let Some(config) = graph.nodes.get(index) else {
                         return div().into_any_element();
                     };
-                    let kind = node_kind(config_type(config));
-                    body.push(
-                        heading(
-                            kind.map_or(theme.fg_dim, |kind| tone_color(kind.tone, theme)),
-                            label_of(config),
-                        )
-                        .into_any_element(),
-                    );
+                    let kind = catalogue.node(config_type(config));
+                    body.push(heading(color, graph.label(end, &catalogue)).into_any_element());
                     body.push(
                         div()
                             .font_family(MONO)
                             .text_size(FONT_SMALL)
                             .text_color(theme.fg_dim)
-                            .child(config_id(config).to_owned())
+                            .child(format!("{} · {}", config_type(config), config_id(config)))
                             .into_any_element(),
                     );
-                    if let Some(kind) = kind {
+                    match kind {
+                        Some(kind) => {
+                            let mut about = format!("{} · {}", kind.category().label(), kind.description);
+                            if kind.side_effect {
+                                about.push_str(" · acts for real when the flow runs");
+                            }
+                            body.push(dim(about, theme).into_any_element());
+                        }
+                        None => body.push(
+                            dim(
+                                format!("This server has no node type “{}”: its settings show as stored", config_type(config)),
+                                theme,
+                            )
+                            .into_any_element(),
+                        ),
+                    }
+                    let outputs = graph.outputs(end, &catalogue);
+                    if outputs.len() > 1 {
                         body.push(
-                            dim(format!("{} · {}", kind.category.label(), kind.desc))
+                            dim(format!("Outputs: {}", outputs.join(" · ")), theme)
                                 .into_any_element(),
                         );
                     }
-                    if let Some(from) = graph.source_of(index) {
-                        body.push(
-                            dim(format!("Fed by {}", graph.end_label(from))).into_any_element(),
-                        );
-                    }
                 }
-            }
-            if fields.is_empty() && matches!(end, End::Node(_)) {
-                body.push(dim("No settings.".to_owned()).into_any_element());
             }
             let config = match end {
                 End::Trigger => Some(&graph.trigger),
                 End::Node(index) => graph.nodes.get(index),
             };
-            for (at, shown) in fields.into_iter().enumerate() {
+            if fields.is_empty() {
+                body.push(dim("No settings.".to_owned(), theme).into_any_element());
+            }
+            for shown in fields {
                 let Shown {
-                    key,
-                    label,
-                    kind,
+                    at,
+                    def,
                     control,
+                    line,
+                    items,
+                    fixed,
                     error,
                 } = shown;
+                let value = config.and_then(|config| config.get(&def.key)).cloned();
                 let control = match control {
                     Some(control) => control,
-                    None => {
-                        let on = config
-                            .and_then(|config| config.get(&key))
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false);
-                        let off_key = key.clone();
+                    None if fixed => div()
+                        .font_family(MONO)
+                        .text_size(FONT_SMALL)
+                        .text_color(theme.fg)
+                        .child(value.as_ref().map_or_else(|| "—".to_owned(), field_text))
+                        .into_any_element(),
+                    None if items.is_some() => {
+                        items_control(at, &def, items.unwrap_or_default(), theme, cx)
+                    }
+                    None if def.kind == FieldKind::Bool => {
+                        let on = value.as_ref().and_then(Value::as_bool).unwrap_or(false);
+                        let (off_key, on_key) = (def.key.clone(), def.key.clone());
                         segmented(
                             ("data-flow-switch", at),
                             vec![
@@ -1883,64 +3111,157 @@ fn inspector_panel(console: &mut Console, theme: &Theme, cx: &mut Context<Consol
                                     "Off",
                                     !on,
                                     cx.listener(move |console, _, _, cx| {
-                                        set_switch(console, &off_key, false, cx);
+                                        set_field(console, &off_key, Value::Bool(false), cx);
                                     }),
                                 ),
                                 Segment::new(
                                     "On",
                                     on,
                                     cx.listener(move |console, _, _, cx| {
-                                        set_switch(console, &key, true, cx);
+                                        set_field(console, &on_key, Value::Bool(true), cx);
                                     }),
                                 ),
                             ],
                             cx,
                         )
                     }
+                    None => {
+                        let choices =
+                            def.choices()
+                                .into_iter()
+                                .enumerate()
+                                .map(|(choice, option)| {
+                                    let chosen = value.as_ref() == Some(&option.value);
+                                    let key = def.key.clone();
+                                    let picked = option.value.clone();
+                                    Button::new(
+                                        SharedString::from(format!(
+                                            "data-flow-choice-{at}-{choice}"
+                                        )),
+                                        option.label(),
+                                    )
+                                    .compact()
+                                    .map(|button| {
+                                        if chosen {
+                                            button.primary()
+                                        } else {
+                                            button.ghost()
+                                        }
+                                    })
+                                    .on_click(cx.listener(
+                                        move |console, _, _, cx| {
+                                            set_field(console, &key, picked.clone(), cx);
+                                        },
+                                    ))
+                                });
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap(SPACE_2)
+                            .children(choices)
+                            .into_any_element()
+                    }
                 };
-                let hint = match kind {
-                    FieldKind::Json => " (JSON)",
+                // Tags and devices the console knows, under a focused field.
+                let picks = match (&line, def.kind) {
+                    (Some(line), FieldKind::Tag | FieldKind::Device)
+                        if line.read(cx).focus_handle(cx).is_focused(window) =>
+                    {
+                        let list = if def.kind == FieldKind::Tag {
+                            tags
+                        } else {
+                            devices
+                        };
+                        suggestions(list, line.read(cx).value())
+                    }
+                    _ => Vec::new(),
+                };
+                let hint = match def.kind {
+                    FieldKind::DurationMs => " (ms)",
+                    FieldKind::Json | FieldKind::Other => " (JSON)",
+                    FieldKind::Cron => " (cron)",
                     _ => "",
                 };
+                let star = if def.required { " *" } else { "" };
+                let problem = error.or_else(|| {
+                    def.is_missing(value.as_ref())
+                        .then(|| "Required".to_owned())
+                });
                 body.push(
                     div()
                         .flex()
                         .flex_col()
                         .gap(SPACE_2)
-                        .child(caption(format!("{}{hint}", label.to_uppercase())))
+                        .child(caption(
+                            format!("{}{hint}{star}", def.label().to_uppercase()),
+                            theme,
+                        ))
                         .child(control)
-                        .when_some(error, |this, error| {
+                        .when(!picks.is_empty(), |this| {
+                            this.child(div().flex().flex_wrap().gap(SPACE_1).children(
+                                picks.into_iter().enumerate().map(|(pick, text)| {
+                                    let chosen = text.clone();
+                                    Button::new(
+                                        SharedString::from(format!("data-flow-pick-{at}-{pick}")),
+                                        text,
+                                    )
+                                    .compact()
+                                    .ghost()
+                                    .on_click(cx.listener(
+                                        move |console, _, window, cx| {
+                                            pick_suggestion(
+                                                console,
+                                                at,
+                                                chosen.clone(),
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    ))
+                                }),
+                            ))
+                        })
+                        .when_some(
+                            def.help().map(str::to_owned).filter(|_| !fixed),
+                            |this, help| {
+                                this.child(
+                                    div()
+                                        .text_size(FONT_CAPTION)
+                                        .text_color(theme.fg_dim)
+                                        .child(help),
+                                )
+                            },
+                        )
+                        .when_some(problem.filter(|_| !fixed), |this, problem| {
                             this.child(
                                 div()
                                     .text_size(FONT_CAPTION)
                                     .text_color(theme.danger)
-                                    .child(error),
+                                    .child(problem),
                             )
                         })
                         .into_any_element(),
                 );
             }
-            if let End::Node(index) = end {
+            if let End::Node(index) = end
+                && !read_only
+            {
                 body.push(
                     div()
                         .flex()
                         .flex_wrap()
                         .gap(SPACE_2)
                         .pt(SPACE_4)
-                        .child(inspector_button(
-                            "data-flow-earlier",
-                            "Earlier",
-                            "Run one place earlier  ⌥←",
-                            cx,
-                            |editor| shift(editor, true),
-                        ))
-                        .child(inspector_button(
-                            "data-flow-later",
-                            "Later",
-                            "Run one place later  ⌥→",
-                            cx,
-                            |editor| shift(editor, false),
-                        ))
+                        .child(
+                            Button::new(("data-flow-duplicate", index), "Duplicate")
+                                .ghost()
+                                .compact()
+                                .icon(Icon::Copy)
+                                .tooltip("⌘D")
+                                .on_click(cx.listener(|console, _, window, cx| {
+                                    with_editor(console, window, cx, duplicate);
+                                })),
+                        )
                         .child(
                             Button::new(("data-flow-remove", index), "Remove")
                                 .danger()
@@ -1949,7 +3270,7 @@ fn inspector_panel(console: &mut Console, theme: &Theme, cx: &mut Context<Consol
                                 .tooltip("⌫")
                                 .on_click(cx.listener(|console, _, window, cx| {
                                     with_editor(console, window, cx, |editor, _| {
-                                        delete_selection(editor)
+                                        delete_selection(editor);
                                     });
                                 })),
                         )
@@ -1960,53 +3281,444 @@ fn inspector_panel(console: &mut Console, theme: &Theme, cx: &mut Context<Consol
     }
 
     div()
-        .id("data-flow-inspector")
         .flex()
         .flex_col()
-        .flex_none()
-        .w(px(INSPECTOR_W))
-        .h_full()
-        .overflow_y_scroll()
-        .bg(theme.chrome)
-        .border_l_1()
-        .border_color(theme.border)
+        .gap(SPACE_6)
+        .px(SPACE_7)
+        .py(SPACE_6)
+        .pb(SPACE_10)
+        .children(body)
+        .into_any_element()
+}
+
+/// A list field as a form: per item its fields, a Remove button; Add.
+fn items_control(
+    at: usize,
+    def: &FieldDef,
+    rows: Vec<Vec<Entity<TextInput>>>,
+    theme: &Theme,
+    cx: &mut Context<Console>,
+) -> AnyElement {
+    let count = rows.len();
+    let items = rows.into_iter().enumerate().map(|(row, lines)| {
+        div()
+            .flex()
+            .flex_col()
+            .gap(SPACE_2)
+            .p(SPACE_3)
+            .rounded(RADIUS_MD)
+            .border_1()
+            .border_color(theme.border)
+            .bg(theme.surface)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(caption(
+                        format!("{} {}", def.label().to_uppercase(), row + 1),
+                        theme,
+                    ))
+                    .child(
+                        IconButton::new(
+                            SharedString::from(format!("data-flow-item-remove-{at}-{row}")),
+                            Icon::X,
+                        )
+                        .tooltip("Remove this item")
+                        .on_click(cx.listener(move |console, _, _, cx| {
+                            edit_items(console, at, Some(row), cx);
+                        })),
+                    ),
+            )
+            .children(def.item_fields.iter().zip(lines).map(|(field, line)| {
+                let star = if field.required { " *" } else { "" };
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_3)
+                    .child(
+                        div()
+                            .w(px(88.0))
+                            .flex_none()
+                            .truncate()
+                            .text_size(FONT_CAPTION)
+                            .text_color(theme.fg_dim)
+                            .child(format!("{}{star}", field.label())),
+                    )
+                    .child(div().flex_1().min_w_0().child(line))
+            }))
+    });
+    div()
+        .flex()
+        .flex_col()
+        .gap(SPACE_3)
+        .children(items)
+        .when(count == 0, |this| {
+            this.child(
+                div()
+                    .text_size(FONT_SMALL)
+                    .text_color(theme.fg_dim)
+                    .child("No items yet."),
+            )
+        })
         .child(
-            div()
-                .flex_none()
-                .px(SPACE_7)
-                .py(SPACE_5)
-                .border_b_1()
-                .border_color(theme.border)
-                .child(caption("CONFIGURATION".to_owned())),
-        )
-        .child(
-            div()
-                .flex()
-                .flex_col()
-                .gap(SPACE_6)
-                .px(SPACE_7)
-                .py(SPACE_6)
-                .pb(SPACE_10)
-                .children(body),
+            div().flex().child(
+                Button::new(
+                    SharedString::from(format!("data-flow-item-add-{at}")),
+                    "Add",
+                )
+                .ghost()
+                .compact()
+                .icon(Icon::Plus)
+                .on_click(cx.listener(move |console, _, _, cx| {
+                    edit_items(console, at, None, cx);
+                })),
+            ),
         )
         .into_any_element()
 }
 
-fn inspector_button(
-    id: &'static str,
-    label: &'static str,
-    tooltip: &'static str,
+/// A webhook trigger: how to call it, and (admins) a new token.
+fn webhook_section(
+    flow_id: &str,
+    admin: bool,
+    token: Entity<TextInput>,
+    state: Option<Result<(), String>>,
+    theme: &Theme,
     cx: &mut Context<Console>,
-    act: fn(&mut Editor),
 ) -> AnyElement {
-    Button::new(id, label)
-        .ghost()
-        .compact()
-        .tooltip(tooltip)
-        .on_click(cx.listener(move |console, _, window, cx| {
-            with_editor(console, window, cx, |editor, _| act(editor));
-        }))
+    let shown = !token.read(cx).value().is_empty();
+    div()
+        .flex()
+        .flex_col()
+        .gap(SPACE_2)
+        .child(caption("WEBHOOK".to_owned(), theme))
+        .child(
+            div()
+                .font_family(MONO)
+                .text_size(FONT_CAPTION)
+                .text_color(theme.fg_muted)
+                .child(format!(
+                    "POST /api/v1/flows/{flow_id}/webhook · header X-Flow-Token"
+                )),
+        )
+        .child(dim(
+            "The token is shown once; a new one replaces the old. The flow must be started."
+                .to_owned(),
+            theme,
+        ))
+        .when(shown, |this| this.child(token))
+        .when_some(state.and_then(Result::err), |this, error| {
+            this.child(
+                div()
+                    .text_size(FONT_CAPTION)
+                    .text_color(theme.danger)
+                    .child(error),
+            )
+        })
+        .when(admin, |this| {
+            this.child(
+                div().flex().child(
+                    Button::new("data-flow-webhook-token", "New token")
+                        .ghost()
+                        .compact()
+                        .icon(Icon::Lock)
+                        .tooltip("Make the webhook's token (admin)")
+                        .on_click(cx.listener(|console, _, _, cx| {
+                            new_webhook_token(console, cx);
+                        })),
+                ),
+            )
+        })
         .into_any_element()
+}
+
+/// Select the node of trace row `row` and show its input and output.
+fn pick_trace(console: &mut Console, row: usize, window: &mut Window, cx: &mut Context<Console>) {
+    if let Some(editor) = editor_mut(console) {
+        let size = canvas_size(editor, window);
+        editor.test.picked = Some(row);
+        let node = match &editor.test.result {
+            Some(Ok((run, _))) => run
+                .trace
+                .get(row)
+                .and_then(|step| editor.graph.index_of(&step.node_id)),
+            _ => None,
+        };
+        if let Some(index) = node {
+            select(editor, Selection::Node(End::Node(index)));
+            if let Some(card) = geometry(editor).card(End::Node(index)) {
+                editor.view = editor.view.reveal(card.rect(), size);
+            }
+        }
+    }
+    cx.notify();
+}
+
+/// The test panel: the input, Run test, the trace.
+#[allow(clippy::too_many_lines)]
+fn test_panel(console: &mut Console, theme: &Theme, cx: &mut Context<Console>) -> AnyElement {
+    let Some(editor) = editor_mut(console) else {
+        return div().into_any_element();
+    };
+    let graph = editor.graph.clone();
+    let catalogue = Rc::clone(&editor.catalogue);
+    let input = editor.test.input.clone();
+    let (result, running, picked, armed, read_only) = (
+        editor.test.result.clone(),
+        editor.test.running,
+        editor.test.picked,
+        editor.test.armed,
+        editor.read_only,
+    );
+    let legacy_server = editor.graph_server == Some(false);
+
+    let mut body: Vec<AnyElement> = Vec::new();
+    body.push(
+        dim(
+            if legacy_server {
+                "This server tests the saved flow, and its outputs act for real.".to_owned()
+            } else {
+                "A dry run of the canvas as it is, saved or not: nodes that act (writes, alarms, webhooks) are skipped.".to_owned()
+            },
+            theme,
+        )
+        .into_any_element(),
+    );
+    body.push(
+        div()
+            .flex()
+            .flex_col()
+            .gap(SPACE_2)
+            .child(caption("INPUT (JSON: PAYLOAD, METADATA)".to_owned(), theme))
+            .child(input)
+            .into_any_element(),
+    );
+    if armed {
+        body.push(
+            div()
+                .p(SPACE_4)
+                .rounded(RADIUS_MD)
+                .bg(theme.warning.opacity(0.08))
+                .text_size(FONT_SMALL)
+                .text_color(theme.warning)
+                .child("Run anyway? The saved flow's outputs will write, post and raise alarms for real. Press Run test again.")
+                .into_any_element(),
+        );
+    }
+    if !read_only {
+        body.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(SPACE_2)
+                .child(
+                    Button::new(
+                        "data-flow-test-run",
+                        if running {
+                            "Running…"
+                        } else if armed {
+                            "Run anyway"
+                        } else {
+                            "Run test"
+                        },
+                    )
+                    .primary()
+                    .compact()
+                    .icon(Icon::Play)
+                    .disabled(running)
+                    .tooltip("⌘↵")
+                    .on_click(cx.listener(|console, _, _, cx| run_test(console, cx))),
+                )
+                .when(result.is_some(), |this| {
+                    this.child(
+                        Button::new("data-flow-test-clear", "Clear")
+                            .ghost()
+                            .compact()
+                            .tooltip("Clear the result and the lit path")
+                            .on_click(cx.listener(|console, _, _, cx| {
+                                if let Some(editor) = editor_mut(console) {
+                                    editor.test.result = None;
+                                    editor.test.picked = None;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                })
+                .into_any_element(),
+        );
+    }
+    match result {
+        None => {}
+        Some(Err(refusal)) => body.push(
+            div()
+                .p(SPACE_4)
+                .rounded(RADIUS_MD)
+                .bg(theme.danger.opacity(0.08))
+                .text_size(FONT_SMALL)
+                .text_color(theme.danger)
+                .child(refusal.message)
+                .into_any_element(),
+        ),
+        Some(Ok((run, source))) => {
+            let (glyph, color, verdict) = if run.ok {
+                (Icon::CircleCheck, theme.success, "Ran through")
+            } else {
+                (Icon::CircleX, theme.danger, "Failed")
+            };
+            body.push(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(SPACE_3)
+                    .text_size(FONT_SMALL)
+                    .child(vt_ui::icon(glyph, ICON_SM, color))
+                    .child(div().text_color(color).child(verdict))
+                    .child(div().text_color(theme.fg_muted).child(format!(
+                        "· {} nodes · outputs reached {}{}",
+                        run.trace.len(),
+                        run.outputs_text(),
+                        match source {
+                            Source::Dry => "",
+                            Source::Saved => " · saved flow",
+                            Source::Live => " · real run",
+                        }
+                    )))
+                    .into_any_element(),
+            );
+            if let Some(error) = run.error.clone() {
+                body.push(
+                    div()
+                        .text_size(FONT_SMALL)
+                        .text_color(theme.danger)
+                        .child(error)
+                        .into_any_element(),
+                );
+            }
+            for (row, step) in run.trace.iter().enumerate() {
+                let index = graph.index_of(&step.node_id);
+                let label = index.map_or_else(
+                    || step.node_id.clone(),
+                    |index| graph.label(End::Node(index), &catalogue),
+                );
+                let port = match (index, step.port) {
+                    (Some(index), Some(port)) => {
+                        let outputs = graph.outputs(End::Node(index), &catalogue);
+                        match outputs.get(port) {
+                            Some(name) if outputs.len() > 1 => format!("→ {name}"),
+                            _ => "→".to_owned(),
+                        }
+                    }
+                    (_, Some(port)) => format!("→ {port}"),
+                    (_, None) => "stop".to_owned(),
+                };
+                let (tint, outcome) = match (&step.error, step.side_effect_skipped) {
+                    (Some(_), _) => (theme.danger, "error"),
+                    (None, true) => (theme.warning, "skipped"),
+                    (None, false) => (theme.success, "ok"),
+                };
+                let current = picked == Some(row);
+                let hover = theme.hover;
+                body.push(
+                    div()
+                        .id(("data-flow-trace", row))
+                        .flex()
+                        .flex_col()
+                        .gap(SPACE_1)
+                        .px(SPACE_3)
+                        .py(SPACE_2)
+                        .rounded(RADIUS_MD)
+                        .cursor_pointer()
+                        .when(current, |this| this.bg(theme.selected))
+                        .when(!current, |this| this.hover(move |style| style.bg(hover)))
+                        .on_click(cx.listener(move |console, _, window, cx| {
+                            pick_trace(console, row, window, cx);
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(SPACE_3)
+                                .text_size(FONT_SMALL)
+                                .child(
+                                    div()
+                                        .w(px(18.0))
+                                        .flex_none()
+                                        .font_family(MONO)
+                                        .text_color(theme.fg_dim)
+                                        .child(format!("{}", row + 1)),
+                                )
+                                .child(div().flex_1().min_w_0().truncate().child(label))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .font_family(MONO)
+                                        .text_color(theme.fg_muted)
+                                        .child(port),
+                                )
+                                .child(pill(outcome, tint))
+                                .when(step.duration_us > 0, |this| {
+                                    this.child(
+                                        div()
+                                            .flex_none()
+                                            .font_family(MONO)
+                                            .text_color(theme.fg_dim)
+                                            .child(format!("{} µs", step.duration_us)),
+                                    )
+                                }),
+                        )
+                        .when_some(step.error.clone(), |this, error| {
+                            this.child(
+                                div()
+                                    .pl(px(26.0))
+                                    .text_size(FONT_CAPTION)
+                                    .text_color(theme.danger)
+                                    .child(error),
+                            )
+                        })
+                        .when(current, |this| {
+                            this.child(json_block("INPUT", &step.input, theme))
+                                .child(json_block("OUTPUT", &step.output, theme))
+                        })
+                        .into_any_element(),
+                );
+            }
+        }
+    }
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(SPACE_5)
+        .px(SPACE_7)
+        .py(SPACE_6)
+        .pb(SPACE_10)
+        .children(body)
+        .into_any_element()
+}
+
+fn json_block(title: &str, value: &Value, theme: &Theme) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(SPACE_1)
+        .pl(px(26.0))
+        .child(caption(title.to_owned(), theme))
+        .child(
+            div()
+                .p(SPACE_3)
+                .rounded(RADIUS_MD)
+                .bg(theme.surface)
+                .border_1()
+                .border_color(theme.border)
+                .font_family(MONO)
+                .text_size(FONT_CAPTION)
+                .child(if value.is_null() {
+                    "—".to_owned()
+                } else {
+                    pretty(value)
+                }),
+        )
 }
 
 /// Leaving with unsaved changes: Enter or the button discards, Esc keeps.
@@ -2099,49 +3811,588 @@ fn discard_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
 
 #[cfg(test)]
 mod tests {
+    use gpui::TestAppContext;
+
     use super::*;
+    use crate::console::testing::Harness;
 
-    #[test]
-    fn the_selection_follows_the_steps() {
-        let order = [Some(2), Some(0), None, Some(1)];
-        assert_eq!(
-            remap(Selection::Step(End::Node(0)), &order),
-            Selection::Step(End::Node(1))
-        );
-        assert_eq!(remap(Selection::Wire(1), &order), Selection::Wire(3));
-        assert_eq!(
-            remap(Selection::Step(End::Node(5)), &order),
-            Selection::None
-        );
-        assert_eq!(
-            remap(Selection::Step(End::Trigger), &order),
-            Selection::Step(End::Trigger)
-        );
+    const CATALOGUE: &str = r#"{
+        "triggers": [
+            { "type": "timer", "label": "Timer",
+              "fields": [ { "key": "interval_ms", "label": "Interval", "kind": "duration_ms",
+                            "required": true, "default": 5000 } ] },
+            { "type": "tag_change", "label": "Tag change",
+              "fields": [ { "key": "tag", "label": "Tag", "kind": "tag", "required": true } ] }
+        ],
+        "nodes": [
+            { "type": "delay", "label": "Delay", "category": "timing", "description": "Wait",
+              "outputs": ["out"],
+              "fields": [ { "key": "duration_ms", "label": "Duration", "kind": "duration_ms",
+                            "required": true, "default": 1000 } ] },
+            { "type": "switch", "label": "Switch", "category": "logic", "description": "Route",
+              "outputs": ["otherwise"],
+              "fields": [ { "key": "rules", "label": "Rules", "kind": "json", "required": true,
+                            "default": [] } ] },
+            { "type": "alarm_out", "label": "Alarm", "category": "output",
+              "description": "Raise an alarm", "outputs": [], "side_effect": true,
+              "fields": [ { "key": "message", "label": "Message", "kind": "string",
+                            "required": true } ] }
+        ]
+    }"#;
+
+    /// trigger → switch; rule "hot" → alarm, otherwise → delay.
+    const GRAPH: &str = r#"{"version": 2,
+        "nodes": [
+            {"id": "s", "type": "switch", "x": 260, "y": 0,
+             "rules": [{"name": "hot", "expression": "payload.temp > 80"}]},
+            {"id": "a", "type": "alarm_out", "x": 520, "y": 0, "message": "Hot", "colour": "red"},
+            {"id": "d", "type": "delay", "x": 520, "y": 110, "duration_ms": 1000}
+        ],
+        "edges": [
+            {"from": "trigger", "port": 0, "to": "s"},
+            {"from": "s", "port": 0, "to": "a"},
+            {"from": "s", "port": 1, "to": "d"}
+        ]}"#;
+
+    const SECONDARY: &str = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+
+    fn catalogue() -> Catalogue {
+        serde_json::from_str(CATALOGUE).unwrap()
+    }
+
+    fn flow() -> Flow {
+        Flow {
+            id: "f".into(),
+            name: "Boiler".into(),
+            enabled: true,
+            trigger_config: r#"{"type": "timer", "interval_ms": 5000}"#.into(),
+            nodes: GRAPH.into(),
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    /// The editor on [`GRAPH`] with the test catalogue, signed in as `role`.
+    fn opened(cx: &mut TestAppContext, role: &str) -> Harness {
+        let mut h = Harness::new(cx);
+        h.sign_in(role);
+        h.update(|console, window, cx| {
+            let state = console.state::<State>();
+            state.catalogue = Some(Rc::new(catalogue()));
+            state.graph_server = Some(true);
+            state.catalogue_asked = true;
+            super::super::super::launch(console, "flows");
+            console.show(crate::console::pages::Page::DataManager, window, cx);
+            open(console, flow(), window, cx);
+        });
+        h.draw();
+        h.update(|console, window, _| focus_canvas(console, window));
+        h.draw();
+        h
+    }
+
+    fn with<R>(h: &mut Harness, f: impl FnOnce(&mut Editor) -> R) -> R {
+        h.update(|console, _, _| f(editor_mut(console).expect("the editor is open")))
+    }
+
+    fn ids(editor: &Editor) -> Vec<String> {
+        editor
+            .graph
+            .nodes
+            .iter()
+            .map(|node| config_id(node).to_owned())
+            .collect()
     }
 
     #[test]
-    fn the_palette_lists_the_web_clients_groups() {
-        let all = palette_items([false; 3]);
-        assert_eq!(all.len(), 3 + 7 + 4);
-        assert!(matches!(all[0], Item::Trigger(kind) if kind.id == "modbus"));
-        assert!(matches!(all[3], Item::Step(kind) if kind.id == "filter"));
-        assert!(matches!(all[13], Item::Step(kind) if kind.id == "write_out"));
-        let folded = palette_items([true, false, true]);
-        assert_eq!(folded.len(), 7);
+    fn the_palette_lists_triggers_then_categories_and_filters() {
+        let catalogue = catalogue();
+        assert_eq!(
+            palette_items(&catalogue, ""),
+            [
+                Item::Trigger(0),
+                Item::Trigger(1),
+                Item::Node(1),
+                Item::Node(2),
+                Item::Node(0)
+            ],
+            "logic, output, timing"
+        );
+        assert_eq!(palette_items(&catalogue, "wait"), [Item::Node(0)]);
+        assert_eq!(palette_items(&catalogue, "tag"), [Item::Trigger(1)]);
+        assert!(palette_items(&catalogue, "zzz").is_empty());
+        // The built-in catalogue when the server has none.
+        let builtin = Catalogue::builtin();
+        assert_eq!(palette_items(&builtin, "").len(), 3 + 11);
     }
 
     #[test]
-    fn trigger_cards_say_what_they_listen_to() {
-        let mut graph = FlowGraph::default();
-        graph.set_trigger_kind(trigger_kind("modbus").unwrap());
-        assert_eq!(trigger_summary(&graph), "device *");
-        graph
-            .trigger
-            .insert("metric".into(), Value::String("temp".into()));
-        assert_eq!(trigger_summary(&graph), "device * · temp");
-        graph.set_trigger_kind(trigger_kind("timer").unwrap());
-        assert_eq!(trigger_summary(&graph), "every 5000 ms");
-        graph.set_trigger_kind(trigger_kind("mqtt").unwrap());
-        assert_eq!(trigger_summary(&graph), "sensors/+/temp");
+    fn fields_come_from_the_catalogue_then_what_the_node_has() {
+        let catalogue = catalogue();
+        let (graph, _) = FlowGraph::parse(r#"{"type": "timer"}"#, GRAPH).unwrap();
+        let alarm: Vec<(String, FieldKind, bool)> =
+            field_defs(&graph, Selection::Node(End::Node(1)), &catalogue)
+                .into_iter()
+                .map(|def| (def.key, def.kind, def.required))
+                .collect();
+        assert_eq!(
+            alarm,
+            [
+                ("name".to_owned(), FieldKind::String, false),
+                ("message".to_owned(), FieldKind::String, true),
+                ("colour".to_owned(), FieldKind::String, false),
+            ],
+            "the label, the type's field, then an undeclared setting"
+        );
+        let switch = field_defs(&graph, Selection::Node(End::Node(0)), &catalogue);
+        assert_eq!(switch[1].kind, FieldKind::Json);
+        let trigger = field_defs(&graph, Selection::Node(End::Trigger), &catalogue);
+        assert_eq!(trigger.len(), 1);
+        assert_eq!(trigger[0].kind, FieldKind::DurationMs);
+        assert!(field_defs(&graph, Selection::Wire(0), &catalogue).is_empty());
+    }
+
+    #[test]
+    fn suggestions_and_server_errors_point_somewhere() {
+        let tags: BTreeSet<String> = ["inv1.power", "inv1.temp", "inv2.power"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(suggestions(&tags, "power"), ["inv1.power", "inv2.power"]);
+        assert!(suggestions(&tags, "inv1.temp").is_empty(), "already exact");
+        assert_eq!(suggestions(&tags, "").len(), 3);
+        let (graph, _) = FlowGraph::parse(r#"{"type": "timer"}"#, GRAPH).unwrap();
+        assert_eq!(
+            named_node(&graph, "node d: duration_ms must be positive"),
+            None,
+            "one-letter ids are too short to tell"
+        );
+        let mut long = graph.clone();
+        long.nodes[2].insert("id".into(), Value::String("delay_1".into()));
+        assert_eq!(
+            named_node(&long, "node delay_1: duration_ms must be positive"),
+            Some(2)
+        );
+    }
+
+    #[gpui::test]
+    fn duplicate_undo_redo_and_delete_on_the_canvas(cx: &mut TestAppContext) {
+        let mut h = opened(cx, "admin");
+        assert!(with(&mut h, |editor| !editor.read_only && !editor.legacy));
+        with(&mut h, |editor| {
+            select(editor, Selection::Node(End::Node(2)))
+        });
+        h.draw();
+        h.keys(&format!("{SECONDARY}-d"));
+        let after = with(&mut h, |editor| (ids(editor).len(), editor.selection));
+        assert_eq!(
+            after,
+            (4, Selection::Node(End::Node(3))),
+            "the copy is selected"
+        );
+        h.keys(&format!("{SECONDARY}-z"));
+        assert_eq!(with(&mut h, |editor| ids(editor).len()), 3, "undone");
+        h.keys(&format!("{SECONDARY}-shift-z"));
+        assert_eq!(with(&mut h, |editor| ids(editor).len()), 4, "redone");
+        // Delete the switch: its three wires go with it.
+        with(&mut h, |editor| {
+            select(editor, Selection::Node(End::Node(0)))
+        });
+        h.draw();
+        h.keys("backspace");
+        let (nodes, edges) = with(&mut h, |editor| (ids(editor), editor.graph.edges.len()));
+        assert_eq!(nodes, ["a", "d", nodes[2].as_str()]);
+        assert_eq!(edges, 0);
+        // A wire: drawn from the trigger onto the delay, then removed.
+        with(&mut h, |editor| connect(editor, End::Trigger, 0, 1));
+        assert_eq!(with(&mut h, |editor| editor.selection), Selection::Wire(0));
+        h.draw();
+        h.keys("delete");
+        assert!(with(&mut h, |editor| editor.graph.edges.is_empty()));
+        // Saving sends the graph.
+        h.commands();
+        h.keys(&format!("{SECONDARY}-s"));
+        let sent = h.calls();
+        assert!(
+            sent.iter().any(|key| key.name == "data.flows.save"),
+            "{sent:?}"
+        );
+    }
+
+    #[gpui::test]
+    fn wiring_by_the_pointer_from_a_named_port(cx: &mut TestAppContext) {
+        let mut h = opened(cx, "admin");
+        h.update(|console, _, _| {
+            let editor = editor_mut(console).unwrap();
+            // Drop the existing "hot" wire, then draw it again by hand.
+            editor.graph.edges.remove(1);
+            let geometry = geometry(editor);
+            let port = geometry.card(End::Node(0)).unwrap().output_port(0);
+            let input = geometry.card(End::Node(1)).unwrap().input_port();
+            let view = editor.view;
+            assert!(press(console, view.to_screen(port), 1));
+            assert!(drag_to(console, view.to_screen(input)));
+            release(console, view.to_screen(input));
+            let editor = editor_mut(console).unwrap();
+            let last = editor.graph.edges.last().unwrap();
+            assert_eq!(
+                (last.from.as_str(), last.port, last.to.as_str()),
+                ("s", 0, "a")
+            );
+            let message = editor.message.clone().unwrap().0;
+            assert_eq!(message, "Switch · hot now feeds Alarm");
+        });
+    }
+
+    #[gpui::test]
+    fn a_required_field_blocks_saving_and_selects_the_node(cx: &mut TestAppContext) {
+        let mut h = opened(cx, "admin");
+        with(&mut h, |editor| {
+            editor.graph.nodes[1].insert("message".into(), Value::String(String::new()));
+        });
+        h.update(|console, _, cx| save(console, cx));
+        let (selection, message) = with(&mut h, |editor| {
+            (editor.selection, editor.message.clone().unwrap())
+        });
+        assert_eq!(selection, Selection::Node(End::Node(1)));
+        assert_eq!(message, ("Alarm (a): Message is required".to_owned(), true));
+        assert!(!h.calls().iter().any(|key| key.name == "data.flows.save"));
+    }
+
+    #[gpui::test]
+    fn a_test_run_lights_its_path_and_rows_select_nodes(cx: &mut TestAppContext) {
+        let mut h = opened(cx, "admin");
+        h.update(|console, _, cx| run_test(console, cx));
+        let seq = with(&mut h, |editor| {
+            assert!(editor.test.running);
+            assert_eq!(editor.side, Side::Test);
+            editor.test.seq
+        });
+        assert!(
+            h.calls()
+                .iter()
+                .any(|key| key.name == "data.flows.draft_test"),
+            "a dry run of the draft"
+        );
+        let run: TestRun = serde_json::from_str(
+            r#"{"ok": true, "outputs_reached": 0, "trace": [
+                {"node_id": "s", "port": 1}, {"node_id": "d", "port": 0}]}"#,
+        )
+        .unwrap();
+        h.reply(
+            CallKey::new("data.flows.draft_test").with(seq),
+            Reply::ok(Ok::<_, Refusal>((run, Source::Dry))),
+        );
+        h.draw();
+        let path = with(&mut h, |editor| shown_path(editor).unwrap());
+        assert_eq!(path.edges.len(), 2, "trigger → switch → delay");
+        let marks = h.update(|console, window, cx| {
+            let theme = theme(cx).clone();
+            let editor = editor_mut(console).unwrap();
+            let size = canvas_size(editor, window);
+            let scene = scene(editor, size, &theme);
+            (
+                scene.cards.iter().map(|card| card.mark).collect::<Vec<_>>(),
+                scene.wires.iter().map(|wire| wire.mark).collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(
+            marks.0,
+            [Mark::Taken, Mark::Taken, Mark::Dim, Mark::Taken],
+            "the alarm was not reached"
+        );
+        assert_eq!(marks.1, [Mark::Taken, Mark::Dim, Mark::Taken]);
+        h.update(|console, window, cx| pick_trace(console, 1, window, cx));
+        assert_eq!(
+            with(&mut h, |editor| editor.selection),
+            Selection::Node(End::Node(2))
+        );
+    }
+
+    #[gpui::test]
+    fn a_switchs_rules_edit_as_a_list_and_refusals_point_at_nodes(cx: &mut TestAppContext) {
+        let mut h = opened(cx, "admin");
+        h.update(|console, _, _| {
+            let editor = editor_mut(console).unwrap();
+            // The list form needs the catalogue to declare the items.
+            let mut catalogue = (*editor.catalogue).clone();
+            let switch = catalogue.nodes.iter_mut().find(|n| n.kind == "switch").unwrap();
+            switch.fields[0].item_fields = serde_json::from_str(
+                r#"[{"key": "name", "label": "Output name", "kind": "string", "required": true},
+                    {"key": "expression", "label": "Condition", "kind": "expression", "required": true}]"#,
+            )
+            .unwrap();
+            editor.catalogue = Rc::new(catalogue);
+            select(editor, Selection::Node(End::Node(0)));
+        });
+        h.draw();
+        let rows = with(&mut h, |editor| match &editor.inspector.fields[1].input {
+            Input::Items(rows) => rows.len(),
+            _ => usize::MAX,
+        });
+        assert_eq!(rows, 1, "one rule, as a form");
+        h.update(|console, _, cx| edit_items(console, 1, None, cx));
+        h.draw();
+        let (outputs, rule) = with(&mut h, |editor| {
+            (
+                editor.graph.outputs(End::Node(0), &editor.catalogue),
+                editor.graph.nodes[0]["rules"][1].clone(),
+            )
+        });
+        assert_eq!(outputs, ["hot", "rule 2", "otherwise"]);
+        assert_eq!(
+            rule,
+            serde_json::json!({"name": "rule 2", "expression": ""})
+        );
+        let otherwise = with(&mut h, |editor| editor.graph.edges[2].port);
+        assert_eq!(otherwise, 2, "the otherwise wire stays on otherwise");
+        // Typing in the new rule's condition stores the list.
+        h.update(|console, _, cx| {
+            let line = match &editor_mut(console).unwrap().inspector.fields[1].input {
+                Input::Items(rows) => rows[1][1].clone(),
+                _ => unreachable!(),
+            };
+            line.update(cx, |line, cx| line.set_text("temp < 0", cx));
+            items_changed(console, 1, cx);
+        });
+        let expression = with(&mut h, |editor| {
+            editor.graph.nodes[0]["rules"][1]["expression"].clone()
+        });
+        assert_eq!(expression, "temp < 0");
+        // Removing the first rule takes its wire; otherwise moves up.
+        h.update(|console, _, cx| edit_items(console, 1, Some(0), cx));
+        let wires: Vec<(String, usize, String)> = with(&mut h, |editor| {
+            editor
+                .graph
+                .edges
+                .iter()
+                .map(|edge| (edge.from.clone(), edge.port, edge.to.clone()))
+                .collect()
+        });
+        assert_eq!(
+            wires,
+            [
+                ("trigger".into(), 0, "s".into()),
+                ("s".into(), 1, "d".into())
+            ]
+        );
+
+        // A refused save points at the node the server names.
+        let seq = h.update(|console, _, cx| {
+            save(console, cx);
+            editor_mut(console).unwrap().save_seq
+        });
+        h.reply(
+            CallKey::new("data.flows.save").with(seq),
+            Reply::ok(Err::<(Flow, FlowGraph), _>(Refusal {
+                message: "node d: duration_ms must be at most one hour".into(),
+                node_id: Some("d".into()),
+                from_server: true,
+            })),
+        );
+        let (selection, message) = with(&mut h, |editor| {
+            (editor.selection, editor.message.clone().unwrap())
+        });
+        assert_eq!(selection, Selection::Node(End::Node(2)));
+        assert!(message.1 && message.0.contains("one hour"));
+    }
+
+    /// Every node and trigger type of the graph server's catalogue
+    /// (`GET /api/v1/flows/node-types`, saved from a server built from
+    /// feat/flow-graph-engine) adds, shows its settings form and saves.
+    #[gpui::test]
+    fn every_type_of_the_servers_catalogue_has_a_form(cx: &mut TestAppContext) {
+        let served: Catalogue = serde_json::from_str(include_str!("node_types.json")).unwrap();
+        assert_eq!(served.nodes.len(), 17);
+        let tags = served
+            .triggers
+            .iter()
+            .find(|t| t.kind == "tag_change")
+            .unwrap();
+        assert!(tags.fields[0].multiple, "tag_change takes several tags");
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.event(voltrus_scada_native::runtime::Event::Tags(vec![
+            Harness::tag(12, "inv1.power"),
+            Harness::tag(13, "inv2.power"),
+        ]));
+        h.update(|console, window, cx| {
+            let state = console.state::<State>();
+            state.catalogue = Some(Rc::new(served.clone()));
+            state.graph_server = Some(true);
+            state.catalogue_asked = true;
+            super::super::super::launch(console, "flows");
+            console.show(crate::console::pages::Page::DataManager, window, cx);
+            let blank = Flow {
+                trigger_config: r#"{"type": "manual"}"#.into(),
+                nodes: r#"{"version": 2, "nodes": [], "edges": []}"#.into(),
+                ..flow()
+            };
+            open(console, blank, window, cx);
+        });
+        for index in 0..served.nodes.len() {
+            h.update(|console, _, _| {
+                let editor = editor_mut(console).unwrap();
+                select(editor, Selection::None);
+                add_item(editor, Item::Node(index), None, Vec2::new(800.0, 600.0));
+            });
+            h.draw();
+            let (fields, kind) = with(&mut h, |editor| {
+                let node = &editor.graph.nodes[index];
+                (editor.inspector.fields.len(), config_type(node).to_owned())
+            });
+            assert!(fields >= 1, "{kind} shows its form");
+        }
+        // The switch's and threshold's rules are list forms.
+        let lists = with(&mut h, |editor| {
+            let mut lists = Vec::new();
+            for kind in ["switch", "threshold"] {
+                let at = editor
+                    .graph
+                    .nodes
+                    .iter()
+                    .position(|node| config_type(node) == kind)
+                    .unwrap();
+                select(editor, Selection::Node(End::Node(at)));
+                lists.push(at);
+            }
+            lists
+        });
+        for at in lists {
+            with(&mut h, |editor| {
+                select(editor, Selection::Node(End::Node(at)))
+            });
+            h.draw();
+            let listed = with(&mut h, |editor| {
+                editor
+                    .inspector
+                    .fields
+                    .iter()
+                    .any(|field| matches!(field.input, Input::Items(_)))
+            });
+            assert!(listed, "node {at} edits its rules as a list");
+        }
+        // Each trigger type, the tag_change one by tag keys.
+        for index in 0..served.triggers.len() {
+            h.update(|console, _, cx| set_trigger_kind(console, index, cx));
+            with(&mut h, |editor| {
+                select(editor, Selection::Node(End::Trigger))
+            });
+            h.draw();
+        }
+        h.update(|console, _, cx| {
+            let index = served
+                .triggers
+                .iter()
+                .position(|t| t.kind == "tag_change")
+                .unwrap();
+            set_trigger_kind(console, index, cx);
+        });
+        with(&mut h, |editor| {
+            select(editor, Selection::Node(End::Trigger))
+        });
+        h.draw();
+        h.update(|console, _, cx| {
+            let line = match &editor_mut(console).unwrap().inspector.fields[0].input {
+                Input::Line(line) => line.clone(),
+                _ => unreachable!("the tags field is a line"),
+            };
+            line.update(cx, |line, cx| line.set_text("inv1.power, 13", cx));
+            field_changed(console, 0, cx);
+        });
+        let ids = with(&mut h, |editor| {
+            editor.graph.trigger["data_source_ids"].clone()
+        });
+        assert_eq!(ids, serde_json::json!([12, 13]), "tags stored by id");
+        // Fill what is still required, then everything validates and saves.
+        with(&mut h, |editor| {
+            let catalogue = Rc::clone(&editor.catalogue);
+            for index in 0..editor.graph.nodes.len() {
+                let kind = config_type(&editor.graph.nodes[index]).to_owned();
+                for field in &catalogue.node(&kind).unwrap().fields {
+                    if field.is_missing(editor.graph.nodes[index].get(&field.key)) {
+                        let value = match field.kind {
+                            FieldKind::Number | FieldKind::Tag => serde_json::json!(1),
+                            FieldKind::Code => serde_json::json!("return payload"),
+                            _ => serde_json::json!("x"),
+                        };
+                        editor.graph.nodes[index].insert(field.key.clone(), value);
+                    }
+                }
+            }
+            assert_eq!(editor.graph.validate(&catalogue), Ok(()));
+        });
+        h.commands();
+        h.update(|console, _, cx| save(console, cx));
+        assert!(h.calls().iter().any(|key| key.name == "data.flows.save"));
+    }
+
+    #[gpui::test]
+    fn below_operator_the_flow_is_read_only(cx: &mut TestAppContext) {
+        let mut h = opened(cx, "viewer");
+        assert!(with(&mut h, |editor| editor.read_only));
+        with(&mut h, |editor| {
+            select(editor, Selection::Node(End::Node(0)))
+        });
+        h.draw();
+        h.keys("backspace");
+        h.keys(&format!("{SECONDARY}-d"));
+        assert_eq!(
+            with(&mut h, |editor| ids(editor).len()),
+            3,
+            "nothing changes"
+        );
+        // The pointer selects and pans but neither moves nor wires.
+        h.update(|console, _, _| {
+            let editor = editor_mut(console).unwrap();
+            let geometry = geometry(editor);
+            let port = geometry.card(End::Node(0)).unwrap().output_port(0);
+            let at = editor.view.to_screen(port);
+            press(console, at, 1);
+            assert!(editor_mut(console).unwrap().drag.is_none());
+        });
+        h.commands();
+        h.update(|console, _, cx| save(console, cx));
+        assert!(h.calls().is_empty(), "no save from a read-only editor");
+    }
+
+    #[gpui::test]
+    fn a_legacy_server_saves_a_straight_line_and_refuses_branches(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| {
+            let state = console.state::<State>();
+            state.catalogue = Some(Rc::new(Catalogue::builtin()));
+            state.graph_server = Some(false);
+            state.catalogue_asked = true;
+            let legacy = Flow {
+                nodes: r#"[{"id": "f1", "type": "filter", "condition": "true"},
+                           {"id": "o1", "type": "alarm_out", "severity": "warning",
+                            "source_key": "k", "message": "m"}]"#
+                    .into(),
+                ..flow()
+            };
+            open(console, legacy, window, cx);
+        });
+        let texts = with(&mut h, |editor| {
+            assert!(editor.legacy);
+            assert_eq!(editor.graph.edges.len(), 2);
+            save_texts(editor)
+        });
+        let (_, nodes) = texts.unwrap();
+        assert!(nodes.trim_start().starts_with('['), "the legacy array");
+        // A second wire from the trigger: a branch the old engine cannot run.
+        with(&mut h, |editor| connect(editor, End::Trigger, 0, 1));
+        h.update(|console, _, cx| save(console, cx));
+        let message = with(&mut h, |editor| editor.message.clone().unwrap());
+        assert!(
+            message.1 && message.0.contains("straight line"),
+            "{message:?}"
+        );
+        assert!(!h.calls().iter().any(|key| key.name == "data.flows.save"));
     }
 }
