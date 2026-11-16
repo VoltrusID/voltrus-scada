@@ -16,6 +16,7 @@ const WRITE_TOOLS: &[&str] = &[
     "create_screen",
     "add_tag_to_screen",
     "create_flow",
+    "test_flow",
     "start_flow",
     "stop_flow",
     "write_tag",
@@ -33,6 +34,7 @@ const READ_TOOLS: &[&str] = &[
     "alarm_summary",
     "list_screens",
     "list_flows",
+    "flow_node_types",
     "get_command_status",
     "list_device_templates",
     "get_device_template",
@@ -1086,6 +1088,57 @@ async fn mcp_alarms_screens_and_flows() {
     assert!(e.contains("unique"), "{e}");
     let flows = ok(&f.app, Auth::Bearer(&f.api_key), "list_flows", json!({})).await;
     assert_eq!(flows["count"], 1);
+
+    // Graphs (v2), the catalogue and dry runs.
+    let graph = json!({"version": 2,
+    "nodes": [
+        {"id": "f", "type": "filter", "condition": "temp > 50", "x": 10, "y": 10},
+        {"id": "hot", "type": "debug"},
+        {"id": "cool", "type": "debug"}
+    ],
+    "edges": [
+        {"from": "trigger", "to": "f"},
+        {"from": "f", "port": 0, "to": "hot"},
+        {"from": "f", "port": 1, "to": "cool"}
+    ]});
+    let created = ok(
+        &f.app,
+        Auth::Bearer(key),
+        "create_flow",
+        json!({"name": "Graph", "trigger": {"type": "manual"}, "nodes": graph}),
+    )
+    .await;
+    assert_eq!(created["edges"], 3);
+    let types = ok(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "flow_node_types",
+        json!({}),
+    )
+    .await;
+    assert!(
+        types["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["type"] == "switch")
+    );
+    let run = ok(
+        &f.app,
+        Auth::Bearer(key),
+        "test_flow",
+        json!({"trigger": {"type": "manual"}, "nodes": graph, "payload": {"temp": 10}}),
+    )
+    .await;
+    assert_eq!(run["outputs_reached"], json!(["cool"]));
+    let e = tool_err(
+        &f.app,
+        Auth::Bearer(key),
+        "test_flow",
+        json!({"trigger": {"type": "manual"}, "nodes": {"version": 2, "nodes": [], "edges": [{"from": "trigger", "to": "x"}]}}),
+    )
+    .await;
+    assert!(e.contains("unknown node 'x'"), "{e}");
 }
 
 #[tokio::test]

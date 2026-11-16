@@ -11,6 +11,15 @@ export function useUsers(enabled: boolean) {
   })
 }
 
+/** The signed-in user (`GET /api/v1/auth/me`). */
+export function useAuthMe() {
+  return useQuery({
+    queryKey: queryKeys.authMe,
+    queryFn: () => fetchJson<{ authenticated?: boolean; username?: string; role?: string }>('/api/v1/auth/me'),
+    staleTime: 60_000,
+  })
+}
+
 export function useCreateUser() {
   const qc = useQueryClient()
   return useMutation({

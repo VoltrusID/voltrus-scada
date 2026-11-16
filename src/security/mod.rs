@@ -58,6 +58,68 @@ mod tests {
         assert_eq!(result.len(), MAX_BRAND_LENGTH);
     }
 
+    #[test]
+    fn test_sanitize_brand_cuts_long_non_ascii_titles_on_char_boundaries() {
+        let title = "Pabrik Gula Djatiroto — Ruang Kontrol 🏭 ".repeat(10);
+        let result = sanitize_brand_input(&title);
+        // The 200th character is a space, trimmed off the end.
+        assert_eq!(result.chars().count(), MAX_BRAND_LENGTH - 1);
+        assert!(title.starts_with(&result));
+
+        // Multi-byte characters straddling the byte the old code cut at.
+        for s in [
+            "é".repeat(150),
+            "🏭".repeat(250),
+            format!("a{}", "—".repeat(300)),
+        ] {
+            let result = sanitize_brand_input(&s);
+            assert!(result.chars().count() <= MAX_BRAND_LENGTH);
+            assert!(s.starts_with(&result));
+        }
+        assert_eq!(sanitize_brand_input("Ruang Kontrol 🏭"), "Ruang Kontrol 🏭");
+    }
+
+    #[test]
+    fn test_sanitize_logo_keeps_valid_logos_whole() {
+        let logo = format!(
+            "data:image/png;base64,{}",
+            "A".repeat(MAX_LOGO_FILE_BYTES.div_ceil(3) * 4)
+        );
+        assert!(logo.len() <= MAX_LOGO_BYTES, "a 100 KB file fits");
+        assert_eq!(sanitize_logo_input(&format!("  {logo} ")).unwrap(), logo);
+        assert_eq!(
+            sanitize_logo_input("https://example.com/l.svg").unwrap(),
+            "https://example.com/l.svg"
+        );
+        assert_eq!(sanitize_logo_input("").unwrap(), "");
+    }
+
+    #[test]
+    fn test_sanitize_logo_rejects_oversized_logos_with_400() {
+        use axum::response::IntoResponse;
+        let logo = "A".repeat(MAX_LOGO_BYTES + 1);
+        let err = sanitize_logo_input(&logo).unwrap_err();
+        assert_eq!(err.0, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.1.contains("100 KB"), "{}", err.1);
+
+        // Through `?` in a handler it answers 400, not 500.
+        fn handler(logo: &str) -> Result<String, crate::api::AppError> {
+            Ok(sanitize_logo_input(logo)?)
+        }
+        let resp = handler(&logo).unwrap_err().into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn test_sanitize_brand_color() {
+        assert_eq!(sanitize_brand_color(" #22C55E ").unwrap(), "#22c55e");
+        assert_eq!(sanitize_brand_color("#0af").unwrap(), "#0af");
+        assert_eq!(sanitize_brand_color("").unwrap(), "");
+        for bad in ["22c55e", "#22c55", "#ggg", "red", "#22c55e;x", "url(x)"] {
+            assert!(sanitize_brand_color(bad).is_err(), "{bad}");
+        }
+    }
+
     fn req_from(peer: &str, headers: &[(&str, &str)]) -> axum::extract::Request {
         let mut b = axum::http::Request::builder();
         for (k, v) in headers {

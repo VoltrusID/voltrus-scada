@@ -123,8 +123,10 @@ JetBrains Mono for values.
   **Admin** (as the web client's group): **Users** (admin only): every
   account with its role; N adds one (name, the password typed twice in
   masked fields, role), Enter changes the role and optionally the password,
-  P resets a password, ⌫ deletes after a confirmation; the console refuses
-  demoting or deleting yourself or the last admin. **Roles** (admin only):
+  P resets a password, the row's disable button disables an account after a
+  confirmation (or enables it again at once; the status column says
+  "disabled"), ⌫ deletes after a confirmation; the console refuses
+  demoting, disabling or deleting yourself or the last enabled admin. **Roles** (admin only):
   the server's RBAC roles with their permissions picked from the 24 the
   server accepts. **Notifications** (operators): who hears of a tag's (or
   every tag's) alarms by email, webhook or push; N, Enter, Space turns a
@@ -556,7 +558,9 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   every request, so a role change applies at once and a deleted user is
   signed out; a role or password change or a deletion also revokes the
   user's refresh tokens. `PUT /users/{id}` with `disabled: true` disables an
-  account: its sessions end at once, login answers 403 "Account disabled"
+  account: its sessions end at once, its refresh tokens are revoked and
+  refresh refuses a disabled account even with a token that was not,
+  login answers 403 "Account disabled"
   (after a correct password), and `disabled: false` re-enables it; the
   `GET /users` rows carry `disabled`. Deleting a user also deletes their
   notifications and keeps the annotations and shift handovers they wrote under

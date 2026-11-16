@@ -543,7 +543,20 @@ fn delete_plain(tx: &Transaction<'_>, p: &Plain, row: &Row, ctx: &mut Ctx) -> Re
 
 /// Replace natural keys inside flow nodes by the ids the engine reads.
 pub fn flow_import(entity: &mut Mapping, ctx: &Ctx) -> Result<()> {
-    let Some(Value::Sequence(nodes)) = entity.get_mut("nodes") else {
+    if let Some(Value::Mapping(trigger)) = entity.get_mut("trigger")
+        && let Some(Value::Sequence(refs)) = trigger.remove("tags")
+    {
+        let mut ids = Vec::new();
+        for r in refs.iter().filter_map(Value::as_str) {
+            let id = ctx
+                .tag_id_by_ref
+                .get(r)
+                .with_context(|| format!("flow trigger refers to unknown tag '{r}'"))?;
+            ids.push(int(*id));
+        }
+        trigger.insert(text("data_source_ids"), Value::Sequence(ids));
+    }
+    let Some(nodes) = super::export::flow_node_list(entity) else {
         return Ok(());
     };
     for node in nodes {

@@ -1,0 +1,52 @@
+/* React Flow themed with the app's CSS variables (light and dark). */
+.vf-editor .react-flow {
+  --xy-background-color: var(--bg);
+  --xy-background-pattern-color: var(--border-light);
+  --xy-edge-stroke: var(--text-muted);
+  --xy-edge-stroke-selected: var(--text);
+  --xy-edge-stroke-width: 1.6;
+  --xy-connectionline-stroke: var(--green);
+  --xy-minimap-background-color: var(--card);
+  --xy-minimap-mask-background-color: color-mix(in srgb, var(--bg) 70%, transparent);
+  --xy-minimap-node-background-color: var(--border-light);
+  --xy-controls-button-background-color: var(--card);
+  --xy-controls-button-background-color-hover: var(--hover-overlay);
+  --xy-controls-button-color: var(--text);
+  --xy-controls-button-border-color: var(--border);
+  --xy-selection-background-color: color-mix(in srgb, var(--green) 8%, transparent);
+  --xy-selection-border: 1px dashed var(--green);
+  --xy-node-boxshadow-selected: none;
+  font-family: var(--font-ui);
+}
+
+.vf-editor .react-flow__node-flow { padding: 0; border: none; background: none; }
+.vf-editor .react-flow__minimap { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.vf-editor .react-flow__controls { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); }
+.vf-editor .react-flow__controls-button { border-bottom: 1px solid var(--border); }
+
+.vf-editor .vf-handle {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--card); border: 2px solid var(--text-muted);
+  transition: border-color .12s, background .12s;
+}
+.vf-editor .vf-handle-in { border-radius: 3px; }
+.vf-editor .vf-handle:hover,
+.vf-editor .react-flow__handle.connectingto,
+.vf-editor .react-flow__handle.valid { border-color: var(--green); background: var(--green); }
+.vf-editor .vf-handle-hit { border-color: var(--green); background: var(--green); }
+
+.vf-editor .react-flow__edge.selected .react-flow__edge-path { stroke: var(--green); stroke-width: 2.2; }
+.vf-editor .react-flow__edge:hover .react-flow__edge-path { stroke: var(--text); }
+.vf-editor .vf-edge-taken .react-flow__edge-path { stroke: var(--green); stroke-width: 2.4; }
+.vf-editor .vf-edge-dim .react-flow__edge-path { opacity: .3; }
+
+.vf-editor .vf-palette-item:hover { background: var(--hover-overlay); }
+.vf-editor .vf-palette-item:focus-visible { outline: 2px solid var(--green); outline-offset: -2px; }
+.vf-editor .vf-title:hover:not(:read-only) { border-color: var(--border) !important; }
+.vf-editor .vf-title:focus { border-color: var(--green) !important; outline: none; }
+.vf-editor button:disabled { opacity: .45; cursor: default; }
+
+.vf-kbd {
+  font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--bg);
+}

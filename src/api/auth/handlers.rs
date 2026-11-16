@@ -41,9 +41,16 @@ pub async fn login(
             peer.as_ref().map(|Extension(ConnectInfo(p))| p),
             &headers,
         ));
-    let source_ip = Some(client_ip);
+    let source_ip = Some(client_ip.clone());
     let user_agent = extract_user_agent(&headers);
-    let rate_key_user = format!("login:{}", body.username);
+    // A shared account's per-username limit is kept per address, or one
+    // visitor typing wrong passwords would shut everyone else out of it.
+    let listed_shared = state.public_demo.is_listed(&body.username);
+    let rate_key_user = if listed_shared {
+        format!("login:{}@{}", body.username, client_ip)
+    } else {
+        format!("login:{}", body.username)
+    };
 
     // Check username-based rate limit
     if !state.login_rate_limiter.is_allowed(&rate_key_user) {
@@ -61,9 +68,16 @@ pub async fn login(
     let user = state.storage.get_user_by_username(&body.username).await?;
     let (response_status, response_json, new_jar) = match user {
         Some(user) => {
-            // Check account lockout
+            let shared = state.public_demo.is_shared(&user.username, &user.role);
+            if listed_shared && !shared {
+                tracing::warn!(
+                    "shared_accounts lists '{}', but it is an admin account: not treated as shared",
+                    user.username
+                );
+            }
+            // Check account lockout (a shared account is never locked)
             let now_secs = crate::timeutil::now_secs();
-            if let Some(locked_until) = user.locked_until {
+            if let Some(locked_until) = user.locked_until.filter(|_| !shared) {
                 if locked_until > now_secs {
                     let _ = state
                         .storage
@@ -92,6 +106,7 @@ pub async fn login(
                         source_ip.clone(),
                         user_agent.clone(),
                         secure,
+                        shared,
                     )
                     .await
                 }
@@ -106,6 +121,7 @@ pub async fn login(
                     source_ip.clone(),
                     user_agent.clone(),
                     secure,
+                    shared,
                 )
                 .await
             }
@@ -150,16 +166,20 @@ async fn check_password_and_login(
     source_ip: Option<String>,
     user_agent: Option<String>,
     secure: bool,
+    shared: bool,
 ) -> (StatusCode, serde_json::Value, CookieJar) {
     if !verify_password(&body.password, &user.password_hash) {
         state.login_rate_limiter.record_attempt(rate_key_user);
-        let _ = state
-            .storage
-            .increment_failed_attempts(&body.username)
-            .await;
+        // A shared account counts no failures: anyone could lock it for everyone.
+        if !shared {
+            let _ = state
+                .storage
+                .increment_failed_attempts(&body.username)
+                .await;
+        }
 
         // Lock account after 10 failed attempts
-        if user.failed_attempts + 1 >= 10 {
+        if !shared && user.failed_attempts + 1 >= 10 {
             let lock_until = now_secs + 900; // 15 minutes
             let _ = state.storage.lock_account(&body.username, lock_until).await;
             tracing::warn!(
@@ -176,10 +196,11 @@ async fn check_password_and_login(
                 source_ip: source_ip.clone(),
                 user_agent: user_agent.clone(),
                 username: Some(body.username.clone()),
-                details: Some(format!(
-                    "Invalid password (attempt {})",
-                    user.failed_attempts + 1
-                )),
+                details: Some(if shared {
+                    "Invalid password (shared account)".to_string()
+                } else {
+                    format!("Invalid password (attempt {})", user.failed_attempts + 1)
+                }),
             })
             .await;
 
@@ -227,7 +248,9 @@ async fn check_password_and_login(
             "ok": true,
             "username": body.username,
             "role": user.role,
-            "must_change_password": user.must_change_password,
+            // Nobody can change a shared account's password, so never ask.
+            "must_change_password": user.must_change_password && !shared,
+            "shared": shared,
         }),
         jar,
     )
@@ -334,7 +357,13 @@ pub async fn auth_me(State(state): State<AppState>, jar: CookieJar) -> impl Into
     }
     match crate::api::auth_middleware::verify_session(&state, token).await {
         Some(claims) => {
-            Json(json!({"authenticated": true, "username": claims.username, "role": claims.role}))
+            let shared = state.public_demo.is_shared(&claims.username, &claims.role);
+            Json(json!({
+                "authenticated": true,
+                "username": claims.username,
+                "role": claims.role,
+                "shared": shared,
+            }))
         }
         None => Json(json!({"authenticated": false})),
     }
@@ -371,7 +400,7 @@ pub async fn refresh_token(
     }
 
     let refresh_hash = hash_refresh_token(refresh_token);
-    match state
+    let valid = match state
         .storage
         .get_refresh_token_by_hash(&refresh_hash)
         .await?
@@ -379,14 +408,18 @@ pub async fn refresh_token(
         Some(rt) if rt.revoked_at.is_none() && rt.expires_at > crate::timeutil::now_secs() => {
             // Revoke old token (rotation)
             let _ = state.storage.revoke_refresh_token(&rt.token_hash).await;
-
-            // Get user
-            let user = state
+            // A deleted or disabled account gets no new session, even from a
+            // refresh token that was never revoked.
+            state
                 .storage
                 .get_user_by_username(&rt.username)
                 .await?
-                .ok_or_else(|| anyhow::anyhow!("User not found"))?;
-
+                .filter(|user| !user.disabled)
+        }
+        _ => None,
+    };
+    match valid {
+        Some(user) => {
             // Create new tokens
             let new_access = create_token(&user.username, &user.role, &state.auth_secret);
             let new_refresh_raw = generate_refresh_token();
@@ -423,7 +456,7 @@ pub async fn refresh_token(
             let jar = jar.add(access_cookie).add(refresh_cookie);
             Ok((jar, Json(json!({"ok": true}))).into_response())
         }
-        _ => {
+        None => {
             // Clear cookies on invalid refresh
             let access_cookie = axum_extra::extract::cookie::Cookie::build(("voltrus_token", ""))
                 .max_age(time::Duration::seconds(0))
@@ -478,6 +511,11 @@ pub async fn change_password(
     Extension(auth): Extension<super::super::AuthUser>,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    if state.public_demo.is_shared(&auth.username, &auth.role) {
+        return Err(AppError::forbidden(
+            crate::api::shared_accounts::SHARED_ACCOUNT_REFUSAL,
+        ));
+    }
     if body.new_password.len() < 8 {
         return Ok((
             StatusCode::BAD_REQUEST,

@@ -21,7 +21,7 @@ async function doRefresh(): Promise<boolean> {
   return refreshing
 }
 
-async function fetchWithRefresh(
+export async function fetchWithRefresh(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
