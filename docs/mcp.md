@@ -113,8 +113,10 @@ saying so.
 | `list_screens` | read | Screens (dashboards). |
 | `create_screen` | write | Create an empty screen. |
 | `add_tag_to_screen` | write | Place a tag on a screen. |
-| `list_flows` | read | Automation flows. |
-| `create_flow` | write | Create a flow (trigger plus node pipeline); validated first, disabled by default. |
+| `list_flows` | read | Automation flows (nodes as the v2 graph). |
+| `flow_node_types` | read | The node and trigger catalogue: fields, output ports, side effects. |
+| `create_flow` | write | Create a flow (trigger plus a node pipeline or a v2 graph of nodes and edges); validated first, disabled by default. See [flows.md](flows.md). |
+| `test_flow` | write | Dry-run a flow definition on a sample payload: per-node trace, nothing written or sent. |
 | `start_flow` / `stop_flow` | write | Enable or disable a flow. |
 | `write_tag` | write | Queue a setpoint write through the tag's write policy. |
 | `get_command_status` | read | Outcome of a queued write. |

@@ -142,7 +142,10 @@ Nothing in a project refers to an AUTOINCREMENT id.
 * **Layouts.** The grid layout items the web client stores as `{i: "<tag id>", x, y, w, h}`
   are written as `{tag: <ref>, x, y, w, h}`. An `i` that matches no tag is kept as is.
 * **Flows.** `write_out` nodes use `tag: <ref>` instead of `data_source_id`;
-  `script` nodes use `script: <script name>` instead of `script_id`.
+  `script` nodes use `script: <script name>` instead of `script_id`, in a v1
+  pipeline and in the `nodes` list of a v2 graph alike
+  ([flows.md](flows.md)). A `tag_change` trigger uses `tags: [<ref>, ...]`
+  instead of `data_source_ids`.
 * **Screens.** `sim_profile` is a simulation profile name. A screen without a
   `name` has no row of its own (the overview screen `__overview` only carries
   layouts).
