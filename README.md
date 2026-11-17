@@ -12,8 +12,18 @@ to read in
 under the Voltrus Enterprise License, which is not an open-source licence.
 See [Core vs Enterprise](#core-vs-enterprise).
 
-Built by [JoyoDigitama](https://joyodigitama.com). Website and pricing:
-<https://voltrus.id/voltrus-scada>.
+Built by [JoyoDigitama](https://joyodigitama.com).
+
+[Download](https://voltrus.id/voltrus-scada/#download) ·
+[Quick start](#quick-start) ·
+[Docs](https://voltrus.id/voltrus-scada/docs/) ·
+[Pricing](https://voltrus.id/voltrus-scada/#pricing) ·
+[Compare with Ignition, AVEVA and FUXA](https://voltrus.id/compare/) ·
+[Help with a site deployment](mailto:support@voltrus.id?subject=Voltrus%20SCADA%20site)
+
+Core is free for commercial use, with no device, tag or retention limits.
+Integrator and Enterprise licences are sold per site, lifetime or monthly
+([prices](https://voltrus.id/voltrus-scada/#pricing)).
 
 ## Core features
 
@@ -127,6 +137,29 @@ are Core plus the add-on. Details of the split and how it is built:
 
 ## Quick start
 
+### Run a prebuilt binary
+
+Prebuilt Core binaries for Linux (x86_64, aarch64 for a Raspberry Pi), Windows
+(x86_64) and macOS are attached to each
+[release](https://github.com/VoltrusID/voltrus-scada/releases/latest). The web
+client is inside the executable. On Linux x86_64 (use the file name of the
+latest release, and `aarch64` on a Pi):
+
+```bash
+V=v0.50.1
+curl -LO https://github.com/VoltrusID/voltrus-scada/releases/download/$V/voltrus-core-$V-linux-x86_64.tar.gz
+tar xzf voltrus-core-$V-linux-x86_64.tar.gz && cd voltrus-core-$V-linux-x86_64
+cp config.yaml.example config.yaml   # set auth_secret and your devices
+./voltrus config.yaml                # then open http://localhost:3000
+```
+
+On Windows, unzip the archive and run `voltrus.exe config.yaml`. The Linux
+archive also has `modbus-sim`, a simulated power meter on port 5020, and a
+`voltrus.service` unit for systemd. Sign-in and the first admin password are
+described below under "Open http://localhost:3000".
+
+### Build from source
+
 You need Rust (stable, edition 2024) and Node.js 22.12 or newer (the client's
 Vite needs it).
 
@@ -182,12 +215,6 @@ password in the log instead and write no file.
 
 Set `auth_secret` in the config. Without it a new secret is generated at every
 start, which signs everyone out and makes a stored AI provider key unreadable.
-
-Prebuilt Core binaries for Linux (x86_64, aarch64), Windows (x86_64) and macOS
-are attached to each [release](https://github.com/VoltrusID/voltrus-scada/releases).
-The web client is inside the executable: unpack, edit `config.yaml.example`
-(save it as `config.yaml`), run `./voltrus config.yaml` (`voltrus.exe` on Windows).
-The Linux archive also has `modbus-sim`, a simulated power meter on port 5020.
 
 To build with fewer protocols:
 
