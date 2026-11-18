@@ -65,9 +65,12 @@ TAGS = {
     'power_factor': ('Power Factor', '', 0.7, 1, 0, 0, 3, None, None),
     'flash_mix_level': ('Flash Mix Tank T-202 Level', '%', 0, 100, 95, 98, 1, None, None),
     'clarifier_rake_run': ('Clarifier Rake Drive',) + D,
+    'cl2_dose_sp': ('Chlorine Dose Setpoint', 'mg/L', 0, 5, 0, 0, 2, None, None),
 }
 WRITABLE = ['p101a_run', 'p101b_run', 'xv101_open', 'coag_pump_run', 'flash_mixer_run', 'sludge_pump_run', 'cl2_pump_run',
             'p301a_run', 'p301b_run', 'p301c_run', 'backwash_pump_run', 'air_blower_run', 'clarifier_rake_run']
+# Setpoints: (write_min, write_max). A write outside the range is refused; the plant clamps to 0-5 mg/L itself.
+SETPOINTS = {'cl2_dose_sp': (1.0, 3.0)}
 
 
 class Api:
@@ -336,7 +339,10 @@ def main():
         })
     for key in WRITABLE:
         api.call('PATCH', f'/api/v1/data-sources/{ids[key]}/write-policy', {'writable': True, 'write_min': 0, 'write_max': 1})
-    print(f'{len(TAGS)} tags configured, {len(WRITABLE)} writable')
+    for key, (lo, hi) in SETPOINTS.items():
+        api.call('PATCH', f'/api/v1/data-sources/{ids[key]}/write-policy',
+                 {'writable': True, 'write_min': lo, 'write_max': hi, 'write_max_rate': 10})
+    print(f'{len(TAGS)} tags configured, {len(WRITABLE) + len(SETPOINTS)} writable')
 
     screens = {sc['name']: sc['id'] for sc in api.call('GET', '/api/v1/screens')}
     plan = [('Plant Overview', overview), ('Filtration', filtration), ('High-Lift & Power', power)]
