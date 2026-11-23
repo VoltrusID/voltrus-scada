@@ -1,7 +1,8 @@
 import { completeSignature } from '../signature/logic'
 import { canPromptForSignature, requestSignature } from '../signature/prompt'
 import {
-  isPasswordChangeRequired, PasswordChangeRequiredError, sessionEndReason, type SessionEndReason,
+  isPasswordChangeRequired, PasswordChangeRequiredError, refreshRefused, SessionExpiredError,
+  sessionEndReason, type SessionEndReason,
 } from '../session'
 
 // Global in-flight refresh promise to prevent multiple simultaneous refresh attempts
@@ -33,7 +34,10 @@ export async function checkPasswordChange(r: Response): Promise<Response> {
   throw new PasswordChangeRequiredError(message)
 }
 
-/** Called when a refresh is refused because the session hit its idle or absolute limit. */
+/**
+ * Called when the server refuses to refresh the session: it hit its idle or
+ * absolute limit, or it is gone for another reason (`session_ended`).
+ */
 export function onSessionEnded(fn: SessionEndedListener): () => void {
   sessionEndedListeners.add(fn)
   return () => { sessionEndedListeners.delete(fn) }
@@ -49,9 +53,9 @@ async function doRefresh(): Promise<boolean> {
         method: 'POST',
         credentials: 'include',
       })
-      if (r.status === 401) {
-        const reason = sessionEndReason(await r.json().catch(() => null))
-        if (reason) sessionEndedListeners.forEach(fn => fn(reason))
+      if (refreshRefused(r.status)) {
+        const reason = sessionEndReason(await r.json().catch(() => null)) ?? 'session_ended'
+        sessionEndedListeners.forEach(fn => fn(reason))
       }
       return r.ok
     } catch {
@@ -75,7 +79,7 @@ export async function fetchWithRefresh(
     }
     // Don't hard-redirect — throw so React Query handles it gracefully.
     // The App component's auth gate will show the login screen.
-    throw new Error('Session expired')
+    throw new SessionExpiredError()
   }
   return checkPasswordChange(r)
 }

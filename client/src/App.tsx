@@ -32,7 +32,7 @@ import { roleAbilities } from './roles'
 import { RoleContext } from './RoleContext'
 import { SignatureDialog } from './signature/SignatureDialog'
 import { cancelAllSignaturePrompts } from './signature/prompt'
-import { NO_SESSION_POLICY, parseSessionPolicy, sessionEndMessage, type SessionPolicy } from './session'
+import { NO_SESSION_POLICY, sessionEndMessage, sessionFromAuthBody, type AuthSession, type SessionPolicy } from './session'
 import { onPasswordChangeRequired, onSessionEnded } from './queries/fetch'
 import { useSessionActivity } from './hooks/useSessionActivity'
 import { extractDashboardWidgets, withDashboardWidgets, type DashboardWidget } from './dashboardWidgets'
@@ -289,14 +289,22 @@ export function AppInner() {
   const effectiveLayouts = defaultLayouts ?? screenLayouts
 
   // ── Auth ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    fetchJson<any>('/api/v1/auth/me').then(d => {
-      setSharedAccount(d.shared === true)
-      // A reload while the password must still be changed comes back to that screen.
-      setMustChangePassword(d.must_change_password === true); setPasswordExpired(d.password_expired === true)
-      setAuthed(d.authenticated === true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setSessionPolicy(parseSessionPolicy(d)); setAuthLoading(false)
-    }).catch(() => { setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser(''); setAuthLoading(false) })
+  // Every way in (password login, SSO, a reload) applies the same fields, so
+  // the session policy and an expired password are never left behind.
+  const applySession = useCallback((sess: AuthSession) => {
+    setSharedAccount(sess.shared)
+    setMustChangePassword(sess.mustChangePassword); setPasswordExpired(sess.passwordExpired)
+    setAuthed(sess.authenticated); setAuthRole(sess.role); setAuthUser(sess.username); setSessionPolicy(sess.policy)
   }, [])
+  const signedOut = useCallback(() => {
+    setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser(''); setSessionPolicy(NO_SESSION_POLICY)
+  }, [])
+
+  useEffect(() => {
+    // A reload while the password must still be changed comes back to that screen.
+    fetchJson<any>('/api/v1/auth/me').then(d => { applySession(sessionFromAuthBody(d)); setAuthLoading(false) })
+      .catch(() => { signedOut(); setAuthLoading(false) })
+  }, [applySession, signedOut])
 
   const handleLogin = async (username: string, password: string) => {
     setLoginError('')
@@ -308,25 +316,48 @@ export function AppInner() {
         const body = await r.json().catch(() => ({}))
         throw new Error(body.error || `Login failed: ${r.status}`)
       }
-      const d = await r.json(); setSharedAccount(d.shared === true); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || username); setMustChangePassword(!!d.must_change_password)
-      setPasswordExpired(d.password_expired === true); setSessionPolicy(parseSessionPolicy(d))
+      applySession(sessionFromAuthBody(await r.json(), username))
     } catch (e: any) { setLoginError(e.message || 'Login failed') }
   }
 
+  // SSO and other add-on logins hand over what their endpoint returned; the
+  // session policy and password expiry come from /auth/me, as for a reload.
   const handleExternalLogin = (d: { username?: string; role?: string; must_change_password?: boolean; shared?: boolean }) => {
-    setSharedAccount(d.shared === true); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setMustChangePassword(!!d.must_change_password)
+    setLoginError('')
+    applySession(sessionFromAuthBody({ ...d, authenticated: true }))
+    fetchJson<any>('/api/v1/auth/me').then(me => { if (me?.authenticated !== false) applySession(sessionFromAuthBody(me, d.username ?? '')) }).catch(() => {})
   }
 
-  const handleLogout = async () => { cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData(); await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser('') }
+  // Leaving the session drops everything fetched with it, so the next user
+  // (or the same one after a timeout) never sees the previous user's data.
+  const endSession = useCallback(() => {
+    cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData()
+    signedOut()
+    queryClient.clear()
+  }, [disconnectWS, storeActions, signedOut, queryClient])
 
-  // The server ended the session (idle or absolute limit): sign out and say why on the login screen.
+  // False from the moment the user leaves, so a refused refresh during the logout
+  // request is not reported as an ended session.
+  const authedRef = useRef(authed)
+  useEffect(() => { authedRef.current = authed }, [authed])
+
+  const handleLogout = async () => {
+    authedRef.current = false
+    cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData()
+    await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {})
+    endSession()
+  }
+
+  // The server ended the session (idle or absolute limit, or any refused
+  // refresh): sign out once and say why on the login screen.
   const idleTimeoutRef = useRef<number | null>(null)
   idleTimeoutRef.current = sessionPolicy.idleTimeoutSecs
   useEffect(() => onSessionEnded(reason => {
-    cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData()
-    setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser('')
+    if (!authedRef.current) return
+    authedRef.current = false
+    endSession()
     setLoginError(sessionEndMessage(reason, idleTimeoutRef.current))
-  }), [disconnectWS, storeActions])
+  }), [endSession])
   useSessionActivity(sessionPolicy.idleTimeoutSecs, authed)
 
   // The live feed runs while the session may use the app; the server refuses
