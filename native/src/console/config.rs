@@ -30,19 +30,31 @@ pub fn load() -> Saved {
         .unwrap_or_default()
 }
 
+/// Where a `ca_file` is: a relative one is read from the config's own
+/// directory, not from wherever the console was started.
+fn resolve_ca_file(ca_file: PathBuf, config: Option<&std::path::Path>) -> PathBuf {
+    if ca_file.is_absolute() {
+        return ca_file;
+    }
+    match config.and_then(std::path::Path::parent) {
+        Some(dir) => dir.join(ca_file),
+        None => ca_file,
+    }
+}
+
 /// Trust the `ca_file` the config names, if any, before the first
-/// request. A file that cannot be read is reported; the system's store
-/// still serves.
+/// request. Problems with it are kept by `tls` for the sign-in card (and
+/// printed); the system's store still serves.
 pub fn trust_ca_file() {
-    let Some(path) = load().ca_file else {
+    let Some(ca_file) = load().ca_file else {
         return;
     };
-    match voltrus_scada_native::tls::add_ca_file(&path) {
-        Ok(count) => eprintln!(
+    let file = resolve_ca_file(ca_file, path().as_deref());
+    if let Ok(count) = voltrus_scada_native::tls::add_ca_file(&file) {
+        eprintln!(
             "voltrus-native: trusting {count} certificate(s) from {}",
-            path.display()
-        ),
-        Err(error) => eprintln!("voltrus-native: ca_file not used: {error}"),
+            file.display()
+        );
     }
 }
 
@@ -98,6 +110,13 @@ mod tests {
             (back.url.as_deref(), back.username),
             (Some("http://x"), None)
         );
+        let config = PathBuf::from("/home/op/.config/voltrus-native/config.toml");
+        assert_eq!(
+            resolve_ca_file("plant-ca.pem".into(), Some(&config)),
+            PathBuf::from("/home/op/.config/voltrus-native/plant-ca.pem")
+        );
+        let absolute = std::env::temp_dir().join("ca.pem");
+        assert_eq!(resolve_ca_file(absolute.clone(), Some(&config)), absolute);
         let with_ca: Saved = toml::from_str("ca_file = \"/etc/plant/ca.pem\"\n").unwrap();
         assert_eq!(with_ca.ca_file, Some(PathBuf::from("/etc/plant/ca.pem")));
         assert!(

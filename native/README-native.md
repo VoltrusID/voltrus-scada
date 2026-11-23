@@ -370,7 +370,10 @@ sudo apt-get install pkg-config clang cmake libasound2-dev libfontconfig-dev \
 TLS (`https://` and `wss://`) trusts the operating system's certificate
 store and the bundled webpki roots. For a plant CA that is not installed on
 the computer, name a PEM file in the console's `config.toml`:
-`ca_file = "/path/to/plant-ca.pem"`. Certificates are always verified.
+`ca_file = "/path/to/plant-ca.pem"` (a relative path is read from
+`config.toml`'s directory). Certificates in it that are not valid are left
+out, and the sign-in card says what could not be used. Certificates are
+always verified.
 
 ## Layout
 

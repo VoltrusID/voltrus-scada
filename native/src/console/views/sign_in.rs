@@ -18,6 +18,31 @@ fn change_reason(expired: bool) -> &'static str {
     }
 }
 
+/// The problems with the console's trust settings, as a warning line.
+fn trust_note(theme: &Theme) -> Option<AnyElement> {
+    let problems = voltrus_scada_native::tls::problems();
+    if problems.is_empty() {
+        return None;
+    }
+    Some(
+        div()
+            .flex()
+            .items_start()
+            .gap(SPACE_4)
+            .px(SPACE_6)
+            .py(SPACE_5)
+            .rounded(RADIUS_MD)
+            .bg(theme.warning.alpha(0.1))
+            .border_1()
+            .border_color(theme.warning.alpha(0.3))
+            .text_size(FONT_SMALL)
+            .text_color(theme.warning)
+            .child(vt_ui::icon(Icon::CircleAlert, ICON_MD, theme.warning))
+            .child(div().flex_1().min_w_0().child(problems.join("\n")))
+            .into_any_element(),
+    )
+}
+
 pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
     let changing = console.phase == Phase::ChangePassword;
@@ -113,6 +138,8 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                 ),
         )
         .child(fields)
+        // A `ca_file` in config.toml that could not be used (in full).
+        .children(trust_note(&theme))
         .when_some(console.error.clone(), |this, error| {
             this.child(
                 div()
