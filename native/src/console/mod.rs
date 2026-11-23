@@ -7,7 +7,7 @@
 pub mod alarms;
 mod anim;
 mod audio;
-mod config;
+pub mod config;
 pub mod keys;
 mod meter;
 mod nav;

@@ -326,6 +326,7 @@ fn main() -> ExitCode {
             cx.set_menus(console::menus());
             cx.on_action(|_: &console::Quit, cx| cx.quit());
 
+            console::config::trust_ca_file();
             let (runtime, events) = match voltrus_scada_native::runtime::start() {
                 Ok(started) => started,
                 Err(error) => {
