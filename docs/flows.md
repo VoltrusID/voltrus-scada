@@ -133,7 +133,10 @@ Shorthands: `@hourly`, `@daily` (`@midnight`), `@weekly`, `@monthly`,
 Answers: 202 `{accepted: true}` (the run happens in the background), 400 when
 the body is not JSON, 401 for a missing or wrong token, 409 when the flow is
 stopped, its trigger is not `webhook`, or a run is in progress, 429 past 30
-calls per flow per minute (wrong tokens count too).
+accepted calls per flow per minute, and 429 instead of 401 for a client
+address's missing or wrong tokens past 30 in a minute. Wrong tokens do not use
+up the flow's share, and a caller with the right token is never turned away
+because of them.
 
 ## Nodes
 
@@ -166,7 +169,7 @@ objects, such as switch and threshold rules: the fields of one item).
 | `write_out` | output | out, error | yes | Writes to tag `data_source_id` through the command queue and its write policy. Value: `value_expr`, or the first number in the payload. Refusals go to `error`. |
 | `alarm_out` | output | out | yes | Raises an alarm (`severity`, `source_key`, `message`). |
 | `notify` | output | out, error | yes | Sends `message` (and `subject`) through `channel`: `settings` (every notification setting of `source_key`: email, webhook, chat), `email` or `webhook` (to the comma-separated `to`). Failures go to `error`. |
-| `http_out` | output | out, error | yes | POSTs the payload as JSON to `url` (`headers`, `timeout_ms` default 5000, `retry_count`). |
+| `http_out` | output | out, error | yes | POSTs the payload as JSON to `url` (`headers`, `timeout_ms` default 5000, `retry_count`). No redirects; the address rules of `outbound_http` (README, Network behaviour) apply. Header values and the URL password read as `********` to roles that may not configure; saved back masked, they keep the stored values only while the URL keeps its scheme, host and port. |
 | `data_source_out` | output | out | yes | Publishes numeric `value_field` as metric `source_key` of device `flow_<flow id>`. |
 | `debug` | advanced | out | no | Records the message (or payload path `field`) in the run trace; passes it on unchanged. |
 

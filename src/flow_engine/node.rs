@@ -624,7 +624,9 @@ impl NodeConfig {
                         result: NodeResult::Continue(msg),
                     });
                 }
-                let client = reqwest::Client::new();
+                crate::security::outbound::check_url(url)
+                    .map_err(|e| format!("HttpOut refused: {e}"))?;
+                let client = crate::security::outbound::client(None);
                 let mut last_error: Option<String> = None;
                 for attempt in 0..=*retry_count {
                     let mut request = client.post(url).json(&msg.payload);
@@ -638,7 +640,9 @@ impl NodeConfig {
                             break;
                         }
                         Ok(resp) => last_error = Some(format!("HTTP {}", resp.status())),
-                        Err(e) => last_error = Some(e.to_string()),
+                        // The error text names the URL, password included: drop it
+                        // (the run's error is readable by every signed-in user).
+                        Err(e) => last_error = Some(e.without_url().to_string()),
                     }
                     if attempt < *retry_count {
                         tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt + 1)))
@@ -775,12 +779,13 @@ impl NodeConfig {
                             }
                         }
                         let input = serde_json::Value::Object(tag_input);
-                        let result = crate::script_engine::execute_script(
-                            &script.source,
-                            &input,
-                            script.cpu_limit_ms as u64,
-                            script.memory_limit_bytes as u64,
-                        );
+                        let result = crate::script_engine::run_script(
+                            script.source.clone(),
+                            input,
+                            script.cpu_limit_ms,
+                            script.memory_limit_bytes,
+                        )
+                        .await;
                         if !dry_run {
                             let _ = storage
                                 .create_script_execution(

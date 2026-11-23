@@ -26,9 +26,11 @@ pub async fn create_script(
     state: State<AppState>,
     Json(req): Json<CreateScriptRequest>,
 ) -> Result<(StatusCode, Json<Script>), StatusCode> {
-    let cpu_limit = req.cpu_limit_ms.unwrap_or(1000);
-    let mem_limit = req.memory_limit_bytes.unwrap_or(1048576);
-    let syntax_error = script_engine::validate_syntax(&req.source);
+    let (cpu_limit, mem_limit) = script_engine::clamp_limits(
+        req.cpu_limit_ms.unwrap_or(1000),
+        req.memory_limit_bytes.unwrap_or(1048576),
+    );
+    let syntax_error = script_engine::check_syntax(req.source.clone()).await;
     let id = state
         .storage
         .create_script(
@@ -56,7 +58,24 @@ pub async fn update_script(
 ) -> Result<Json<Script>, StatusCode> {
     // New source: re-validate and store the result, clearing the old error
     // when it now parses. No source: leave the stored error alone.
-    let syntax_error = req.source.as_deref().map(script_engine::validate_syntax);
+    let syntax_error = match &req.source {
+        Some(source) => Some(script_engine::check_syntax(source.clone()).await),
+        None => None,
+    };
+    // Limits are clamped to the engine's ranges (a negative one used to mean
+    // "no limit" once cast to u64).
+    let cpu_limit = req.cpu_limit_ms.map(|v| {
+        v.clamp(
+            *script_engine::CPU_LIMIT_MS.start(),
+            *script_engine::CPU_LIMIT_MS.end(),
+        )
+    });
+    let mem_limit = req.memory_limit_bytes.map(|v| {
+        v.clamp(
+            *script_engine::MEMORY_LIMIT_BYTES.start(),
+            *script_engine::MEMORY_LIMIT_BYTES.end(),
+        )
+    });
     state
         .storage
         .update_script(
@@ -64,8 +83,8 @@ pub async fn update_script(
             req.name.as_deref(),
             req.source.as_deref(),
             syntax_error.as_ref().map(Option::as_deref),
-            req.cpu_limit_ms,
-            req.memory_limit_bytes,
+            cpu_limit,
+            mem_limit,
             req.enabled,
         )
         .await
@@ -114,12 +133,13 @@ pub async fn test_script(
         })));
     }
 
-    let result = script_engine::execute_script(
-        &script.source,
-        &req.input,
-        script.cpu_limit_ms as u64,
-        script.memory_limit_bytes as u64,
-    );
+    let result = script_engine::run_script(
+        script.source.clone(),
+        req.input,
+        script.cpu_limit_ms,
+        script.memory_limit_bytes,
+    )
+    .await;
 
     let _ = state
         .storage

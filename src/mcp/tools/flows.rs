@@ -198,7 +198,10 @@ fn create_schema() -> Value {
 
 fn list_flows(ctx: &Ctx, _args: Value) -> ToolFuture<'_> {
     Box::pin(async move {
-        let out = from_handler(flows::list_flows(State(ctx.state.clone())).await).await?;
+        let out = from_handler(
+            flows::list_flows(State(ctx.state.clone()), Extension(ctx.user.clone())).await,
+        )
+        .await?;
         let count = out["flows"].as_array().map_or(0, Vec::len);
         let mut out = out;
         out["count"] = json!(count);

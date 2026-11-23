@@ -777,10 +777,6 @@ pub fn create_router(state: AppState) -> Router {
             get(system_docs::get_automation_docs),
         )
         .route("/api/v1/docs/export", get(system_docs::export_docs))
-        .route(
-            "/api/v1/docs/config-diff",
-            get(system_docs::get_config_diff),
-        )
         .route("/api/v1/auth/change-password", post(auth::change_password))
         .route("/api/v1/data", get(data::get_data))
         .route("/api/v1/data/export", get(data::export_data))
@@ -924,10 +920,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/ai/proposals/{id}", get(ai_copilot::get_proposal))
         .route("/api/v1/ai/templates", get(ai_copilot::list_templates))
         .route("/api/v1/templates", get(vertical_templates::list_templates))
-        .route(
-            "/api/v1/templates/preview",
-            post(vertical_templates::preview_template),
-        )
         .route(
             "/api/v1/device-templates",
             get(device_templates::list_templates),
@@ -1265,6 +1257,12 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/templates/{id}/instantiate",
             post(vertical_templates::instantiate_template),
+        )
+        // Preview expands the template like instantiate does, so it sits in the
+        // same configuration tier.
+        .route(
+            "/api/v1/templates/preview",
+            post(vertical_templates::preview_template),
         );
     // Operator routes whose handlers write no audit entry of their own: the
     // middleware records who changed what (see audit_writes_middleware).
@@ -1343,6 +1341,12 @@ pub fn create_router(state: AppState) -> Router {
             .route(
                 "/api/v1/config/snapshots/{id}",
                 get(config_snapshots::get_snapshot).delete(config_snapshots::delete_snapshot),
+            )
+            // Snapshots hold whole flows (http_out headers included), so the
+            // diff of two is for roles that configure, like the snapshots.
+            .route(
+                "/api/v1/docs/config-diff",
+                get(system_docs::get_config_diff),
             )
             .route(
                 "/api/v1/config/snapshots/{from_id}/diff/{to_id}",
@@ -1542,9 +1546,9 @@ pub fn create_router(state: AppState) -> Router {
 
 // Middleware types re-exported from middleware module
 pub use auth_middleware::{
-    ApiKeyAuth, AuthUser, admin_only_middleware, cookie_auth_middleware, demo_allowed_middleware,
-    effective_key_role, operator_allowed_middleware, role_allows_configuration,
-    role_allows_operation, role_allows_operational_writes,
+    ApiKeyAuth, AuthCredential, AuthUser, admin_only_middleware, cookie_auth_middleware,
+    demo_allowed_middleware, effective_key_role, operator_allowed_middleware,
+    role_allows_configuration, role_allows_operation, role_allows_operational_writes,
 };
 
 #[cfg(test)]

@@ -63,6 +63,14 @@ pub struct AppConfig {
     pub device_templates: DeviceTemplatesConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Where webhooks and flow HTTP nodes may send requests
+    /// (`crate::security::outbound`).
+    #[serde(default)]
+    pub outbound_http: crate::security::outbound::OutboundPolicy,
+    /// The reverse proxy or tunnel whose header names the client address.
+    /// Default: `X-Forwarded-For` from this machine (127.0.0.1, ::1).
+    #[serde(default)]
+    pub trusted_proxy: crate::security::TrustedProxy,
 }
 
 /// Longest accepted `login_hint`.

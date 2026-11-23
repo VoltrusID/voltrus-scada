@@ -252,9 +252,28 @@ impl Storage {
 /// Replace the contents of every versioned table inside `tx` with the rows
 /// stored in `snapshot_data`. The caller owns the transaction and decides when
 /// to commit, so a rollback can be combined with other writes atomically.
+///
+/// A flow's `webhook_token_hash` is never taken from the snapshot: each flow
+/// keeps the token it has now (a flow the snapshot brings back that does not
+/// exist now has none), so a rollback cannot bring back a token that was
+/// rotated because it leaked.
 fn apply_snapshot(tx: &rusqlite::Transaction<'_>, snapshot_data: &str) -> Result<()> {
     let snapshot: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(snapshot_data).context("Parse snapshot JSON failed")?;
+
+    let current_tokens: Vec<(String, String)> = {
+        match tx.prepare(
+            "SELECT id, webhook_token_hash FROM flows WHERE webhook_token_hash IS NOT NULL",
+        ) {
+            Ok(mut stmt) => stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .context("Read flow webhook tokens failed")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("Read flow webhook tokens failed")?,
+            // An old database without the column has no tokens to keep.
+            Err(_) => Vec::new(),
+        }
+    };
 
     for table in &VERSIONED_TABLES {
         if let Some(table_data) = snapshot.get(*table) {
@@ -305,6 +324,17 @@ fn apply_snapshot(tx: &rusqlite::Transaction<'_>, snapshot_data: &str) -> Result
                     }
                 }
             }
+        }
+    }
+
+    if snapshot.contains_key("flows") {
+        let _ = tx.execute("UPDATE flows SET webhook_token_hash = NULL", []);
+        for (id, hash) in &current_tokens {
+            tx.execute(
+                "UPDATE flows SET webhook_token_hash = ?1 WHERE id = ?2",
+                rusqlite::params![hash, id],
+            )
+            .context("Keep flow webhook token failed")?;
         }
     }
 
