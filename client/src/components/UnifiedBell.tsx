@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useUserNotifications, useMarkNotificationRead, useDismissNotification, type UserNotification } from '../queries'
 
 const ICON_BTN: React.CSSProperties = {
@@ -40,6 +41,7 @@ interface Props {
 }
 
 export function UnifiedBell({ authed, activeAlarmCount, alarmsUnavailable = false, onOpenAlarmPanel }: Props) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'notifications' | 'alarms'>('alarms')
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -89,7 +91,7 @@ export function UnifiedBell({ authed, activeAlarmCount, alarmsUnavailable = fals
     <div style={{ position: 'relative' }} ref={dropdownRef}>
       <button
         onClick={() => setOpen(o => !o)}
-        aria-label={`Notifications & alarms${totalCount > 0 ? ` (${totalCount})` : ''}${alarmsUnavailable ? ', alarms unavailable' : ''}`}
+        aria-label={`Notifications & alarms${totalCount > 0 ? ` (${totalCount})` : ''}${alarmsUnavailable ? `, ${t('alarms.unavailable')}` : ''}`}
         style={{
           ...ICON_BTN,
           borderColor: hasAlarm ? 'var(--crit)' : hasNotif ? 'var(--warn)' : 'var(--border)',
@@ -101,7 +103,7 @@ export function UnifiedBell({ authed, activeAlarmCount, alarmsUnavailable = fals
           <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
         </svg>
         {alarmsUnavailable && totalCount === 0 && (
-          <span title="Alarms unavailable" style={{
+          <span title={t('alarms.unavailable')} style={{
             position: 'absolute', top: -4, right: -4,
             background: 'var(--warn)', color: '#000', borderRadius: '50%', minWidth: 16, height: 16,
             fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800,
@@ -151,7 +153,7 @@ export function UnifiedBell({ authed, activeAlarmCount, alarmsUnavailable = fals
             <div style={{ overflowY: 'auto', flex: 1 }}>
               {alarmsUnavailable && (
                 <div role="alert" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontSize: 12, color: 'var(--warn)', fontWeight: 600 }}>
-                  Alarms unavailable: the server did not answer. The count may be out of date.
+                  {t('alarms.unavailableCount')}
                 </div>
               )}
               {activeAlarmCount === 0 && alarmsUnavailable ? null : activeAlarmCount === 0 ? (

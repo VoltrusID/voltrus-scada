@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import {
@@ -21,6 +22,7 @@ import { useRole } from './RoleContext'
 const FILTER_TABS = ['all', 'active', 'acknowledged', 'shelved'] as const
 const PANEL_TABS = ['alarms', 'analytics', 'audit'] as const
 type PanelTab = typeof PANEL_TABS[number]
+const PANEL_TAB_KEYS: Record<PanelTab, string> = { alarms: 'alarms.tabAlarms', analytics: 'alarms.tabAnalytics', audit: 'alarms.tabAudit' }
 /** The flood banner re-reads the alarm list and moves its 5-minute window this often. */
 const FLOOD_REFETCH_MS = 10_000
 
@@ -30,13 +32,7 @@ const PRIORITY_COLORS: Record<string, { bg: string; fg: string }> = {
   info:     { bg: 'rgba(59,130,246,.15)', fg: '#3b82f6' },
 }
 
-const SHELF_DURATIONS = [
-  { label: '15 min', secs: 900 },
-  { label: '30 min', secs: 1800 },
-  { label: '1 hr',   secs: 3600 },
-  { label: '4 hr',   secs: 14400 },
-  { label: '8 hr',   secs: 28800 },
-]
+const SHELF_DURATIONS = [900, 1800, 3600, 14400, 28800]
 
 const useIsMobile = () => {
   const [mobile, setMobile] = useState(window.innerWidth <= 768)
@@ -60,15 +56,16 @@ function formatDuration(secs: number): string {
 /* ── Summary header badges ─────────────────────────────────────── */
 
 function SummaryHeader({ isMobile }: { isMobile: boolean }) {
+  const { t } = useTranslation()
   const { data: summary, isLoading } = useAlarmSummary()
 
   if (isLoading || !summary) return null
 
   const badges = [
-    { label: 'Critical', value: summary.active_critical, color: PRIORITY_COLORS.critical },
-    { label: 'Warning',  value: summary.active_warning,  color: PRIORITY_COLORS.warning },
-    { label: 'Info',     value: summary.active_info,     color: PRIORITY_COLORS.info },
-    { label: 'Shelved',  value: summary.shelved,         color: { bg: 'rgba(148,163,184,.15)', fg: '#94a3b8' } },
+    { label: t('alarms.critical'), value: summary.active_critical, color: PRIORITY_COLORS.critical },
+    { label: t('alarms.warning'),  value: summary.active_warning,  color: PRIORITY_COLORS.warning },
+    { label: t('alarms.info'),     value: summary.active_info,     color: PRIORITY_COLORS.info },
+    { label: t('alarms.shelved'),  value: summary.shelved,         color: { bg: 'rgba(148,163,184,.15)', fg: '#94a3b8' } },
   ]
 
   return (
@@ -93,7 +90,7 @@ function SummaryHeader({ isMobile }: { isMobile: boolean }) {
           fontSize: isMobile ? 11 : 10, color: 'var(--muted)',
           display: 'flex', alignItems: 'center', gap: 4,
         }}>
-          <span style={{ fontWeight: 700 }}>{summary.recent_24h}</span> last 24h
+          <span style={{ fontWeight: 700 }}>{summary.recent_24h}</span> {t('alarms.last24h')}
         </div>
       )}
     </div>
@@ -103,6 +100,7 @@ function SummaryHeader({ isMobile }: { isMobile: boolean }) {
 /* ── Shelf form mini-dialog ────────────────────────────────────── */
 
 function ShelfForm({ alarmId, onClose }: { alarmId: number; onClose: () => void }) {
+  const { t } = useTranslation()
   const [duration, setDuration] = useState(1800)
   const [reason, setReason] = useState('')
   const shelfMut = useShelfAlarm()
@@ -119,24 +117,24 @@ function ShelfForm({ alarmId, onClose }: { alarmId: number; onClose: () => void 
       padding: 8, borderRadius: 6, border: '1px solid var(--border)',
       background: 'var(--card)', marginTop: 6,
     }}>
-      <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6, color: 'var(--fg)' }}>Shelf Alarm</div>
+      <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6, color: 'var(--fg)' }}>{t('alarms.shelfAlarm')}</div>
       <div style={{ display: 'flex', gap: 6, marginBottom: 6 }}>
-        {SHELF_DURATIONS.map(d => (
+        {SHELF_DURATIONS.map(secs => (
           <button
-            key={d.secs}
-            onClick={() => setDuration(d.secs)}
+            key={secs}
+            onClick={() => setDuration(secs)}
             style={{
               padding: '4px 8px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
-              border: `1px solid ${duration === d.secs ? 'var(--cyan)' : 'var(--border)'}`,
-              background: duration === d.secs ? 'rgba(6,182,212,.15)' : 'transparent',
-              color: duration === d.secs ? 'var(--cyan)' : 'var(--muted)',
+              border: `1px solid ${duration === secs ? 'var(--cyan)' : 'var(--border)'}`,
+              background: duration === secs ? 'rgba(6,182,212,.15)' : 'transparent',
+              color: duration === secs ? 'var(--cyan)' : 'var(--muted)',
             }}
-          >{d.label}</button>
+          >{secs < 3600 ? t('alarms.durationMin', { count: secs / 60 }) : t('alarms.durationHour', { count: secs / 3600 })}</button>
         ))}
       </div>
       <input
         type="text"
-        placeholder="Reason (optional)"
+        placeholder={t('alarms.reasonOptional')}
         value={reason}
         onChange={e => setReason(e.target.value)}
         style={{
@@ -150,12 +148,12 @@ function ShelfForm({ alarmId, onClose }: { alarmId: number; onClose: () => void 
         <button onClick={onClose} style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
           border: '1px solid var(--border)', background: 'transparent', color: 'var(--muted)',
-        }}>Cancel</button>
+        }}>{t('common.cancel')}</button>
         <button onClick={handleSubmit} disabled={shelfMut.isPending} style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
           border: '1px solid var(--cyan)', background: 'var(--cyan)', color: '#fff',
           opacity: shelfMut.isPending ? 0.6 : 1,
-        }}>Shelf</button>
+        }}>{t('alarms.shelf')}</button>
       </div>
     </div>
   )
@@ -169,6 +167,7 @@ function SwipeableAlarmRow({ alarm, isMobile, onAck, children }: {
   onAck: () => void
   children: React.ReactNode
 }) {
+  const { t } = useTranslation()
   const touchStartX = useRef(0)
   const currentX = useRef(0)
   const rowRef = useRef<HTMLDivElement>(null)
@@ -213,7 +212,7 @@ function SwipeableAlarmRow({ alarm, isMobile, onAck, children }: {
         background: 'rgba(34,197,94,.2)', borderRadius: 8, color: 'var(--ok)',
         fontWeight: 700, fontSize: 14,
       }}>
-        Ack &#10003;
+        {t('alarms.swipeAck')} &#10003;
       </div>
       {/* Sliding card */}
       <div
@@ -232,6 +231,7 @@ function SwipeableAlarmRow({ alarm, isMobile, onAck, children }: {
 /* ── Priority badge component ──────────────────────────────────── */
 
 function PriorityBadge({ priority, isMobile }: { priority: string; isMobile: boolean }) {
+  const { t } = useTranslation()
   const colors = PRIORITY_COLORS[priority] || PRIORITY_COLORS.info
   return (
     <span style={{
@@ -239,13 +239,14 @@ function PriorityBadge({ priority, isMobile }: { priority: string; isMobile: boo
       borderRadius: 4, fontSize: isMobile ? 12 : 10,
       fontWeight: 700, textTransform: 'uppercase',
       background: colors.bg, color: colors.fg,
-    }}>{priority}</span>
+    }}>{t(`alarms.${priority}`, { defaultValue: priority })}</span>
   )
 }
 
 /* ── Analytics tab ─────────────────────────────────────────────── */
 
 function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
+  const { t } = useTranslation()
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), FLOOD_REFETCH_MS)
@@ -265,7 +266,7 @@ function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
   const flood = detectFlood(recent, Math.floor(now / 1000), ALARM_LIST_LIMIT)
 
   if (isLoading) {
-    return <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading analytics...</div>
+    return <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>{t('alarms.loadingAnalytics')}</div>
   }
 
   return (
@@ -279,7 +280,7 @@ function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
           display: 'flex', alignItems: 'center', gap: 8,
         }}>
           <span style={{ fontSize: 16 }}>&#9888;</span>
-          Alarm flood detected — {flood.count}{flood.capped ? '+' : ''} alarms in the last 5 minutes
+          {t('alarms.flood', { n: `${flood.count}${flood.capped ? '+' : ''}` })}
         </div>
       )}
 
@@ -290,16 +291,16 @@ function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
           background: 'var(--card)', border: '1px solid var(--border)',
           fontSize: 12, color: 'var(--fg)',
         }}>
-          Avg time to acknowledge: <strong>{formatDuration(Math.round(summary.avg_ack_time_secs))}</strong>
+          {t('alarms.avgAck')} <strong>{formatDuration(Math.round(summary.avg_ack_time_secs))}</strong>
         </div>
       )}
 
       {/* Top 10 table */}
       <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', marginBottom: 8, textTransform: 'uppercase', letterSpacing: '.04em' }}>
-        Top 10 Most Frequent (24h)
+        {t('alarms.top10')}
       </div>
       {top10.length === 0 && (
-        <div style={{ color: 'var(--muted)', fontSize: 13, textAlign: 'center', padding: 20 }}>No alarm data</div>
+        <div style={{ color: 'var(--muted)', fontSize: 13, textAlign: 'center', padding: 20 }}>{t('alarms.noData')}</div>
       )}
       {top10.map((entry, i) => (
         <div key={entry.source_key} style={{
@@ -327,14 +328,15 @@ function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
 /* ── Audit tab ─────────────────────────────────────────────────── */
 
 function AuditTab({ isMobile }: { isMobile: boolean }) {
+  const { t } = useTranslation()
   const { data: entries = [], isLoading } = useAlarmAudit()
 
   if (isLoading) {
-    return <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading audit trail...</div>
+    return <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>{t('alarms.loadingAudit')}</div>
   }
 
   if (entries.length === 0) {
-    return <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>No audit entries</div>
+    return <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>{t('alarms.noAudit')}</div>
   }
 
   return (
@@ -353,13 +355,13 @@ function AuditTab({ isMobile }: { isMobile: boolean }) {
             <span style={{ fontSize: 10, color: 'var(--muted)' }}>{fmtTs(entry.created_at * 1000)}</span>
           </div>
           <div style={{ fontSize: 11, color: 'var(--fg)', marginBottom: 2 }}>
-            Alarm #{entry.alarm_id}
+            {t('alarms.alarmNumber', { id: entry.alarm_id })}
           </div>
           {entry.details && (
             <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 2 }}>{entry.details}</div>
           )}
           <div style={{ fontSize: 10, color: 'var(--muted)' }}>
-            by {entry.performed_by || 'system'}
+            {t('alarms.byName', { name: entry.performed_by || t('alarms.system') })}
           </div>
         </div>
       ))}
@@ -370,13 +372,14 @@ function AuditTab({ isMobile }: { isMobile: boolean }) {
 /* ── Per-alarm ISA-18.2 journal (History) ──────────────────────── */
 
 function AlarmHistory({ alarmId }: { alarmId: number }) {
+  const { t } = useTranslation()
   const { data: entries = [], isLoading } = useAlarmJournal(alarmId)
 
   if (isLoading) {
-    return <div style={{ marginTop: 8, fontSize: 10, color: 'var(--muted)' }}>Loading history...</div>
+    return <div style={{ marginTop: 8, fontSize: 10, color: 'var(--muted)' }}>{t('alarms.loadingHistory')}</div>
   }
   if (entries.length === 0) {
-    return <div style={{ marginTop: 8, fontSize: 10, color: 'var(--muted)' }}>No history</div>
+    return <div style={{ marginTop: 8, fontSize: 10, color: 'var(--muted)' }}>{t('alarms.noHistory')}</div>
   }
 
   return (
@@ -384,12 +387,12 @@ function AlarmHistory({ alarmId }: { alarmId: number }) {
       <div style={{
         fontSize: 9, fontWeight: 700, textTransform: 'uppercase',
         letterSpacing: '.04em', color: 'var(--muted)', marginBottom: 4,
-      }}>History</div>
+      }}>{t('alarms.history')}</div>
       {entries.map(entry => (
         <div key={entry.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, marginBottom: 2 }}>
           <span style={{ color: 'var(--muted)', minWidth: 52 }}>{fmtTs(entry.at * 1000)}</span>
           <span style={{ fontWeight: 600, color: 'var(--fg)' }}>{entry.event}</span>
-          {entry.actor && <span style={{ color: 'var(--muted)' }}>by {entry.actor}</span>}
+          {entry.actor && <span style={{ color: 'var(--muted)' }}>{t('alarms.byName', { name: entry.actor })}</span>}
         </div>
       ))}
     </div>
@@ -413,6 +416,7 @@ export function AlarmPanel({ onClose }: Props) {
     document.head.appendChild(style)
   }
 
+  const { t } = useTranslation()
   const isMobile = useIsMobile()
   // Viewers see alarms; acknowledging and shelving needs an operator.
   const { canOperate } = useRole()
@@ -454,7 +458,7 @@ export function AlarmPanel({ onClose }: Props) {
   const timeSize = isMobile ? 13 : 11
 
   return (
-    <div role="dialog" aria-label="Alarm Panel" style={{
+    <div role="dialog" aria-label={t('alarms.panel')} style={{
       position: 'fixed', inset: 0, zIndex: 1000,
       display: 'flex',
       justifyContent: isMobile ? 'center' : 'flex-end',
@@ -471,9 +475,9 @@ export function AlarmPanel({ onClose }: Props) {
       }}>
         {/* Header */}
         <div style={{ padding: '12px 16px 10px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
-          <span style={{ fontSize: isMobile ? 17 : 15, fontWeight: 700 }}>Alarms</span>
-          {canOperate && <button onClick={() => ackAllMut.mutate()} aria-label="Acknowledge all alarms" style={{ marginLeft: 10, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--warn)', background: 'transparent', color: 'var(--warn)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Ack All</button>}
-          <button onClick={onClose} aria-label="Close" style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, transition: 'color 0.15s' }}>
+          <span style={{ fontSize: isMobile ? 17 : 15, fontWeight: 700 }}>{t('alarms.title')}</span>
+          {canOperate && <button onClick={() => ackAllMut.mutate()} aria-label={t('alarms.ackAllLabel')} style={{ marginLeft: 10, padding: '5px 10px', borderRadius: 6, border: '1px solid var(--warn)', background: 'transparent', color: 'var(--warn)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>{t('alarms.ackAll')}</button>}
+          <button onClick={onClose} aria-label={t('common.close')} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, transition: 'color 0.15s' }}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -484,12 +488,12 @@ export function AlarmPanel({ onClose }: Props) {
         {/* Panel tabs: Alarms | Analytics | Audit */}
         <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
           {PANEL_TABS.map(tab => (
-            <button key={tab} onClick={() => setPanelTab(tab)} aria-label={`Tab: ${tab}`} aria-selected={panelTab === tab} style={{
+            <button key={tab} onClick={() => setPanelTab(tab)} aria-label={t('alarms.tabLabel', { name: t(PANEL_TAB_KEYS[tab]) })} aria-selected={panelTab === tab} style={{
               flex: 1, padding: isMobile ? '10px 0' : '8px 0', fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
               letterSpacing: '.04em', cursor: 'pointer', border: 'none', background: 'transparent',
               borderBottom: panelTab === tab ? '2px solid var(--cyan)' : '2px solid transparent',
               color: panelTab === tab ? 'var(--cyan)' : 'var(--muted)',
-            }}>{tab}</button>
+            }}>{t(PANEL_TAB_KEYS[tab])}</button>
           ))}
         </div>
 
@@ -499,28 +503,28 @@ export function AlarmPanel({ onClose }: Props) {
             {/* Filter tabs */}
             <div style={{ display: 'flex', borderBottom: '1px solid var(--border)' }}>
               {FILTER_TABS.map(tab => (
-                <button key={tab} onClick={() => setFilter(tab)} aria-label={`Filter: ${tab}`} aria-selected={filter === tab} style={{
+                <button key={tab} onClick={() => setFilter(tab)} aria-label={t('alarms.filterLabel', { name: t(`alarms.${tab}`) })} aria-selected={filter === tab} style={{
                   flex: 1, padding: isMobile ? '10px 0' : '8px 0', fontSize: 11, fontWeight: 600, textTransform: 'uppercase',
                   letterSpacing: '.04em', cursor: 'pointer', border: 'none', background: 'transparent',
                   borderBottom: filter === tab ? '2px solid var(--cyan)' : '2px solid transparent',
                   color: filter === tab ? 'var(--cyan)' : 'var(--muted)',
-                }}>{tab}</button>
+                }}>{t(`alarms.${tab}`)}</button>
               ))}
             </div>
 
             {/* Alarm list */}
             <div ref={parentRef} role="list" aria-live="polite" style={{ flex: 1, overflow: 'auto', padding: isMobile ? 12 : 8 }}>
-              {isLoading && <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading...</div>}
+              {isLoading && <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>{t('common.loading')}</div>}
               {isError && (
                 <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', marginBottom: 8, borderRadius: 8, border: '1px solid var(--warn)', fontSize: 12 }}>
                   <span style={{ flex: 1, color: 'var(--fg)' }}>
-                    <strong style={{ color: 'var(--warn)' }}>Alarms unavailable.</strong>{' '}
-                    {alarms.length > 0 ? 'The server did not answer; this list may be out of date.' : 'The server did not answer, so active alarms cannot be shown.'}
+                    <strong style={{ color: 'var(--warn)' }}>{t('alarms.unavailable')}</strong>{' '}
+                    {alarms.length > 0 ? t('alarms.unavailableStale') : t('alarms.unavailableEmpty')}
                   </span>
-                  <button onClick={() => refetch()} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Retry</button>
+                  <button onClick={() => refetch()} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>{t('common.retry')}</button>
                 </div>
               )}
-              {!isLoading && !isError && alarms.length === 0 && <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>No alarms</div>}
+              {!isLoading && !isError && alarms.length === 0 && <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>{t('alarms.none')}</div>}
               {!isLoading && alarms.length > 0 && (
                 <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
                   {virtualizer.getVirtualItems().map(virtualItem => {
@@ -562,7 +566,7 @@ export function AlarmPanel({ onClose }: Props) {
                                 padding: '1px 6px', borderRadius: 3, fontSize: 9, fontWeight: 600,
                                 background: 'rgba(148,163,184,.15)', color: '#94a3b8',
                               }}>
-                                SHELVED {shelfRemaining > 0 ? formatDuration(shelfRemaining) : ''}
+                                {t('alarms.shelvedBadge')} {shelfRemaining > 0 ? formatDuration(shelfRemaining) : ''}
                               </span>
                             )}
                           </div>
@@ -574,10 +578,10 @@ export function AlarmPanel({ onClose }: Props) {
                         {/* Action buttons */}
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                           {canOperate && isActive && !isShelved && (
-                            <button onClick={() => ackMut.mutate(alarm.id)} aria-label={`Acknowledge alarm: ${alarm.source_name}`} style={{
+                            <button onClick={() => ackMut.mutate(alarm.id)} aria-label={t('alarms.ackAlarm', { name: alarm.source_name })} style={{
                               padding: '4px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
                               border: `1px solid ${sevColor}`, background: 'transparent', color: sevColor,
-                            }}>Acknowledge</button>
+                            }}>{t('alarms.acknowledge')}</button>
                           )}
 
                           {/* Shelf / Unshelf controls */}
@@ -585,20 +589,20 @@ export function AlarmPanel({ onClose }: Props) {
                             <button onClick={() => setShelfTarget(shelfTarget === alarm.id ? null : alarm.id)} style={{
                               padding: '4px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
                               border: '1px solid var(--border)', background: 'transparent', color: 'var(--muted)',
-                            }}>Shelf</button>
+                            }}>{t('alarms.shelf')}</button>
                           )}
                           {canOperate && isShelved && (
                             <button onClick={() => unshelfMut.mutate(alarm.id)} disabled={unshelfMut.isPending} style={{
                               padding: '4px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
                               border: '1px solid #94a3b8', background: 'transparent', color: '#94a3b8',
                               opacity: unshelfMut.isPending ? 0.6 : 1,
-                            }}>Unshelf</button>
+                            }}>{t('alarms.unshelf')}</button>
                           )}
-                          <button onClick={() => setHistoryTarget(historyTarget === alarm.id ? null : alarm.id)} aria-label={`Toggle history: ${alarm.source_name}`} aria-expanded={historyTarget === alarm.id} style={{
+                          <button onClick={() => setHistoryTarget(historyTarget === alarm.id ? null : alarm.id)} aria-label={t('alarms.toggleHistory', { name: alarm.source_name })} aria-expanded={historyTarget === alarm.id} style={{
                             padding: '4px 8px', borderRadius: 6, fontSize: 11, fontWeight: 600, cursor: 'pointer',
                             border: '1px solid var(--border)', background: 'transparent',
                             color: historyTarget === alarm.id ? 'var(--cyan)' : 'var(--muted)',
-                          }}>History</button>
+                          }}>{t('alarms.history')}</button>
                         </div>
 
                         {/* Shelf form */}
@@ -610,7 +614,7 @@ export function AlarmPanel({ onClose }: Props) {
                         {historyTarget === alarm.id && <AlarmHistory alarmId={alarm.id} />}
 
                         {alarm.acknowledged_at && (
-                          <span style={{ fontSize: 11, color: 'var(--ok)' }}>&#10003; Acknowledged{alarm.acknowledged_by ? ` by ${alarm.acknowledged_by}` : ''}</span>
+                          <span style={{ fontSize: 11, color: 'var(--ok)' }}>&#10003; {alarm.acknowledged_by ? t('alarms.acknowledgedBy', { name: alarm.acknowledged_by }) : t('alarms.acknowledged')}</span>
                         )}
                       </div>
                     )

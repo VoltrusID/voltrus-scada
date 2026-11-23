@@ -35,7 +35,7 @@ describe('alarms the server cannot deliver', () => {
   it('the bell shows a warning badge, not a calm zero', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('[]', { status: 200 })))
     render(wrap(<UnifiedBell authed activeAlarmCount={0} alarmsUnavailable onOpenAlarmPanel={() => {}} />))
-    const bell = screen.getByRole('button', { name: /alarms unavailable/ })
+    const bell = screen.getByRole('button', { name: /alarms unavailable/i })
     expect(bell.textContent).toContain('!')
     fireEvent.click(bell)
     expect(screen.getByRole('alert').textContent).toContain('Alarms unavailable')

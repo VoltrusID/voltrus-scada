@@ -97,15 +97,25 @@ export function sessionFromAuthBody(body: unknown, fallbackUsername = ''): AuthS
   }
 }
 
+/** An i18next-style translate function; the default gives the English text. */
+export type Translate = (key: string, options: { defaultValue: string; count?: number }) => string
+
+const english: Translate = (_key, { defaultValue, count }) => defaultValue.replace('{{count}}', String(count ?? ''))
+
 /** Text for the login screen after the server ended the session. */
-export function sessionEndMessage(reason: SessionEndReason, idleTimeoutSecs: number | null): string {
-  if (reason === 'session_expired') return 'Your session reached its maximum length. Please sign in again.'
-  if (reason === 'session_ended') return 'Your session has ended. Please sign in again.'
+export function sessionEndMessage(reason: SessionEndReason, idleTimeoutSecs: number | null, t: Translate = english): string {
+  if (reason === 'session_expired') return t('session.expired', { defaultValue: 'Your session reached its maximum length. Please sign in again.' })
+  if (reason === 'session_ended') return t('session.ended', { defaultValue: 'Your session has ended. Please sign in again.' })
   if (idleTimeoutSecs) {
     const mins = Math.max(1, Math.round(idleTimeoutSecs / 60))
-    return `You were signed out after ${mins} minute${mins === 1 ? '' : 's'} of inactivity.`
+    return t('session.idleMinutes', {
+      count: mins,
+      defaultValue: mins === 1
+        ? 'You were signed out after {{count}} minute of inactivity.'
+        : 'You were signed out after {{count}} minutes of inactivity.',
+    })
   }
-  return 'You were signed out after a period of inactivity.'
+  return t('session.idle', { defaultValue: 'You were signed out after a period of inactivity.' })
 }
 
 /** The `code` of the 403 a session gets while its user must change their password. */

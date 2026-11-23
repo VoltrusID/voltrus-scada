@@ -325,7 +325,7 @@ export function AppInner() {
         throw new Error(body.error || `Login failed: ${r.status}`)
       }
       applySession(sessionFromAuthBody(await r.json(), username))
-    } catch (e: any) { setLoginError(e.message || 'Login failed') }
+    } catch (e: any) { setLoginError(e.message || t('auth.loginFailed')) }
   }
 
   // SSO and other add-on logins hand over what their endpoint returned; the
@@ -364,8 +364,8 @@ export function AppInner() {
     if (!authedRef.current) return
     authedRef.current = false
     endSession()
-    setLoginError(sessionEndMessage(reason, idleTimeoutRef.current))
-  }), [endSession])
+    setLoginError(sessionEndMessage(reason, idleTimeoutRef.current, (key, opts) => String(t(key, opts))))
+  }), [endSession, t])
   useSessionActivity(sessionPolicy.idleTimeoutSecs, authed)
 
   // The live feed runs while the session may use the app; the server refuses
@@ -448,7 +448,7 @@ export function AppInner() {
   const handleAddScreen = () => {
     const defaultShortcut = `Mod+${screens.length + 2}`
     setScreenPrompt({
-      title: 'New Screen', label: 'Screen name', placeholder: 'My Screen', shortcutValue: defaultShortcut, okLabel: 'Create',
+      title: t('dashboard.newScreen'), label: t('dashboard.screenName'), placeholder: t('dashboard.screenNamePlaceholder'), shortcutValue: defaultShortcut, okLabel: t('common.create'),
       onSubmit: async (name, shortcut) => {
         const created = await createScreenMut.mutateAsync(name)
         if (shortcut) {
@@ -461,7 +461,7 @@ export function AppInner() {
   const handleRenameScreen = (id: string, oldName: string) => {
     const currentShortcut = navShortcuts[`screen:${id}`] || effectiveNavShortcuts[`screen:${id}`] || ''
     setScreenPrompt({
-      title: 'Rename Screen', label: 'Screen name', initialValue: oldName, shortcutValue: currentShortcut, okLabel: 'Rename',
+      title: t('dashboard.renameScreen'), label: t('dashboard.screenName'), initialValue: oldName, shortcutValue: currentShortcut, okLabel: t('common.rename'),
       onSubmit: async (name, shortcut) => {
         if (name !== oldName) renameScreenMut.mutate({ id, name })
         const target = `screen:${id}`
@@ -476,7 +476,7 @@ export function AppInner() {
 
   const handleDeleteScreen = (id: string, name: string) => {
     setScreenConfirm({
-      title: 'Delete Screen', message: `Delete screen "${name}"? This cannot be undone.`,
+      title: t('dashboard.deleteScreen'), message: t('dashboard.deleteScreenConfirm', { name }),
       onConfirm: () => { deleteScreenMut.mutate(id); if (activeScreen === id) setActiveScreen('all') }
     })
   }
@@ -591,9 +591,9 @@ export function AppInner() {
         <ErrorBoundary resetKey={routerLocation.href}>
         {mode === 'history' && historyError && (
           <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '8px 0', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--warn)', color: 'var(--fg)', fontSize: 13 }}>
-            <span style={{ color: 'var(--warn)', fontWeight: 600 }}>History could not be loaded.</span>
+            <span style={{ color: 'var(--warn)', fontWeight: 600 }}>{t('history.loadFailed')}</span>
             <span style={{ color: 'var(--muted)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{historyError}</span>
-            <button onClick={retryHistory} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 12 }}>Retry</button>
+            <button onClick={retryHistory} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 12 }}>{t('common.retry')}</button>
           </div>
         )}
         {editMode && viewMode === 'cards' && (

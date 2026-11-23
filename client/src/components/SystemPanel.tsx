@@ -8,6 +8,7 @@ import { HealthCheckPanel } from './HealthCheckPanel'
 import { SmtpSettingsPanel } from './SmtpSettingsPanel'
 import { StorageSettings } from './StorageSettings'
 import { TabList, TabPanel } from './TabList'
+import { useTranslation } from 'react-i18next'
 
 type SystemTab = 'overview' | 'docs' | 'templates' | 'config' | 'wizard' | 'health' | 'storage' | 'smtp' | 'tools'
 
@@ -16,23 +17,15 @@ interface Props {
 }
 
 export function SystemPanel({ systemInfo }: Props) {
+  const { t } = useTranslation()
   const [tab, setTab] = useState<SystemTab>('overview')
 
-  const tabs: { id: SystemTab; label: string }[] = [
-    { id: 'overview', label: 'System' },
-    { id: 'docs', label: 'Documentation' },
-    { id: 'templates', label: 'Templates' },
-    { id: 'wizard', label: 'Wizard' },
-    { id: 'health', label: 'Health' },
-    { id: 'storage', label: 'Storage' },
-    { id: 'config', label: 'Config' },
-    { id: 'smtp', label: 'SMTP' },
-    { id: 'tools', label: 'Tools' },
-  ]
+  const ids: SystemTab[] = ['overview', 'docs', 'templates', 'wizard', 'health', 'storage', 'config', 'smtp', 'tools']
+  const tabs = ids.map(id => ({ id, label: t(`system.tabs.${id}`) }))
 
   return (
     <div style={{ padding: 8, overflowY: 'auto', height: '100%', boxSizing: 'border-box' }}>
-      <TabList tabs={tabs} value={tab} onChange={setTab} label="System sections" idPrefix="system" />
+      <TabList tabs={tabs} value={tab} onChange={setTab} label={t('system.sections')} idPrefix="system" />
 
       <TabPanel idPrefix="system" id={tab}>
         {tab === 'overview' && <SystemOverview systemInfo={systemInfo} />}

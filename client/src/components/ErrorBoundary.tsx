@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import i18n from 'i18next'
 import { isChunkLoadError, reloadOnceForNewBuild, CHUNK_RELOAD_GUARD_MS } from '../chunkReload'
 
 interface Props {
@@ -59,6 +60,8 @@ export class ErrorBoundary extends Component<Props, State> {
     const { error } = this.state
     if (!error) return this.props.children
     const chunk = isChunkLoadError(error)
+    // The default text covers an error before the translations have loaded.
+    const t = (key: string, defaultValue: string) => i18n.t(key, { defaultValue })
     return (
       <div role="alert" style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12,
@@ -66,18 +69,18 @@ export class ErrorBoundary extends Component<Props, State> {
         ...(this.props.fullScreen ? { minHeight: '100dvh', background: 'var(--bg)' } : { flex: 1, minHeight: 240 }),
       }}>
         <div style={{ fontSize: 16, fontWeight: 600 }}>
-          {chunk ? 'This page could not be loaded' : 'Something went wrong on this page'}
+          {chunk ? t('errors.pageNotLoaded', 'This page could not be loaded') : t('errors.pageCrashed', 'Something went wrong on this page')}
         </div>
         <div style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 420 }}>
           {chunk
-            ? 'The server may have been updated or is not reachable. Reloading fetches the current version.'
-            : 'The rest of the app keeps running. Try again, or go back to the dashboard.'}
+            ? t('errors.pageNotLoadedDesc', 'The server may have been updated or is not reachable. Reloading fetches the current version.')
+            : t('errors.pageCrashedDesc', 'The rest of the app keeps running. Try again, or go back to the dashboard.')}
         </div>
         <button onClick={this.retry} style={{
           padding: '8px 18px', borderRadius: 6, border: '1px solid var(--cyan)', background: 'transparent',
           color: 'var(--cyan)', fontSize: 13, fontWeight: 600, cursor: 'pointer', minHeight: 36,
         }}>
-          {chunk ? 'Reload' : 'Try again'}
+          {chunk ? t('errors.reload', 'Reload') : t('errors.tryAgain', 'Try again')}
         </button>
       </div>
     )
