@@ -50,6 +50,24 @@ impl ModbusPool {
         unit_id: u8,
         bind_addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<tokio_modbus::client::Context> {
+        self.get_or_connect_with(device_id, addr, async move {
+            anyhow::Ok(if let Some(local) = bind_addr {
+                let stream = crate::network::bind_and_connect(Some(local), addr).await?;
+                tokio_modbus::client::tcp::attach_slave(stream, Slave(unit_id))
+            } else {
+                tcp::connect_slave(addr, Slave(unit_id)).await?
+            })
+        })
+        .await
+    }
+
+    /// `get_or_connect` with the connect step given as a future.
+    async fn get_or_connect_with(
+        &self,
+        device_id: &str,
+        addr: std::net::SocketAddr,
+        connect: impl std::future::Future<Output = anyhow::Result<tokio_modbus::client::Context>>,
+    ) -> anyhow::Result<tokio_modbus::client::Context> {
         // The lock covers the map only, never a connect: one unreachable
         // device must not hold up writes to the others.
         let pooled = self.connections.lock().await.remove(device_id);
@@ -62,14 +80,6 @@ impl ModbusPool {
         }
 
         tracing::debug!("Connecting to device {device_id} at {addr}");
-        let connect = async {
-            anyhow::Ok(if let Some(local) = bind_addr {
-                let stream = crate::network::bind_and_connect(Some(local), addr).await?;
-                tokio_modbus::client::tcp::attach_slave(stream, Slave(unit_id))
-            } else {
-                tcp::connect_slave(addr, Slave(unit_id)).await?
-            })
-        };
         tokio::time::timeout(CONNECT_TIMEOUT, connect)
             .await
             .map_err(|_| {
@@ -119,23 +129,49 @@ mod tests {
         assert_eq!(ModbusPool::new().bind_address(Some("ot")).await, None);
     }
 
-    #[tokio::test]
-    async fn an_unreachable_device_does_not_block_the_pool() {
+    /// A connect that never finishes on its own (a device that does not
+    /// answer the SYN).
+    async fn hanging_connect() -> anyhow::Result<tokio_modbus::client::Context> {
+        std::future::pending().await
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hanging_connect_does_not_hold_the_pool_lock() {
         let pool = Arc::new(ModbusPool::new());
-        // A non-routable address: the connect hangs until the timeout.
         let slow = {
             let pool = pool.clone();
             tokio::spawn(async move {
-                pool.get_or_connect("slow", "10.255.255.1:502".parse().unwrap(), 1, None)
-                    .await
-                    .map(|_| ())
+                pool.get_or_connect_with(
+                    "slow",
+                    "192.0.2.1:502".parse().unwrap(),
+                    hanging_connect(),
+                )
+                .await
+                .map(|_| ())
             })
         };
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        // The map stays usable while the other connect is pending.
+        // Let the slow connect start and park on its connect.
+        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!slow.is_finished());
+        // With paused time the runtime jumps to the next timer: 200 ms comes
+        // before the 5 s connect timeout, so this fails if the lock is held.
         tokio::time::timeout(Duration::from_millis(200), pool.remove("other"))
             .await
             .expect("pool lock held during a connect");
         slow.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hanging_connect_times_out() {
+        let pool = ModbusPool::new();
+        let started = tokio::time::Instant::now();
+        let err = pool
+            .get_or_connect_with("slow", "192.0.2.1:502".parse().unwrap(), hanging_connect())
+            .await
+            .map(|_| ())
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert_eq!(started.elapsed(), CONNECT_TIMEOUT);
     }
 }
