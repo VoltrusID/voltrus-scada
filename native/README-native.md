@@ -69,9 +69,12 @@ JetBrains Mono for values.
   and server in `<config dir>/voltrus-native/alarm-sound.toml`.
 - **Trends**: the chosen tags on one time axis over 5 min, 30 min, 1 h, 6 h or 24 h,
   filled from the server's history and extended by live values. While the
-  link is live the chart moves on once a second. Each tag keeps a day of
-  history: live values of the last 15 minutes at full rate, older ones
-  thinned to one per 20 seconds.
+  link is live the chart moves on once a second. A tag on the chart keeps
+  a day of history (its range fetched from the server when it is added):
+  live values of the last 15 minutes at full rate, older ones thinned to
+  one per 20 seconds. The other tags keep 35 minutes, what the sparklines
+  and the mimic's faceplate draw, so a plant of thousands of tags does not
+  hold a day of each.
 - **Data Manager** (More menu, palette; offered to a role that sees at least
   one section): a sidebar of sections grouped Data, Protocols, Insights,
   Admin and Engineering as in the web client (only built sections are

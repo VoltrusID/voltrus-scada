@@ -118,6 +118,10 @@ pub fn range_ms(range: &str) -> f64 {
     }
 }
 
+/// The history every tag is filled with at sign-in: what the sparklines
+/// (15 min) and the mimic's faceplate (30 min) draw.
+pub const SHORT_HISTORY_RANGE: &str = "30m";
+
 /// The server's `range` parameter that covers a trend range.
 pub fn history_range(range: &str) -> &str {
     if range == "5m" { "30m" } else { range }
@@ -770,11 +774,14 @@ impl Console {
                 }
                 self.send(Command::Subscribe(self.store.keys()));
                 if self.stress.is_none() {
+                    // Every tag's recent past for the sparklines; the
+                    // trended tags' whole range follows.
                     self.send(Command::History {
-                        range: history_range(self.range).to_owned(),
+                        range: SHORT_HISTORY_RANGE.to_owned(),
                         keys: Vec::new(),
                     });
                 }
+                self.sync_trend(true);
                 if let Some(index) = self
                     .pending_tag
                     .take()
@@ -810,11 +817,9 @@ impl Console {
                 self.show_toast(format!("{severity} alarm: {name} at {value}"), true, cx);
                 shell::alarm_raised(self, &alarm, cx);
             }
-            Event::History { range, series } => {
-                if range == history_range(self.range) {
-                    self.store.backfill(&series);
-                }
-            }
+            // Merged by time: a short fetch for every tag and a trended
+            // tag's longer one each fill their own stretch.
+            Event::History { series, .. } => self.store.backfill(&series),
             Event::Written { tag, result, late } => {
                 // A late answer to an earlier write must not settle the one
                 // now waiting.
@@ -1421,20 +1426,45 @@ impl Console {
         if !self.trend.remove(&id) {
             self.trend.insert(id);
         }
+        self.sync_trend(false);
         cx.notify();
     }
 
     pub fn set_range(&mut self, range: &'static str, cx: &mut Context<Self>) {
         if self.range != range {
             self.range = range;
-            if self.stress.is_none() {
-                self.send(Command::History {
-                    range: history_range(range).to_owned(),
-                    keys: Vec::new(),
-                });
-            }
+            self.sync_trend(true);
         }
         cx.notify();
+    }
+
+    /// Keep a day of history only for the tags on the Trends chart (the
+    /// others keep the short stretch the sparklines and faceplates draw),
+    /// and fetch the trend range for the tags that need it: the newly
+    /// trended ones, or all of them (`all`) after a new tag list or range.
+    pub fn sync_trend(&mut self, all: bool) {
+        let added = self.store.keep_long(&self.trend);
+        if self.stress.is_some() {
+            return;
+        }
+        let ids: Vec<i64> = if all {
+            self.trend.iter().copied().collect()
+        } else {
+            added
+        };
+        let mut keys: Vec<String> = ids
+            .iter()
+            .filter_map(|id| self.store.get(*id))
+            .map(|tag| tag.info.key.clone())
+            .collect();
+        keys.sort();
+        keys.dedup();
+        if !keys.is_empty() {
+            self.send(Command::History {
+                range: history_range(self.range).to_owned(),
+                keys,
+            });
+        }
     }
 
     /// The user pressed a key, clicked or scrolled: the runtime reports it
