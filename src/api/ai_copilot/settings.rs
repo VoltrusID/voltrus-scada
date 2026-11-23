@@ -75,6 +75,7 @@ pub async fn update_ai_settings(
     let stored_provider = state.storage.get_ai_setting("provider").await?;
     let stored_model = state.storage.get_ai_setting("default_model").await?;
     let stored_base_url = state.storage.get_ai_setting("base_url").await?;
+    let old_base_url = stored_base_url.clone();
 
     let provider = match &body.provider {
         Some(p) => Some(AiProviderType::from_str(p).ok_or_else(|| {
@@ -126,13 +127,19 @@ pub async fn update_ai_settings(
     }
 
     // A key entered for one provider is not sent to another one (for example
-    // an OpenAI key to a custom base URL): switching provider without
-    // entering a new key removes the stored one.
+    // an OpenAI key to a custom base URL): switching provider, or pointing
+    // the provider at another base URL, without entering a new key removes
+    // the stored one.
     let provider_changed = match (&provider, stored_provider.as_deref()) {
         (Some(new), Some(old)) => new.as_str() != old,
         _ => false,
     };
-    let key_cleared = new_key.is_none() && (body.clear_api_key || provider_changed);
+    let base_url_changed = match base_url.as_deref() {
+        Some(new) => new != old_base_url.as_deref().unwrap_or(""),
+        None => false,
+    };
+    let key_cleared =
+        new_key.is_none() && (body.clear_api_key || provider_changed || base_url_changed);
 
     if let Some(p) = &provider {
         state.storage.set_ai_setting("provider", p.as_str()).await?;

@@ -63,6 +63,10 @@ pub struct AppConfig {
     pub device_templates: DeviceTemplatesConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Where webhooks and flow HTTP nodes may send requests
+    /// (`crate::security::outbound`).
+    #[serde(default)]
+    pub outbound_http: crate::security::outbound::OutboundPolicy,
 }
 
 /// Longest accepted `login_hint`.

@@ -624,7 +624,9 @@ impl NodeConfig {
                         result: NodeResult::Continue(msg),
                     });
                 }
-                let client = reqwest::Client::new();
+                crate::security::outbound::check_url(url)
+                    .map_err(|e| format!("HttpOut refused: {e}"))?;
+                let client = crate::security::outbound::client(None);
                 let mut last_error: Option<String> = None;
                 for attempt in 0..=*retry_count {
                     let mut request = client.post(url).json(&msg.payload);

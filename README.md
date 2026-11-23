@@ -203,7 +203,8 @@ reverse proxy or tunnel on the same machine that sends `X-Forwarded-Proto: https
 For a public demo with one shared read-only login, create a `viewer` account and
 set `shared_accounts: [guest]` and `login_hint: "Demo: sign in as guest / ..."`:
 the hint appears under the sign-in form, and visitors can neither change that
-account's password or preferences nor lock it with wrong passwords.
+account's password or preferences nor lock it with wrong passwords. Also set
+`outbound_http: {allow_private_networks: false}` there (see Network behaviour).
 
 Open <http://localhost:3000>. The first start generates a random admin
 password and writes it to `initial-admin-password` next to the database
@@ -288,6 +289,20 @@ an AI provider if you enable the optional AI copilot with your own key (or a
 local model server such as Ollama, which keeps it all on your network).
 The API documentation page (`/api/docs`, signed-in users only) loads its viewer
 script from a public CDN; the OpenAPI document at `/api/v1/openapi.json` does not.
+
+Requests to URLs that users configure (outbound webhooks and their test button,
+alarm webhooks, flow `http_out` nodes) follow no redirects and never go to a
+link-local address such as the cloud metadata service (169.254.169.254).
+Loopback is refused unless `outbound_http.allow_loopback: true`; private
+networks are allowed unless `outbound_http.allow_private_networks: false`.
+Host names are checked after they resolve. The webhook test button reports the
+HTTP status only, not the response body. The AI copilot's base URL is not
+restricted (a local model server is the usual setup); changing it without
+entering a key again removes the stored key.
+
+Readers who may not configure (viewers, operators, read-only API keys) see
+header values and URL passwords of outbound webhooks and flow `http_out` nodes
+as `********`; an editor that saves the masked value back keeps the stored one.
 
 ## Development
 

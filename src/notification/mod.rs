@@ -282,8 +282,15 @@ pub async fn dispatch_outbound_webhooks(
         // Fire the webhook with retry
         let storage_clone = storage.clone();
         let payload_clone = payload.clone();
+        if let Err(e) = crate::security::outbound::check_url(&url) {
+            tracing::warn!("Outbound webhook {wh_id} not sent: {e}");
+            let _ = storage
+                .update_outbound_webhook_status(wh_id, Some(now), Some(format!("refused: {e}")))
+                .await;
+            continue;
+        }
         tokio::spawn(async move {
-            let client = reqwest::Client::new();
+            let client = crate::security::outbound::client(None);
             let mut success = false;
 
             for attempt in 0..=retry_count {

@@ -317,6 +317,7 @@ pub async fn create_outbound_webhook(
             "URL must start with http:// or https://"
         )));
     }
+    crate::security::outbound::check_url(&req.url).map_err(AppError::bad_request)?;
     let events: Vec<String> = serde_json::from_str(&req.events).map_err(|_| {
         AppError(anyhow::anyhow!(
             "events must be a JSON array of event types"
@@ -382,7 +383,13 @@ pub async fn test_outbound_webhook(
         .and_then(|v| v.as_u64())
         .unwrap_or(10000);
     let test_payload = json!({ "event": "test", "message": "Test webhook from Voltrus", "timestamp": crate::timeutil::now_secs(), "source": "voltrus_webhook_test" });
-    let client = reqwest::Client::new();
+    // Same rules as real deliveries: no redirects, refused addresses
+    // (`outbound_http` in config.yaml). Only the status comes back, never
+    // the body, so the button cannot be used to read internal pages.
+    if let Err(e) = crate::security::outbound::check_url(&url) {
+        return Ok(Json(json!({ "ok": false, "error": e })));
+    }
+    let client = crate::security::outbound::client(None);
     let mut request = client
         .post(&url)
         .json(&test_payload)
@@ -398,10 +405,7 @@ pub async fn test_outbound_webhook(
     match request.send().await {
         Ok(resp) => {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            Ok(Json(
-                json!({ "ok": true, "status": status, "response": body }),
-            ))
+            Ok(Json(json!({ "ok": true, "status": status })))
         }
         Err(e) => Ok(Json(json!({ "ok": false, "error": e.to_string() }))),
     }

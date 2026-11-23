@@ -18,7 +18,8 @@ pub struct WebhookPayload {
 ///
 /// Retries with exponential backoff, same pattern as the HttpOut flow node.
 pub async fn send_webhook_alarm(url: &str, payload: &WebhookPayload) -> Result<()> {
-    let client = reqwest::Client::new();
+    crate::security::outbound::check_url(url).map_err(anyhow::Error::msg)?;
+    let client = crate::security::outbound::client(None);
     let max_retries: u32 = 3;
 
     for attempt in 0..=max_retries {

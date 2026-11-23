@@ -229,3 +229,44 @@ async fn test_endpoint_reports_missing_settings_as_a_failed_test() {
         "{body}"
     );
 }
+
+#[tokio::test]
+async fn changing_the_base_url_without_a_new_key_removes_the_key() {
+    let (app, cookie) = admin().await;
+    let (status, _) = put(
+        &app,
+        &cookie,
+        json!({"provider": "byok_openai_compatible", "base_url": "http://llm.plant.lan/v1", "default_model": "m", "api_key": "local-test-key-abcdefghijkl"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(get(&app, &cookie).await["api_key_set"], true);
+
+    // The same base URL sent again (a form saving every field) keeps the key.
+    put(
+        &app,
+        &cookie,
+        json!({"base_url": "http://llm.plant.lan/v1", "default_model": "m2"}),
+    )
+    .await;
+    assert_eq!(get(&app, &cookie).await["api_key_set"], true);
+
+    // Another host does not get the key.
+    let (status, _) = put(
+        &app,
+        &cookie,
+        json!({"base_url": "http://attacker.example/v1"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(get(&app, &cookie).await["api_key_set"], false);
+
+    // A new URL with a new key keeps the new key.
+    put(
+        &app,
+        &cookie,
+        json!({"base_url": "http://llm2.plant.lan/v1", "api_key": "other-test-key-abcdefghijkl"}),
+    )
+    .await;
+    assert_eq!(get(&app, &cookie).await["api_key_set"], true);
+}

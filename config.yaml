@@ -10,6 +10,16 @@ persist_interval_secs: 5
 # Use true behind an HTTPS proxy that runs on another machine.
 # cookie_secure: auto
 
+# Where outbound webhooks, alarm webhooks and flow http_out nodes may send
+# requests. Link-local addresses (the cloud metadata service 169.254.169.254)
+# are always refused and redirects are never followed. Private networks are
+# allowed by default (plants post to hosts on their LAN); set false on a server
+# reachable from the internet, such as a public demo. Loopback (this machine)
+# is refused unless allowed. Host names are checked after they resolve.
+# outbound_http:
+#   allow_private_networks: true
+#   allow_loopback: false
+
 # Public demo: usernames many people sign in with (give them the viewer role).
 # Nobody can change such an account's password, theme, language or shortcuts
 # (403), and wrong passwords never lock it; the per-address login limit still
@@ -18,6 +28,7 @@ persist_interval_secs: 5
 # shared_accounts: [guest]
 # Plain text shown under the sign-in form, at most 200 characters, one line.
 # login_hint: "Demo: sign in as guest / voltrus-demo"
+# A public demo should also set outbound_http.allow_private_networks: false.
 
 # Each device's interval_ms must be 1 to 3600000; a value outside that range stops
 # the server at startup with a message naming the device.

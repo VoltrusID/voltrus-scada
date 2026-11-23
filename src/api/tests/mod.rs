@@ -26,6 +26,7 @@ mod mcp;
 mod mqtt_broker;
 mod naming_convention;
 mod notifications;
+mod outbound_webhooks;
 mod password_change_gate;
 mod poll_interval;
 mod project;
@@ -43,8 +44,8 @@ mod system;
 mod tag_tree;
 mod ui_preferences;
 mod users;
-
 mod vertical_templates;
+
 pub use helpers::*;
 
 use super::{AppState, create_router};
