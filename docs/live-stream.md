@@ -27,8 +27,12 @@ the WebSocket. A comment line is sent every 15 seconds to keep proxies from clos
 idle stream. A value that is NaN (a failed read) is `null` in JSON.
 
 The user or key behind a stream is checked again every 30 seconds, as on the
-WebSocket: when the user is disabled or deleted, must change their password, or
-the key is revoked or expired, the stream sends an `AuthError` event and ends.
+WebSocket: when the user is disabled or deleted, must change their password,
+has another role than when the stream opened, or the sign-in session has ended
+(signed out, password changed elsewhere, revoked; or, for a stream opened with
+an access token only, that token expired), or the key is revoked or expired,
+the stream sends an `AuthError` event and ends. The client reconnects with
+what it has now.
 
 Each tag update may also carry `data_quality` and `ts_ms`. `ts_ms` is when the value
 was read, in Unix milliseconds. `data_quality` is one of `good`, `uncertain`,
@@ -64,8 +68,9 @@ value is never written into the live cache: the screen shows it once a poll conf
 The same roles may write over the WebSocket as over REST and MCP: admins, operators,
 demo users and integration API keys (viewers and read-only keys may not). The user or
 key is checked again on every write and
-every 30 seconds; a socket whose user is disabled or deleted, or whose key is revoked,
-is closed with code 1008. Clients that are not on the WebSocket (including the event stream) write
+every 30 seconds; a socket whose user is disabled or deleted, whose role or
+sign-in session changed as above, or whose key is revoked, is closed with code
+1008. An application-level `Ping` message is answered with `Pong`. Clients that are not on the WebSocket (including the event stream) write
 with the REST endpoint.
 
 ## The web client

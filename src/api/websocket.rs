@@ -32,6 +32,7 @@ pub async fn websocket_handler(
     jar: axum_extra::extract::cookie::CookieJar,
 ) -> impl IntoResponse {
     let cookie_token = jar.get("voltrus_token").map(|c| c.value().to_string());
+    let refresh_cookie = jar.get("voltrus_refresh").map(|c| c.value().to_string());
     let header_key = headers
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
@@ -47,8 +48,10 @@ pub async fn websocket_handler(
     {
         return crate::api::auth_middleware::password_change_required_response();
     }
-    ws.on_upgrade(move |socket| handle_socket(socket, state, cookie_token, header_key))
-        .into_response()
+    ws.on_upgrade(move |socket| {
+        handle_socket(socket, state, cookie_token, header_key, refresh_cookie)
+    })
+    .into_response()
 }
 
 /// How often an open socket re-reads its user or key, so a disabled or deleted
@@ -92,6 +95,93 @@ impl WsPrincipal {
     }
 }
 
+/// What an open socket or event stream was granted when it opened: the role,
+/// and for a person the sign-in session it belongs to. Checked every
+/// [`RECHECK_INTERVAL`]; a stream whose grant no longer holds is closed, and
+/// the client reconnects with what it has now.
+#[derive(Clone, Debug)]
+pub(super) struct Grant {
+    pub role: String,
+    pub session: SessionTie,
+}
+
+/// How a person's stream is tied to their sign-in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SessionTie {
+    /// The browser session (refresh-token chain) that began at this time
+    /// (Unix seconds): it ends at sign-out, a password change elsewhere, an
+    /// admin revoking it, or its end of life.
+    Refresh { started_at: i64 },
+    /// Only an access token was presented: the stream ends when it expires
+    /// (Unix milliseconds).
+    Expires { exp_ms: u64 },
+    /// API keys and sign-in-provider tokens are checked by other means.
+    None,
+}
+
+/// A refresh token rotated by a refresh is revoked just before its successor
+/// is stored; a session counts as open for this long after a revocation.
+#[cfg(not(test))]
+const SESSION_GRACE_SECS: i64 = 10;
+/// Tests revoke and check within the same second.
+#[cfg(test)]
+const SESSION_GRACE_SECS: i64 = -1;
+
+impl SessionTie {
+    /// The tie of a session whose access token has `claims`, from the
+    /// `voltrus_refresh` cookie of the same request when it belongs to the
+    /// same user, else the access token's expiry.
+    pub(super) async fn of(
+        state: &AppState,
+        claims: &crate::models::TokenClaims,
+        refresh_cookie: Option<&str>,
+    ) -> Self {
+        if let Some(raw) = refresh_cookie.filter(|r| !r.is_empty()) {
+            let hash = crate::api::auth::hash_refresh_token(raw);
+            if let Ok(Some(rt)) = state.storage.get_refresh_token_by_hash(&hash).await
+                && rt.username == claims.username
+                && rt.revoked_at.is_none()
+            {
+                return SessionTie::Refresh {
+                    started_at: rt.session_started_at.unwrap_or(rt.created_at),
+                };
+            }
+        }
+        SessionTie::Expires { exp_ms: claims.exp }
+    }
+
+    /// Whether the session is still open. Fails closed on a storage error.
+    pub(super) async fn alive(&self, state: &AppState, username: &str) -> bool {
+        match self {
+            SessionTie::Refresh { started_at } => state
+                .storage
+                .session_alive(username, *started_at, SESSION_GRACE_SECS)
+                .await
+                .unwrap_or(false),
+            SessionTie::Expires { exp_ms } => (crate::timeutil::now_millis() as u64) < *exp_ms,
+            SessionTie::None => true,
+        }
+    }
+}
+
+impl WsPrincipal {
+    /// Whether the stream may stay open: the principal may still use it
+    /// ([`WsPrincipal::current_role`]), its role is the one it was granted,
+    /// and a person's session is still open.
+    pub(super) async fn still_granted(&self, state: &AppState, grant: &Grant) -> bool {
+        let Some(role) = self.current_role(state).await else {
+            return false;
+        };
+        if role != grant.role {
+            return false;
+        }
+        match self {
+            WsPrincipal::User(username) => grant.session.alive(state, username).await,
+            WsPrincipal::ApiKey(_) => true,
+        }
+    }
+}
+
 /// Whether the socket loop keeps going after a client message.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum After {
@@ -107,6 +197,7 @@ async fn handle_socket(
     state: AppState,
     cookie_token: Option<String>,
     header_key: Option<String>,
+    refresh_cookie: Option<String>,
 ) {
     let (mut sink, mut stream) = socket.split();
 
@@ -191,14 +282,18 @@ async fn handle_socket(
             .await;
             return;
         }
-        Some(WsPrincipal::User(claims.username))
+        let tie = SessionTie::of(&state, &claims, refresh_cookie.as_deref()).await;
+        Some((WsPrincipal::User(claims.username), tie))
     } else {
         crate::api::auth_middleware::authenticate_api_key(&state, &token)
             .await
-            .map(|(_, key)| WsPrincipal::ApiKey(key.id))
+            .map(|(_, key)| (WsPrincipal::ApiKey(key.id), SessionTie::None))
     };
-    let Some((principal, role)) = (match principal {
-        Some(p) => p.current_role(&state).await.map(|role| (p, role)),
+    let Some((principal, grant)) = (match principal {
+        Some((p, session)) => p
+            .current_role(&state)
+            .await
+            .map(|role| (p, Grant { role, session })),
         None => None,
     }) else {
         let _ = send_msg(
@@ -214,7 +309,7 @@ async fn handle_socket(
     let username = principal.name();
 
     // 4. Determine permissions from role.
-    let permissions = role_to_permissions(&role);
+    let permissions = role_to_permissions(&grant.role);
 
     // 5. Generate a unique connection ID.
     let conn_id = format!(
@@ -225,7 +320,7 @@ async fn handle_socket(
             .as_nanos()
     );
 
-    tracing::info!("WS: user={} role={} conn={}", username, role, conn_id);
+    tracing::info!("WS: user={} role={} conn={}", username, grant.role, conn_id);
 
     // 6. Register with WsManager and get the receiver for outgoing messages.
     let mut rx = state
@@ -260,7 +355,7 @@ async fn handle_socket(
     loop {
         tokio::select! {
             _ = recheck.tick() => {
-                if principal.current_role(&state_loop).await.is_none() {
+                if !principal.still_granted(&state_loop, &grant).await {
                     tracing::info!("WS: {} lost access, closing conn={}", username, conn_id);
                     close_revoked(&mut sink).await;
                     break;
@@ -433,7 +528,9 @@ pub(super) async fn handle_client_message(
         }
 
         ClientMessage::Ping => {
-            // Application-level ping -- WS protocol ping/pong handled separately.
+            // Application-level ping: the web client takes a missing Pong as
+            // a dead socket (the WS protocol's own ping/pong is separate).
+            ws_manager.send_to(conn_id, ServerMessage::Pong);
         }
 
         ClientMessage::Auth { .. } => {
@@ -797,6 +894,82 @@ mod tests {
         );
         assert!(other.try_recv().is_err(), "nobody else is told");
         assert_eq!(state.cache.get_metric_value("temp").await, Some(1.0));
+    }
+
+    /// A stream is tied to the role it was granted and to its sign-in
+    /// session: a role change, a revoked session (sign-out, password change
+    /// elsewhere) or an expired access token ends it.
+    #[tokio::test]
+    async fn the_grant_ends_with_the_session_or_a_role_change() {
+        let (state, _me, _other, _) = setup(false).await;
+        let uid = add_user(&state, "olga", "operator").await;
+        let now = crate::timeutil::now_secs();
+        state
+            .storage
+            .create_session_refresh_token("olga", "h1", now + 3600, now, now - 5, now)
+            .await
+            .unwrap();
+        let principal = WsPrincipal::User("olga".into());
+        let grant = Grant {
+            role: "operator".into(),
+            session: SessionTie::Refresh {
+                started_at: now - 5,
+            },
+        };
+        assert!(principal.still_granted(&state, &grant).await);
+
+        // A refresh rotates the token: the session goes on.
+        state.storage.revoke_refresh_token("h1").await.unwrap();
+        state
+            .storage
+            .create_session_refresh_token("olga", "h2", now + 3600, now, now - 5, now)
+            .await
+            .unwrap();
+        assert!(principal.still_granted(&state, &grant).await);
+
+        // Demoted: the grant no longer holds.
+        state.storage.update_user_role(uid, "viewer").await.unwrap();
+        assert!(!principal.still_granted(&state, &grant).await);
+        state
+            .storage
+            .update_user_role(uid, "operator")
+            .await
+            .unwrap();
+
+        // Signed out everywhere (a password change elsewhere): over.
+        state
+            .storage
+            .revoke_all_user_refresh_tokens("olga")
+            .await
+            .unwrap();
+        assert!(!principal.still_granted(&state, &grant).await);
+
+        // Only an access token: over once it expires.
+        let expiring = |exp_ms: u64| Grant {
+            role: "operator".into(),
+            session: SessionTie::Expires { exp_ms },
+        };
+        let now_ms = crate::timeutil::now_millis() as u64;
+        assert!(
+            principal
+                .still_granted(&state, &expiring(now_ms + 60_000))
+                .await
+        );
+        assert!(!principal.still_granted(&state, &expiring(now_ms - 1)).await);
+    }
+
+    /// An application-level Ping is answered with a Pong to that socket only.
+    #[tokio::test]
+    async fn ping_is_answered_with_pong() {
+        let (state, mut me, mut other, _) = setup(false).await;
+        add_user(&state, "watcher", "viewer").await;
+        let after = dispatch(&state, "watcher", ClientMessage::Ping).await;
+        assert_eq!(after, After::Continue);
+        assert!(matches!(
+            me.try_recv(),
+            Ok(WsFrame::Message(ServerMessage::Pong))
+        ));
+        assert!(other.try_recv().is_err());
     }
 
     /// The WebSocket follows the REST rule: a demo user may write.

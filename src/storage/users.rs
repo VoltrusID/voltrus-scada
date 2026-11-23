@@ -402,6 +402,36 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Whether the sign-in session of `username` that began at
+    /// `session_started_at` is still open: one of its refresh tokens is
+    /// unexpired and not revoked, or was revoked less than `grace_secs` ago
+    /// (a refresh revokes the old token just before it stores the new one).
+    pub async fn session_alive(
+        &self,
+        username: &str,
+        session_started_at: i64,
+        grace_secs: i64,
+    ) -> Result<bool> {
+        let conn = self.conn.clone();
+        let username = username.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let now = crate::timeutil::now_secs();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM refresh_tokens
+                     WHERE username = ?1 AND COALESCE(session_started_at, created_at) = ?2
+                       AND expires_at > ?3 AND (revoked_at IS NULL OR revoked_at >= ?4)",
+                    rusqlite::params![username, session_started_at, now, now - grace_secs],
+                    |row| row.get(0),
+                )
+                .context("Session lookup failed")?;
+            Ok(n > 0)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     pub async fn revoke_all_user_refresh_tokens(&self, username: &str) -> Result<()> {
         let conn = self.conn.clone();
         let username = username.to_string();

@@ -162,6 +162,16 @@ pub(crate) async fn authenticate_api_key(
     ))
 }
 
+/// Which credential authenticated a request, next to its [`AuthUser`]. A
+/// request may carry several (a bearer token and an old session cookie);
+/// this is the one that counted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthCredential {
+    ApiKey,
+    Bearer,
+    Session,
+}
+
 #[derive(Clone)]
 pub struct AuthUser {
     pub username: String,
@@ -194,6 +204,7 @@ pub async fn cookie_auth_middleware(
             Some((user, key)) => {
                 req.extensions_mut().insert(user);
                 req.extensions_mut().insert(key);
+                req.extensions_mut().insert(AuthCredential::ApiKey);
                 return next.run(req).await;
             }
             None => {
@@ -239,6 +250,7 @@ pub async fn cookie_auth_middleware(
             username: identity.username,
             role: identity.role,
         });
+        req.extensions_mut().insert(AuthCredential::Bearer);
         return next.run(req).await;
     }
 
@@ -265,6 +277,7 @@ pub async fn cookie_auth_middleware(
                 username: claims.username,
                 role: claims.role,
             });
+            req.extensions_mut().insert(AuthCredential::Session);
             next.run(req).await
         }
         None => {

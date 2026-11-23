@@ -1546,9 +1546,9 @@ pub fn create_router(state: AppState) -> Router {
 
 // Middleware types re-exported from middleware module
 pub use auth_middleware::{
-    ApiKeyAuth, AuthUser, admin_only_middleware, cookie_auth_middleware, demo_allowed_middleware,
-    effective_key_role, operator_allowed_middleware, role_allows_configuration,
-    role_allows_operation, role_allows_operational_writes,
+    ApiKeyAuth, AuthCredential, AuthUser, admin_only_middleware, cookie_auth_middleware,
+    demo_allowed_middleware, effective_key_role, operator_allowed_middleware,
+    role_allows_configuration, role_allows_operation, role_allows_operational_writes,
 };
 
 #[cfg(test)]
