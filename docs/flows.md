@@ -121,6 +121,8 @@ day fields are restricted, a day matching either fires (classic cron). A field
 that starts with `*` counts as unrestricted, as in Vixie cron: `0 0 */2 * mon`
 fires on Mondays that fall on an odd day, `0 0 1-31/2 * mon` on odd days and on
 Mondays.
+Up to v0.51 the first one fired on odd days and on Mondays; see
+[upgrade notes](upgrade-notes.md) to keep that.
 Shorthands: `@hourly`, `@daily` (`@midnight`), `@weekly`, `@monthly`,
 `@yearly` (`@annually`). A schedule fires at most once per minute.
 

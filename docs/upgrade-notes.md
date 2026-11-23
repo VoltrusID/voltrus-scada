@@ -35,3 +35,21 @@ or `swapped` before the upgrade keeps the old layout under the new names
 `little_dword` and `swapped_dword`: change the device's `endianness` (device
 API, project YAML or template). Readings of such a device that suddenly look
 like tiny or huge numbers after the upgrade are the sign it needs this.
+
+### Flow schedules: day fields written with `*`
+
+Schedules now read the two day fields as Vixie cron does: a field that
+starts with `*` counts as unrestricted, and then a day must match both
+fields. Up to v0.51 a starred step such as `*/2` counted as restricted, so a
+day matching either field fired.
+
+Only schedules with a `*`-prefixed step in one day field and a restricted
+other day field change, for example `0 0 */2 * mon`: it used to fire on
+every odd day and every Monday, and now fires on Mondays that fall on an odd
+day. To keep the old behaviour, write the step without the star:
+`0 0 1-31/2 * mon`. Plain `*` and schedules with only one day field
+restricted behave as before.
+
+Schedules with a fixed minute and hour also handle daylight saving time
+differently: they fire once when the clock goes back, and at the change
+when the clock skips their time (docs/flows.md).
