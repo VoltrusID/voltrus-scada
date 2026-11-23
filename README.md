@@ -313,7 +313,7 @@ sdks/           TypeScript and Python SDKs (MIT)
 native/         experimental native operator console (GPUI), see native/README-native.md
 scenarios/      simulated plants for testing
 deploy/         example systemd unit
-docs/           open-core split, MCP server, live stream, notes
+docs/           open-core split, MCP server, live stream, upgrade notes
 ```
 
 ## Contributing

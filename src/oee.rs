@@ -78,10 +78,37 @@ fn state_reading(snap: &crate::models::DeviceSnapshot, metric: Option<&str>) -> 
     (value.is_finite() && snap.quality_of(name) == crate::quality::Quality::Good).then_some(value)
 }
 
+/// Why a device's state is not tracked, if it is not: several metrics and
+/// none chosen as the state metric.
+pub const NOT_TRACKED_NOTE: &str =
+    "not tracked: choose a state metric (oee_threshold_<device> setting, \"metric\")";
+
+/// The tracking note for a device with `metric_count` metrics and the
+/// configured state metric `metric`.
+pub fn tracking_note(metric: Option<&str>, metric_count: usize) -> Option<&'static str> {
+    (metric.is_none() && metric_count > 1).then_some(NOT_TRACKED_NOTE)
+}
+
+/// The tracking note for `device_id` as it is now (see `tracking_note`).
+pub async fn device_tracking_note(
+    storage: &Storage,
+    cache: &DeviceCache,
+    device_id: &str,
+) -> Option<&'static str> {
+    let snap = cache
+        .get_all()
+        .await
+        .into_iter()
+        .find(|s| s.device_id == device_id)?;
+    let (metric, _) = get_device_threshold(storage, device_id).await;
+    tracking_note(metric.as_deref(), snap.metrics.len())
+}
+
 /// Background task that monitors device metrics and creates/closes downtime events.
 pub async fn run_oee_monitor(cache: DeviceCache, storage: Storage) {
     let mut interval = tokio::time::interval(Duration::from_secs(MONITOR_INTERVAL_SECS));
     let mut device_states: HashMap<String, DeviceOeeState> = HashMap::new();
+    let mut warned = std::collections::HashSet::new();
 
     loop {
         interval.tick().await;
@@ -89,7 +116,7 @@ pub async fn run_oee_monitor(cache: DeviceCache, storage: Storage) {
             continue;
         }
         for snap in &cache.get_all().await {
-            evaluate_device(&storage, &mut device_states, snap).await;
+            evaluate_device(&storage, &mut device_states, &mut warned, snap).await;
         }
     }
 }
@@ -98,6 +125,7 @@ pub async fn run_oee_monitor(cache: DeviceCache, storage: Storage) {
 async fn evaluate_device(
     storage: &Storage,
     device_states: &mut HashMap<String, DeviceOeeState>,
+    warned: &mut std::collections::HashSet<String>,
     snap: &crate::models::DeviceSnapshot,
 ) {
     if snap.status != crate::models::DeviceStatus::Online {
@@ -105,6 +133,18 @@ async fn evaluate_device(
     }
     let device_id = &snap.device_id;
     let (threshold_metric, running_above) = get_device_threshold(storage, device_id).await;
+    if tracking_note(threshold_metric.as_deref(), snap.metrics.len()).is_some() {
+        // Once per device per run, so the log says why it has no downtime.
+        if warned.insert(device_id.clone()) {
+            tracing::warn!(
+                "OEE: device {device_id} has {} metrics and no state metric; its downtime is \
+                 not tracked until one is chosen (setting oee_threshold_{device_id}, \
+                 {{\"metric\": \"...\"}})",
+                snap.metrics.len()
+            );
+        }
+        return;
+    }
     let Some(value) = state_reading(snap, threshold_metric.as_deref()) else {
         return;
     };
@@ -219,6 +259,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_untracked_device_is_reported() {
+        let storage = Storage::new_in_memory().unwrap();
+        let cache = DeviceCache::new();
+        cache
+            .update(
+                "m5",
+                HashMap::from([("a".into(), 1.0), ("b".into(), 0.0)]),
+                false,
+            )
+            .await;
+        assert_eq!(
+            device_tracking_note(&storage, &cache, "m5").await,
+            Some(NOT_TRACKED_NOTE)
+        );
+        let mut warned = std::collections::HashSet::new();
+        let mut states = HashMap::new();
+        let snap = snapshot(&cache, "m5").await;
+        evaluate_device(&storage, &mut states, &mut warned, &snap).await;
+        evaluate_device(&storage, &mut states, &mut warned, &snap).await;
+        assert_eq!(warned.len(), 1);
+        assert!(states.is_empty());
+
+        storage
+            .upsert_setting("oee_threshold_m5", r#"{"metric": "a"}"#)
+            .await
+            .unwrap();
+        assert_eq!(device_tracking_note(&storage, &cache, "m5").await, None);
+        assert_eq!(tracking_note(None, 1), None);
+    }
+
+    #[tokio::test]
     async fn an_event_left_open_by_a_restart_is_closed_when_running() {
         let storage = Storage::new_in_memory().unwrap();
         let cache = DeviceCache::new();
@@ -229,7 +300,13 @@ mod tests {
         cache
             .update("m3", HashMap::from([("rpm".into(), 900.0)]), false)
             .await;
-        evaluate_device(&storage, &mut states, &snapshot(&cache, "m3").await).await;
+        evaluate_device(
+            &storage,
+            &mut states,
+            &mut Default::default(),
+            &snapshot(&cache, "m3").await,
+        )
+        .await;
         assert!(
             storage
                 .get_open_downtime_event("m3")
@@ -255,7 +332,13 @@ mod tests {
         cache
             .update("m4", HashMap::from([("rpm".into(), 0.0)]), false)
             .await;
-        evaluate_device(&storage, &mut states, &snapshot(&cache, "m4").await).await;
+        evaluate_device(
+            &storage,
+            &mut states,
+            &mut Default::default(),
+            &snapshot(&cache, "m4").await,
+        )
+        .await;
         let open = storage
             .get_open_downtime_event("m4")
             .await
@@ -272,7 +355,13 @@ mod tests {
                 false,
             )
             .await;
-        evaluate_device(&storage, &mut states, &snapshot(&cache, "m4").await).await;
+        evaluate_device(
+            &storage,
+            &mut states,
+            &mut Default::default(),
+            &snapshot(&cache, "m4").await,
+        )
+        .await;
         assert!(
             storage
                 .get_open_downtime_event("m4")
@@ -283,7 +372,13 @@ mod tests {
         cache
             .update("m4", HashMap::from([("rpm".into(), 5.0)]), false)
             .await;
-        evaluate_device(&storage, &mut states, &snapshot(&cache, "m4").await).await;
+        evaluate_device(
+            &storage,
+            &mut states,
+            &mut Default::default(),
+            &snapshot(&cache, "m4").await,
+        )
+        .await;
         assert!(
             storage
                 .get_open_downtime_event("m4")

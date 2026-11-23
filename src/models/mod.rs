@@ -494,6 +494,7 @@ mod tests {
             total_running_secs: 3600,
             total_planned_secs: 4235,
             downtime_count: 3,
+            tracking: None,
         };
         let json = serde_json::to_string(&metrics).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
