@@ -1012,16 +1012,20 @@ pub fn dismiss(console: &Console, id: i64) {
 // ── System notifications and the clock ────────────────────────────────────
 
 /// An AppleScript string literal of `text`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn applescript_string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// A notification in the system's notification centre (macOS, through
-/// `osascript`: no extra dependency and no entitlement).
+/// `osascript`: no extra dependency and no entitlement). Elsewhere none:
+/// the toast and the alarm sound still tell.
+#[cfg(not(target_os = "macos"))]
+fn os_notify(_: &str, _: &str) {}
+
+/// See the other platforms' [`os_notify`].
+#[cfg(target_os = "macos")]
 fn os_notify(title: &str, body: &str) {
-    if !OS_NOTIFICATIONS {
-        return;
-    }
     let script = format!(
         "display notification {} with title {}",
         applescript_string(body),
@@ -1042,6 +1046,7 @@ fn os_notify(title: &str, body: &str) {
 
 /// Wait for a notification's process off the UI thread: one thread for
 /// all of them, started with the first.
+#[cfg(target_os = "macos")]
 fn reap(child: std::process::Child) {
     static REAPER: std::sync::LazyLock<
         std::sync::Mutex<std::sync::mpsc::Sender<std::process::Child>>,
