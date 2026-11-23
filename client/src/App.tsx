@@ -23,6 +23,7 @@ import { LicenseContext } from './LicenseContext'
 import { useLicenseStatus } from './queries/license'
 import { edition, useEditionBranding, DEFAULT_BRANDING, applyBrandToDocument } from './edition'
 import { OverlayScreen } from './components/OverlayScreen'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { VoltrusWebSocket, setWsInstance } from './api/websocket'
 import { ThemeProvider } from './ThemeContext'
 import { setSharedAccount } from './sharedAccount'
@@ -579,6 +580,7 @@ export function AppInner() {
         padding: (viewMode === 'scada' || viewMode === 'canvas' || viewMode === 'twin') ? '0 0 38px 0' : '0 24px 38px',
         display: 'flex', flexDirection: 'column', position: 'relative',
       }} className="main-content">
+        <ErrorBoundary resetKey={routerLocation.href}>
         {editMode && viewMode === 'cards' && (
           <LayoutBreakpointSelector layoutBreakpoint={layoutBreakpoint} onChange={setLayoutBreakpoint} />
         )}
@@ -704,6 +706,7 @@ export function AppInner() {
             <Suspense fallback={null}><EdrCompatPanel onClose={() => setShowEdrPanel(false)} /></Suspense>
           </OverlayScreen>
         )}
+        </ErrorBoundary>
       </main>
 
       <Footer activeAlarmCount={activeAlarms.count} viewMode={viewMode} activeScreen={activeScreen} screens={screens} />

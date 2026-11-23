@@ -11,6 +11,11 @@ import { router } from './router'
 import { toast } from './components/Toast'
 import { isSignatureCancelled } from './signature/logic'
 import { isPasswordChangeRequiredError, isSessionExpiredError } from './session'
+import { installChunkReload } from './chunkReload'
+import { ErrorBoundary } from './components/ErrorBoundary'
+
+// A redeploy while this page is open leaves it asking for chunks that are gone.
+installChunkReload()
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -42,7 +47,7 @@ queryClient.getQueryCache().config.onError = (error: any) => {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App><RouterProvider router={router} /></App>
+      <App><ErrorBoundary fullScreen><RouterProvider router={router} /></ErrorBoundary></App>
     </QueryClientProvider>
   </StrictMode>
 )
