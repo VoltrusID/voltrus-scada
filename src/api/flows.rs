@@ -20,7 +20,8 @@ use std::collections::HashMap;
 /// Flow ids the routes under `/api/v1/flows/` use for themselves.
 const RESERVED_FLOW_IDS: &[&str] = &["test", "node-types"];
 
-/// Webhook calls accepted per flow per minute (wrong tokens included).
+/// Webhook calls accepted per flow per minute, and calls with a wrong token
+/// per client address per minute.
 pub const WEBHOOK_MAX_PER_MINUTE: u32 = 30;
 
 fn reject(status: StatusCode, message: impl Into<String>) -> AppError {
@@ -76,7 +77,6 @@ fn with_v2_nodes(mut flow: Flow) -> Flow {
     flow
 }
 
-#[utoipa::path(
 /// The flow as `role` may read it: roles that may not configure see the
 /// headers and URL credentials of `http_out` nodes masked.
 fn readable_by(mut flow: Flow, role: &str) -> Flow {
@@ -86,6 +86,7 @@ fn readable_by(mut flow: Flow, role: &str) -> Flow {
     flow
 }
 
+#[utoipa::path(
     get,
     path = "/api/v1/flows",
     tag = "Flows",
@@ -96,8 +97,8 @@ fn readable_by(mut flow: Flow, role: &str) -> Flow {
 )]
 pub async fn list_flows(
     State(state): State<AppState>,
-) -> Result<Json<serde_json::Value>, AppError> {
     Extension(auth): Extension<AuthUser>,
+) -> Result<Json<serde_json::Value>, AppError> {
     let flows: Vec<Flow> = state
         .storage
         .list_flows()
@@ -123,8 +124,8 @@ pub async fn list_flows(
 )]
 pub async fn get_flow(
     State(state): State<AppState>,
-    Path(id): Path<String>,
     Extension(auth): Extension<AuthUser>,
+    Path(id): Path<String>,
 ) -> Result<Json<Flow>, AppError> {
     let flow = state
         .storage
@@ -693,24 +694,55 @@ pub async fn create_webhook_token(
     Ok(Json(json!({ "token": token })))
 }
 
-/// flow id -> (start of the current minute window, calls in it).
-static WEBHOOK_CALLS: std::sync::LazyLock<dashmap::DashMap<String, (std::time::Instant, u32)>> =
-    std::sync::LazyLock::new(dashmap::DashMap::new);
+/// Calls per key in one-minute windows. Entries whose window has passed are
+/// dropped once the map grows, so made-up keys cannot fill memory.
+struct MinuteCounter(std::sync::LazyLock<dashmap::DashMap<String, (std::time::Instant, u32)>>);
 
-/// Count a webhook call; false when the flow had its share this minute.
-fn webhook_allowed(flow_id: &str) -> bool {
-    let now = std::time::Instant::now();
-    let mut entry = WEBHOOK_CALLS.entry(flow_id.to_string()).or_insert((now, 0));
-    if now.duration_since(entry.0) >= std::time::Duration::from_secs(60) {
-        *entry = (now, 0);
+impl MinuteCounter {
+    const fn new() -> Self {
+        Self(std::sync::LazyLock::new(dashmap::DashMap::new))
     }
-    entry.1 += 1;
-    entry.1 <= WEBHOOK_MAX_PER_MINUTE
+
+    fn window_open(start: std::time::Instant, now: std::time::Instant) -> bool {
+        now.duration_since(start) < std::time::Duration::from_secs(60)
+    }
+
+    /// Calls counted for `key` in its current window.
+    fn count(&self, key: &str) -> u32 {
+        let now = std::time::Instant::now();
+        self.0
+            .get(key)
+            .filter(|e| Self::window_open(e.0, now))
+            .map_or(0, |e| e.1)
+    }
+
+    /// Count one call for `key`; returns the calls in the window, this one included.
+    fn add(&self, key: &str) -> u32 {
+        let now = std::time::Instant::now();
+        if self.0.len() >= 1024 {
+            self.0
+                .retain(|_, (start, _)| Self::window_open(*start, now));
+        }
+        let mut entry = self.0.entry(key.to_string()).or_insert((now, 0));
+        if !Self::window_open(entry.0, now) {
+            *entry = (now, 0);
+        }
+        entry.1 += 1;
+        entry.1
+    }
 }
+
+/// Accepted webhook calls per flow (only calls with the right token count,
+/// so nobody without it can use up a flow's share).
+static WEBHOOK_CALLS: MinuteCounter = MinuteCounter::new();
+/// Calls with a missing or wrong token per client address.
+static WEBHOOK_BAD_TOKENS: MinuteCounter = MinuteCounter::new();
 
 /// Fire a flow with a webhook trigger. Needs the flow's token in
 /// `X-Flow-Token`; the JSON body (optional) becomes the payload. No session
-/// or API key. At most [`WEBHOOK_MAX_PER_MINUTE`] calls per flow per minute.
+/// or API key. At most [`WEBHOOK_MAX_PER_MINUTE`] accepted calls per flow per
+/// minute; a client address that sent that many wrong tokens in a minute is
+/// refused (429) until the minute is over.
 #[utoipa::path(
     post,
     path = "/api/v1/flows/{id}/webhook",
@@ -732,13 +764,18 @@ fn webhook_allowed(flow_id: &str) -> bool {
 pub async fn flow_webhook(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    peer: Option<Extension<axum::extract::ConnectInfo<std::net::SocketAddr>>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    if !webhook_allowed(&id) {
+    let client = crate::security::client_ip_from_parts(
+        peer.map(|Extension(axum::extract::ConnectInfo(p))| p),
+        &headers,
+    );
+    if WEBHOOK_BAD_TOKENS.count(&client) >= WEBHOOK_MAX_PER_MINUTE {
         return Err(reject(
             StatusCode::TOO_MANY_REQUESTS,
-            "too many webhook calls for this flow; try again in a minute",
+            "too many webhook calls with a wrong token; try again in a minute",
         ));
     }
     let token = headers
@@ -753,9 +790,16 @@ pub async fn flow_webhook(
     };
     // Both sides are SHA-256 digests, so comparing them leaks nothing about the token.
     if stored.is_none_or(|hash| hash != sha256_hex(token)) {
+        WEBHOOK_BAD_TOKENS.add(&client);
         return Err(reject(
             StatusCode::UNAUTHORIZED,
             "missing or wrong X-Flow-Token",
+        ));
+    }
+    if WEBHOOK_CALLS.add(&id) > WEBHOOK_MAX_PER_MINUTE {
+        return Err(reject(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many webhook calls for this flow; try again in a minute",
         ));
     }
     let payload: Value = if body.iter().all(u8::is_ascii_whitespace) {

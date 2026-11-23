@@ -133,7 +133,9 @@ Shorthands: `@hourly`, `@daily` (`@midnight`), `@weekly`, `@monthly`,
 Answers: 202 `{accepted: true}` (the run happens in the background), 400 when
 the body is not JSON, 401 for a missing or wrong token, 409 when the flow is
 stopped, its trigger is not `webhook`, or a run is in progress, 429 past 30
-calls per flow per minute (wrong tokens count too).
+accepted calls per flow per minute, or once a client address has sent 30
+missing or wrong tokens in a minute (then until the minute is over, whatever
+token it sends). Wrong tokens do not use up the flow's own share.
 
 ## Nodes
 

@@ -796,15 +796,39 @@ async fn webhook_needs_the_token_and_is_rate_limited() {
     assert_ne!(t2["token"], t["token"]);
     assert_eq!(hook(Some(token), "{}").await, StatusCode::UNAUTHORIZED);
 
-    // Every call counts toward the per-minute limit, wrong tokens too.
+    // Wrong tokens are limited per client address, and they do not use up
+    // the flow's share: a caller with the token from elsewhere still gets in.
+    let from = |addr: &'static str, token: String| {
+        let app = app.clone();
+        async move {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/flows/hooked/webhook")
+                .header("content-type", "application/json")
+                .header("X-Flow-Token", token)
+                .body(Body::from("{}"))
+                .unwrap();
+            req.extensions_mut().insert(axum::extract::ConnectInfo(
+                addr.parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
     let mut limited = false;
-    for _ in 0..crate::api::flows::WEBHOOK_MAX_PER_MINUTE {
-        if hook(Some("wrong".into()), "{}").await == StatusCode::TOO_MANY_REQUESTS {
+    for _ in 0..=crate::api::flows::WEBHOOK_MAX_PER_MINUTE {
+        if from("203.0.113.5:1", "wrong".into()).await == StatusCode::TOO_MANY_REQUESTS {
             limited = true;
             break;
         }
     }
     assert!(limited);
+    let good = t2["token"].as_str().unwrap().to_string();
+    assert_eq!(
+        from("203.0.113.5:1", good.clone()).await,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the limited address is refused before its token is checked"
+    );
+    assert_eq!(from("203.0.113.6:1", good).await, StatusCode::ACCEPTED);
 }
 
 #[tokio::test]
