@@ -235,7 +235,7 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
           </div>
         </div>
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          <TvDetailChart data={data} resetKey={mode === 'history' ? `history|${historyRange}|${historyDetail ?? 'auto'}` : 'live'} color={sensor.color} warn={sensor.warn_val} crit={sensor.crit_val} unit={sensor.unit} overlays={overlays} annotations={chartAnnotations} onAnnotationClick={handleAnnotationClick} />
+          <TvDetailChart data={data} live={mode !== 'history'} resetKey={mode === 'history' ? `history|${historyRange}|${historyDetail ?? 'auto'}|${historyAutoAgg ?? ''}` : 'live'} color={sensor.color} warn={sensor.warn_val} crit={sensor.crit_val} unit={sensor.unit} overlays={overlays} annotations={chartAnnotations} onAnnotationClick={handleAnnotationClick} />
 
           {/* Top-left toolbar: hint + notes toggle */}
           <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', alignItems: 'center', gap: 6, zIndex: 5 }}>

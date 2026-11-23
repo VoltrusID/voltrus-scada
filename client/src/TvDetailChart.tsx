@@ -71,8 +71,28 @@ export function planSeriesUpdate(drawn: DrawnSpan | null, next: LineData<Time>[]
   return { kind: 'append', points: next.filter(p => (p.time as number) > drawn.last) }
 }
 
+/**
+ * Live data appends (see planSeriesUpdate). History is a fresh answer each
+ * time: a narrower range or another aggregation ends inside what is drawn, so
+ * any new history array (or a reset key change) redraws it in full, empty included.
+ */
+export function planChartUpdate(o: {
+  live: boolean
+  keyChanged: boolean
+  dataChanged: boolean
+  drawn: DrawnSpan | null
+  next: LineData<Time>[]
+}): SeriesPlan {
+  if (!o.live) return o.dataChanged || o.keyChanged || !o.drawn ? { kind: 'set' } : { kind: 'none' }
+  if (o.next.length === 0) return { kind: 'none' }
+  if (o.keyChanged) return { kind: 'set' }
+  return planSeriesUpdate(o.drawn, o.next)
+}
+
 interface Props {
   data: DataPoint[]
+  /** Live data (appended as it arrives); false for history, which is redrawn whenever it changes. */
+  live?: boolean
   /** Changing this (mode, range) redraws the series from scratch instead of appending. */
   resetKey?: string
   color: string
@@ -87,6 +107,7 @@ interface Props {
 export function TvDetailChart({
   data: rawData,
   resetKey = '',
+  live = true,
   color: rawColor,
   warn,
   crit,
@@ -105,6 +126,7 @@ export function TvDetailChart({
   const markersPluginRef = useRef<ReturnType<typeof createSeriesMarkers<Time>> | null>(null)
   const drawnRef = useRef<DrawnSpan | null>(null)
   const drawnKeyRef = useRef(resetKey)
+  const drawnDataRef = useRef<DataPoint[] | null>(null)
   const [userScrolled, setUserScrolled] = useState(false)
 
   const color = toHexColor(rawColor)
@@ -237,14 +259,15 @@ export function TvDetailChart({
       : rawData
 
     const tvData = toTvData(filtered)
-    if (tvData.length === 0) return
 
     const keyChanged = drawnKeyRef.current !== resetKey
+    const dataChanged = drawnDataRef.current !== rawData
     drawnKeyRef.current = resetKey
+    drawnDataRef.current = rawData
     const firstDraw = drawnRef.current === null
-    const plan = keyChanged ? { kind: 'set' as const } : planSeriesUpdate(drawnRef.current, tvData)
+    const plan = planChartUpdate({ live, keyChanged, dataChanged, drawn: drawnRef.current, next: tvData })
     if (plan.kind === 'none') return
-    drawnRef.current = { first: tvData[0].time as number, last: tvData[tvData.length - 1].time as number }
+    drawnRef.current = tvData.length ? { first: tvData[0].time as number, last: tvData[tvData.length - 1].time as number } : null
 
     if (plan.kind === 'append') {
       // Live update: only the new points, the view stays where the user left it.
@@ -255,7 +278,7 @@ export function TvDetailChart({
     // First load, or data replaced (mode change, history reload).
     series.setData(tvData)
     if (firstDraw || !userScrolled) chart.timeScale().fitContent()
-  }, [rawData, userScrolled, resetKey])
+  }, [rawData, userScrolled, resetKey, live])
 
   // Min/max band: only history answered with `agg=minmax` carries one
   useEffect(() => {
