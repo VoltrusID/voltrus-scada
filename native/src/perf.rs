@@ -361,7 +361,35 @@ pub fn thread_cpu_ms() -> Option<f64> {
     (status == 0).then(|| time.tv_sec as f64 * 1000.0 + time.tv_nsec as f64 / 1_000_000.0)
 }
 
-#[cfg(not(unix))]
+/// The calling thread's CPU time so far, in ms (kernel and user, from
+/// `GetThreadTimes` in 100 ns ticks).
+#[cfg(windows)]
+pub fn thread_cpu_ms() -> Option<f64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetCurrentThread, GetThreadTimes};
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut creation, mut exit, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: `GetThreadTimes` writes the four structs it is given; the
+    // pseudo-handle of the current thread needs no closing.
+    let ok = unsafe {
+        GetThreadTimes(
+            GetCurrentThread(),
+            &raw mut creation,
+            &raw mut exit,
+            &raw mut kernel,
+            &raw mut user,
+        )
+    };
+    let ticks =
+        |time: FILETIME| (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime);
+    #[allow(clippy::cast_precision_loss)]
+    (ok != 0).then(|| (ticks(kernel) + ticks(user)) as f64 / 10_000.0)
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn thread_cpu_ms() -> Option<f64> {
     None
 }

@@ -51,6 +51,10 @@ lyon = "1.0.19"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The thread CPU clock for the performance HUD (`GetThreadTimes`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 # The mimic's trackpad pinch: the handler block of an AppKit event monitor
 # for magnify gestures, which GPUI does not surface (GPUI's own crate).
 [target.'cfg(target_os = "macos")'.dependencies]

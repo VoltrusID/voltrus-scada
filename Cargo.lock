@@ -8400,6 +8400,7 @@ dependencies = [
  "toml 0.8.23",
  "vt-ui",
  "webpki-roots 0.26.11",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
