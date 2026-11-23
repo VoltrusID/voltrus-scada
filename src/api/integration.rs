@@ -1,13 +1,13 @@
 //! API handlers for external integration & BI connectors (v0.39.0).
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{AppError, AppState};
+use super::{AppError, AppState, AuthUser};
 use crate::integration::bi::{self, BiQuery};
 use crate::integration::egress::{self, CreateEgressJobRequest, UpdateEgressJobRequest};
 
@@ -287,10 +287,24 @@ fn default_timeout() -> u64 {
     10000
 }
 
+/// Lists outbound webhooks. Roles that may not configure see header values
+/// and URL credentials masked.
 pub async fn list_outbound_webhooks(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<impl IntoResponse, AppError> {
-    let webhooks = state.storage.list_outbound_webhooks().await?;
+    let mut webhooks = state.storage.list_outbound_webhooks().await?;
+    if !super::role_allows_configuration(&auth.role) {
+        use crate::security::redact::{mask_headers_text, mask_url};
+        for hook in &mut webhooks {
+            if let Some(url) = hook.get("url").and_then(|v| v.as_str()) {
+                hook["url"] = json!(mask_url(url));
+            }
+            if let Some(headers) = hook.get("headers").and_then(|v| v.as_str()) {
+                hook["headers"] = json!(mask_headers_text(headers));
+            }
+        }
+    }
     Ok(Json(webhooks))
 }
 

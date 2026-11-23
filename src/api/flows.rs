@@ -77,6 +77,15 @@ fn with_v2_nodes(mut flow: Flow) -> Flow {
 }
 
 #[utoipa::path(
+/// The flow as `role` may read it: roles that may not configure see the
+/// headers and URL credentials of `http_out` nodes masked.
+fn readable_by(mut flow: Flow, role: &str) -> Flow {
+    if !crate::api::role_allows_configuration(role) {
+        flow.nodes = crate::security::redact::mask_flow_nodes(&flow.nodes);
+    }
+    flow
+}
+
     get,
     path = "/api/v1/flows",
     tag = "Flows",
@@ -88,12 +97,13 @@ fn with_v2_nodes(mut flow: Flow) -> Flow {
 pub async fn list_flows(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, AppError> {
+    Extension(auth): Extension<AuthUser>,
     let flows: Vec<Flow> = state
         .storage
         .list_flows()
         .await?
         .into_iter()
-        .map(with_v2_nodes)
+        .map(|f| readable_by(with_v2_nodes(f), &auth.role))
         .collect();
     Ok(Json(json!({ "flows": flows })))
 }
@@ -114,13 +124,14 @@ pub async fn list_flows(
 pub async fn get_flow(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<Json<Flow>, AppError> {
     let flow = state
         .storage
         .get_flow(&id)
         .await?
         .ok_or_else(|| AppError::not_found("Flow not found"))?;
-    Ok(Json(with_v2_nodes(flow)))
+    Ok(Json(readable_by(with_v2_nodes(flow), &auth.role)))
 }
 
 #[utoipa::path(
@@ -209,9 +220,18 @@ pub async fn update_flow(
 ) -> Result<StatusCode, AppError> {
     let (trigger, graph, trigger_text) =
         check_definition(&req.trigger_config, &req.nodes).map_err(invalid)?;
-    if state.storage.get_flow(&id).await?.is_none() {
+    let Some(stored) = state.storage.get_flow(&id).await? else {
         return Err(AppError::not_found("Flow not found"));
-    }
+    };
+    // An editor that read the flow masked sends the mask back: keep the
+    // stored header values and URL credentials of those http_out nodes.
+    let mut doc = graph.to_value();
+    let (trigger, graph, trigger_text) =
+        if crate::security::redact::restore_flow_graph(&mut doc, Some(&stored.nodes)) {
+            check_definition(&req.trigger_config, &doc).map_err(invalid)?
+        } else {
+            (trigger, graph, trigger_text)
+        };
     state
         .storage
         .update_flow(

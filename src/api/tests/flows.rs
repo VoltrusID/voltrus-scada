@@ -806,3 +806,56 @@ async fn webhook_needs_the_token_and_is_rate_limited() {
     }
     assert!(limited);
 }
+
+#[tokio::test]
+async fn http_out_secrets_are_masked_for_viewers_and_kept_on_edit() {
+    let state = seeded_admin_app_state().await;
+    let storage = state.storage.clone();
+    let app = create_router(state);
+    let admin = format!("voltrus_token={}", admin_cookie(&app).await);
+    let viewer = user_cookie(&app, &storage, "vera", "viewer").await;
+    let nodes = json!([{
+        "id": "h", "type": "http_out",
+        "url": format!("https://bot:{}@hooks.example.com/in", "pa55word"),
+        "headers": {"Authorization": "Bearer top-secret"}
+    }]);
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/flows",
+        None,
+        Some(&admin),
+        Some(json!({"id": "out", "name": "Out", "trigger_config": {"type": "manual"}, "nodes": nodes})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for uri in ["/api/v1/flows", "/api/v1/flows/out"] {
+        let (status, body) = send_request(&app, "GET", uri, None, Some(&viewer), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let text = body.to_string();
+        assert!(!text.contains("top-secret"), "{uri}: {text}");
+        assert!(!text.contains("pa55word"), "{uri}: {text}");
+    }
+    let (_, flow) = send_request(&app, "GET", "/api/v1/flows/out", None, Some(&admin), None).await;
+    assert!(flow["nodes"].as_str().unwrap().contains("top-secret"));
+
+    // An editor sending the masked graph back keeps the stored secrets.
+    let (_, masked) =
+        send_request(&app, "GET", "/api/v1/flows/out", None, Some(&viewer), None).await;
+    let (status, _) = send_request(
+        &app,
+        "PUT",
+        "/api/v1/flows/out",
+        None,
+        Some(&admin),
+        Some(
+            json!({"name": "Out", "trigger_config": {"type": "manual"}, "nodes": masked["nodes"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let stored = storage.get_flow("out").await.unwrap().unwrap().nodes;
+    assert!(stored.contains("Bearer top-secret"), "{stored}");
+    assert!(stored.contains(":pa55word@"), "{stored}");
+}

@@ -4,6 +4,7 @@ pub mod intrusion;
 pub mod mcp_guard;
 pub mod rate_limiter;
 pub mod request_filters;
+pub mod redact;
 pub mod request_id;
 pub mod sanitization;
 pub mod secrets;
