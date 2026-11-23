@@ -7,6 +7,8 @@ import { useServerVersion } from '../queries/system'
 
 interface Props {
   activeAlarmCount: number
+  /** The active alarm count could not be fetched. */
+  alarmsUnavailable?: boolean
   viewMode: 'cards' | 'canvas' | 'twin' | 'scada'
   activeScreen: string
   screens: Screen[]
@@ -19,7 +21,7 @@ const VIEW_LABELS: Record<string, string> = {
   scada: 'SCADA',
 }
 
-export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Props) {
+export function Footer({ activeAlarmCount, alarmsUnavailable = false, viewMode, activeScreen, screens }: Props) {
   const wsConnected = useWsConnected()
   const transport = useLiveTransport()
   const license = useLicense()
@@ -87,6 +89,13 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
           {VIEW_LABELS[viewMode]}
         </span>
       </div>
+
+      {alarmsUnavailable && (
+        <>
+          <div style={{ width: 1, height: 14, background: 'var(--border)', flexShrink: 0 }} />
+          <span role="status" style={{ color: 'var(--warn)', fontWeight: 700, flexShrink: 0 }}>ALARMS UNAVAILABLE</span>
+        </>
+      )}
 
       {/* Alarm count */}
       {activeAlarmCount > 0 && (

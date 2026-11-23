@@ -65,6 +65,7 @@ const ScriptEditor = lazy(() => import('./components/ScriptEditor').then(m => ({
 const EMPTY_SENSORS: SensorConfig[] = []
 const EMPTY_LIST: never[] = []
 const EMPTY_SHORTCUTS: Record<string, string> = {}
+const NO_ALARMS = { count: 0 }
 
 export function AppInner() {
   const queryClient = useQueryClient()
@@ -189,7 +190,7 @@ export function AppInner() {
   const branding = useEditionBranding(licenseInfo) ?? DEFAULT_BRANDING
   // Tab title and favicon follow the brand (Voltrus defaults when none is set).
   useEffect(() => { applyBrandToDocument(document, branding) }, [branding])
-  const { data: activeAlarms = { count: 0 } } = useActiveAlarmCount(sessionReady)
+  const { data: activeAlarms = NO_ALARMS, isError: alarmsUnavailable } = useActiveAlarmCount(sessionReady)
 
   // ── Mutation hooks ───────────────────────────────────────────────
   const updateSensorMut = useUpdateSensor()
@@ -531,6 +532,7 @@ export function AppInner() {
         branding={branding} editMode={editMode}
         onBrandingClick={() => { if (editMode && edition.branding) setShowBrandingDialog(true) }}
         activeAlarmCount={activeAlarms.count}
+        alarmsUnavailable={alarmsUnavailable}
         effectiveNavShortcuts={effectiveNavShortcuts}
         showShortcutsPanel={showShortcutsPanel}
         onToggleShortcutsPanel={() => setShowShortcutsPanel(v => !v)}
@@ -722,7 +724,7 @@ export function AppInner() {
         </ErrorBoundary>
       </main>
 
-      <Footer activeAlarmCount={activeAlarms.count} viewMode={viewMode} activeScreen={activeScreen} screens={screens} />
+      <Footer activeAlarmCount={activeAlarms.count} alarmsUnavailable={alarmsUnavailable} viewMode={viewMode} activeScreen={activeScreen} screens={screens} />
       <ToastContainer />
       <SignatureDialog />
       {/* router outlet (child route components render null; AppInner owns all chrome) */}

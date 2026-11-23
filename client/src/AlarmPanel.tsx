@@ -402,6 +402,8 @@ interface Props {
   onClose: () => void
 }
 
+const NO_ALARMS: Alarm[] = []
+
 export function AlarmPanel({ onClose }: Props) {
   // Inject pulse animation once
   if (typeof document !== 'undefined' && !document.getElementById('alarm-pulse-style')) {
@@ -421,7 +423,7 @@ export function AlarmPanel({ onClose }: Props) {
   const setPanelTab = (t: PanelTab) => navigate({ to: '/alarms', search: prev => ({ ...prev, tab: t }) })
   const [shelfTarget, setShelfTarget] = useState<number | null>(null)
   const [historyTarget, setHistoryTarget] = useState<number | null>(null)
-  const { data: alarms = [], isLoading } = useAlarms(filter)
+  const { data: alarms = NO_ALARMS, isLoading, isError, refetch } = useAlarms(filter)
   const ackMut = useAcknowledgeAlarm()
   const ackAllMut = useAcknowledgeAllAlarms()
   const unshelfMut = useUnshelfAlarm()
@@ -509,7 +511,16 @@ export function AlarmPanel({ onClose }: Props) {
             {/* Alarm list */}
             <div ref={parentRef} role="list" aria-live="polite" style={{ flex: 1, overflow: 'auto', padding: isMobile ? 12 : 8 }}>
               {isLoading && <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>Loading...</div>}
-              {!isLoading && alarms.length === 0 && <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>No alarms</div>}
+              {isError && (
+                <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', marginBottom: 8, borderRadius: 8, border: '1px solid var(--warn)', fontSize: 12 }}>
+                  <span style={{ flex: 1, color: 'var(--fg)' }}>
+                    <strong style={{ color: 'var(--warn)' }}>Alarms unavailable.</strong>{' '}
+                    {alarms.length > 0 ? 'The server did not answer; this list may be out of date.' : 'The server did not answer, so active alarms cannot be shown.'}
+                  </span>
+                  <button onClick={() => refetch()} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11, fontWeight: 600 }}>Retry</button>
+                </div>
+              )}
+              {!isLoading && !isError && alarms.length === 0 && <div style={{ padding: 20, color: 'var(--muted)', textAlign: 'center', fontSize: 13 }}>No alarms</div>}
               {!isLoading && alarms.length > 0 && (
                 <div style={{ height: `${virtualizer.getTotalSize()}px`, width: '100%', position: 'relative' }}>
                   {virtualizer.getVirtualItems().map(virtualItem => {
