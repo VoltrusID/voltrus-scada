@@ -12,11 +12,31 @@ pub fn parse_register(words: &[u16], reg_type: &RegisterType, endianness: &Endia
             let raw = combine_u16(words[0], words[1], endianness);
             f32::from_bits(raw) as f64
         }
-        RegisterType::Float64 => {
-            let hi = combine_u16(words[0], words[1], endianness);
-            let lo = combine_u16(words[2], words[3], endianness);
-            f64::from_bits(((hi as u64) << 32) | (lo as u64))
-        }
+        RegisterType::Float64 => f64::from_bits(combine_u64(words, endianness)),
+    }
+}
+
+/// Four registers as one 64-bit value, extending the 32-bit orders: `big`
+/// is most significant word first (ABCDEFGH), `little` least significant
+/// word first with big-endian bytes in each word (GHEFCDAB), `swapped`
+/// every byte reversed (HGFEDCBA).
+pub(crate) fn combine_u64(words: &[u16], endianness: &Endianness) -> u64 {
+    let first = combine_u16(words[0], words[1], endianness) as u64;
+    let second = combine_u16(words[2], words[3], endianness) as u64;
+    match endianness {
+        Endianness::Big => (first << 32) | second,
+        // Low dword first in both reversed orders.
+        Endianness::Little | Endianness::Swapped => (second << 32) | first,
+    }
+}
+
+/// The inverse of `combine_u64`.
+fn split_u64(raw: u64, endianness: &Endianness) -> Vec<u16> {
+    let hi = split_u32((raw >> 32) as u32, endianness);
+    let lo = split_u32(raw as u32, endianness);
+    match endianness {
+        Endianness::Big => [hi, lo].concat(),
+        Endianness::Little | Endianness::Swapped => [lo, hi].concat(),
     }
 }
 
@@ -48,12 +68,7 @@ pub(crate) fn value_to_words(
             let raw = (value as f32).to_bits();
             split_u32(raw, endianness)
         }
-        RegisterType::Float64 => {
-            let raw = value.to_bits();
-            let hi = split_u32((raw >> 32) as u32, endianness);
-            let lo = split_u32((raw & 0xFFFFFFFF) as u32, endianness);
-            [hi, lo].concat()
-        }
+        RegisterType::Float64 => split_u64(value.to_bits(), endianness),
     }
 }
 

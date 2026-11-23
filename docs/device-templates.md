@@ -54,14 +54,14 @@ does not know.
   "verified": true,
   "verified_notes": "Firmware 2.1.4, checked against the front panel at a 400 V site, Jan 2026",
   "quirks": [
-    "Float32 values are low word first: use endianness 'swapped'",
+    "Float32 values are low word first: use endianness 'little'",
     "The manual lists 1-based register numbers; offsets here are 0-based"
   ],
   "license": "CC-BY-4.0",
   "port": 502,
   "unit_id": 1,
   "interval_ms": 1000,
-  "endianness": "swapped",
+  "endianness": "little",
   "registers": [
     { "name": "Voltage_L1N", "offset": 0, "register_type": "float32", "register_area": "holding", "scale": 1.0, "unit": "V", "description": "L1-N voltage" },
     { "name": "Current_L1", "offset": 2, "register_type": "float32", "register_area": "holding", "scale": 1.0, "unit": "A" },
@@ -92,6 +92,16 @@ does not know.
 Device defaults (all optional; defaults in brackets): `port` (502), `unit_id` (1),
 `interval_ms` (1000), `endianness` (`big`, `little` or `swapped`; `big`).
 At least one entry in `registers`.
+
+`endianness` is the order of the registers of a 32- or 64-bit value. With
+the bytes of the value written most significant first as `ABCD` (32-bit) or
+`ABCDEFGH` (64-bit):
+
+| `endianness` | 32-bit registers | 64-bit registers |
+|---|---|---|
+| `big` | `AB CD` | `AB CD EF GH` |
+| `little` | `CD AB` (low word first) | `GH EF CD AB` |
+| `swapped` | `DC BA` (low word first, bytes swapped) | `HG FE DC BA` |
 
 | Register field | Required | Notes |
 |---|:-:|---|

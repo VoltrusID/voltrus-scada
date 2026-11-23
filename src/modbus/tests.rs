@@ -191,3 +191,68 @@ fn test_encode_refuses_bad_scale_and_values() {
     assert!(super::types::encode_register(f64::NAN, &reg, &Endianness::Big).is_err());
     assert!(super::types::encode_register(1e300, &reg, &Endianness::Big).is_err());
 }
+
+/// Known float64 vectors in each word order. Big: most significant word
+/// first; little: least significant word first, bytes big-endian per word;
+/// swapped: all eight bytes reversed (the 32-bit orders extended).
+#[test]
+fn test_float64_word_orders() {
+    let cases: [(f64, [u16; 4], [u16; 4], [u16; 4]); 3] = [
+        (
+            1.0,
+            [0x3FF0, 0x0000, 0x0000, 0x0000],
+            [0x0000, 0x0000, 0x0000, 0x3FF0],
+            [0x0000, 0x0000, 0x0000, 0xF03F],
+        ),
+        (
+            -2.5,
+            [0xC004, 0x0000, 0x0000, 0x0000],
+            [0x0000, 0x0000, 0x0000, 0xC004],
+            [0x0000, 0x0000, 0x0000, 0x04C0],
+        ),
+        (
+            // 0x40FE240C9FBE76C9
+            123456.789,
+            [0x40FE, 0x240C, 0x9FBE, 0x76C9],
+            [0x76C9, 0x9FBE, 0x240C, 0x40FE],
+            [0xC976, 0xBE9F, 0x0C24, 0xFE40],
+        ),
+    ];
+    for (value, big, little, swapped) in cases {
+        for (order, words) in [
+            (Endianness::Big, big),
+            (Endianness::Little, little),
+            (Endianness::Swapped, swapped),
+        ] {
+            assert_eq!(
+                value_to_words(value, &RegisterType::Float64, &order),
+                words.to_vec(),
+                "{value} encoded {order:?}"
+            );
+            assert_eq!(
+                parse_register(&words, &RegisterType::Float64, &order),
+                value,
+                "{value} decoded {order:?}"
+            );
+        }
+    }
+}
+
+/// The 64-bit orders agree with the 32-bit ones: the same value as float32
+/// in each order is laid out the same way, two words shorter.
+#[test]
+fn test_float32_word_orders_match_float64_convention() {
+    // 1.0f32 = 0x3F800000
+    assert_eq!(
+        value_to_words(1.0, &RegisterType::Float32, &Endianness::Big),
+        vec![0x3F80, 0x0000]
+    );
+    assert_eq!(
+        value_to_words(1.0, &RegisterType::Float32, &Endianness::Little),
+        vec![0x0000, 0x3F80]
+    );
+    assert_eq!(
+        value_to_words(1.0, &RegisterType::Float32, &Endianness::Swapped),
+        vec![0x0000, 0x803F]
+    );
+}
