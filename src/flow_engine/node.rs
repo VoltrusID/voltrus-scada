@@ -775,12 +775,13 @@ impl NodeConfig {
                             }
                         }
                         let input = serde_json::Value::Object(tag_input);
-                        let result = crate::script_engine::execute_script(
-                            &script.source,
-                            &input,
-                            script.cpu_limit_ms as u64,
-                            script.memory_limit_bytes as u64,
-                        );
+                        let result = crate::script_engine::run_script(
+                            script.source.clone(),
+                            input,
+                            script.cpu_limit_ms,
+                            script.memory_limit_bytes,
+                        )
+                        .await;
                         if !dry_run {
                             let _ = storage
                                 .create_script_execution(
