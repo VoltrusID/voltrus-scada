@@ -72,6 +72,26 @@ const MAX_RECENT_MESSAGES: usize = 500;
 const MAX_TOPIC_MESSAGES: usize = 50;
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
+/// Make room in a full topic map: forget the tenth of `max` (at least one)
+/// updated longest ago, in one pass, so a stream of new topics costs one
+/// scan per `max / 10` inserts rather than one per insert.
+fn evict_oldest(topics: &mut HashMap<String, TopicInfo>, max: usize) {
+    let batch = (max / 10).max(1);
+    let target = max.saturating_sub(batch);
+    if topics.len() <= target {
+        return;
+    }
+    let remove = topics.len() - target;
+    let mut ages: Vec<(i64, String)> = topics
+        .values()
+        .map(|t| (t.last_update, t.topic.clone()))
+        .collect();
+    ages.select_nth_unstable(remove - 1);
+    for (_, name) in &ages[..remove] {
+        topics.remove(name);
+    }
+}
+
 /// In-memory tracker of topics and messages passing through the broker.
 #[derive(Clone)]
 pub struct TopicTracker {
@@ -124,18 +144,8 @@ impl TopicTracker {
         {
             let mut topics = self.topics.write().await;
             let max = self.max_topics.load(std::sync::atomic::Ordering::Relaxed);
-            if !topics.contains_key(&topic) {
-                // Make room by forgetting the topics updated longest ago.
-                while topics.len() >= max {
-                    let Some(oldest) = topics
-                        .values()
-                        .min_by_key(|t| t.last_update)
-                        .map(|t| t.topic.clone())
-                    else {
-                        break;
-                    };
-                    topics.remove(&oldest);
-                }
+            if topics.len() >= max && !topics.contains_key(&topic) {
+                evict_oldest(&mut topics, max);
             }
             let entry = topics.entry(topic.clone()).or_insert_with(|| TopicInfo {
                 topic: topic.clone(),
@@ -479,6 +489,34 @@ mod topic_tracker_tests {
             .collect();
         names.sort();
         assert_eq!(names, ["a", "c", "d"]);
+    }
+
+    #[tokio::test]
+    async fn eviction_runs_in_batches() {
+        let tracker = TopicTracker::new();
+        tracker.set_max_topics(100);
+        for i in 0..100 {
+            tracker.record_message(format!("t{i}"), vec![], false).await;
+            tracker
+                .topics
+                .write()
+                .await
+                .get_mut(&format!("t{i}"))
+                .unwrap()
+                .last_update = i;
+        }
+        // The 101st topic drops the ten oldest at once.
+        tracker.record_message("new".into(), vec![], false).await;
+        let topics = tracker.topics.read().await;
+        assert_eq!(topics.len(), 91);
+        assert!((0..10).all(|i| !topics.contains_key(&format!("t{i}"))));
+        assert!(topics.contains_key("t10") && topics.contains_key("new"));
+        drop(topics);
+        // The next nine new topics fit without another pass.
+        for i in 0..9 {
+            tracker.record_message(format!("n{i}"), vec![], false).await;
+        }
+        assert_eq!(tracker.topics.read().await.len(), 100);
     }
 
     #[tokio::test]
