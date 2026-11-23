@@ -20,7 +20,7 @@ const RESERVED_IDS: [&str; 2] = ["catalog", "from-device"];
 
 pub const MODBUS_TYPES: [&str; 5] = ["int16", "uint16", "int32", "float32", "float64"];
 pub const MODBUS_AREAS: [&str; 4] = ["holding", "input", "coil", "discrete"];
-pub const MODBUS_ENDIANNESS: [&str; 3] = ["big", "little", "swapped"];
+pub const MODBUS_ENDIANNESS: [&str; 5] = crate::models::Endianness::NAMES;
 pub const BACNET_TYPES: [&str; 9] = [
     "analogInput",
     "analogOutput",

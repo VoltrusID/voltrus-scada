@@ -731,9 +731,10 @@ pub async fn instantiate_template(
     if let Some(e) = &req.endianness
         && !crate::device_templates::MODBUS_ENDIANNESS.contains(&e.as_str())
     {
-        return Err(AppError::bad_request(
-            "endianness must be big, little or swapped",
-        ));
+        return Err(AppError::bad_request(format!(
+            "endianness must be one of {}",
+            crate::device_templates::MODBUS_ENDIANNESS.join(", ")
+        )));
     }
     let created = match t.protocol {
         Protocol::Modbus => instantiate_modbus(&state, &auth, &t, &req, name, ip).await?,

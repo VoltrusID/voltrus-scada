@@ -19,32 +19,38 @@ pub fn parse_register(words: &[u16], reg_type: &RegisterType, endianness: &Endia
 /// Four registers as one 64-bit value, extending the 32-bit orders: `big`
 /// is most significant word first (ABCDEFGH), `little` least significant
 /// word first with big-endian bytes in each word (GHEFCDAB), `swapped`
-/// every byte reversed (HGFEDCBA).
+/// every byte reversed (HGFEDCBA). The `_dword` orders keep the high dword
+/// first and order each dword as `little`/`swapped` (CDABGHEF, DCBAHGFE).
 pub(crate) fn combine_u64(words: &[u16], endianness: &Endianness) -> u64 {
     let first = combine_u16(words[0], words[1], endianness) as u64;
     let second = combine_u16(words[2], words[3], endianness) as u64;
-    match endianness {
-        Endianness::Big => (first << 32) | second,
-        // Low dword first in both reversed orders.
-        Endianness::Little | Endianness::Swapped => (second << 32) | first,
+    if low_dword_first(endianness) {
+        (second << 32) | first
+    } else {
+        (first << 32) | second
     }
+}
+
+fn low_dword_first(endianness: &Endianness) -> bool {
+    matches!(endianness, Endianness::Little | Endianness::Swapped)
 }
 
 /// The inverse of `combine_u64`.
 fn split_u64(raw: u64, endianness: &Endianness) -> Vec<u16> {
     let hi = split_u32((raw >> 32) as u32, endianness);
     let lo = split_u32(raw as u32, endianness);
-    match endianness {
-        Endianness::Big => [hi, lo].concat(),
-        Endianness::Little | Endianness::Swapped => [lo, hi].concat(),
+    if low_dword_first(endianness) {
+        [lo, hi].concat()
+    } else {
+        [hi, lo].concat()
     }
 }
 
 pub(crate) fn combine_u16(high: u16, low: u16, endianness: &Endianness) -> u32 {
     match endianness {
         Endianness::Big => ((high as u32) << 16) | (low as u32),
-        Endianness::Little => ((low as u32) << 16) | (high as u32),
-        Endianness::Swapped => {
+        Endianness::Little | Endianness::LittleDword => ((low as u32) << 16) | (high as u32),
+        Endianness::Swapped | Endianness::SwappedDword => {
             let h = high.swap_bytes();
             let l = low.swap_bytes();
             ((l as u32) << 16) | (h as u32)
@@ -126,9 +132,9 @@ pub(crate) fn encode_register(
 fn split_u32(raw: u32, endianness: &Endianness) -> Vec<u16> {
     match endianness {
         Endianness::Big => vec![(raw >> 16) as u16, raw as u16],
-        Endianness::Little => vec![raw as u16, (raw >> 16) as u16],
+        Endianness::Little | Endianness::LittleDword => vec![raw as u16, (raw >> 16) as u16],
         // The inverse of `combine_u16`: low word first, each byte-swapped.
-        Endianness::Swapped => {
+        Endianness::Swapped | Endianness::SwappedDword => {
             let h = (raw >> 16) as u16;
             let l = raw as u16;
             vec![l.swap_bytes(), h.swap_bytes()]

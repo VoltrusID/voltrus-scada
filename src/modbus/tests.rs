@@ -256,3 +256,40 @@ fn test_float32_word_orders_match_float64_convention() {
         vec![0x0000, 0x803F]
     );
 }
+
+/// The `_dword` orders read float64 the way `little` and `swapped` did
+/// before they were corrected: high dword first, each dword in the 32-bit
+/// order. 32-bit values are the same as `little`/`swapped`.
+#[test]
+fn test_legacy_dword_orders() {
+    // 123456.789 = 0x40FE240C 9FBE76C9
+    let little_dword = [0x240C, 0x40FE, 0x76C9, 0x9FBE];
+    let swapped_dword = [0x0C24, 0xFE40, 0xC976, 0xBE9F];
+    for (order, words) in [
+        (Endianness::LittleDword, little_dword),
+        (Endianness::SwappedDword, swapped_dword),
+    ] {
+        assert_eq!(
+            value_to_words(123456.789, &RegisterType::Float64, &order),
+            words.to_vec()
+        );
+        assert_eq!(
+            parse_register(&words, &RegisterType::Float64, &order),
+            123456.789
+        );
+    }
+    for (legacy, plain) in [
+        (Endianness::LittleDword, Endianness::Little),
+        (Endianness::SwappedDword, Endianness::Swapped),
+    ] {
+        assert_eq!(
+            value_to_words(220.5, &RegisterType::Float32, &legacy),
+            value_to_words(220.5, &RegisterType::Float32, &plain)
+        );
+    }
+    for name in Endianness::NAMES {
+        assert_eq!(Endianness::from_name(name).name(), name);
+        let parsed: Endianness = serde_json::from_value(serde_json::json!(name)).unwrap();
+        assert_eq!(parsed.name(), name);
+    }
+}

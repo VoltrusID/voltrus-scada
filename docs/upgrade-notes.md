@@ -22,3 +22,16 @@ The server logs a warning once per device, and `GET /api/v1/oee/metrics`
 answers with `"tracking": "not tracked: choose a state metric ..."` for it.
 Readings that are not good (bad quality, stale, NaN) no longer change the
 state either.
+
+### Modbus: `float64` in `little` and `swapped` order
+
+`little` and `swapped` used to apply only inside each half of a 64-bit
+value: the high 32 bits always came first. They now reverse the whole value,
+as the 32-bit orders do (`little`: `GH EF CD AB`, `swapped`: `HG FE DC BA`;
+see docs/device-templates.md). 32-bit values and `big` are unchanged.
+
+A device with `float64` registers whose readings were correct with `little`
+or `swapped` before the upgrade keeps the old layout under the new names
+`little_dword` and `swapped_dword`: change the device's `endianness` (device
+API, project YAML or template). Readings of such a device that suddenly look
+like tiny or huge numbers after the upgrade are the sign it needs this.

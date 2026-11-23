@@ -251,7 +251,7 @@ mod modbus {
                 "port": {"type": "integer", "minimum": 1, "maximum": 65535, "default": 502},
                 "unit_id": {"type": "integer", "minimum": 0, "maximum": 255, "default": 1, "description": "Modbus unit / slave id."},
                 "interval_ms": {"type": "integer", "minimum": 1, "default": 1000, "description": "Polling interval in milliseconds."},
-                "endianness": {"type": "string", "enum": ["big", "little", "swapped"], "default": "big", "description": "Word/byte order for 32- and 64-bit registers."},
+                "endianness": {"type": "string", "enum": ["big", "little", "swapped", "little_dword", "swapped_dword"], "default": "big", "description": "Word/byte order for 32- and 64-bit registers."},
                 "registers": {
                     "type": "array",
                     "description": "Register map, polled every interval.",

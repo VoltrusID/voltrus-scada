@@ -87,7 +87,7 @@ pub fn tools() -> Vec<Tool> {
                         "port": {"type": "integer", "minimum": 1, "maximum": 65535, "description": "Default: the template's."},
                         "unit_id": {"type": "integer", "minimum": 0, "maximum": 255, "description": "Modbus unit id. Default: the template's."},
                         "interval_ms": {"type": "integer", "minimum": 1, "description": "Polling interval. Default: the template's."},
-                        "endianness": {"type": "string", "enum": ["big", "little", "swapped"], "description": "Modbus word order. Default: the template's."},
+                        "endianness": {"type": "string", "enum": ["big", "little", "swapped", "little_dword", "swapped_dword"], "description": "Modbus word order. Default: the template's."},
                         "device_instance": {"type": "integer", "minimum": 0, "maximum": 4194303, "description": "BACnet device instance. Default 0."},
                         "cov_enabled": {"type": "boolean", "description": "BACnet change-of-value subscriptions. Default: the template's."},
                         "cov_lifetime": {"type": "integer", "minimum": 1, "description": "BACnet COV subscription lifetime in seconds. Default: the template's."},
