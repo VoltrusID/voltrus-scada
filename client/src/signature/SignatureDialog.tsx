@@ -86,7 +86,7 @@ function ModalBackdrop({ children }: { children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null)
   useModalFocus(ref, () => answerSignaturePrompt(null))
   return (
-    <div ref={ref} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+    <div ref={ref} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 5000 }}>
       {children}
     </div>
   )

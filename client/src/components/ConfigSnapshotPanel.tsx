@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { btnStyle, inputStyle, labelStyle, labelTextStyle } from '../styles'
 import { listSnapshots, createSnapshot, diffSnapshots, rollback } from '../api/config-snapshots'
 import type { ConfigSnapshot, ConfigDiff } from '../api/config-snapshots'
+import { isSignatureCancelled } from '../signature/logic'
 
 // ── Trigger badge ───────────────────────────────────────────────────
 
@@ -329,7 +330,8 @@ export function ConfigSnapshotPanel() {
       setRollbackTarget(null)
       await fetchSnapshots()
     } catch (e: any) {
-      setError(e.message || 'Failed to rollback')
+      // Closing the signature prompt abandons the rollback; the confirm dialog stays open.
+      if (!isSignatureCancelled(e)) setError(e.message || 'Failed to rollback')
     } finally {
       setRollbackLoading(false)
     }
