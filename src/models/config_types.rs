@@ -166,6 +166,10 @@ pub struct MqttBrokerConfig {
     pub max_connections: u32,
     #[serde(default)]
     pub auth: MqttAuthConfig,
+    /// Topics the broker page keeps last values for. Past this, the topic
+    /// updated longest ago is forgotten to make room for a new one.
+    #[serde(default = "default_mqtt_max_tracked_topics")]
+    pub max_tracked_topics: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -198,6 +202,7 @@ impl Default for MqttBrokerConfig {
             port: default_mqtt_port(),
             max_connections: default_mqtt_max_connections(),
             auth: MqttAuthConfig::default(),
+            max_tracked_topics: default_mqtt_max_tracked_topics(),
         }
     }
 }
@@ -207,6 +212,9 @@ fn default_mqtt_port() -> u16 {
 }
 fn default_mqtt_max_connections() -> u32 {
     100
+}
+pub fn default_mqtt_max_tracked_topics() -> usize {
+    10_000
 }
 fn default_mqtt_auth_mode() -> String {
     "none".to_string()
