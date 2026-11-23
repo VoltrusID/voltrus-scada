@@ -80,22 +80,31 @@ async fn spoofed_forwarded_for_from_remote_peer_does_not_evade_limit() {
     );
 }
 
-/// Without `trusted_proxy` in the config no forwarding header is trusted,
-/// not even from loopback: claiming a fresh address per attempt does not
-/// reset the limit. (Reading the configured header is covered by the
-/// `TrustedProxy` unit tests in `security`.)
+/// The default `trusted_proxy` reads X-Forwarded-For from a proxy on this
+/// machine: clients behind it are limited one by one.
 #[tokio::test]
-async fn forwarded_for_from_loopback_is_ignored_unless_configured() {
+async fn loopback_proxy_forwarded_ip_is_limited_per_real_client() {
     let app = create_router(seeded_admin_app_state().await);
     let n = crate::security::LOGIN_MAX_IP_ATTEMPTS;
     for i in 0..n {
-        let xff = format!("198.51.100.{i}");
-        let s = login_from(&app, "127.0.0.1", Some(&xff), &format!("g{i}"), "x").await;
+        let s = login_from(
+            &app,
+            "127.0.0.1",
+            Some("198.51.100.30"),
+            &format!("g{i}"),
+            "x",
+        )
+        .await;
         assert_eq!(s, StatusCode::UNAUTHORIZED);
     }
     assert_eq!(
-        login_from(&app, "127.0.0.1", Some("198.51.100.200"), "admin", "admin").await,
+        login_from(&app, "127.0.0.1", Some("198.51.100.30"), "admin", "admin").await,
         StatusCode::TOO_MANY_REQUESTS
+    );
+    // A different client behind the same proxy is unaffected.
+    assert_eq!(
+        login_from(&app, "127.0.0.1", Some("198.51.100.31"), "admin", "admin").await,
+        StatusCode::OK
     );
 }
 

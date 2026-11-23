@@ -68,9 +68,9 @@ pub struct AppConfig {
     #[serde(default)]
     pub outbound_http: crate::security::outbound::OutboundPolicy,
     /// The reverse proxy or tunnel whose header names the client address.
-    /// None by default: the TCP peer is the client.
+    /// Default: `X-Forwarded-For` from this machine (127.0.0.1, ::1).
     #[serde(default)]
-    pub trusted_proxy: Option<crate::security::TrustedProxy>,
+    pub trusted_proxy: crate::security::TrustedProxy,
 }
 
 /// Longest accepted `login_hint`.

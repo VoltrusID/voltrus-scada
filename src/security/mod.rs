@@ -157,45 +157,71 @@ mod tests {
     }
 
     #[test]
-    fn client_ip_trusts_no_header_unless_configured() {
+    fn by_default_forwarded_for_is_trusted_from_this_machine_only() {
         let h = headers(&[
-            ("cf-connecting-ip", "1.2.3.4"),
-            ("x-forwarded-for", "5.6.7.8"),
+            ("cf-connecting-ip", "198.51.100.34"),
+            ("x-forwarded-for", "198.51.100.78"),
         ]);
-        // Default (no trusted_proxy): the peer, even from loopback.
+        let default = TrustedProxy::default();
         assert_eq!(
-            TrustedProxy::default().client_ip(peer("127.0.0.1:5000"), &h),
-            "127.0.0.1"
+            default.client_ip(peer("127.0.0.1:5000"), &h),
+            "198.51.100.78"
         );
-        // Configured, but from a peer that is not a trusted proxy.
+        assert_eq!(default.client_ip(peer("[::1]:5000"), &h), "198.51.100.78");
+        // A remote peer cannot name its own address.
         assert_eq!(
-            proxy(ProxyHeader::CfConnectingIp).client_ip(peer("203.0.113.7:5000"), &h),
+            default.client_ip(peer("203.0.113.7:5000"), &h),
             "203.0.113.7"
         );
-        // Without a configuration the request-level helper uses the peer.
+        // Without a configuration the request-level helper uses the default.
         assert_eq!(
             client_ip(&req_from(
                 "127.0.0.1:5000",
-                &[("x-forwarded-for", "5.6.7.8")]
+                &[("x-forwarded-for", "198.51.100.78")]
             )),
+            "198.51.100.78"
+        );
+        // `header: none` turns it off.
+        assert_eq!(
+            proxy(ProxyHeader::None).client_ip(peer("127.0.0.1:5000"), &h),
             "127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn proxy_addresses_take_cidr_and_hops_may_carry_a_port() {
+        let p = TrustedProxy {
+            header: ProxyHeader::XForwardedFor,
+            addresses: vec![ProxyNet::parse("10.0.0.0/24").unwrap()],
+        };
+        let h = headers(&[("x-forwarded-for", "198.51.100.9:51000, 10.0.0.7:443")]);
+        assert_eq!(p.client_ip(peer("10.0.0.5:1"), &h), "198.51.100.9");
+        let h = headers(&[("x-forwarded-for", "[2001:db8::9]:443")]);
+        assert_eq!(p.client_ip(peer("10.0.0.5:1"), &h), "2001:db8::9");
+        assert_eq!(p.client_ip(peer("10.0.1.5:1"), &h), "10.0.1.5");
+        assert!(ProxyNet::parse("10.0.0.0/33").is_err());
+        assert!(ProxyNet::parse("nope").is_err());
+        assert!(
+            ProxyNet::parse("fd00::/8")
+                .unwrap()
+                .contains("fd12::1".parse().unwrap())
         );
     }
 
     #[test]
     fn client_ip_reads_only_the_configured_header() {
         let h = headers(&[
-            ("x-forwarded-for", "5.6.7.8"),
-            ("cf-connecting-ip", "1.2.3.4"),
+            ("x-forwarded-for", "198.51.100.78"),
+            ("cf-connecting-ip", "198.51.100.34"),
         ]);
         let local = peer("127.0.0.1:5000");
         assert_eq!(
             proxy(ProxyHeader::CfConnectingIp).client_ip(local, &h),
-            "1.2.3.4"
+            "198.51.100.34"
         );
         assert_eq!(
             proxy(ProxyHeader::XForwardedFor).client_ip(local, &h),
-            "5.6.7.8"
+            "198.51.100.78"
         );
         assert_eq!(
             proxy(ProxyHeader::XRealIp).client_ip(local, &h),
@@ -207,7 +233,10 @@ mod tests {
     fn forwarded_for_is_read_from_the_right() {
         let p = TrustedProxy {
             header: ProxyHeader::XForwardedFor,
-            addresses: vec!["127.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap()],
+            addresses: vec![
+                ProxyNet::parse("127.0.0.1").unwrap(),
+                ProxyNet::parse("10.0.0.2").unwrap(),
+            ],
         };
         // The client wrote 192.0.2.66 itself; the proxy appended the real peer.
         let h = headers(&[("x-forwarded-for", "192.0.2.66, 198.51.100.9")]);

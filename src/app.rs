@@ -98,9 +98,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
     let config_path = args.get(1).map(|s| s.as_str()).unwrap_or("config.yaml");
     let app_config = config::load_config(config_path)?;
     crate::security::outbound::set_policy(app_config.outbound_http);
-    if let Some(proxy) = &app_config.trusted_proxy {
-        crate::security::set_trusted_proxy(proxy.clone());
-    }
+    crate::security::set_trusted_proxy(app_config.trusted_proxy.clone());
 
     tracing::info!(
         "Loaded config: {} devices in YAML, port {}",
