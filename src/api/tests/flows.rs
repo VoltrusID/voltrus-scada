@@ -797,7 +797,8 @@ async fn webhook_needs_the_token_and_is_rate_limited() {
     assert_eq!(hook(Some(token), "{}").await, StatusCode::UNAUTHORIZED);
 
     // Wrong tokens are limited per client address, and they do not use up
-    // the flow's share: a caller with the token from elsewhere still gets in.
+    // the flow's share: a caller with the token still gets in, from another
+    // address and from the same one.
     let from = |addr: &'static str, token: String| {
         let app = app.clone();
         async move {
@@ -824,11 +825,33 @@ async fn webhook_needs_the_token_and_is_rate_limited() {
     assert!(limited);
     let good = t2["token"].as_str().unwrap().to_string();
     assert_eq!(
-        from("203.0.113.5:1", good.clone()).await,
-        StatusCode::TOO_MANY_REQUESTS,
-        "the limited address is refused before its token is checked"
+        from("203.0.113.6:1", "wrong".into()).await,
+        StatusCode::UNAUTHORIZED,
+        "another address is not limited"
     );
-    assert_eq!(from("203.0.113.6:1", good).await, StatusCode::ACCEPTED);
+    // A run still in progress answers 409; wait it out.
+    let accepted = |addr: &'static str, token: String| {
+        let from = &from;
+        async move {
+            for _ in 0..40 {
+                let status = from(addr, token.clone()).await;
+                if status != StatusCode::CONFLICT {
+                    return status;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            StatusCode::CONFLICT
+        }
+    };
+    assert_eq!(
+        accepted("203.0.113.6:1", good.clone()).await,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        accepted("203.0.113.5:1", good).await,
+        StatusCode::ACCEPTED,
+        "junk from an address does not turn away its right token"
+    );
 }
 
 #[tokio::test]

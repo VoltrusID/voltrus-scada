@@ -698,40 +698,57 @@ pub async fn create_webhook_token(
     Ok(Json(json!({ "token": token })))
 }
 
-/// Calls per key in one-minute windows. Entries whose window has passed are
-/// dropped once the map grows, so made-up keys cannot fill memory.
-struct MinuteCounter(std::sync::LazyLock<dashmap::DashMap<String, (std::time::Instant, u32)>>);
+/// Calls per key in one-minute windows. Once the map holds many keys, keys
+/// whose window has passed are dropped, at most every 10 seconds (not a full
+/// scan per call); past a hard cap it starts over, so made-up keys cannot
+/// fill memory.
+struct MinuteCounter {
+    map: std::sync::LazyLock<dashmap::DashMap<String, (std::time::Instant, u32)>>,
+    last_prune: std::sync::Mutex<Option<std::time::Instant>>,
+}
 
 impl MinuteCounter {
+    const PRUNE_FROM: usize = 1024;
+    const HARD_CAP: usize = 100_000;
+
     const fn new() -> Self {
-        Self(std::sync::LazyLock::new(dashmap::DashMap::new))
+        Self {
+            map: std::sync::LazyLock::new(dashmap::DashMap::new),
+            last_prune: std::sync::Mutex::new(None),
+        }
     }
 
     fn window_open(start: std::time::Instant, now: std::time::Instant) -> bool {
         now.duration_since(start) < std::time::Duration::from_secs(60)
     }
 
-    /// Calls counted for `key` in its current window.
-    fn count(&self, key: &str) -> u32 {
-        let now = std::time::Instant::now();
-        self.0
-            .get(key)
-            .filter(|e| Self::window_open(e.0, now))
-            .map_or(0, |e| e.1)
+    fn prune(&self, now: std::time::Instant) {
+        if self.map.len() < Self::PRUNE_FROM {
+            return;
+        }
+        {
+            let mut last = self.last_prune.lock().unwrap_or_else(|e| e.into_inner());
+            if last.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(10)) {
+                return;
+            }
+            *last = Some(now);
+        }
+        self.map
+            .retain(|_, (start, _)| Self::window_open(*start, now));
+        if self.map.len() >= Self::HARD_CAP {
+            self.map.clear();
+        }
     }
 
     /// Count one call for `key`; returns the calls in the window, this one included.
     fn add(&self, key: &str) -> u32 {
         let now = std::time::Instant::now();
-        if self.0.len() >= 1024 {
-            self.0
-                .retain(|_, (start, _)| Self::window_open(*start, now));
-        }
-        let mut entry = self.0.entry(key.to_string()).or_insert((now, 0));
+        self.prune(now);
+        let mut entry = self.map.entry(key.to_string()).or_insert((now, 0));
         if !Self::window_open(entry.0, now) {
             *entry = (now, 0);
         }
-        entry.1 += 1;
+        entry.1 = entry.1.saturating_add(1);
         entry.1
     }
 }
@@ -745,8 +762,9 @@ static WEBHOOK_BAD_TOKENS: MinuteCounter = MinuteCounter::new();
 /// Fire a flow with a webhook trigger. Needs the flow's token in
 /// `X-Flow-Token`; the JSON body (optional) becomes the payload. No session
 /// or API key. At most [`WEBHOOK_MAX_PER_MINUTE`] accepted calls per flow per
-/// minute; a client address that sent that many wrong tokens in a minute is
-/// refused (429) until the minute is over.
+/// minute; past that many wrong tokens in a minute, a client address gets 429
+/// instead of 401 for its wrong tokens until the minute is over (a right
+/// token is still accepted).
 #[utoipa::path(
     post,
     path = "/api/v1/flows/{id}/webhook",
@@ -772,16 +790,6 @@ pub async fn flow_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<Value>), AppError> {
-    let client = crate::security::client_ip_from_parts(
-        peer.map(|Extension(axum::extract::ConnectInfo(p))| p),
-        &headers,
-    );
-    if WEBHOOK_BAD_TOKENS.count(&client) >= WEBHOOK_MAX_PER_MINUTE {
-        return Err(reject(
-            StatusCode::TOO_MANY_REQUESTS,
-            "too many webhook calls with a wrong token; try again in a minute",
-        ));
-    }
     let token = headers
         .get("x-flow-token")
         .and_then(|v| v.to_str().ok())
@@ -794,7 +802,18 @@ pub async fn flow_webhook(
     };
     // Both sides are SHA-256 digests, so comparing them leaks nothing about the token.
     if stored.is_none_or(|hash| hash != sha256_hex(token)) {
-        WEBHOOK_BAD_TOKENS.add(&client);
+        // Only wrong tokens are limited, per client: junk from one address
+        // never turns away a caller that has the token.
+        let client = crate::security::client_ip_from_parts(
+            peer.map(|Extension(axum::extract::ConnectInfo(p))| p),
+            &headers,
+        );
+        if WEBHOOK_BAD_TOKENS.add(&client) > WEBHOOK_MAX_PER_MINUTE {
+            return Err(reject(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many webhook calls with a wrong token; try again in a minute",
+            ));
+        }
         return Err(reject(
             StatusCode::UNAUTHORIZED,
             "missing or wrong X-Flow-Token",
