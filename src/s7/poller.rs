@@ -53,19 +53,15 @@ pub async fn poll_s7_device(config: S7DeviceConfig, cache: DeviceCache) {
                 }
             }
             Err(e) => {
-                let delay = backoff.next();
-                tracing::warn!(
-                    "S7 device {} connection failed: {}, retrying in {}ms",
-                    device_id,
-                    e,
-                    delay
-                );
+                tracing::warn!("S7 device {} connection failed: {}", device_id, e);
                 cache.set_status(&device_id, DeviceStatus::Offline).await;
             }
         }
 
         let _ = client.disconnect().await;
+        // One step of the backoff per failed attempt.
         let delay = backoff.next();
+        tracing::info!("S7 device {} retrying in {}ms", device_id, delay);
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
     }
 }
