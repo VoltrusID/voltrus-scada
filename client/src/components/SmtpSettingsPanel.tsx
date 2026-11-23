@@ -122,7 +122,7 @@ export function SmtpSettingsPanel() {
 
       <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
         <button onClick={handleSave} disabled={updateMutation.isPending} style={{
-          ...btnStyle, background: 'var(--cyan)', color: '#000', borderColor: 'var(--cyan)',
+          ...btnStyle, background: 'var(--cyan)', color: 'var(--on-accent)', borderColor: 'var(--cyan)',
           fontWeight: 700, opacity: updateMutation.isPending ? 0.6 : 1,
         }}>
           {updateMutation.isPending ? 'Saving...' : 'Save Configuration'}

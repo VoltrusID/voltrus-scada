@@ -9,7 +9,9 @@ function theme(selector: string): Record<string, string> {
   const start = css.indexOf(selector)
   const block = css.slice(css.indexOf('{', start) + 1, css.indexOf('\n}', start))
   const vars: Record<string, string> = {}
-  for (const m of block.matchAll(/(--[\w-]+):\s*(#[0-9a-fA-F]{6})\s*;/g)) vars[m[1]] = m[2]
+  for (const m of block.matchAll(/(--[\w-]+):\s*(#[0-9a-fA-F]{6}|#[0-9a-fA-F]{3})\s*;/g)) {
+    vars[m[1]] = m[2].length === 4 ? '#' + [...m[2].slice(1)].map(c => c + c).join('') : m[2]
+  }
   return vars
 }
 
@@ -50,6 +52,15 @@ test('HMI state colours label symbols legibly on the stage', () => {
     for (const fg of ['--hmi-run', '--hmi-warn', '--hmi-fault', '--hmi-stale']) {
       const r = contrast(t[fg], t['--hmi-stage'])
       assert.ok(r >= 4.5, `${name} ${fg} ${t[fg]} on --hmi-stage ${t['--hmi-stage']}: ${r.toFixed(2)}`)
+    }
+  }
+})
+
+test('text on accent and status fills (--on-accent) reaches 4.5:1 in both themes', () => {
+  for (const [name, t] of [['dark', dark], ['light', light]] as const) {
+    for (const bg of ['--cyan', '--ok', '--warn']) {
+      const r = contrast(t['--on-accent'], t[bg])
+      assert.ok(r >= 4.5, `${name} --on-accent ${t['--on-accent']} on ${bg} ${t[bg]}: ${r.toFixed(2)}`)
     }
   }
 })

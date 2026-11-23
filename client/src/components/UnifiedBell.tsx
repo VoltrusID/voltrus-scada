@@ -105,7 +105,7 @@ export function UnifiedBell({ authed, activeAlarmCount, alarmsUnavailable = fals
         {alarmsUnavailable && totalCount === 0 && (
           <span title={t('alarms.unavailable')} style={{
             position: 'absolute', top: -4, right: -4,
-            background: 'var(--warn)', color: '#000', borderRadius: '50%', minWidth: 16, height: 16,
+            background: 'var(--warn)', color: 'var(--on-accent)', borderRadius: '50%', minWidth: 16, height: 16,
             fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800,
           }}>!</span>
         )}

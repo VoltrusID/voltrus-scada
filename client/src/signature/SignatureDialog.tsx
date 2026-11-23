@@ -74,7 +74,7 @@ export function SignatureDialog({ username }: { username?: string }) {
         )}
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 4 }}>
           <button type="button" onClick={() => answerSignaturePrompt(null)} style={{ padding: '7px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 13 }}>{t('common.cancel')}</button>
-          <button type="submit" style={{ padding: '7px 16px', borderRadius: 6, border: '1px solid var(--cyan)', background: 'var(--cyan)', color: '#000', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>{t('signature.sign')}</button>
+          <button type="submit" style={{ padding: '7px 16px', borderRadius: 6, border: '1px solid var(--cyan)', background: 'var(--cyan)', color: 'var(--on-accent)', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>{t('signature.sign')}</button>
         </div>
       </form>
     </ModalBackdrop>

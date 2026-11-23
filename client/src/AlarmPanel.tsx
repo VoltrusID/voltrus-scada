@@ -151,7 +151,7 @@ function ShelfForm({ alarmId, onClose }: { alarmId: number; onClose: () => void 
         }}>{t('common.cancel')}</button>
         <button onClick={handleSubmit} disabled={shelfMut.isPending} style={{
           padding: '4px 10px', borderRadius: 4, fontSize: 10, cursor: 'pointer',
-          border: '1px solid var(--cyan)', background: 'var(--cyan)', color: '#fff',
+          border: '1px solid var(--cyan)', background: 'var(--cyan)', color: 'var(--on-accent)',
           opacity: shelfMut.isPending ? 0.6 : 1,
         }}>{t('alarms.shelf')}</button>
       </div>

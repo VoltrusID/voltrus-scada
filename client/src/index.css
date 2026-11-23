@@ -31,6 +31,8 @@
   --crit: #ef4444;
   --ok: #22c55e;
   --cyan: #22c55e;
+  /* Text on an accent or status fill (--cyan, --ok, --warn): black on the bright dark-theme fills. */
+  --on-accent: #000;
   --fg: var(--text);
   --green: #22c55e;
   --muted: var(--text-muted);
@@ -80,6 +82,8 @@
   --crit: #dc2626;
   --ok: #15803d;
   --cyan: #15803d;
+  /* White on the darker light-theme fills: 5.0:1 (black would be 4.2:1). */
+  --on-accent: #fff;
   --fg: var(--text);
   --green: #15803d;
   --muted: var(--text-muted);
@@ -334,7 +338,7 @@ input, textarea, [contenteditable] {
   transform: translateX(-50%);
   padding: 8px 16px;
   background: var(--cyan);
-  color: var(--bg);
+  color: var(--on-accent);
   font-weight: 700;
   z-index: 10000;
   border-radius: 0 0 8px 8px;

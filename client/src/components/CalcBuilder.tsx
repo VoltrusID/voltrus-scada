@@ -29,7 +29,7 @@ const btnStyle: React.CSSProperties = {
 }
 
 const primaryBtnStyle: React.CSSProperties = {
-  ...btnStyle, background: 'var(--cyan)', color: '#000', border: 'none', fontWeight: 600,
+  ...btnStyle, background: 'var(--cyan)', color: 'var(--on-accent)', border: 'none', fontWeight: 600,
 }
 
 /** Safe arithmetic-only evaluator — supports +, -, *, /, %, parentheses, and numbers. */

@@ -400,7 +400,7 @@ export function ScriptEditor() {
                 alignSelf: 'flex-start',
                 border: '1px solid var(--cyan)',
                 background: 'var(--cyan)',
-                color: '#fff',
+                color: 'var(--on-accent)',
                 cursor: saving || !newScript.name.trim() ? 'not-allowed' : 'pointer',
                 opacity: saving || !newScript.name.trim() ? 0.5 : 1,
               }}
@@ -501,7 +501,7 @@ export function ScriptEditor() {
                   ...btnStyle,
                   border: '1px solid var(--cyan)',
                   background: 'var(--cyan)',
-                  color: '#fff',
+                  color: 'var(--on-accent)',
                   cursor: saving ? 'not-allowed' : 'pointer',
                   opacity: saving ? 0.5 : 1,
                 }}

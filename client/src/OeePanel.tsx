@@ -233,7 +233,7 @@ function CloseEventButton({ eventId }: { eventId: number }) {
         disabled={closeMutation.isPending}
         style={{
           padding: '3px 10px', fontSize: 11, cursor: 'pointer',
-          background: 'var(--cyan)', color: '#000', border: 'none', borderRadius: 4,
+          background: 'var(--cyan)', color: 'var(--on-accent)', border: 'none', borderRadius: 4,
           fontWeight: 600,
         }}
       >
@@ -281,7 +281,7 @@ function ShiftManager({ shifts, canConfigure }: { shifts: { id: number; name: st
           onClick={() => setShowForm(!showForm)}
           style={{
             padding: '4px 12px', fontSize: 12, cursor: 'pointer',
-            background: 'var(--cyan)', color: '#000', border: 'none', borderRadius: 4, fontWeight: 600,
+            background: 'var(--cyan)', color: 'var(--on-accent)', border: 'none', borderRadius: 4, fontWeight: 600,
           }}
         >
           {showForm ? 'Cancel' : '+ Add Shift'}
