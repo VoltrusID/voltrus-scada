@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useRole } from './RoleContext'
 import {
   useOeeMetrics,
@@ -71,6 +72,7 @@ function daysMaskToString(mask: number): string {
 }
 
 export function OeePanel() {
+  const { t } = useTranslation()
   const { canOperate, canConfigure } = useRole()
   const [deviceId, setDeviceId] = useState('')
   const [timeRange, setTimeRange] = useState<'8h' | '24h' | '7d'>('8h')
@@ -118,6 +120,13 @@ export function OeePanel() {
 
       {deviceId && metrics ? (
         <>
+          {metrics.tracking && (
+            <div role="status" style={{ maxWidth: 560, margin: '0 auto 16px', padding: '8px 12px', border: '1px solid #f59e0b', borderRadius: 6, color: 'var(--text)', fontSize: 13 }}>
+              {metrics.tracking.startsWith('not tracked: choose a state metric')
+                ? t('oee.notTracked', { device: deviceId })
+                : metrics.tracking}
+            </div>
+          )}
           {/* OEE Gauges */}
           <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginBottom: 24, flexWrap: 'wrap' }}>
             <OeeGauge value={metrics.oee} label="OEE" color={metrics.oee >= 0.85 ? '#22c55e' : metrics.oee >= 0.65 ? '#f59e0b' : '#ef4444'} />

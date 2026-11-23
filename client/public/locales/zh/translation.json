@@ -192,7 +192,15 @@
     "points": "数据点",
     "objects": "对象",
     "nodes": "节点",
-    "browse": "浏览"
+    "browse": "浏览",
+    "endianness": "字节序",
+    "endiannessOptions": {
+      "big": "big（高字在前）",
+      "little": "little（低字在前）",
+      "swapped": "swapped（低字在前，字节交换）",
+      "little_dword": "little_dword（little，v0.51 的 float64 布局）",
+      "swapped_dword": "swapped_dword（swapped，v0.51 的 float64 布局）"
+    }
   },
   "theme": {
     "dark": "深色",
@@ -293,7 +301,8 @@
     "title": "OEE 指标",
     "availability": "可用率",
     "performance": "表现率",
-    "quality": "质量率"
+    "quality": "质量率",
+    "notTracked": "此设备的停机时间未被跟踪：它有多个指标，但尚未选择状态指标。请在 oee_threshold_{{device}} 设置中填写 \"metric\"。"
   },
   "annotations": {
     "title": "标注",

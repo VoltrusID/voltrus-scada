@@ -192,7 +192,15 @@
     "points": "Titik",
     "objects": "Objek",
     "nodes": "Node",
-    "browse": "Jelajahi"
+    "browse": "Jelajahi",
+    "endianness": "Urutan byte",
+    "endiannessOptions": {
+      "big": "big (word tinggi dulu)",
+      "little": "little (word rendah dulu)",
+      "swapped": "swapped (word rendah dulu, byte ditukar)",
+      "little_dword": "little_dword (little, tata letak float64 v0.51)",
+      "swapped_dword": "swapped_dword (swapped, tata letak float64 v0.51)"
+    }
   },
   "theme": {
     "dark": "Gelap",
@@ -293,7 +301,8 @@
     "title": "Metrik OEE",
     "availability": "Ketersediaan",
     "performance": "Performa",
-    "quality": "Kualitas"
+    "quality": "Kualitas",
+    "notTracked": "Downtime perangkat ini tidak dilacak: perangkat ini punya beberapa metrik dan belum ada yang dipilih sebagai metrik status. Isi \"metric\" pada pengaturan oee_threshold_{{device}}."
   },
   "annotations": {
     "title": "Anotasi",

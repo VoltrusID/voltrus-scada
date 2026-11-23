@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { MODBUS_ENDIANNESS } from './deviceFileImport'
 import { inputStyle, monoInputStyle, labelStyle, labelTextStyle } from './styles'
 import { useScanModbusRegisters } from './queries'
 import { useNetworks } from './queries/networks'
@@ -24,9 +26,9 @@ interface Props {
 
 const REG_TYPES = ['float32', 'int32', 'uint16', 'int16']
 const REG_AREAS = ['holding', 'input', 'coil', 'discrete']
-const ENCODINGS = ['big', 'little', 'swapped']
 
 export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) {
+  const { t } = useTranslation()
   const source = device ?? dupDevice
   const isEdit = !!device
   const [id, setId] = useState(dupDevice ? '' : (source?.id ?? ''))
@@ -133,7 +135,7 @@ export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) 
             <label style={labelStyle}><span style={labelTextStyle}>Port</span><input type="number" value={port} onChange={e => setPort(parseInt(e.target.value) || 502)} style={monoInputStyle} /></label>
             <label style={labelStyle}><span style={labelTextStyle}>Unit ID</span><input type="number" value={unitId} onChange={e => setUnitId(parseInt(e.target.value) || 1)} style={monoInputStyle} /></label>
             <label style={labelStyle}><span style={labelTextStyle}>Interval (ms)</span><input type="number" value={intervalMs} onChange={e => setIntervalMs(parseInt(e.target.value) || 1000)} style={monoInputStyle} /></label>
-            <label style={labelStyle}><span style={labelTextStyle}>Endianness</span><select value={endianness} onChange={e => setEndianness(e.target.value)} style={inputStyle}>{ENCODINGS.map(e => <option key={e} value={e}>{e}</option>)}</select></label>
+            <label style={labelStyle}><span style={labelTextStyle}>{t('devices.endianness')}</span><select value={endianness} onChange={e => setEndianness(e.target.value)} style={inputStyle}>{MODBUS_ENDIANNESS.map(e => <option key={e} value={e}>{t(`devices.endiannessOptions.${e}`)}</option>)}</select></label>
             <label style={labelStyle}><span style={labelTextStyle}>Network</span><select value={network} onChange={e => setNetwork(e.target.value)} style={inputStyle}><option value="">Default</option>{networksData?.configured_networks?.map(n => <option key={n} value={n}>{n}</option>)}</select></label>
           </div>
 

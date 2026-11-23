@@ -192,7 +192,15 @@
     "points": "Points",
     "objects": "Objects",
     "nodes": "Nodes",
-    "browse": "Browse"
+    "browse": "Browse",
+    "endianness": "Endianness",
+    "endiannessOptions": {
+      "big": "big (high word first)",
+      "little": "little (low word first)",
+      "swapped": "swapped (low word first, bytes swapped)",
+      "little_dword": "little_dword (little, v0.51 float64 layout)",
+      "swapped_dword": "swapped_dword (swapped, v0.51 float64 layout)"
+    }
   },
   "theme": {
     "dark": "Dark",
@@ -293,7 +301,8 @@
     "title": "OEE Metrics",
     "availability": "Availability",
     "performance": "Performance",
-    "quality": "Quality"
+    "quality": "Quality",
+    "notTracked": "Downtime is not tracked for this device: it has several metrics and none is chosen as its state metric. Set \"metric\" in the oee_threshold_{{device}} setting."
   },
   "annotations": {
     "title": "Annotations",

@@ -19,6 +19,8 @@ export interface OeeMetrics {
   total_running_secs: number
   total_planned_secs: number
   downtime_count: number
+  /** Set when the device's downtime is not tracked, with the reason. */
+  tracking?: string
 }
 
 export interface ShiftConfig {

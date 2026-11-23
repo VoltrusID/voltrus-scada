@@ -192,7 +192,15 @@
     "points": "Punkte",
     "objects": "Objekte",
     "nodes": "Knoten",
-    "browse": "Durchsuchen"
+    "browse": "Durchsuchen",
+    "endianness": "Byte-Reihenfolge",
+    "endiannessOptions": {
+      "big": "big (hohes Wort zuerst)",
+      "little": "little (niedriges Wort zuerst)",
+      "swapped": "swapped (niedriges Wort zuerst, Bytes vertauscht)",
+      "little_dword": "little_dword (little, float64-Layout von v0.51)",
+      "swapped_dword": "swapped_dword (swapped, float64-Layout von v0.51)"
+    }
   },
   "theme": {
     "dark": "Dunkel",
@@ -293,7 +301,8 @@
     "title": "OEE-Kennzahlen",
     "availability": "Verfügbarkeit",
     "performance": "Leistung",
-    "quality": "Qualität"
+    "quality": "Qualität",
+    "notTracked": "Ausfallzeiten dieses Geräts werden nicht erfasst: Es hat mehrere Messwerte, und keiner ist als Zustandsmesswert gewählt. Setzen Sie \"metric\" in der Einstellung oee_threshold_{{device}}."
   },
   "annotations": {
     "title": "Anmerkungen",
