@@ -1,8 +1,10 @@
 //! Per-value data quality, after the OPC UA Good / Uncertain / Bad model.
 //!
-//! A value that is not `Good` must not drive alarms, interlocks or history:
-//! drivers mark what they know (a failed item, a device exception, a lost
-//! connection) and the cache marks values that stopped updating as stale.
+//! A value that is not `Good` must not drive alarms or interlocks: drivers
+//! mark what they know (a failed item, a device exception, a lost connection)
+//! and the cache marks values that stopped updating as stale. History keeps
+//! `Good` and `Uncertain` samples (an uncertain reading is still data) and
+//! drops bad and stale ones, so the trend shows a gap (docs/historian.md).
 
 use serde::{Deserialize, Serialize};
 
