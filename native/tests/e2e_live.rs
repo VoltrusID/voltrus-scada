@@ -154,7 +154,10 @@ async fn live_login_sensors_ws_stream() {
             Some(Event::Tags(list)) => {
                 let keys: Vec<String> = list.iter().map(|tag| tag.key.clone()).collect();
                 handle.send(Command::Subscribe(keys.clone()));
-                handle.send(Command::History("30m".into()));
+                handle.send(Command::History {
+                    range: "30m".into(),
+                    keys: Vec::new(),
+                });
                 tags = Some(keys);
             }
             Some(Event::Link(Link::Live)) => live = true,

@@ -16,8 +16,18 @@ gpui = "0.2.2"
 # compatible with this crate's AGPL-3.0-or-later).
 vt-ui = { git = "https://github.com/VoltrusID/voltrus-explorers", rev = "31e9c1e109e8ec0361a1df2d8ae80d34fff07978" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# TLS trusts the operating system's certificate store and the bundled
+# webpki roots, plus an optional `ca_file` from the console's config
+# (`tls`); verification is never turned off.
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "rustls-tls-native-roots"] }
+# The WebSocket's TLS configuration when a `ca_file` adds roots: the same
+# rustls (ring only, as reqwest and tokio-tungstenite build it), native
+# roots and webpki roots as tokio-tungstenite's default connector.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+rustls-pki-types = { version = "1", features = ["std"] }
+webpki-roots = "0.26"
 rmp-serde = "1.3"
 async-channel = "2"
 futures-util = "0.3"
@@ -31,13 +41,15 @@ time = { version = "0.3", features = ["macros", "formatting"] }
 # The operator's time zone with its daylight-saving rules (`zone`); thread-safe,
 # unlike `time`'s local offset, which refuses to ask once threads exist.
 jiff = "0.2"
-# `getrusage` for the performance HUD's memory figure.
-libc = "0.2"
 # The alarm annunciator's output stream (tones are synthesized; no codecs).
 cpal = "0.17"
 # The mimic's symbols: SVG path data tessellated with GPUI's own lyon, with
 # the caps, joins and dashes the HMI drawings need.
 lyon = "1.0.19"
+
+# `getrusage` and the thread CPU clock for the performance HUD.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 # The mimic's trackpad pinch: the handler block of an AppKit event monitor
 # for magnify gestures, which GPUI does not surface (GPUI's own crate).

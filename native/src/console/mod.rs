@@ -7,7 +7,7 @@
 pub mod alarms;
 mod anim;
 mod audio;
-mod config;
+pub mod config;
 pub mod keys;
 mod meter;
 mod nav;
@@ -117,6 +117,14 @@ pub fn range_ms(range: &str) -> f64 {
         _ => 3_600_000.0,
     }
 }
+
+/// The history every tag is filled with at sign-in: what the sparklines
+/// (15 min) and the mimic's faceplate (30 min) draw.
+pub const SHORT_HISTORY_RANGE: &str = "30m";
+
+/// The history fetched for a tag a mimic trend widget draws (up to 300
+/// samples; a tag polled every 10 s fills them in 50 minutes).
+pub const MIMIC_HISTORY_RANGE: &str = "1h";
 
 /// The server's `range` parameter that covers a trend range.
 pub fn history_range(range: &str) -> &str {
@@ -278,10 +286,19 @@ pub struct Console {
     pub selected: Option<i64>,
     /// Tags (data source ids) on the Trends chart.
     pub trend: BTreeSet<i64>,
+    /// Tags drawn by the trend widgets of the mimic screen last shown: they
+    /// keep a long history too (a widget draws up to 300 samples, which
+    /// for a slowly polled tag reach back further than the short stretch).
+    pub mimic_trend: BTreeSet<i64>,
     pub range: &'static str,
     pub inputs: Inputs,
     pub busy: bool,
     pub error: Option<String>,
+    /// The password the server wants changed has expired (rather than
+    /// being a generated one): the change card says so.
+    pub password_expired: bool,
+    /// Server history has arrived since the tag list (for the ready file).
+    history_loaded: bool,
     pub write_result: Option<(i64, Result<String, String>)>,
     /// The tag whose write awaits the server's answer.
     pub writing: Option<i64>,
@@ -398,6 +415,7 @@ impl Console {
                     for event in batch {
                         console.apply(event, window, cx);
                     }
+                    console.signal_ready();
                     let now = Instant::now();
                     let took = meter::ms(started, now);
                     let mut frames = console.meter.borrow_mut();
@@ -537,9 +555,12 @@ impl Console {
             switched_at: Instant::now(),
             selected: None,
             trend: BTreeSet::new(),
+            mimic_trend: BTreeSet::new(),
             range: launch.range.unwrap_or("1h"),
             inputs,
             busy: false,
+            password_expired: false,
+            history_loaded: false,
             error: None,
             write_result: None,
             writing: None,
@@ -693,6 +714,7 @@ impl Console {
                 role,
                 server,
                 must_change_password,
+                password_expired,
             } => {
                 self.busy = false;
                 self.error = None;
@@ -718,6 +740,7 @@ impl Console {
                 self.inputs
                     .password
                     .update(cx, |field, cx| field.set_text("", cx));
+                self.password_expired = password_expired;
                 if must_change_password {
                     self.phase = Phase::ChangePassword;
                 } else {
@@ -764,8 +787,14 @@ impl Console {
                 }
                 self.send(Command::Subscribe(self.store.keys()));
                 if self.stress.is_none() {
-                    self.send(Command::History(history_range(self.range).to_owned()));
+                    // Every tag's recent past for the sparklines; the
+                    // trended tags' whole range follows.
+                    self.send(Command::History {
+                        range: SHORT_HISTORY_RANGE.to_owned(),
+                        keys: Vec::new(),
+                    });
                 }
+                self.sync_trend(true);
                 if let Some(index) = self
                     .pending_tag
                     .take()
@@ -801,10 +830,11 @@ impl Console {
                 self.show_toast(format!("{severity} alarm: {name} at {value}"), true, cx);
                 shell::alarm_raised(self, &alarm, cx);
             }
-            Event::History { range, series } => {
-                if range == history_range(self.range) {
-                    self.store.backfill(&series);
-                }
+            // Merged by time: a short fetch for every tag and a trended
+            // tag's longer one each fill their own stretch.
+            Event::History { series, .. } => {
+                self.store.backfill(&series);
+                self.history_loaded = true;
             }
             Event::Written { tag, result, late } => {
                 // A late answer to an earlier write must not settle the one
@@ -1003,6 +1033,7 @@ impl Console {
         self.devices.clear();
         self.selected = None;
         self.trend.clear();
+        self.mimic_trend.clear();
         self.reset_session(window, cx);
         for nav in self.lists.values_mut() {
             nav.cursor = None;
@@ -1412,17 +1443,97 @@ impl Console {
         if !self.trend.remove(&id) {
             self.trend.insert(id);
         }
+        self.sync_trend(false);
         cx.notify();
     }
 
     pub fn set_range(&mut self, range: &'static str, cx: &mut Context<Self>) {
         if self.range != range {
             self.range = range;
-            if self.stress.is_none() {
-                self.send(Command::History(history_range(range).to_owned()));
-            }
+            self.sync_trend(true);
         }
         cx.notify();
+    }
+
+    /// Keep a day of history only for the tags on the Trends chart and on
+    /// the shown mimic's trend widgets (the others keep the short stretch
+    /// the sparklines and faceplates draw), and fetch history for the tags
+    /// that need it: the newly kept ones, or every trended one (`all`)
+    /// after a new tag list or range.
+    pub fn sync_trend(&mut self, all: bool) {
+        let long: BTreeSet<i64> = self.trend.union(&self.mimic_trend).copied().collect();
+        let added = self.store.keep_long(&long);
+        if self.stress.is_some() {
+            return;
+        }
+        let keys = |ids: &mut dyn Iterator<Item = i64>| -> Vec<String> {
+            let mut keys: Vec<String> = ids
+                .filter_map(|id| self.store.get(id))
+                .map(|tag| tag.info.key.clone())
+                .collect();
+            keys.sort();
+            keys.dedup();
+            keys
+        };
+        let trend = if all {
+            keys(&mut self.trend.iter().copied())
+        } else {
+            keys(&mut added.iter().copied().filter(|id| self.trend.contains(id)))
+        };
+        let mimic = keys(&mut added.iter().copied().filter(|id| !self.trend.contains(id)));
+        for (range, keys) in [
+            (history_range(self.range), trend),
+            (MIMIC_HISTORY_RANGE, mimic),
+        ] {
+            if !keys.is_empty() {
+                self.send(Command::History {
+                    range: range.to_owned(),
+                    keys,
+                });
+            }
+        }
+    }
+
+    /// The shown mimic screen's trend widgets draw these tags: keep their
+    /// history long (see [`Self::sync_trend`]).
+    pub fn set_mimic_trend(&mut self, tags: BTreeSet<i64>) {
+        if self.mimic_trend != tags {
+            self.mimic_trend = tags;
+            self.sync_trend(false);
+        }
+    }
+
+    /// Once the console shows live data (signed in, the link live, the tag
+    /// list and history loaded; a stress run's plant), create the file
+    /// `VOLTRUS_NATIVE_READY_FILE` names, if set: the screenshot script
+    /// waits for it instead of a fixed time.
+    fn signal_ready(&self) {
+        static READY: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+        static SIGNALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let Some(path) = READY
+            .get_or_init(|| std::env::var_os("VOLTRUS_NATIVE_READY_FILE").map(Into::into))
+            .as_ref()
+        else {
+            return;
+        };
+        let ready = self.phase == Phase::Console
+            && self.link == Link::Live
+            && !self.store.tags.is_empty()
+            && (self.history_loaded || self.stress.is_some());
+        if ready
+            && !SIGNALLED.swap(true, std::sync::atomic::Ordering::SeqCst)
+            && let Err(error) = std::fs::write(path, b"ready\n")
+        {
+            eprintln!("voltrus-native: cannot write {}: {error}", path.display());
+        }
+    }
+
+    /// The user pressed a key, clicked or scrolled: the runtime reports it
+    /// (throttled) while the session has an idle timeout.
+    pub fn note_activity(&self) {
+        if self.user.is_some() && self.stress.is_none() {
+            self.send(Command::Activity);
+        }
     }
 
     // ── Commands to the server ────────────────────────────────────────────

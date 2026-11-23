@@ -1057,6 +1057,34 @@ fn samples_for(widget: &Widget) -> usize {
     }
 }
 
+/// The tags a trend widget draws (none for other widgets).
+fn trend_tags(store: &crate::console::store::Store, widget: &Widget) -> Vec<i64> {
+    match widget.kind {
+        WidgetKind::Trend => widget.tag().into_iter().collect(),
+        WidgetKind::MultiTrend => shown_multi(store, widget),
+        _ => Vec::new(),
+    }
+}
+
+/// The tags a multi-tag widget shows: its bound ones in the plant's order,
+/// or the plant's first tags when none is bound.
+fn shown_multi(store: &crate::console::store::Store, widget: &Widget) -> Vec<i64> {
+    // The plant's first tags stand in for none bound; bound ones go in
+    // the plant's order: only the candidates, never every tag.
+    let candidates: Vec<i64> = if widget.tags.is_empty() {
+        store.tags.iter().take(24).map(|tag| tag.info.id).collect()
+    } else {
+        let mut known: Vec<(usize, i64)> = widget
+            .tags
+            .iter()
+            .filter_map(|id| store.position(*id).map(|at| (at, *id)))
+            .collect();
+        known.sort_unstable();
+        known.into_iter().map(|(_, id)| id).collect()
+    };
+    mimic::shown_tags(widget, &candidates)
+}
+
 /// A widget prepared for drawing.
 fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
     let store = &console.store;
@@ -1074,20 +1102,7 @@ fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
             | WidgetKind::MultiTrend
     );
     let tags = if multi {
-        // The plant's first tags stand in for none bound; bound ones go in
-        // the plant's order: only the candidates, never every tag.
-        let candidates: Vec<i64> = if widget.tags.is_empty() {
-            store.tags.iter().take(24).map(|tag| tag.info.id).collect()
-        } else {
-            let mut known: Vec<(usize, i64)> = widget
-                .tags
-                .iter()
-                .filter_map(|id| store.position(*id).map(|at| (at, *id)))
-                .collect();
-            known.sort_unstable();
-            known.into_iter().map(|(_, id)| id).collect()
-        };
-        mimic::shown_tags(widget, &candidates)
+        shown_multi(store, widget)
             .into_iter()
             .filter_map(|id| store.get(id).map(|tag| TagView::of(tag, samples)))
             .collect()
@@ -1143,6 +1158,20 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             .is_some_and(|state| state.layouts.contains_key(&active(console)))
     {
         cx.defer_in(window, |console, _, _| sync(console));
+    }
+    // The shown screen's trend widgets keep their tags' history long.
+    if console.page == Page::Mimic
+        && console.phase == Phase::Console
+        && let Some(layout) = layout(console)
+    {
+        let wanted: std::collections::BTreeSet<i64> = layout
+            .widgets
+            .iter()
+            .flat_map(|widget| trend_tags(&console.store, widget))
+            .collect();
+        if wanted != console.mimic_trend {
+            cx.defer_in(window, move |console, _, _| console.set_mimic_trend(wanted));
+        }
     }
     editor::launch_ready(console, window, cx);
     if editor::editing(console) && console.stress.is_none() {

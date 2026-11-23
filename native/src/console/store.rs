@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use gpui::SharedString;
 use voltrus_scada_native::api::{DataSource, HistorySeries};
 use voltrus_scada_native::ws_types::TagUpdateEntry;
-use vt_ui::chart::History;
+use vt_ui::chart::{History, Summary};
 
 /// Filter results kept at once (the Tags filter, the Trends picker's, and
 /// the queries typed on the way to them).
@@ -34,9 +34,14 @@ const DENSE_MS: f64 = 15.0 * 60_000.0;
 /// plus up to two dense spans fits [`HISTORY`] comfortably.
 const COARSE_MS: f64 = 20_000.0;
 
-/// Samples older than this before the newest are dropped: the longest trend
-/// range and an hour to spare.
+/// Samples of a trended tag older than this before the newest are
+/// dropped: the longest trend range and an hour to spare.
 const KEEP_MS: f64 = 25.0 * 3_600_000.0;
+
+/// Samples of the other tags older than this are dropped: the sparklines
+/// draw 15 minutes and the mimic's faceplate 30, so a plant of thousands of
+/// tags does not keep a day of each.
+const SHORT_KEEP_MS: f64 = 35.0 * 60_000.0;
 
 /// What the server says about a tag's value (it evaluates the thresholds).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -108,11 +113,16 @@ pub struct Tag {
     /// Unix seconds of the latest value, 0 before the first.
     pub at_secs: i64,
     pub simulated: bool,
-    /// What the charts draw.
-    pub history: Rc<History>,
-    /// The same samples as `history`, which can only be appended to and
-    /// cleared: thinning and backfill rebuild it from these.
+    /// The samples, oldest first: `(Unix ms, value)`, stored once.
     samples: VecDeque<(f64, f64)>,
+    /// What the Trends chart draws (vt-ui's chart takes a [`History`]):
+    /// a copy of `samples` kept only while the tag is on the chart. It can
+    /// only be appended to and cleared, so thinning and backfill rebuild
+    /// it from `samples`.
+    history: Option<Rc<History>>,
+    /// On the Trends chart: a day of history is kept, not
+    /// [`SHORT_KEEP_MS`].
+    long: bool,
     /// Unix ms up to which live samples are already thinned.
     thinned_to: f64,
 }
@@ -129,8 +139,9 @@ impl Tag {
             status: Status::Unknown,
             at_secs: 0,
             simulated: false,
-            history: History::new(HISTORY),
             samples: VecDeque::new(),
+            history: None,
+            long: false,
             thinned_to: f64::NAN,
         }
     }
@@ -183,15 +194,93 @@ impl Tag {
             self.samples.pop_front();
         }
         self.samples.push_back((at_ms, value));
-        self.history.push(at_ms, value);
+        if let Some(history) = &self.history {
+            history.push(at_ms, value);
+        }
+    }
+
+    /// How far back samples are kept before the newest.
+    fn keep_ms(&self) -> f64 {
+        if self.long { KEEP_MS } else { SHORT_KEEP_MS }
+    }
+
+    /// Keep a day (`long`, on the Trends chart) or the short stretch.
+    fn set_long(&mut self, long: bool) {
+        if self.long == long {
+            return;
+        }
+        self.long = long;
+        if long {
+            self.history = Some(History::new(HISTORY));
+            self.rebuild();
+        } else {
+            self.history = None;
+            if let Some(&(newest, _)) = self.samples.back() {
+                let oldest = newest - SHORT_KEEP_MS;
+                let older = self.samples.partition_point(|(at, _)| *at < oldest);
+                self.samples.drain(..older);
+            }
+        }
+    }
+
+    /// What the Trends chart draws: the tag's history while it is on the
+    /// chart, else an empty one.
+    pub fn chart(&self) -> Rc<History> {
+        self.history.clone().unwrap_or_else(|| History::new(2))
+    }
+
+    /// The newest sample, `(Unix ms, value)`.
+    pub fn latest(&self) -> Option<(f64, f64)> {
+        self.samples.back().copied()
+    }
+
+    /// How many samples are kept.
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    /// Smallest and largest finite value from `since_ms` on.
+    pub fn range(&self, since_ms: f64) -> Option<(f64, f64)> {
+        self.samples_since(since_ms)
+            .filter(|(_, value)| value.is_finite())
+            .fold(None, |range, (_, value)| {
+                Some(range.map_or((value, value), |(low, high): (f64, f64)| {
+                    (low.min(value), high.max(value))
+                }))
+            })
+    }
+
+    /// Minimum, maximum, mean and count of the finite values from
+    /// `since_ms` on.
+    pub fn summary(&self, since_ms: f64) -> Option<Summary> {
+        let mut summary: Option<Summary> = None;
+        for (_, value) in self
+            .samples_since(since_ms)
+            .filter(|(_, value)| value.is_finite())
+        {
+            let entry = summary.get_or_insert(Summary {
+                min: value,
+                max: value,
+                mean: 0.0,
+                count: 0,
+            });
+            entry.min = entry.min.min(value);
+            entry.max = entry.max.max(value);
+            entry.count += 1;
+            #[allow(clippy::cast_precision_loss)]
+            let count = entry.count as f64;
+            entry.mean += (value - entry.mean) / count;
+        }
+        summary
     }
 
     /// Thin the samples between the last thinning and [`DENSE_MS`] before
     /// `newest` to about one per [`COARSE_MS`], keeping every break in the
-    /// line, and drop what is older than [`KEEP_MS`].
+    /// line, and drop what is older than [`KEEP_MS`] ([`SHORT_KEEP_MS`] for
+    /// a tag off the Trends chart).
     fn thin(&mut self, newest: f64) {
         let dense_from = newest - DENSE_MS;
-        let oldest = newest - KEEP_MS;
+        let oldest = newest - self.keep_ms();
         let thinned_to = self.thinned_to;
         let mut kept: Option<(f64, f64)> = None;
         self.samples.retain(|&(at, value)| {
@@ -211,9 +300,12 @@ impl Tag {
     }
 
     fn rebuild(&self) {
-        self.history.clear();
+        let Some(history) = &self.history else {
+            return;
+        };
+        history.clear();
         for &(at, value) in &self.samples {
-            self.history.push(at, value);
+            history.push(at, value);
         }
     }
 
@@ -308,6 +400,22 @@ impl Store {
         self.all = (0..self.tags.len()).collect();
         self.filters.borrow_mut().clear();
         self.earliest.set(None);
+    }
+
+    /// Keep a day of history for the tags `long` (data source ids, the
+    /// Trends chart's) and the short stretch for the rest; the ids that
+    /// were not kept long before, to fetch their history.
+    pub fn keep_long(&mut self, long: &BTreeSet<i64>) -> Vec<i64> {
+        let mut added = Vec::new();
+        for tag in &mut self.tags {
+            let wanted = long.contains(&tag.info.id);
+            if wanted && !tag.long {
+                added.push(tag.info.id);
+            }
+            tag.set_long(wanted);
+        }
+        self.earliest.set(None);
+        added
     }
 
     /// Counts tag list changes, for view caches keyed on the tag list.
@@ -424,34 +532,47 @@ impl Store {
         }
     }
 
-    /// Load server history, replacing what each tag had up to its last
-    /// bucket; the live samples after that bucket stay. A tag the server has
-    /// no samples for keeps its own. The history is keyed by data source id
-    /// (`/history?keyed_by=id`), so tags sharing a key each get their own.
+    /// Load server history, replacing what each tag had over the stretch
+    /// the history covers; samples before and after it stay, so a short
+    /// fetch for every tag and a trended tag's longer one each fill their
+    /// own stretch. A tag the server has no samples for keeps its own. The
+    /// history is keyed by data source id (`/history?keyed_by=id`), so tags
+    /// sharing a key each get their own.
     pub fn backfill(&mut self, series: &HashMap<String, HistorySeries>) {
         for (id, series) in series {
             let Some(index) = id.parse::<i64>().ok().and_then(|id| self.position(id)) else {
                 continue;
             };
             let tag = &mut self.tags[index];
-            let Some((last_bucket, _)) = series.samples().last() else {
+            let (Some((first_bucket, _)), Some((last_bucket, _))) =
+                (series.samples().next(), series.samples().last())
+            else {
                 continue;
             };
             #[allow(clippy::cast_precision_loss)]
-            let last_bucket = last_bucket as f64;
+            let (first_bucket, last_bucket) = (first_bucket as f64, last_bucket as f64);
             #[allow(clippy::cast_precision_loss)]
             let buckets = series.samples().map(|(at_ms, value)| (at_ms as f64, value));
-            let older = tag
+            let from = tag
+                .samples
+                .partition_point(|(at_ms, _)| *at_ms < first_bucket);
+            let to = tag
                 .samples
                 .partition_point(|(at_ms, _)| *at_ms <= last_bucket);
-            tag.samples.drain(..older);
-            let live = tag.samples.len();
+            let after: Vec<(f64, f64)> = tag.samples.drain(from..).skip(to - from).collect();
             tag.samples.extend(buckets);
-            tag.samples.rotate_left(live);
+            tag.samples.extend(after);
+            if let Some(&(newest, _)) = tag.samples.back() {
+                let oldest = newest - tag.keep_ms();
+                let older = tag.samples.partition_point(|(at, _)| *at < oldest);
+                tag.samples.drain(..older);
+            }
             let excess = tag.samples.len().saturating_sub(HISTORY);
             tag.samples.drain(..excess);
             // Server buckets are coarse already; thinning starts after them.
-            tag.thinned_to = last_bucket;
+            if tag.thinned_to.is_nan() || tag.thinned_to < last_bucket {
+                tag.thinned_to = last_bucket;
+            }
             tag.rebuild();
         }
         self.earliest.set(None);
@@ -589,7 +710,7 @@ mod tests {
             (b.value, b.status, b.display().as_str()),
             (4.25, Status::Warning, "4.2")
         );
-        assert_eq!(b.history.latest(), Some((100_000.0, 4.25)));
+        assert_eq!(b.latest(), Some((100_000.0, 4.25)));
         assert_eq!(store.get(info("b").id).map(|tag| tag.value), Some(4.25));
     }
 
@@ -602,7 +723,7 @@ mod tests {
         store.replace(vec![info("c"), info("a"), info("a")]);
         assert_eq!(store.keys(), ["c", "a"]);
         assert_eq!(store.tags.len(), 2);
-        assert_eq!(store.tags[1].history.len(), 1);
+        assert_eq!(store.tags[1].samples.len(), 1);
         assert_eq!(store.tags[1].value, 1.0);
         assert_eq!(store.position(info("a").id), Some(1));
         assert_eq!(store.position(info("b").id), None);
@@ -669,13 +790,13 @@ mod tests {
         store.apply(&[update("a", 5.0, 20, "normal")]);
         store.apply(&[update("a", 6.0, 10, "normal")]);
         assert_eq!(
-            store.tags[0].history.len(),
+            store.tags[0].samples.len(),
             1,
             "an older update is not plotted"
         );
         assert_eq!(store.tags[0].value, 6.0, "but it is shown");
         store.apply(&[update("a", 0.0, 30, "offline")]);
-        assert!(store.tags[0].history.latest().unwrap().1.is_nan());
+        assert!(store.tags[0].latest().unwrap().1.is_nan());
     }
 
     #[test]
@@ -692,9 +813,9 @@ mod tests {
             },
         )]);
         store.backfill(&series);
-        let history = &store.tags[0].history;
-        assert_eq!(history.len(), 3);
-        assert_eq!(history.latest(), Some((100_000.0, 9.0)));
+        let tag = &store.tags[0];
+        assert_eq!(tag.samples.len(), 3);
+        assert_eq!(tag.latest(), Some((100_000.0, 9.0)));
     }
 
     #[test]
@@ -711,8 +832,8 @@ mod tests {
             ("2".to_string(), series(50.1)),
             ("not-an-id".to_string(), series(0.0)),
         ]));
-        assert_eq!(store.tags[0].history.latest(), Some((50_000.0, 49.9)));
-        assert_eq!(store.tags[1].history.latest(), Some((50_000.0, 50.1)));
+        assert_eq!(store.tags[0].latest(), Some((50_000.0, 49.9)));
+        assert_eq!(store.tags[1].latest(), Some((50_000.0, 50.1)));
     }
 
     #[test]
@@ -727,7 +848,7 @@ mod tests {
         assert_eq!(store.tags[0].span_ms(200_000.0), Some(100_000.0));
         let empty = HashMap::from([(info("a").id.to_string(), HistorySeries::default())]);
         store.backfill(&empty);
-        assert_eq!(store.tags[0].history.len(), 2);
+        assert_eq!(store.tags[0].samples.len(), 2);
     }
 
     #[test]
@@ -738,23 +859,27 @@ mod tests {
         store.apply(&[update("a", 1.0, 100, "normal")]);
         store.apply(&[update("a", 2.0, 100, "warning")]);
         let tag = &store.tags[0];
-        assert_eq!(tag.history.len(), 1, "no duplicates");
-        assert_eq!(tag.history.latest(), Some((100_000.0, 1.0)), "first kept");
+        assert_eq!(tag.samples.len(), 1, "no duplicates");
+        assert_eq!(tag.latest(), Some((100_000.0, 1.0)), "first kept");
         assert_eq!(
             (tag.value, tag.status),
             (2.0, Status::Warning),
             "the shown value and status follow the newest update"
         );
         store.apply(&[update("a", 3.0, 101, "normal")]);
-        assert_eq!(store.tags[0].history.len(), 2);
         assert_eq!(store.tags[0].samples.len(), 2);
-        assert_eq!(store.tags[0].history.latest(), Some((101_000.0, 3.0)));
+        assert_eq!(store.tags[0].samples.len(), 2);
+        assert_eq!(store.tags[0].latest(), Some((101_000.0, 3.0)));
     }
 
     #[test]
     fn a_day_of_live_values_fits_and_older_ones_are_thinned_or_dropped() {
         let mut store = Store::default();
         store.replace(vec![info("a")]);
+        assert_eq!(
+            store.keep_long(&BTreeSet::from([info("a").id])),
+            [info("a").id]
+        );
         let day: i64 = 26 * 3600;
         for second in 0..day {
             // Two broadcasts a second, as with two polled devices.
@@ -768,17 +893,17 @@ mod tests {
         let tag = &store.tags[0];
         #[allow(clippy::cast_precision_loss)]
         let now = (day as f64) * 1000.0;
-        assert!(tag.history.len() <= HISTORY);
-        assert_eq!(tag.history.len(), tag.samples.len());
+        assert!(tag.samples.len() <= HISTORY);
+        assert_eq!(tag.chart().len(), tag.samples.len(), "the chart's copy");
         let span = tag.span_ms(now).unwrap();
         assert!(span >= 24.0 * 3_600_000.0, "a day is kept, got {span}");
         assert!(
             span <= KEEP_MS + 2.0 * DENSE_MS,
             "older is dropped, got {span}"
         );
-        let summary = tag.history.summary(now - DENSE_MS).unwrap();
+        let summary = tag.chart().summary(now - DENSE_MS).unwrap();
         assert!(summary.count >= 900, "the last minutes stay at full rate");
-        let hour = tag.history.summary(now - 3_600_000.0).unwrap();
+        let hour = tag.chart().summary(now - 3_600_000.0).unwrap();
         assert!(hour.count < 3600, "older live values are thinned");
     }
 
@@ -786,6 +911,7 @@ mod tests {
     fn a_backfilled_day_survives_hours_of_live_values() {
         let mut store = Store::default();
         store.replace(vec![info("a")]);
+        store.keep_long(&BTreeSet::from([info("a").id]));
         let start = 1_000_000;
         let interval = 8 * 60_000;
         let series = HashMap::from([(
@@ -841,8 +967,70 @@ mod tests {
             [81_000.0, 91_000.0, 101_000.0, 102_000.0, 103_000.0],
             "live samples up to the last bucket give way to it"
         );
-        assert_eq!(tag.history.len(), 5);
-        assert_eq!(tag.history.latest(), Some((103_000.0, 103.0)));
+        assert_eq!(tag.samples.len(), 5);
+        assert_eq!(tag.latest(), Some((103_000.0, 103.0)));
+    }
+
+    #[test]
+    fn tags_off_the_trends_chart_keep_a_short_stretch_once() {
+        let mut store = Store::default();
+        store.replace(vec![info("a"), info("b")]);
+        let hours: i64 = 3 * 3600;
+        for second in 0..hours {
+            #[allow(clippy::cast_precision_loss)]
+            let value = second as f64;
+            store.apply(&[
+                update("a", value, second, "normal"),
+                update("b", value, second, "normal"),
+            ]);
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let now = (hours as f64) * 1000.0;
+        let (a, b) = (&store.tags[0], &store.tags[1]);
+        // Thinned every 30 minutes: at most that much more than kept.
+        let span = a.span_ms(now).unwrap();
+        assert!(span <= SHORT_KEEP_MS + 2.0 * DENSE_MS, "got {span}");
+        assert!(span >= 30.0 * 60_000.0, "the faceplate's 30 minutes stay");
+        assert!(a.history.is_none(), "no chart copy off the chart");
+        assert_eq!(a.samples.len(), b.samples.len());
+
+        // Put on the chart: a day is kept from now on, and the chart draws
+        // the same samples.
+        let added = store.keep_long(&BTreeSet::from([info("a").id]));
+        assert_eq!(added, [info("a").id]);
+        assert_eq!(store.tags[0].chart().len(), store.tags[0].samples.len());
+        assert!(store.keep_long(&BTreeSet::from([info("a").id])).is_empty());
+        // Taken off: back to the short stretch at once.
+        store.keep_long(&BTreeSet::new());
+        let a = &store.tags[0];
+        assert!(a.history.is_none());
+        assert!(a.span_ms(now).unwrap() <= SHORT_KEEP_MS + 1000.0);
+    }
+
+    #[test]
+    fn a_longer_backfill_fills_before_what_a_shorter_one_left() {
+        let mut store = Store::default();
+        store.replace(vec![info("a")]);
+        store.keep_long(&BTreeSet::from([info("a").id]));
+        let series = |start: i64, values: Vec<f64>| {
+            HashMap::from([(
+                info("a").id.to_string(),
+                HistorySeries {
+                    values,
+                    start,
+                    interval: 60_000,
+                },
+            )])
+        };
+        // The short fetch for every tag: the last 3 minutes.
+        store.backfill(&series(10_800_000, vec![7.0, 8.0, 9.0]));
+        store.apply(&[update("a", 10.0, 11_000, "normal")]);
+        // The trend's longer one arrives later and covers older minutes
+        // only: what it does not cover stays.
+        store.backfill(&series(10_620_000, vec![1.0, 2.0, 3.0]));
+        let values: Vec<f64> = store.tags[0].samples().map(|(_, value)| value).collect();
+        assert_eq!(values, [1.0, 2.0, 3.0, 7.0, 8.0, 9.0, 10.0]);
+        assert_eq!(store.tags[0].chart().len(), values.len());
     }
 
     #[test]

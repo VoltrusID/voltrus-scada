@@ -2205,6 +2205,7 @@ mod tests {
             role: "admin".into(),
             server: SERVER.into(),
             must_change_password: false,
+            password_expired: false,
         });
         h.event(Event::Link(Link::Live));
         h.event(Event::Tags(vec![DataSource {

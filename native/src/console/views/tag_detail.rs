@@ -275,7 +275,6 @@ fn line_samples(console: &mut Console, id: i64) -> Samples {
         return Rc::default();
     };
     let latest = console.store.tags[index]
-        .history
         .latest()
         .map_or(0, |(at, _)| at.to_bits());
     let state = console.state::<DetailState>();

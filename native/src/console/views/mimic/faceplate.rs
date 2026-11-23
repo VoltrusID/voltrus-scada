@@ -283,7 +283,7 @@ pub(crate) fn render(
     // The trend, from the tag's history in the store.
     let trend = tag.and_then(|tag| console.store.get(tag.id)).map(|known| {
         let now = now_ms();
-        let summary = known.history.summary(now - TREND_MS);
+        let summary = known.summary(now - TREND_MS);
         // How far back the samples in the window reach, as the web shows.
         let minutes = known
             .samples_since(now - TREND_MS)
@@ -323,7 +323,7 @@ pub(crate) fn render(
                     .border_color(hmi.border)
                     .bg(hmi.badge)
                     .p(px(2.0))
-                    .child(if known.history.len() < 2 {
+                    .child(if known.len() < 2 {
                         div()
                             .size_full()
                             .flex()
