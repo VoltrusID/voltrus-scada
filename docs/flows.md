@@ -117,9 +117,17 @@ attributed to `flow:<flow id>`, like a write from the API.
 `minute hour day-of-month month day-of-week`. Each field is `*`, a number, a
 range `a-b`, a step `*/n`, `a-b/n` or `a/n`, or a comma list. Months and
 weekdays take names (`jan`, `mon-fri`); weekday 0 and 7 are Sunday. When both
-day fields are restricted, a day matching either fires (classic cron).
+day fields are restricted, a day matching either fires (classic cron). A field
+that starts with `*` counts as unrestricted, as in Vixie cron: `0 0 */2 * mon`
+fires on Mondays that fall on an odd day, `0 0 1-31/2 * mon` on odd days and on
+Mondays.
 Shorthands: `@hourly`, `@daily` (`@midnight`), `@weekly`, `@monthly`,
 `@yearly` (`@annually`). A schedule fires at most once per minute.
+
+Daylight saving time: a schedule with a fixed minute and hour (`30 2 * * *`)
+fires once when the clock goes back and repeats that time, and fires at the
+change when the clock goes forward over it. A schedule with `*` in the minute
+or hour field (`*/15 * * * *`, `30 * * * *`) follows the clock as it is.
 
 ### Webhooks
 
