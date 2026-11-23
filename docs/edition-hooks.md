@@ -210,6 +210,8 @@ format is the same everywhere:
 | `mode_switch` | `POST /api/v1/flows/{id}/start`, `…/stop` (optional body); MCP `start_flow`/`stop_flow` | `flow:<id>` | `{mode: "start"\|"stop", flow_id, name}` |
 | `mode_switch` | `POST /api/v1/flows/{id}/run` (manual run; body `{input?, signature?}`) | `flow:<id>` | `{mode: "run", flow_id, name}` |
 | `mode_switch` | `PATCH /api/v1/data-sources/{id}/write-policy` (body fields plus `signature`) | `data_source:<id>:write_policy` | `{mode: "write_policy", tag_id, policy}` |
+| `mode_switch` | `POST /api/v1/config/snapshots/{id}/rollback` (optional body); it rewrites tags with their write policies | `config_snapshot:<id>:rollback` | `{mode: "config_rollback", snapshot_id}` |
+| `tag_write` | `POST /api/v1/voltrus-plc/devices/{id}/write` (body `{variable, value, reason?, signature?}`); the variable must be read by a tag of the device, whose write policy applies | `data_source:<id>` | as for `POST /api/v1/tags/{id}/write` |
 
 "Optional body" means the route accepts no body (as before) or a JSON body
 `{"signature": {...}}` with `Content-Type: application/json`.

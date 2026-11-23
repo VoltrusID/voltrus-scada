@@ -1060,3 +1060,125 @@ async fn a_password_that_expires_during_a_session_holds_it_at_refresh() {
     assert!(olga.must_change_password, "the refresh flags the account");
 }
 
+#[tokio::test]
+async fn a_config_rollback_needs_the_signature_and_is_audited() {
+    let mut f = fixture(TestEdition::default()).await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let snap = f
+        .state
+        .storage
+        .create_config_snapshot(Some("before"), None, "manual", None)
+        .await
+        .unwrap();
+    let uri = format!("/api/v1/config/snapshots/{snap}/rollback");
+    let (status, body) = send_request(&f.app, "POST", &uri, None, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body["signature_required"]["action"], "mode_switch");
+    drain(&mut f.audit);
+
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        &uri,
+        None,
+        Some(&admin),
+        Some(json!({"signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    let record = f.edition.records.lock().unwrap()[0].clone();
+    assert_eq!(record.resource, format!("config_snapshot:{snap}:rollback"));
+    let events = drain(&mut f.audit);
+    let event = events
+        .iter()
+        .find(|e| e.action == "config_rollback")
+        .expect("an audit entry for the rollback");
+    assert!(
+        event
+            .details
+            .as_deref()
+            .unwrap()
+            .contains("signature=sig-1"),
+        "{event:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_direct_plc_write_follows_the_tag_write_policy_and_signature() {
+    let mut f = fixture(TestEdition::default()).await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let plc = f
+        .state
+        .storage
+        .create_voltrus_plc_device("PLC", "http://127.0.0.1:1", "http", 1000, false)
+        .await
+        .unwrap();
+    let tag = f
+        .state
+        .storage
+        .create_data_source(
+            "speed",
+            "Speed",
+            "",
+            "#fff",
+            0.0,
+            100.0,
+            0.0,
+            0.0,
+            0.0,
+            0,
+            1,
+            "voltrus_plc",
+            "{}",
+            &plc.to_string(),
+            None,
+            "line",
+        )
+        .await
+        .unwrap();
+    let uri = format!("/api/v1/voltrus-plc/devices/{plc}/write");
+    let write = |body: serde_json::Value| {
+        send_request(&f.app, "POST", &uri, None, Some(&admin), Some(body))
+    };
+
+    // Not writable yet.
+    let (status, _) = write(json!({"variable": "speed", "value": 10.0})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // A variable no tag reads.
+    let (status, _) = write(json!({"variable": "other", "value": 10.0})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    f.state
+        .storage
+        .update_write_policy(
+            tag,
+            &crate::models::WritePolicyUpdate {
+                writable: Some(true),
+                write_min: Some(Some(0.0)),
+                write_max: Some(Some(50.0)),
+                write_max_rate: None,
+                write_requires_reason: None,
+                write_deadband: None,
+            },
+        )
+        .await
+        .unwrap();
+    let (status, body) = write(json!({"variable": "speed", "value": 80.0})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "above write_max: {body}");
+    let (status, body) = write(json!({"variable": "speed", "value": 10.0})).await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body["signature_required"]["action"], "tag_write");
+    drain(&mut f.audit);
+
+    let (status, body) =
+        write(json!({"variable": "speed", "value": 10.0, "signature": signature("admin")})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let events = drain(&mut f.audit);
+    let event = events
+        .iter()
+        .find(|e| e.action == "voltrus_plc_write")
+        .expect("the write is audited");
+    let details = event.details.as_deref().unwrap();
+    assert!(details.contains("\"value\":10.0"), "{details}");
+    assert!(details.contains("signature=sig-1"), "{details}");
+}

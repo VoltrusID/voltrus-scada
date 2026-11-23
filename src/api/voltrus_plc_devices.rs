@@ -400,13 +400,45 @@ pub async fn restart_device(
     Ok(Json(json!({"success": true, "device_id": id})))
 }
 
+/// The tag (data source) of PLC device `device_id` that reads `variable`:
+/// its key is the variable name, or `<device>.<variable>` or
+/// `<anything>:<variable>`, as the command queue resolves points.
+async fn tag_of_variable(
+    state: &AppState,
+    device_id: i64,
+    variable: &str,
+) -> anyhow::Result<Option<i64>> {
+    let device_ref = device_id.to_string();
+    let sources = state.storage.list_data_sources(None).await?;
+    Ok(sources
+        .iter()
+        .filter(|ds| ds.device_id == device_ref)
+        .find(|ds| {
+            ds.key == variable
+                || ds
+                    .key
+                    .strip_prefix(&device_ref)
+                    .and_then(|r| r.strip_prefix('.'))
+                    == Some(variable)
+                || ds.key.split_once(':').map(|(_, v)| v) == Some(variable)
+        })
+        .map(|ds| ds.id))
+}
+
 /// POST /api/v1/voltrus-plc/devices/:id/write
+///
+/// Writes one variable straight to the PLC (not through the command queue),
+/// but under the same rules as every other setpoint write: the variable must
+/// be read by a tag of this device, that tag's write policy is checked
+/// (writable, reason, range, deadband, rate), the edition may ask for a
+/// signature, and the write is audited with the previous and new value.
 pub async fn write_variable(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<crate::api::ApiKeyAuth>>,
     Path(id): Path<i64>,
     Json(body): Json<serde_json::Value>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<axum::response::Response, AppError> {
     if user.role != "admin" {
         return Err(AppError::forbidden("Admin access required"));
     }
@@ -423,12 +455,73 @@ pub async fn write_variable(
     let value = body["value"]
         .as_f64()
         .ok_or_else(|| AppError(anyhow::anyhow!("'value' field must be a number")))?;
+    let reason = body["reason"].as_str().map(str::to_string);
+    let signature: Option<crate::models::SignatureInput> = match body.get("signature") {
+        Some(v) if !v.is_null() => Some(
+            serde_json::from_value(v.clone())
+                .map_err(|e| AppError::bad_request(format!("invalid signature: {e}")))?,
+        ),
+        _ => None,
+    };
+
+    let Some(tag_id) = tag_of_variable(&state, id, variable_name).await? else {
+        return Err(AppError::forbidden(format!(
+            "'{variable_name}' is not read by a tag of this device; add a writable tag for it first"
+        )));
+    };
+    let submission = crate::api::commands::TagWriteSubmission {
+        tag_id,
+        value,
+        policy: "immediate".to_string(),
+        scheduled_at: None,
+        reason: reason.clone(),
+        command_id: None,
+    };
+    let checked =
+        match crate::api::commands::check_write(&state.storage, &state.cache, &submission).await {
+            Ok(checked) => checked,
+            Err(e) => return Ok(e.into_response()),
+        };
+    let ctx = crate::edition::ActionContext {
+        action: crate::edition::SignedAction::TagWrite,
+        origin: crate::api::signature::origin_of(&user, api_key.is_some()),
+        username: user.username.clone(),
+        role: user.role.clone(),
+        resource: format!("data_source:{tag_id}"),
+        details: checked.details(value),
+    };
+    let signed = match crate::api::signature::authorize(&state, &ctx, signature.as_ref()).await {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
+    };
 
     let result = write_tag(&device.url, &device.transport, variable_name, value).await;
+
+    let mut details = json!({
+        "variable": variable_name,
+        "tag_id": tag_id,
+        "previous": checked.previous,
+        "value": value,
+        "reason": reason,
+        "success": result.success,
+        "error": result.error,
+    })
+    .to_string();
+    if let Some(signed) = &signed {
+        details.push_str(&signed.audit_suffix());
+    }
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: "voltrus_plc_write".to_string(),
+        username: user.username.clone(),
+        resource: format!("voltrus_plc_device:{id}"),
+        details: Some(details),
+    });
+
     Ok(Json(json!({
         "success": result.success,
         "device_response": result.device_response,
         "error": result.error,
         "latency_ms": result.latency_ms,
-    })))
+    }))
+    .into_response())
 }
