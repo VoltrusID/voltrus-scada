@@ -190,13 +190,16 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Lock the account until `locked_until` and start the failure count
+    /// over, so that once the lock ends it takes another full run of wrong
+    /// passwords to lock it again (not a single one).
     pub async fn lock_account(&self, username: &str, locked_until: i64) -> Result<()> {
         let conn = self.conn.clone();
         let username = username.to_string();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             conn.execute(
-                "UPDATE users SET locked_until = ?1 WHERE username = ?2",
+                "UPDATE users SET locked_until = ?1, failed_attempts = 0 WHERE username = ?2",
                 rusqlite::params![locked_until, username],
             )
             .context("Lock account failed")?;
@@ -370,6 +373,29 @@ impl Storage {
                 rusqlite::params![crate::timeutil::now_secs(), token_hash],
             )
             .context("Revoke refresh token failed")?;
+            Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Revoke every live refresh token of `username` except the one whose
+    /// hash is `keep` (the session that asked, e.g. for a password change).
+    pub async fn revoke_other_user_refresh_tokens(
+        &self,
+        username: &str,
+        keep: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.clone();
+        let username = username.to_string();
+        let keep = keep.unwrap_or_default().to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "UPDATE refresh_tokens SET revoked_at = ?1 WHERE username = ?2 AND revoked_at IS NULL AND token_hash <> ?3",
+                rusqlite::params![crate::timeutil::now_secs(), username, keep],
+            )
+            .context("Revoke other refresh tokens failed")?;
             Ok(())
         })
         .await

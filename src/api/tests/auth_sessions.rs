@@ -102,6 +102,32 @@ async fn test_password_change_revokes_refresh_tokens() {
 }
 
 #[tokio::test]
+async fn test_self_password_change_signs_out_the_other_sessions() {
+    let (app, _admin, _ops_id, ops_laptop) = setup_second_admin().await;
+    let ops_phone = login(&app, "ops", "pw1").await;
+    let (status, body) = send_request(
+        &app,
+        "POST",
+        "/api/v1/auth/change-password",
+        None,
+        Some(&ops_laptop),
+        Some(serde_json::json!({"old_password": "pw1", "new_password": "a-new-password-2"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        refresh_status(&app, &ops_phone).await,
+        StatusCode::UNAUTHORIZED,
+        "the other session is signed out"
+    );
+    assert_eq!(
+        refresh_status(&app, &ops_laptop).await,
+        StatusCode::OK,
+        "the session that changed it stays"
+    );
+}
+
+#[tokio::test]
 async fn test_deleted_user_session_ends() {
     let (app, admin, ops_id, ops) = setup_second_admin().await;
     let (status, _) = send_request(

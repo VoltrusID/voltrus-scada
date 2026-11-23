@@ -214,10 +214,39 @@ async fn a_normal_account_still_locks_after_ten_failures() {
     }
     let (status, _, _) = login(&app, "ops", "wrong", "10.4.0.1").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(failed_attempts(&state, "ops").await, 10);
+    // Locking starts the count over.
+    assert_eq!(failed_attempts(&state, "ops").await, 0);
     let (status, body, _) = login(&app, "ops", GUEST_PW, "10.4.0.2").await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
     assert_eq!(body["error"], "Account locked. Please try again later.");
+}
+
+/// Once a lock has run out, one wrong password does not lock the account
+/// again: it takes another ten.
+#[tokio::test]
+async fn an_expired_lock_needs_ten_new_failures_to_lock_again() {
+    let state = demo_state(&[], None).await;
+    let app = create_router(state.clone());
+    for _ in 0..9 {
+        state
+            .storage
+            .increment_failed_attempts("ops")
+            .await
+            .unwrap();
+    }
+    let (status, _, _) = login(&app, "ops", "wrong", "10.5.0.1").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // The lock runs out.
+    state
+        .storage
+        .lock_account("ops", crate::timeutil::now_secs() - 1)
+        .await
+        .unwrap();
+    let (status, _, _) = login(&app, "ops", "wrong", "10.5.0.2").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(failed_attempts(&state, "ops").await, 1);
+    let (status, body, _) = login(&app, "ops", GUEST_PW, "10.5.0.3").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }
 
 #[tokio::test]

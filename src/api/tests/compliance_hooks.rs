@@ -29,6 +29,8 @@ struct TestEdition {
     session: SessionPolicy,
     /// Let flows write without a signature.
     allow_flows: bool,
+    /// Report every password as expired (not only `stale`'s).
+    expire_all: std::sync::atomic::AtomicBool,
 }
 
 impl Extension for TestEdition {
@@ -66,7 +68,9 @@ impl Extension for TestEdition {
     }
 
     fn password_expired<'a>(&'a self, user: &'a crate::models::User) -> BoxFuture<'a, bool> {
-        Box::pin(async move { user.username == "stale" })
+        Box::pin(async move {
+            user.username == "stale" || self.expire_all.load(std::sync::atomic::Ordering::SeqCst)
+        })
     }
 
     fn session_policy<'a>(
@@ -1033,3 +1037,26 @@ async fn community_sessions_have_no_limit() {
     let (status, _) = refresh(&app, &refresh_token).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn a_password_that_expires_during_a_session_holds_it_at_refresh() {
+    let f = fixture(TestEdition::default()).await;
+    add_user(&f.state.storage, "olga", "olga-password-1", "operator").await;
+    let (_, refresh_token, body) = sign_in(&f.app, "olga", "olga-password-1").await;
+    assert_eq!(body["must_change_password"], false);
+
+    f.edition
+        .expire_all
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let (status, _) = refresh(&f.app, &refresh_token).await;
+    assert_eq!(status, StatusCode::OK);
+    let olga = f
+        .state
+        .storage
+        .get_user_by_username("olga")
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(olga.must_change_password, "the refresh flags the account");
+}
+

@@ -19,7 +19,7 @@ paths, so keep them fast: read your settings from memory or one indexed query.
 |---|---|---|
 | `validate_new_password(&PasswordCheck) -> Result<(), String>` | before a password is stored | `Ok(())` |
 | `password_changed(username, password_hash, PasswordChangeKind)` | after a password is stored | nothing |
-| `password_expired(&User) -> bool` | at sign-in, after the password checked out (and by `/auth/me` while `must_change_password` is set) | `false` |
+| `password_expired(&User) -> bool` | at sign-in, after the password checked out, at every refresh (and by `/auth/me` while `must_change_password` is set) | `false` |
 | `session_policy(username, role) -> SessionPolicy` | at sign-in, `/auth/me`, every refresh and activity ping | no limits |
 | `signature_required(&ActionContext) -> Option<SignatureRequirement>` | before every signable action | `None` |
 | `record_signature(&SignatureRecord) -> anyhow::Result<Option<String>>` | after the core verified a signature, before the action runs | `Ok(None)` |
@@ -62,7 +62,12 @@ Where it is called:
   core sets `must_change_password` on the account until the password is
   changed, so every session of that user is held, not only this one. The
   web client then shows the change-password screen with "Your password has
-  expired".
+  expired". It is asked again at every `POST /api/v1/auth/refresh`, so a
+  password that expires during a session holds that session (and the
+  others) from the next refresh on.
+* A self-service password change revokes the user's other refresh tokens:
+  every other session ends at its next refresh; the one that changed the
+  password stays.
 * A session whose user has `must_change_password` set (generated first admin
   password, CLI `--reset-admin-password`, or an expired password) may only
   change the password and leave: `POST /api/v1/auth/change-password`,
