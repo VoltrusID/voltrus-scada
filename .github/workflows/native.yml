@@ -1,24 +1,31 @@
-# The native operator console (native/): formatting, lints, tests, an
-# end-to-end run against a live server with the solar-farm simulators, an
-# unsigned macOS app bundle, and screenshots of every page. No secrets: safe
-# for forks.
+# The native operator console (native/): formatting, lints and tests on
+# Linux and Windows; on macOS an end-to-end run against a live server with
+# the solar-farm simulators, an unsigned app bundle, a stress pass and (on
+# main and by hand) screenshots of every page. No secrets: safe for forks.
 name: Native console
 
+# The console does not build against the server crate; its tests read a
+# few server sources (the wire format and the admin types), which are the
+# only server paths listed. Server-only changes do not run this workflow.
 on:
   push:
     branches: [main, native-v2, native-parity, 'native-*']
     paths:
       - native/**
-      - src/**
-      - scenarios/solar-farm/**
+      - src/ws_types.rs
+      - src/models/rbac_types.rs
+      - src/api/auth/users.rs
+      - src/api/api_keys.rs
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/native.yml
   pull_request:
     paths:
       - native/**
-      - src/**
-      - scenarios/solar-farm/**
+      - src/ws_types.rs
+      - src/models/rbac_types.rs
+      - src/api/auth/users.rs
+      - src/api/api_keys.rs
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/native.yml
@@ -36,17 +43,26 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
-  macos:
-    runs-on: macos-15
-    timeout-minutes: 120
+  # Formatting, lints and every test but the live end-to-end one, on Linux
+  # (GPUI's X11/Wayland backend; the console's tests use GPUI's test
+  # platform, so no display is needed).
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      # Restore and save separately so a failing build still keeps the compiled
-      # dependencies (GPUI and the server's protocol stacks take most of a cold
-      # build).
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config clang cmake libasound2-dev libfontconfig-dev libfreetype-dev \
+            libwayland-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libvulkan1
+
+      # Saved from main only, and only when the lock file changed, so pull
+      # requests and repeated runs do not each store a copy.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache
         with:
@@ -54,10 +70,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: native-macos-${{ hashFiles('Cargo.lock') }}-${{ github.run_id }}
+          key: native-linux-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            native-macos-${{ hashFiles('Cargo.lock') }}-
-            native-macos-
+            native-linux-
 
       - name: Toolchain
         run: |
@@ -74,6 +89,89 @@ jobs:
       - name: Test
         run: cargo test --locked -p voltrus-scada-native
 
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  # The console builds and its tests pass on Windows (no installer here).
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: native-windows-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            native-windows-
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Build
+        run: cargo build --locked -p voltrus-scada-native --all-targets
+
+      - name: Test
+        run: cargo test --locked -p voltrus-scada-native
+
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  # What needs a Mac: the live end-to-end run, the app bundle, the stress
+  # pass on Metal and the screenshots.
+  macos:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Restore and save separately so a failing build still keeps the compiled
+      # dependencies (GPUI and the server's protocol stacks take most of a cold
+      # build); saved from main only, when the lock file changed.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: native-macos-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            native-macos-
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
       # One build for the console, the server and the simulator, so shared
       # dependencies compile once with the same features.
       - name: Build release
@@ -83,7 +181,7 @@ jobs:
         run: cargo build --locked --release --workspace --bin voltrus-native --bin voltrus --bin modbus-sim
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: always()
+        if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
@@ -119,8 +217,10 @@ jobs:
           trap 'pause CONT' EXIT
           # The longest frame interval on the hosted runner follows display-link
           # wake jitter (54-72 ms seen while the slowest frame drew in 30 ms),
-          # so CI allows up to 100 ms; locally the budget stays 50 ms.
-          STRESS_ENFORCE=1 STRESS_MAX_INTERVAL_MS=100 \
+          # so CI allows up to 100 ms; locally the budget stays 50 ms. Its
+          # shared GPU drops a little more too (1.04% seen): 2% of vsyncs
+          # (the script's default on hosted runners; 1% locally).
+          STRESS_ENFORCE=1 STRESS_MAX_INTERVAL_MS=100 STRESS_MAX_DROPPED_PCT=2 \
             native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-report.txt
           # The showcase's figures are reported and warned about, not
           # enforced: it repaints the whole window every frame, and its drops
@@ -128,7 +228,9 @@ jobs:
           STRESS_PROFILE=1 STRESS_SECONDS=10 \
             native/scripts/stress-macos.sh "dist/Voltrus SCADA.app" dist/stress-profile-report.txt
 
+      # Every page, about 3 s each: on main and when run by hand only.
       - name: Screenshots
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         run: native/scripts/screenshots-macos.sh "dist/Voltrus SCADA.app" dist/screenshots
 
       - name: Stop the plant

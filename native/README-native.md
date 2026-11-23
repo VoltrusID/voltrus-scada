@@ -355,8 +355,22 @@ meter takes the refresh rate from the display).
 How the console is built, and how to add a page, a REST call, a key, an
 overlay or an animation: [`docs/architecture.md`](docs/architecture.md).
 
-Requires a recent stable Rust (edition 2024). CI builds and tests on macOS;
-GPUI also supports Linux (X11 or Wayland), which is not tested here.
+Requires a recent stable Rust (edition 2024). CI checks formatting, lints
+and tests on Linux, builds and tests on Windows, and runs the end-to-end
+test, the bundle, the stress pass and the screenshots on macOS. On Linux
+(X11 or Wayland) GPUI and the alarm sound need the system's libraries; on
+Debian or Ubuntu:
+
+```bash
+sudo apt-get install pkg-config clang cmake libasound2-dev libfontconfig-dev \
+  libfreetype-dev libwayland-dev libx11-xcb-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev libvulkan1
+```
+
+TLS (`https://` and `wss://`) trusts the operating system's certificate
+store and the bundled webpki roots. For a plant CA that is not installed on
+the computer, name a PEM file in the console's `config.toml`:
+`ca_file = "/path/to/plant-ca.pem"`. Certificates are always verified.
 
 ## Layout
 

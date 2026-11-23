@@ -289,6 +289,8 @@ pub struct Console {
     /// The password the server wants changed has expired (rather than
     /// being a generated one): the change card says so.
     pub password_expired: bool,
+    /// Server history has arrived since the tag list (for the ready file).
+    history_loaded: bool,
     pub write_result: Option<(i64, Result<String, String>)>,
     /// The tag whose write awaits the server's answer.
     pub writing: Option<i64>,
@@ -405,6 +407,7 @@ impl Console {
                     for event in batch {
                         console.apply(event, window, cx);
                     }
+                    console.signal_ready();
                     let now = Instant::now();
                     let took = meter::ms(started, now);
                     let mut frames = console.meter.borrow_mut();
@@ -548,6 +551,7 @@ impl Console {
             inputs,
             busy: false,
             password_expired: false,
+            history_loaded: false,
             error: None,
             write_result: None,
             writing: None,
@@ -819,7 +823,10 @@ impl Console {
             }
             // Merged by time: a short fetch for every tag and a trended
             // tag's longer one each fill their own stretch.
-            Event::History { series, .. } => self.store.backfill(&series),
+            Event::History { series, .. } => {
+                self.store.backfill(&series);
+                self.history_loaded = true;
+            }
             Event::Written { tag, result, late } => {
                 // A late answer to an earlier write must not settle the one
                 // now waiting.
@@ -1464,6 +1471,31 @@ impl Console {
                 range: history_range(self.range).to_owned(),
                 keys,
             });
+        }
+    }
+
+    /// Once the console shows live data (signed in, the link live, the tag
+    /// list and history loaded; a stress run's plant), create the file
+    /// `VOLTRUS_NATIVE_READY_FILE` names, if set: the screenshot script
+    /// waits for it instead of a fixed time.
+    fn signal_ready(&self) {
+        static READY: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+        static SIGNALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let Some(path) = READY
+            .get_or_init(|| std::env::var_os("VOLTRUS_NATIVE_READY_FILE").map(Into::into))
+            .as_ref()
+        else {
+            return;
+        };
+        let ready = self.phase == Phase::Console
+            && self.link == Link::Live
+            && !self.store.tags.is_empty()
+            && (self.history_loaded || self.stress.is_some());
+        if ready
+            && !SIGNALLED.swap(true, std::sync::atomic::Ordering::SeqCst)
+            && let Err(error) = std::fs::write(path, b"ready\n")
+        {
+            eprintln!("voltrus-native: cannot write {}: {error}", path.display());
         }
     }
 

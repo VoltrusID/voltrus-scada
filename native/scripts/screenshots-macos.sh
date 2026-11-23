@@ -146,7 +146,8 @@ status=0
 for shot in "${shots[@]}"; do
   name="${shot%%|*}"
   read -r -a args <<< "${shot#*|}"
-  "$binary" "${args[@]}" &
+  ready="$(mktemp -u)"
+  VOLTRUS_NATIVE_READY_FILE="$ready" "$binary" "${args[@]}" &
   pid=$!
   id=""
   for _ in $(seq 1 60); do
@@ -157,12 +158,21 @@ for shot in "${shots[@]}"; do
     echo "::warning::$name: no window appeared"
     status=1
   else
-    # Sign in, load history, and let live values and alarms arrive.
-    sleep 10
+    # The console creates the ready file once it is signed in, live and
+    # has its tags and history (a stress run: its plant); then a moment for
+    # the page's own fetches and entrance. Without it (the sign-in card, or
+    # a server that never answers) at most 10 s, as before.
+    for _ in $(seq 1 50); do
+      [ -e "$ready" ] && break
+      case " ${args[*]} " in *" --sign-in "*|*" --stress"*) ;; *) break ;; esac
+      sleep 0.2
+    done
+    sleep 2
     screencapture -o -x -l "$id" "$out/$name.png"
     echo "captured $name ($(sips -g pixelWidth -g pixelHeight "$out/$name.png" | tail -2 | awk '{print $2}' | paste -sd x -))"
   fi
   kill "$pid" 2>/dev/null || true
   wait "$pid" 2>/dev/null || true
+  rm -f "$ready"
 done
 exit "$status"
