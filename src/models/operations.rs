@@ -67,6 +67,10 @@ pub struct OeeMetrics {
     pub total_running_secs: i64,
     pub total_planned_secs: i64,
     pub downtime_count: i64,
+    /// Set when the device's downtime is not being tracked, with the reason
+    /// (for instance no state metric chosen for a device with several).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracking: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]

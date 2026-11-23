@@ -269,7 +269,7 @@ export function RecipeManager({ canConfigure = true }: { canConfigure?: boolean 
               <button onClick={() => setConfirmLoadId(null)} style={btnStyle}>Cancel</button>
               <button
                 onClick={() => handleLoad(confirmLoadId)}
-                style={{ ...btnStyle, background: 'var(--cyan)', color: '#000' }}
+                style={{ ...btnStyle, background: 'var(--cyan)', color: 'var(--on-accent)' }}
                 disabled={loadRecipe.isPending}
               >
                 Load Recipe

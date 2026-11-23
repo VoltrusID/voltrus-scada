@@ -64,11 +64,16 @@ impl CommandQueue {
     pub async fn run(&self) {
         let mut interval =
             tokio::time::interval(std::time::Duration::from_millis(POLL_INTERVAL_MS));
+        let mut recovered = false;
         loop {
             interval.tick().await;
             // Queued commands wait for the node that owns the devices.
             if !crate::node_role::is_active() {
                 continue;
+            }
+            // Retried every tick until it succeeds.
+            if !recovered {
+                recovered = self.fail_interrupted().await;
             }
             self.check_readbacks().await;
             if let Err(e) = self.process_queue().await {
@@ -77,8 +82,30 @@ impl CommandQueue {
         }
     }
 
+    /// Commands a previous run left mid-delivery are failed, never resent.
+    /// False when the sweep could not run (it is tried again).
+    async fn fail_interrupted(&self) -> bool {
+        match self.storage.fail_interrupted_commands().await {
+            Ok(0) => true,
+            Ok(n) => {
+                tracing::warn!(
+                    "{n} command(s) were being sent when the server stopped; marked failed"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::warn!("Could not resolve interrupted commands: {e}");
+                false
+            }
+        }
+    }
+
     async fn process_queue(&self) -> anyhow::Result<()> {
         let commands = self.storage.get_queued_commands().await?;
+        // Devices whose oldest due command has been looked at: a device takes
+        // its commands in order, so a newer one never overtakes an older one
+        // that is waiting out a retry backoff (and later overwrites it).
+        let mut device_seen = std::collections::HashSet::new();
 
         for cmd in &commands {
             let now = crate::timeutil::now_secs();
@@ -103,7 +130,10 @@ impl CommandQueue {
                 .max(cmd.created_at);
             if matches!(cmd.status.as_str(), "pending" | "queued") && is_expired(due_at, now) {
                 self.publish_status_event(&cmd.id, "expired", None);
-                self.storage
+                // Logged, not returned: devices already claimed in this pass
+                // must still be delivered and released.
+                if let Err(e) = self
+                    .storage
                     .update_command_status(
                         &cmd.id,
                         "expired",
@@ -111,7 +141,10 @@ impl CommandQueue {
                         "system",
                         Some("auto-expired"),
                     )
-                    .await?;
+                    .await
+                {
+                    tracing::warn!("Could not expire command {}: {e}", cmd.id);
+                }
                 continue;
             }
 
@@ -121,6 +154,11 @@ impl CommandQueue {
                 && scheduled_at > now
             {
                 continue; // Not yet time
+            }
+
+            // -- Order: only the oldest due command of a device is considered --
+            if !device_seen.insert(cmd.device_id) {
+                continue;
             }
 
             // -- Retry backoff: don't hammer a failing device. --
@@ -137,11 +175,8 @@ impl CommandQueue {
             }
 
             // -- Concurrency check: only one command per device in-flight --
-            {
-                let in_flight = self.in_flight.read().await;
-                if in_flight.contains(&cmd.device_id) {
-                    continue;
-                }
+            if self.in_flight.read().await.contains(&cmd.device_id) {
+                continue;
             }
 
             // -- Resolve the text device ID from the data source for cache lookups --
@@ -170,83 +205,131 @@ impl CommandQueue {
                 continue;
             }
 
-            // Mark as in-flight
-            {
-                let mut in_flight = self.in_flight.write().await;
-                in_flight.insert(cmd.device_id);
+            // Claim the device and deliver in a task of its own, released
+            // when it finishes: devices do not wait for each other, and the
+            // queue keeps serving the others while one is slow.
+            if !self.in_flight.write().await.insert(cmd.device_id) {
+                continue;
             }
-
-            // -- Execute --
-            self.publish_status_event(&cmd.id, "sent", None);
-            self.storage
-                .update_command_status(&cmd.id, "sent", None, "system", None)
-                .await?;
-
-            let result = self.execute_write(cmd).await;
-
-            // -- Handle result --
-            match result.success {
-                true => {
-                    tracing::info!(
-                        "Command acked: id={}, response={}, latency={}ms",
-                        cmd.id,
-                        result.device_response.as_deref().unwrap_or("OK"),
-                        result.latency_ms
-                    );
-                    let response = result
-                        .device_response
-                        .clone()
-                        .unwrap_or_else(|| "OK".to_string());
-                    self.publish_ack_event(&cmd.id, &response, result.latency_ms);
-                    self.storage
-                        .update_command_status(&cmd.id, "acked", None, "system", None)
-                        .await?;
-
-                    // The cache keeps showing what the device last reported:
-                    // an ack says the device took the write, not that the
-                    // value is in effect. The next poll confirms it.
-                    if let Some(ds) = ds
-                        && let Ok(value) = cmd.value.parse::<f64>()
-                    {
-                        self.start_readback(cmd, &ds, &cache_device_id, value).await;
-                    }
-                }
-                false => {
-                    let error = result.error.as_deref().unwrap_or("Unknown error");
-                    tracing::warn!(
-                        "Command failed: id={}, error={}, retry={}/{}",
-                        cmd.id,
-                        error,
-                        cmd.retry_count,
-                        cmd.max_retries
-                    );
-                    if cmd.retry_count < cmd.max_retries {
-                        self.publish_status_event(&cmd.id, "queued", Some(error));
-                        self.storage
-                            .update_command_status(
-                                &cmd.id,
-                                "queued",
-                                Some(error),
-                                "system",
-                                Some("retry"),
-                            )
-                            .await?;
-                    } else {
-                        self.publish_status_event(&cmd.id, "failed", Some(error));
-                        self.storage
-                            .update_command_status(&cmd.id, "failed", Some(error), "system", None)
-                            .await?;
-                    }
-                }
-            }
-
-            // Remove from in-flight
-            {
-                let mut in_flight = self.in_flight.write().await;
-                in_flight.remove(&cmd.device_id);
-            }
+            let queue = self.clone();
+            let cmd = cmd.clone();
+            tokio::spawn(async move {
+                queue
+                    .with_in_flight(cmd.device_id, queue.deliver(&cmd, ds, &cache_device_id))
+                    .await;
+            });
         }
 
+        Ok(())
+    }
+
+    /// Run `work` for a device already marked in flight, then release the
+    /// device whatever the outcome, so an error never leaves it wedged.
+    pub(super) async fn with_in_flight<F>(&self, device_id: i64, work: F)
+    where
+        F: std::future::Future<Output = anyhow::Result<()>>,
+    {
+        let result = work.await;
+        self.in_flight.write().await.remove(&device_id);
+        if let Err(e) = result {
+            tracing::warn!("Command delivery to device {device_id} failed: {e:#}");
+        }
+    }
+
+    /// Send one command to its device and record the outcome.
+    async fn deliver(
+        &self,
+        cmd: &crate::models::Command,
+        ds: Option<crate::models::DataSource>,
+        cache_device_id: &str,
+    ) -> anyhow::Result<()> {
+        // -- Execute --
+        self.publish_status_event(&cmd.id, "sent", None);
+        self.storage
+            .update_command_status(&cmd.id, "sent", None, "system", None)
+            .await?;
+
+        let started = std::time::Instant::now();
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(WRITE_TIMEOUT_SECS),
+            self.execute_write(cmd),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => crate::models::WriteResult {
+                success: false,
+                device_response: None,
+                error: Some(format!("Write timed out after {WRITE_TIMEOUT_SECS}s")),
+                latency_ms: started.elapsed().as_millis() as u64,
+            },
+        };
+
+        // -- Handle result --
+        if result.success {
+            tracing::info!(
+                "Command acked: id={}, response={}, latency={}ms",
+                cmd.id,
+                result.device_response.as_deref().unwrap_or("OK"),
+                result.latency_ms
+            );
+            let response = result
+                .device_response
+                .clone()
+                .unwrap_or_else(|| "OK".to_string());
+            self.publish_ack_event(&cmd.id, &response, result.latency_ms);
+            // The device took the write: losing that to a passing storage
+            // error would leave the command "sent" for good, so try again.
+            let mut attempt = 1;
+            while let Err(e) = self
+                .storage
+                .update_command_status(&cmd.id, "acked", None, "system", None)
+                .await
+            {
+                if attempt >= ACK_RECORD_ATTEMPTS {
+                    return Err(e.context(format!(
+                        "command {} was acknowledged by the device but could not be recorded",
+                        cmd.id
+                    )));
+                }
+                tracing::warn!(
+                    "Recording the ack of command {} failed, retrying: {e}",
+                    cmd.id
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(200 * u64::from(attempt)))
+                    .await;
+                attempt += 1;
+            }
+
+            // The cache keeps showing what the device last reported: an ack
+            // says the device took the write, not that the value is in
+            // effect. The next poll confirms it.
+            if let Some(ds) = ds
+                && let Ok(value) = cmd.value.parse::<f64>()
+            {
+                self.start_readback(cmd, &ds, cache_device_id, value).await;
+            }
+        } else {
+            let error = result.error.as_deref().unwrap_or("Unknown error");
+            tracing::warn!(
+                "Command failed: id={}, error={}, retry={}/{}",
+                cmd.id,
+                error,
+                cmd.retry_count,
+                cmd.max_retries
+            );
+            if cmd.retry_count < cmd.max_retries {
+                self.publish_status_event(&cmd.id, "queued", Some(error));
+                self.storage
+                    .update_command_status(&cmd.id, "queued", Some(error), "system", Some("retry"))
+                    .await?;
+            } else {
+                self.publish_status_event(&cmd.id, "failed", Some(error));
+                self.storage
+                    .update_command_status(&cmd.id, "failed", Some(error), "system", None)
+                    .await?;
+            }
+        }
         Ok(())
     }
 }
@@ -445,5 +528,139 @@ mod tests {
         let cmd = storage.get_command("c2").await.unwrap().unwrap();
         assert_eq!(cmd.readback_status.as_deref(), Some("timeout"));
         assert_eq!(cmd.readback_value, None);
+    }
+
+    #[tokio::test]
+    async fn a_failed_delivery_releases_the_device() {
+        let q = queue(Storage::new_in_memory().unwrap(), DeviceCache::new());
+        q.in_flight.write().await.insert(7);
+        q.with_in_flight(7, async { anyhow::bail!("storage unavailable") })
+            .await;
+        assert!(q.in_flight.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn commands_cut_off_by_a_restart_are_failed_not_resent() {
+        let storage = Storage::new_in_memory().unwrap();
+        acked_command(&storage, "c3").await;
+        storage
+            .update_command_status("c3", "sent", None, "system", None)
+            .await
+            .unwrap();
+        let q = queue(storage.clone(), DeviceCache::new());
+        q.fail_interrupted().await;
+        let cmd = storage.get_command("c3").await.unwrap().unwrap();
+        assert_eq!(cmd.status, "failed");
+        assert!(cmd.error_message.unwrap().contains("restart"));
+        assert!(storage.get_queued_commands().await.unwrap().is_empty());
+        let audit = storage.get_command_audit("c3").await.unwrap();
+        assert!(audit.iter().any(|a| a.new_status == "failed"));
+    }
+
+    fn queued_command(id: &str, created_at: i64) -> crate::models::Command {
+        crate::models::Command {
+            id: id.into(),
+            data_source_id: 999,
+            device_id: 5,
+            protocol: "modbus".into(),
+            value: "1".into(),
+            status: "pending".into(),
+            policy: "immediate".into(),
+            scheduled_at: None,
+            retry_count: 0,
+            max_retries: 3,
+            error_message: None,
+            created_at,
+            sent_at: None,
+            acked_at: None,
+            resolved_at: None,
+            created_by: "admin".into(),
+            device_ref: "plc".into(),
+            readback_status: None,
+            readback_value: None,
+            readback_attempts: 0,
+            readback_ts: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_newer_command_waits_for_an_older_one_in_backoff() {
+        let storage = Storage::new_in_memory().unwrap();
+        let cache = DeviceCache::new();
+        cache
+            .update(
+                "plc",
+                std::collections::HashMap::from([("sp".into(), 1.0)]),
+                false,
+            )
+            .await;
+        cache
+            .set_status("plc", crate::models::DeviceStatus::Online)
+            .await;
+        let now = crate::timeutil::now_secs();
+        // The older command failed once just now and is backing off.
+        let mut older = queued_command("old", now - 10);
+        older.status = "queued".into();
+        older.retry_count = 1;
+        older.sent_at = Some(now);
+        storage.insert_command(&older).await.unwrap();
+        storage
+            .insert_command(&queued_command("new", now - 5))
+            .await
+            .unwrap();
+
+        let q = queue(storage.clone(), cache);
+        q.process_queue().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let newer = storage.get_command("new").await.unwrap().unwrap();
+        assert_eq!(
+            newer.status, "pending",
+            "the newer command must not overtake"
+        );
+        assert_eq!(newer.sent_at, None);
+        assert!(q.in_flight.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_oldest_command_of_a_device_goes_first() {
+        let storage = Storage::new_in_memory().unwrap();
+        let cache = DeviceCache::new();
+        cache
+            .update(
+                "plc",
+                std::collections::HashMap::from([("sp".into(), 1.0)]),
+                false,
+            )
+            .await;
+        cache
+            .set_status("plc", crate::models::DeviceStatus::Online)
+            .await;
+        let now = crate::timeutil::now_secs();
+        storage
+            .insert_command(&queued_command("a", now - 10))
+            .await
+            .unwrap();
+        storage
+            .insert_command(&queued_command("b", now - 5))
+            .await
+            .unwrap();
+        let q = queue(storage.clone(), cache);
+        q.process_queue().await.unwrap();
+        // The write itself fails (no such tag); what matters is which was tried.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !q.in_flight.read().await.is_empty() {
+            assert!(std::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let a = storage.get_command("a").await.unwrap().unwrap();
+        let b = storage.get_command("b").await.unwrap().unwrap();
+        assert!(a.sent_at.is_some(), "the oldest was sent");
+        assert_eq!(b.sent_at, None, "the newer one waits");
+    }
+
+    #[tokio::test]
+    async fn the_restart_sweep_reports_success() {
+        let q = queue(Storage::new_in_memory().unwrap(), DeviceCache::new());
+        assert!(q.fail_interrupted().await);
     }
 }

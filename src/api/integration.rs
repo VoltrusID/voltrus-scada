@@ -1,13 +1,13 @@
 //! API handlers for external integration & BI connectors (v0.39.0).
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::{AppError, AppState};
+use super::{AppError, AppState, AuthUser};
 use crate::integration::bi::{self, BiQuery};
 use crate::integration::egress::{self, CreateEgressJobRequest, UpdateEgressJobRequest};
 
@@ -287,10 +287,24 @@ fn default_timeout() -> u64 {
     10000
 }
 
+/// Lists outbound webhooks. Roles that may not configure see header values
+/// and URL credentials masked.
 pub async fn list_outbound_webhooks(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
 ) -> Result<impl IntoResponse, AppError> {
-    let webhooks = state.storage.list_outbound_webhooks().await?;
+    let mut webhooks = state.storage.list_outbound_webhooks().await?;
+    if !super::role_allows_configuration(&auth.role) {
+        use crate::security::redact::{mask_headers_text, mask_url};
+        for hook in &mut webhooks {
+            if let Some(url) = hook.get("url").and_then(|v| v.as_str()) {
+                hook["url"] = json!(mask_url(url));
+            }
+            if let Some(headers) = hook.get("headers").and_then(|v| v.as_str()) {
+                hook["headers"] = json!(mask_headers_text(headers));
+            }
+        }
+    }
     Ok(Json(webhooks))
 }
 
@@ -303,6 +317,7 @@ pub async fn create_outbound_webhook(
             "URL must start with http:// or https://"
         )));
     }
+    crate::security::outbound::check_url(&req.url).map_err(AppError::bad_request)?;
     let events: Vec<String> = serde_json::from_str(&req.events).map_err(|_| {
         AppError(anyhow::anyhow!(
             "events must be a JSON array of event types"
@@ -368,7 +383,13 @@ pub async fn test_outbound_webhook(
         .and_then(|v| v.as_u64())
         .unwrap_or(10000);
     let test_payload = json!({ "event": "test", "message": "Test webhook from Voltrus", "timestamp": crate::timeutil::now_secs(), "source": "voltrus_webhook_test" });
-    let client = reqwest::Client::new();
+    // Same rules as real deliveries: no redirects, refused addresses
+    // (`outbound_http` in config.yaml). Only the status comes back, never
+    // the body, so the button cannot be used to read internal pages.
+    if let Err(e) = crate::security::outbound::check_url(&url) {
+        return Ok(Json(json!({ "ok": false, "error": e })));
+    }
+    let client = crate::security::outbound::client(None);
     let mut request = client
         .post(&url)
         .json(&test_payload)
@@ -384,10 +405,7 @@ pub async fn test_outbound_webhook(
     match request.send().await {
         Ok(resp) => {
             let status = resp.status().as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            Ok(Json(
-                json!({ "ok": true, "status": status, "response": body }),
-            ))
+            Ok(Json(json!({ "ok": true, "status": status })))
         }
         Err(e) => Ok(Json(json!({ "ok": false, "error": e.to_string() }))),
     }

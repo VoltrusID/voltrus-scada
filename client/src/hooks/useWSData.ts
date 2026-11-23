@@ -75,17 +75,19 @@ export function useWSData(authed: boolean, sensors: SensorConfig[]) {
     })
   }, [authed, sensors])
 
-  // Register batch handler and mark connected
+  // Register batch handler and track whether the live feed is up. The footer's
+  // LIVE badge follows this, so a dropped socket must turn it back to CONNECTING.
   useEffect(() => {
     if (!authed) return
+    const markDisconnected = () => actions.setWsConnected(false)
 
-    return onWsReady(ws => {
+    const stop = onWsReady(ws => {
       ws.onTagBatch(handleBatch)
       ws.onTransportChange(actions.setLiveTransport)
+      ws.onDisconnect(markDisconnected)
       actions.setLiveTransport(ws.getTransport())
       actions.setWsConnected(true)
     })
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- disconnect cleans up; reconnect re-registers
+    return () => { stop(); markDisconnected() }
   }, [authed, handleBatch, actions])
 }

@@ -10,7 +10,13 @@ use crate::ws_manager::WsManager;
 
 pub const COMMAND_EXPIRY_SECS: i64 = 1800; // 30 minutes
 pub const POLL_INTERVAL_MS: u64 = 500;
+/// Longest a single write may take, whatever the protocol, before it counts
+/// as failed and the device is released.
+pub const WRITE_TIMEOUT_SECS: u64 = 30;
+/// Attempts at recording that the device acknowledged a write.
+pub const ACK_RECORD_ATTEMPTS: u32 = 4;
 
+#[derive(Clone)]
 pub struct CommandQueue {
     pub(super) storage: Storage,
     pub(super) cache: DeviceCache,

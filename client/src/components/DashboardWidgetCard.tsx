@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { getScreenWidget, screenWidgets } from '../edition/widgets'
 import type { DashboardWidget } from '../dashboardWidgets'
 import type { SensorConfig } from '../types'
-import { useDashboardSelector } from '../store/dashboardStore'
+import { useTrackedCurrentValues } from '../store/dashboardStore'
 import { ScreenWidgetView, useElementSize } from './ScreenWidgetView'
 
 const DRAG_DOTS = (
@@ -26,7 +26,8 @@ export function DashboardWidgetCard({ widget, sensors, editMode, onChange, onRem
   onChange: (config: Record<string, unknown>) => void
   onRemove: () => void
 }) {
-  const values = useDashboardSelector(s => s.currentValues)
+  // Re-renders for the tags this widget reads, not for every live update.
+  const values = useTrackedCurrentValues()
   const { ref, width, height } = useElementSize<HTMLDivElement>()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const def = getScreenWidget(widget.type, 'dashboard')

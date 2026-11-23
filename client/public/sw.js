@@ -23,8 +23,8 @@ self.addEventListener("push", (event) => {
 
   const options = {
     body: data.body,
-    icon: "/favicon-32x32.png",
-    badge: "/favicon-16x16.png",
+    icon: "/favicon-32.png",
+    badge: "/favicon-16.png",
     tag: data.source_key || "default",
     data: {
       url: self.location.origin,

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useWsConnected, useLiveTransport } from '../store/dashboardStore'
 import type { Screen } from '../types'
 import { useLicense } from '../LicenseContext'
@@ -7,19 +8,22 @@ import { useServerVersion } from '../queries/system'
 
 interface Props {
   activeAlarmCount: number
+  /** The active alarm count could not be fetched. */
+  alarmsUnavailable?: boolean
   viewMode: 'cards' | 'canvas' | 'twin' | 'scada'
   activeScreen: string
   screens: Screen[]
 }
 
-const VIEW_LABELS: Record<string, string> = {
-  cards: 'Grid',
-  canvas: 'Canvas',
-  twin: '3D',
-  scada: 'SCADA',
+const VIEW_LABEL_KEYS: Record<Props['viewMode'], string> = {
+  cards: 'footer.viewCards',
+  canvas: 'footer.viewCanvas',
+  twin: 'footer.viewTwin',
+  scada: 'footer.viewScada',
 }
 
-export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Props) {
+export function Footer({ activeAlarmCount, alarmsUnavailable = false, viewMode, activeScreen, screens }: Props) {
+  const { t, i18n } = useTranslation()
   const wsConnected = useWsConnected()
   const transport = useLiveTransport()
   const license = useLicense()
@@ -34,11 +38,13 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
   }, [])
 
   const screenName = activeScreen === 'all'
-    ? 'Overview'
-    : screens.find(s => s.id === activeScreen)?.name ?? 'Overview'
+    ? t('footer.overview')
+    : screens.find(s => s.id === activeScreen)?.name ?? t('footer.overview')
 
-  const timeStr = now.toLocaleTimeString('en-US', { hour12: false })
-  const dateStr = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  // The clock follows the UI language (24-hour, as plants run shifts around the clock).
+  const locale = i18n.resolvedLanguage ?? i18n.language ?? 'en'
+  const timeStr = now.toLocaleTimeString(locale, { hour12: false })
+  const dateStr = now.toLocaleDateString(locale, { month: 'short', day: 'numeric' })
 
   return (
     <div style={{
@@ -53,7 +59,7 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
       alignItems: 'center',
       padding: '0 14px',
       gap: 14,
-      fontFamily: "'var(--font-mono)', monospace",
+      fontFamily: 'var(--font-mono), monospace',
       fontSize: 10.5,
       color: 'var(--muted)',
       zIndex: 5,
@@ -67,7 +73,7 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
           boxShadow: wsConnected ? '0 0 6px rgba(34,197,94,.4)' : '0 0 6px rgba(245,158,11,.4)',
         }} />
         <span style={{ color: wsConnected ? 'var(--ok)' : 'var(--warn)', fontWeight: 600 }}>
-          {wsConnected ? (transport === 'sse' ? 'LIVE (SSE)' : 'LIVE') : 'CONNECTING'}
+          {wsConnected ? (transport === 'sse' ? t('footer.liveSse') : t('footer.live')) : t('footer.connecting')}
         </span>
       </div>
 
@@ -84,9 +90,16 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
           fontWeight: 600,
           letterSpacing: '.03em',
         }}>
-          {VIEW_LABELS[viewMode]}
+          {t(VIEW_LABEL_KEYS[viewMode])}
         </span>
       </div>
+
+      {alarmsUnavailable && (
+        <>
+          <div style={{ width: 1, height: 14, background: 'var(--border)', flexShrink: 0 }} />
+          <span role="status" style={{ color: 'var(--warn)', fontWeight: 700, flexShrink: 0 }}>{t('footer.alarmsUnavailable')}</span>
+        </>
+      )}
 
       {/* Alarm count */}
       {activeAlarmCount > 0 && (
@@ -94,7 +107,7 @@ export function Footer({ activeAlarmCount, viewMode, activeScreen, screens }: Pr
           <div style={{ width: 1, height: 14, background: 'var(--border)', flexShrink: 0 }} />
           <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="var(--crit)" strokeWidth="2.5"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
-            <span style={{ color: 'var(--crit)', fontWeight: 700 }}>{activeAlarmCount} Alarm{activeAlarmCount !== 1 ? 's' : ''}</span>
+            <span style={{ color: 'var(--crit)', fontWeight: 700 }}>{t('footer.alarmCount', { count: activeAlarmCount })}</span>
           </div>
         </>
       )}

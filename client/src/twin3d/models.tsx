@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { RoundedBox, Sparkles } from '@react-three/drei'
 import * as THREE from 'three'
@@ -50,6 +50,7 @@ function Spin({ active, axis = 'y', speed = 8, children }: { active: boolean; ax
 export function Beacon({ state, position }: { state: EquipState; position: [number, number, number] }) {
   const halo = useRef<THREE.Mesh>(null)
   const haloMat = useMemo(() => new THREE.MeshBasicMaterial({ color: STATE_COLOR.fault, transparent: true, opacity: 0, depthWrite: false }), [])
+  useEffect(() => () => haloMat.dispose(), [haloMat])
   useFrame(({ clock }) => {
     if (!halo.current) return
     const on = state === 'fault'
@@ -240,6 +241,7 @@ export function ConveyorModel({ w, d, state }: ModelProps) {
     const g = c.getContext('2d')!; g.fillStyle = '#1c1f22'; g.fillRect(0, 0, 64, 8); g.fillStyle = '#3a3f45'; g.fillRect(0, 0, 8, 8)
     const t = new THREE.CanvasTexture(c); t.wrapS = THREE.RepeatWrapping; t.repeat.set(len * 2, 1); return t
   }, [len])
+  useEffect(() => () => tex.dispose(), [tex])
   useFrame((_, dt) => { if (running) tex.offset.x -= dt * 0.8 })
   return (
     <Shadowed>

@@ -53,7 +53,13 @@ pub async fn get_oee_metrics(
     }
 
     match state.storage.calculate_oee(&q.device_id, from, to).await {
-        Ok(metrics) => (HttpStatus::OK, Json(json!(metrics))).into_response(),
+        Ok(mut metrics) => {
+            metrics.tracking =
+                crate::oee::device_tracking_note(&state.storage, &state.cache, &q.device_id)
+                    .await
+                    .map(str::to_string);
+            (HttpStatus::OK, Json(json!(metrics))).into_response()
+        }
         Err(e) => (
             HttpStatus::INTERNAL_SERVER_ERROR,
             Json(json!({"error": format!("Failed to calculate OEE: {}", e)})),

@@ -25,20 +25,54 @@ pub async fn poll_opcua_device(config: OpcUaDeviceConfig, cache: DeviceCache) {
     let mut backoff = Backoff::new();
 
     loop {
+        let started = std::time::Instant::now();
         match try_connect_and_subscribe(&config, &cache).await {
             Ok(()) => {
-                backoff.reset();
-                // Connection lost or session ended -- retry
+                // Only a session that stayed up a while resets the backoff: a
+                // server that accepts and drops at once must not be hammered.
+                if started.elapsed() >= STABLE_SESSION {
+                    backoff.reset();
+                }
                 tracing::warn!("OPC-UA device {} connection lost, reconnecting", device_id);
-                cache.set_status(&device_id, DeviceStatus::Offline).await;
             }
             Err(e) => {
                 tracing::warn!("OPC-UA device {} error: {e}", device_id);
-                cache.set_status(&device_id, DeviceStatus::Offline).await;
-                let delay = backoff.next();
-                tracing::info!("OPC-UA device {} retrying in {delay}ms", device_id);
-                tokio::time::sleep(Duration::from_millis(delay)).await;
             }
+        }
+        cache.set_status(&device_id, DeviceStatus::Offline).await;
+        let delay = backoff.next();
+        tracing::info!("OPC-UA device {} retrying in {delay}ms", device_id);
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
+}
+
+/// A session that lasted this long counts as a working connection.
+const STABLE_SESSION: Duration = Duration::from_secs(60);
+
+/// Owns a connected session and its event loop. However the attempt ends,
+/// an error, the loop ending, or the poller task being aborted, dropping
+/// this closes the session and stops the event loop, so neither outlives
+/// the poller.
+struct SessionGuard {
+    session: Arc<Session>,
+    event_loop: tokio::task::JoinHandle<StatusCode>,
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        let session = self.session.clone();
+        let event_loop = self.event_loop.abort_handle();
+        match tokio::runtime::Handle::try_current() {
+            // Disconnecting needs the event loop running, so it is stopped
+            // after the (bounded) disconnect.
+            Ok(rt) => {
+                rt.spawn(async move {
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(2), session.disconnect()).await;
+                    event_loop.abort();
+                });
+            }
+            Err(_) => event_loop.abort(),
         }
     }
 }
@@ -111,7 +145,10 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
             }
         })?;
 
-    let mut event_handle = event_loop.spawn();
+    let mut guard = SessionGuard {
+        session: session.clone(),
+        event_loop: event_loop.spawn(),
+    };
 
     // wait_for_connection() returns bool -- false means it failed to connect
     tokio::select! {
@@ -120,7 +157,7 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
                 anyhow::bail!("OPC-UA session failed to connect");
             }
         }
-        event_result = &mut event_handle => {
+        event_result = &mut guard.event_loop => {
             let code = event_result
                 .context("OPC-UA event loop task panicked")?;
             anyhow::bail!("OPC-UA event loop ended with status {code}");
@@ -187,8 +224,7 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
         .collect();
 
     if items_to_create.is_empty() {
-        tracing::warn!("OPC-UA device {} has no valid nodes to monitor", device_id);
-        return Ok(());
+        anyhow::bail!("no valid node ids to monitor");
     }
 
     let results = session
@@ -220,7 +256,7 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
     cache.set_status(&device_id, DeviceStatus::Online).await;
 
     // Wait for the event loop to end (connection lost, error, etc.)
-    let _ = event_handle.await;
+    let _ = (&mut guard.event_loop).await;
 
     Ok(())
 }
@@ -1035,6 +1071,33 @@ mod tests {
         );
         let r = write_tag(&device_id, &node("Sp"), 1.0).await;
         assert_eq!(r.error.as_deref(), Some("device not connected"));
+
+        // A device whose node ids all fail to parse is an error (retried with
+        // backoff), and its session is closed rather than left behind.
+        let bad = OpcUaDeviceConfig {
+            id: format!("{device_id}_bad"),
+            url,
+            security_policy: OpcUaSecurityPolicy::None,
+            security_mode: OpcUaSecurityMode::None,
+            username: None,
+            password: None,
+            interval_ms: 200,
+            nodes: vec![OpcUaNodeConfig {
+                node_id: "not a node id".into(),
+                name: "x".into(),
+                display_name: String::new(),
+                data_type: String::new(),
+            }],
+        };
+        let err = tokio::time::timeout(
+            Duration::from_secs(60),
+            try_connect_and_subscribe(&bad, &DeviceCache::new()),
+        )
+        .await
+        .expect("returns instead of waiting on the session")
+        .unwrap_err();
+        assert!(err.to_string().contains("no valid node ids"), "{err}");
+        assert!(!SESSIONS.lock().unwrap().contains_key(&bad.id));
     }
 
     #[test]

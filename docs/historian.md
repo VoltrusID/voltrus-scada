@@ -45,6 +45,11 @@ number of seconds). System, Storage shows the stored sizes, the running
 retention settings (read-only, they come from `config.yaml`) and the tags that
 filter.
 
+Only readings with a number worth keeping are stored: `good` and `uncertain`
+ones. A `bad*` reading (device unreachable, item error) or an
+`uncertain_stale` one (not refreshed for several poll intervals; it was stored
+when it was read) is not, so the trend shows a gap there.
+
 Tags without `history_deadband` store every sample, with one exception that
 applies to all tags: a sample that repeats the last stored one exactly (same
 timestamp and value, which is what the loop sees when a device has stopped

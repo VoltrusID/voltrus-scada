@@ -28,26 +28,95 @@ pub struct ScriptResult {
 #[cfg(feature = "scripts")]
 use std::time::{Duration, Instant};
 
-/// Validate JS syntax. Returns None if valid.
+/// Fewest and most milliseconds of CPU a script may be given.
+pub const CPU_LIMIT_MS: std::ops::RangeInclusive<i64> = 1..=10_000;
+/// Smallest and largest QuickJS heap a script may be given, in bytes.
+pub const MEMORY_LIMIT_BYTES: std::ops::RangeInclusive<i64> = 65_536..=67_108_864;
+
+/// Stored limits clamped to [`CPU_LIMIT_MS`] and [`MEMORY_LIMIT_BYTES`]: a
+/// negative value (which used to become "unlimited" when cast to `u64`) takes
+/// the smallest allowed, a huge one the largest.
+pub fn clamp_limits(cpu_limit_ms: i64, memory_limit_bytes: i64) -> (i64, i64) {
+    (
+        cpu_limit_ms.clamp(*CPU_LIMIT_MS.start(), *CPU_LIMIT_MS.end()),
+        memory_limit_bytes.clamp(*MEMORY_LIMIT_BYTES.start(), *MEMORY_LIMIT_BYTES.end()),
+    )
+}
+
+/// [`execute_script`] with the limits clamped, on a blocking thread so the
+/// async runtime keeps serving while the script runs.
+pub async fn run_script(
+    source: String,
+    input: Value,
+    cpu_limit_ms: i64,
+    memory_limit_bytes: i64,
+) -> ScriptResult {
+    let (cpu, mem) = clamp_limits(cpu_limit_ms, memory_limit_bytes);
+    tokio::task::spawn_blocking(move || execute_script(&source, &input, cpu as u64, mem as u64))
+        .await
+        .unwrap_or_else(|e| ScriptResult {
+            success: false,
+            output: None,
+            error: Some(format!("Script execution failed: {e}")),
+            duration_ms: 0,
+        })
+}
+
+/// [`validate_syntax`] on a blocking thread.
+pub async fn check_syntax(source: String) -> Option<String> {
+    tokio::task::spawn_blocking(move || validate_syntax(&source))
+        .await
+        .unwrap_or_else(|e| Some(format!("syntax check failed: {e}")))
+}
+
+/// Check JS syntax without running anything: the source is compiled only
+/// (QuickJS `JS_EVAL_FLAG_COMPILE_ONLY`), under a memory limit. Returns None
+/// if it compiles.
 #[cfg(feature = "scripts")]
 pub fn validate_syntax(source: &str) -> Option<String> {
     if source.trim().is_empty() {
         return Some("Script source is empty".to_string());
     }
-    use rquickjs::{Context, Runtime, Value};
+    use rquickjs::{Context, Runtime, qjs};
+    let Ok(c_source) = std::ffi::CString::new(source) else {
+        return Some("Script source contains a NUL character".to_string());
+    };
     let runtime = match Runtime::new() {
         Ok(r) => r,
         Err(e) => return Some(format!("runtime init failed: {e}")),
     };
+    runtime.set_memory_limit(*MEMORY_LIMIT_BYTES.end() as usize);
+    runtime.set_max_stack_size(2 * 1024 * 1024);
     let ctx = match Context::full(&runtime) {
         Ok(c) => c,
         Err(e) => return Some(format!("context init failed: {e}")),
     };
     ctx.with(|c| -> Option<String> {
-        match c.eval::<Value, _>(source) {
-            Ok(_) => None,
-            Err(e) => Some(format!("{e}")),
+        let flags = (qjs::JS_EVAL_TYPE_GLOBAL | qjs::JS_EVAL_FLAG_COMPILE_ONLY) as _;
+        // SAFETY: the context is live for this closure; the source and file
+        // name are NUL-terminated and outlive the call; the returned value is
+        // owned and handed to `Value`, which frees it on drop.
+        let compiled = unsafe {
+            let raw = qjs::JS_Eval(
+                c.as_raw().as_ptr(),
+                c_source.as_ptr(),
+                source.len() as _,
+                c"<script>".as_ptr(),
+                flags,
+            );
+            rquickjs::Value::from_raw(c.clone(), raw)
+        };
+        if !compiled.is_exception() {
+            return None;
         }
+        let caught = c.catch();
+        Some(match caught.as_exception() {
+            Some(e) => e
+                .message()
+                .map(|m| format!("SyntaxError: {m}"))
+                .unwrap_or_else(|| e.to_string()),
+            None => "SyntaxError".to_string(),
+        })
     })
 }
 
@@ -248,6 +317,24 @@ mod tests {
     fn test_validate_syntax_valid() {
         let source = "function main(input) { return { outputs: {} }; }";
         assert_eq!(validate_syntax(source), None);
+    }
+
+    #[cfg(feature = "scripts")]
+    #[test]
+    fn validate_syntax_compiles_without_running() {
+        // Running this would never end; compiling it is instant.
+        let started = Instant::now();
+        assert_eq!(validate_syntax("while (true) {}"), None);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        // A top-level throw is not a syntax error: nothing runs.
+        assert_eq!(validate_syntax("throw new Error('x')"), None);
+    }
+
+    #[test]
+    fn limits_are_clamped() {
+        assert_eq!(clamp_limits(-1, -1), (1, 65_536));
+        assert_eq!(clamp_limits(i64::MAX, i64::MAX), (10_000, 67_108_864));
+        assert_eq!(clamp_limits(1000, 1_048_576), (1000, 1_048_576));
     }
 
     #[cfg(feature = "scripts")]

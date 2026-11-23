@@ -10,6 +10,12 @@
 //! WebSocket write answers a `CommandAck` with status `signature_required`,
 //! or `rejected` with `signature_required` set for a wrong password.
 //!
+//! Every request of the session goes through one path
+//! (`api::VoltrusApi`), which asks for a signature when the server wants
+//! one and sends the request again with it ([`Signable::Request`]), as the
+//! web client's shared fetch does; tag writes, alarm actions and flow runs
+//! ask through their own [`Signable`]s.
+//!
 //! No UI here: the console's prompt is `views::sign`.
 
 use crate::api::ServerError;
@@ -115,6 +121,13 @@ pub enum Signable {
         name: String,
         input: Option<serde_json::Value>,
     },
+    /// Any other request of the session the server wants signed, waiting
+    /// in the shared request path (`api::VoltrusApi`) for the signature or
+    /// for the user to decline; `what` describes it.
+    Request {
+        id: u64,
+        what: String,
+    },
 }
 
 impl Signable {
@@ -126,6 +139,7 @@ impl Signable {
             Self::AcknowledgeAll => "Acknowledge all alarms".to_owned(),
             Self::Shelve { alarm, .. } => format!("Shelve alarm {alarm}"),
             Self::FlowRun { name, .. } => format!("Run flow {name} once"),
+            Self::Request { what, .. } => what.clone(),
         }
     }
 }

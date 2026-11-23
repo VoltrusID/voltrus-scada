@@ -23,6 +23,7 @@ import { LicenseContext } from './LicenseContext'
 import { useLicenseStatus } from './queries/license'
 import { edition, useEditionBranding, DEFAULT_BRANDING, applyBrandToDocument } from './edition'
 import { OverlayScreen } from './components/OverlayScreen'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { VoltrusWebSocket, setWsInstance } from './api/websocket'
 import { ThemeProvider } from './ThemeContext'
 import { setSharedAccount } from './sharedAccount'
@@ -32,7 +33,7 @@ import { roleAbilities } from './roles'
 import { RoleContext } from './RoleContext'
 import { SignatureDialog } from './signature/SignatureDialog'
 import { cancelAllSignaturePrompts } from './signature/prompt'
-import { NO_SESSION_POLICY, parseSessionPolicy, sessionEndMessage, type SessionPolicy } from './session'
+import { NO_SESSION_POLICY, sessionEndMessage, sessionFromAuthBody, type AuthSession, type SessionPolicy } from './session'
 import { onPasswordChangeRequired, onSessionEnded } from './queries/fetch'
 import { useSessionActivity } from './hooks/useSessionActivity'
 import { extractDashboardWidgets, withDashboardWidgets, type DashboardWidget } from './dashboardWidgets'
@@ -58,6 +59,13 @@ const NodeRedImportWizard = lazy(() => import('./NodeRedImportWizard').then(m =>
 const MqttBrokerPanel = lazy(() => import('./MqttBrokerPanel').then(m => ({ default: m.MqttBrokerPanel })))
 const EdrCompatPanel = lazy(() => import('./EdrCompatPanel').then(m => ({ default: m.EdrCompatPanel })))
 const ScriptEditor = lazy(() => import('./components/ScriptEditor').then(m => ({ default: m.ScriptEditor })))
+
+// Stable fallbacks while a query has no data: a fresh `[]` per render would
+// re-run every effect and memo that depends on it.
+const EMPTY_SENSORS: SensorConfig[] = []
+const EMPTY_LIST: never[] = []
+const EMPTY_SHORTCUTS: Record<string, string> = {}
+const NO_ALARMS = { count: 0 }
 
 export function AppInner() {
   const queryClient = useQueryClient()
@@ -163,26 +171,26 @@ export function AppInner() {
   // ── URL sync is owned by @tanstack/react-router (see router.tsx) ──
 
   // ── Query hooks ──────────────────────────────────────────────────
-  const { data: sensors = [] } = useSensors(sessionReady)
-  const { data: screenSensors = [] } = useScreenSensors(activeScreen, sessionReady)
-  const { data: screens = [] } = useScreens(sessionReady)
+  const { data: sensors = EMPTY_SENSORS } = useSensors(sessionReady)
+  const { data: screenSensors = EMPTY_SENSORS } = useScreenSensors(activeScreen, sessionReady)
+  const { data: screens = EMPTY_LIST } = useScreens(sessionReady)
   const { data: serverLayouts } = useLayouts(activeScreen, sessionReady)
   const screenLayouts = localLayouts ?? (serverLayouts ?? { lg: [], md: [], sm: [], xs: [] })
   const { data: twinLayoutsData } = useTwinLayouts(activeScreen, sessionReady)
   const twinLayouts = twinLayoutsData?.items ?? []
   const twinCamera = twinLayoutsData?.camera
-  const { data: twinConnections = [] } = useTwinConnections(activeScreen, sessionReady)
-  const { data: scadaEquipment = [], isFetched: scadaEquipmentFetched } = useScadaEquipment(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
-  const { data: scadaConnections = [], isFetched: scadaConnectionsFetched } = useScadaConnections(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
-  const { data: serverCanvasLayouts = [] } = useCanvasLayouts(activeScreen, sessionReady)
+  const { data: twinConnections = EMPTY_LIST } = useTwinConnections(activeScreen, sessionReady)
+  const { data: scadaEquipment = EMPTY_LIST, isFetched: scadaEquipmentFetched } = useScadaEquipment(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
+  const { data: scadaConnections = EMPTY_LIST, isFetched: scadaConnectionsFetched } = useScadaConnections(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
+  const { data: serverCanvasLayouts = EMPTY_LIST } = useCanvasLayouts(activeScreen, sessionReady)
   const canvasLayouts = localCanvasLayouts ?? serverCanvasLayouts
-  const { data: shortcuts = {} } = useShortcuts(sessionReady)
-  const { data: navShortcuts = {} } = useNavShortcuts(sessionReady)
+  const { data: shortcuts = EMPTY_SHORTCUTS } = useShortcuts(sessionReady)
+  const { data: navShortcuts = EMPTY_SHORTCUTS } = useNavShortcuts(sessionReady)
   const licenseInfo = useLicenseStatus()
   const branding = useEditionBranding(licenseInfo) ?? DEFAULT_BRANDING
   // Tab title and favicon follow the brand (Voltrus defaults when none is set).
   useEffect(() => { applyBrandToDocument(document, branding) }, [branding])
-  const { data: activeAlarms = { count: 0 } } = useActiveAlarmCount(sessionReady)
+  const { data: activeAlarms = NO_ALARMS, isError: alarmsUnavailable } = useActiveAlarmCount(sessionReady)
 
   // ── Mutation hooks ───────────────────────────────────────────────
   const updateSensorMut = useUpdateSensor()
@@ -204,7 +212,7 @@ export function AppInner() {
 
   // ── Dashboard data hook (now store-backed) ───────────────────────
   const detailSensor = selectedSensor != null ? sensors.find(x => x.id === selectedSensor) : undefined
-  const { systemInfo } = useDashboardData(sessionReady, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo, detailSensor)
+  const { systemInfo, historyError, retryHistory } = useDashboardData(sessionReady, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo, detailSensor)
   const storeSystemInfo = useDashboardSystemInfo()
   const storeActions = useDashboardStoreActions()
   const effectiveSystemInfo = systemInfo ?? storeSystemInfo
@@ -289,14 +297,22 @@ export function AppInner() {
   const effectiveLayouts = defaultLayouts ?? screenLayouts
 
   // ── Auth ─────────────────────────────────────────────────────────
-  useEffect(() => {
-    fetchJson<any>('/api/v1/auth/me').then(d => {
-      setSharedAccount(d.shared === true)
-      // A reload while the password must still be changed comes back to that screen.
-      setMustChangePassword(d.must_change_password === true); setPasswordExpired(d.password_expired === true)
-      setAuthed(d.authenticated === true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setSessionPolicy(parseSessionPolicy(d)); setAuthLoading(false)
-    }).catch(() => { setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser(''); setAuthLoading(false) })
+  // Every way in (password login, SSO, a reload) applies the same fields, so
+  // the session policy and an expired password are never left behind.
+  const applySession = useCallback((sess: AuthSession) => {
+    setSharedAccount(sess.shared)
+    setMustChangePassword(sess.mustChangePassword); setPasswordExpired(sess.passwordExpired)
+    setAuthed(sess.authenticated); setAuthRole(sess.role); setAuthUser(sess.username); setSessionPolicy(sess.policy)
   }, [])
+  const signedOut = useCallback(() => {
+    setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser(''); setSessionPolicy(NO_SESSION_POLICY)
+  }, [])
+
+  useEffect(() => {
+    // A reload while the password must still be changed comes back to that screen.
+    fetchJson<any>('/api/v1/auth/me').then(d => { applySession(sessionFromAuthBody(d)); setAuthLoading(false) })
+      .catch(() => { signedOut(); setAuthLoading(false) })
+  }, [applySession, signedOut])
 
   const handleLogin = async (username: string, password: string) => {
     setLoginError('')
@@ -308,25 +324,48 @@ export function AppInner() {
         const body = await r.json().catch(() => ({}))
         throw new Error(body.error || `Login failed: ${r.status}`)
       }
-      const d = await r.json(); setSharedAccount(d.shared === true); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || username); setMustChangePassword(!!d.must_change_password)
-      setPasswordExpired(d.password_expired === true); setSessionPolicy(parseSessionPolicy(d))
-    } catch (e: any) { setLoginError(e.message || 'Login failed') }
+      applySession(sessionFromAuthBody(await r.json(), username))
+    } catch (e: any) { setLoginError(e.message || t('auth.loginFailed')) }
   }
 
+  // SSO and other add-on logins hand over what their endpoint returned; the
+  // session policy and password expiry come from /auth/me, as for a reload.
   const handleExternalLogin = (d: { username?: string; role?: string; must_change_password?: boolean; shared?: boolean }) => {
-    setSharedAccount(d.shared === true); setAuthed(true); setAuthRole(d.role || 'user'); setAuthUser(d.username || ''); setMustChangePassword(!!d.must_change_password)
+    setLoginError('')
+    applySession(sessionFromAuthBody({ ...d, authenticated: true }))
+    fetchJson<any>('/api/v1/auth/me').then(me => { if (me?.authenticated !== false) applySession(sessionFromAuthBody(me, d.username ?? '')) }).catch(() => {})
   }
 
-  const handleLogout = async () => { cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData(); await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {}); setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser('') }
+  // Leaving the session drops everything fetched with it, so the next user
+  // (or the same one after a timeout) never sees the previous user's data.
+  const endSession = useCallback(() => {
+    cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData()
+    signedOut()
+    queryClient.clear()
+  }, [disconnectWS, storeActions, signedOut, queryClient])
 
-  // The server ended the session (idle or absolute limit): sign out and say why on the login screen.
+  // False from the moment the user leaves, so a refused refresh during the logout
+  // request is not reported as an ended session.
+  const authedRef = useRef(authed)
+  useEffect(() => { authedRef.current = authed }, [authed])
+
+  const handleLogout = async () => {
+    authedRef.current = false
+    cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData()
+    await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {})
+    endSession()
+  }
+
+  // The server ended the session (idle or absolute limit, or any refused
+  // refresh): sign out once and say why on the login screen.
   const idleTimeoutRef = useRef<number | null>(null)
   idleTimeoutRef.current = sessionPolicy.idleTimeoutSecs
   useEffect(() => onSessionEnded(reason => {
-    cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData()
-    setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser('')
-    setLoginError(sessionEndMessage(reason, idleTimeoutRef.current))
-  }), [disconnectWS, storeActions])
+    if (!authedRef.current) return
+    authedRef.current = false
+    endSession()
+    setLoginError(sessionEndMessage(reason, idleTimeoutRef.current, (key, opts) => String(t(key, opts))))
+  }), [endSession, t])
   useSessionActivity(sessionPolicy.idleTimeoutSecs, authed)
 
   // The live feed runs while the session may use the app; the server refuses
@@ -409,7 +448,7 @@ export function AppInner() {
   const handleAddScreen = () => {
     const defaultShortcut = `Mod+${screens.length + 2}`
     setScreenPrompt({
-      title: 'New Screen', label: 'Screen name', placeholder: 'My Screen', shortcutValue: defaultShortcut, okLabel: 'Create',
+      title: t('dashboard.newScreen'), label: t('dashboard.screenName'), placeholder: t('dashboard.screenNamePlaceholder'), shortcutValue: defaultShortcut, okLabel: t('common.create'),
       onSubmit: async (name, shortcut) => {
         const created = await createScreenMut.mutateAsync(name)
         if (shortcut) {
@@ -422,7 +461,7 @@ export function AppInner() {
   const handleRenameScreen = (id: string, oldName: string) => {
     const currentShortcut = navShortcuts[`screen:${id}`] || effectiveNavShortcuts[`screen:${id}`] || ''
     setScreenPrompt({
-      title: 'Rename Screen', label: 'Screen name', initialValue: oldName, shortcutValue: currentShortcut, okLabel: 'Rename',
+      title: t('dashboard.renameScreen'), label: t('dashboard.screenName'), initialValue: oldName, shortcutValue: currentShortcut, okLabel: t('common.rename'),
       onSubmit: async (name, shortcut) => {
         if (name !== oldName) renameScreenMut.mutate({ id, name })
         const target = `screen:${id}`
@@ -437,7 +476,7 @@ export function AppInner() {
 
   const handleDeleteScreen = (id: string, name: string) => {
     setScreenConfirm({
-      title: 'Delete Screen', message: `Delete screen "${name}"? This cannot be undone.`,
+      title: t('dashboard.deleteScreen'), message: t('dashboard.deleteScreenConfirm', { name }),
       onConfirm: () => { deleteScreenMut.mutate(id); if (activeScreen === id) setActiveScreen('all') }
     })
   }
@@ -470,8 +509,8 @@ export function AppInner() {
   }, [activeAlarms.count, startAlarm, stopAlarm])
 
   // ── Render gates ─────────────────────────────────────────────────
-  if (!i18nReady) return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>Loading...</div>
-  if (authLoading) return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>{t('common.loading')}</div>
+  if (!i18nReady) return <div className="viewport-height" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>Loading...</div>
+  if (authLoading) return <div className="viewport-height" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>{t('common.loading')}</div>
   if (!authed) return <LoginScreen onLogin={handleLogin} onExternalLogin={handleExternalLogin} error={loginError} branding={branding} />
 
   if (mustChangePassword) {
@@ -485,7 +524,7 @@ export function AppInner() {
   return (
     <RoleContext.Provider value={abilities}>
     <LicenseContext.Provider value={licenseInfo}>
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div className="viewport-height" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <a href="#main-content" className="skip-to-content">Skip to content</a>
       {edition.Banners && <edition.Banners />}
       <header role="banner">
@@ -493,6 +532,7 @@ export function AppInner() {
         branding={branding} editMode={editMode}
         onBrandingClick={() => { if (editMode && edition.branding) setShowBrandingDialog(true) }}
         activeAlarmCount={activeAlarms.count}
+        alarmsUnavailable={alarmsUnavailable}
         effectiveNavShortcuts={effectiveNavShortcuts}
         showShortcutsPanel={showShortcutsPanel}
         onToggleShortcutsPanel={() => setShowShortcutsPanel(v => !v)}
@@ -548,6 +588,14 @@ export function AppInner() {
         padding: (viewMode === 'scada' || viewMode === 'canvas' || viewMode === 'twin') ? '0 0 38px 0' : '0 24px 38px',
         display: 'flex', flexDirection: 'column', position: 'relative',
       }} className="main-content">
+        <ErrorBoundary resetKey={routerLocation.href}>
+        {mode === 'history' && historyError && (
+          <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '8px 0', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--warn)', color: 'var(--fg)', fontSize: 13 }}>
+            <span style={{ color: 'var(--warn)', fontWeight: 600 }}>{t('history.loadFailed')}</span>
+            <span style={{ color: 'var(--muted)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{historyError}</span>
+            <button onClick={retryHistory} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 12 }}>{t('common.retry')}</button>
+          </div>
+        )}
         {editMode && viewMode === 'cards' && (
           <LayoutBreakpointSelector layoutBreakpoint={layoutBreakpoint} onChange={setLayoutBreakpoint} />
         )}
@@ -673,11 +721,12 @@ export function AppInner() {
             <Suspense fallback={null}><EdrCompatPanel onClose={() => setShowEdrPanel(false)} /></Suspense>
           </OverlayScreen>
         )}
+        </ErrorBoundary>
       </main>
 
-      <Footer activeAlarmCount={activeAlarms.count} viewMode={viewMode} activeScreen={activeScreen} screens={screens} />
+      <Footer activeAlarmCount={activeAlarms.count} alarmsUnavailable={alarmsUnavailable} viewMode={viewMode} activeScreen={activeScreen} screens={screens} />
       <ToastContainer />
-      <SignatureDialog />
+      <SignatureDialog username={authUser} />
       {/* router outlet (child route components render null; AppInner owns all chrome) */}
       <span style={{ display: 'none' }}><Outlet /></span>
     </div>

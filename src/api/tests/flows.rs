@@ -796,13 +796,113 @@ async fn webhook_needs_the_token_and_is_rate_limited() {
     assert_ne!(t2["token"], t["token"]);
     assert_eq!(hook(Some(token), "{}").await, StatusCode::UNAUTHORIZED);
 
-    // Every call counts toward the per-minute limit, wrong tokens too.
+    // Wrong tokens are limited per client address, and they do not use up
+    // the flow's share: a caller with the token still gets in, from another
+    // address and from the same one.
+    let from = |addr: &'static str, token: String| {
+        let app = app.clone();
+        async move {
+            let mut req = Request::builder()
+                .method("POST")
+                .uri("/api/v1/flows/hooked/webhook")
+                .header("content-type", "application/json")
+                .header("X-Flow-Token", token)
+                .body(Body::from("{}"))
+                .unwrap();
+            req.extensions_mut().insert(axum::extract::ConnectInfo(
+                addr.parse::<std::net::SocketAddr>().unwrap(),
+            ));
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
     let mut limited = false;
-    for _ in 0..crate::api::flows::WEBHOOK_MAX_PER_MINUTE {
-        if hook(Some("wrong".into()), "{}").await == StatusCode::TOO_MANY_REQUESTS {
+    for _ in 0..=crate::api::flows::WEBHOOK_MAX_PER_MINUTE {
+        if from("203.0.113.5:1", "wrong".into()).await == StatusCode::TOO_MANY_REQUESTS {
             limited = true;
             break;
         }
     }
     assert!(limited);
+    let good = t2["token"].as_str().unwrap().to_string();
+    assert_eq!(
+        from("203.0.113.6:1", "wrong".into()).await,
+        StatusCode::UNAUTHORIZED,
+        "another address is not limited"
+    );
+    // A run still in progress answers 409; wait it out.
+    let accepted = |addr: &'static str, token: String| {
+        let from = &from;
+        async move {
+            for _ in 0..40 {
+                let status = from(addr, token.clone()).await;
+                if status != StatusCode::CONFLICT {
+                    return status;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            StatusCode::CONFLICT
+        }
+    };
+    assert_eq!(
+        accepted("203.0.113.6:1", good.clone()).await,
+        StatusCode::ACCEPTED
+    );
+    assert_eq!(
+        accepted("203.0.113.5:1", good).await,
+        StatusCode::ACCEPTED,
+        "junk from an address does not turn away its right token"
+    );
+}
+
+#[tokio::test]
+async fn http_out_secrets_are_masked_for_viewers_and_kept_on_edit() {
+    let state = seeded_admin_app_state().await;
+    let storage = state.storage.clone();
+    let app = create_router(state);
+    let admin = format!("voltrus_token={}", admin_cookie(&app).await);
+    let viewer = user_cookie(&app, &storage, "vera", "viewer").await;
+    let nodes = json!([{
+        "id": "h", "type": "http_out",
+        "url": format!("https://bot:{}@hooks.example.com/in", "pa55word"),
+        "headers": {"Authorization": "Bearer top-secret"}
+    }]);
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/flows",
+        None,
+        Some(&admin),
+        Some(json!({"id": "out", "name": "Out", "trigger_config": {"type": "manual"}, "nodes": nodes})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    for uri in ["/api/v1/flows", "/api/v1/flows/out"] {
+        let (status, body) = send_request(&app, "GET", uri, None, Some(&viewer), None).await;
+        assert_eq!(status, StatusCode::OK);
+        let text = body.to_string();
+        assert!(!text.contains("top-secret"), "{uri}: {text}");
+        assert!(!text.contains("pa55word"), "{uri}: {text}");
+    }
+    let (_, flow) = send_request(&app, "GET", "/api/v1/flows/out", None, Some(&admin), None).await;
+    assert!(flow["nodes"].as_str().unwrap().contains("top-secret"));
+
+    // An editor sending the masked graph back keeps the stored secrets.
+    let (_, masked) =
+        send_request(&app, "GET", "/api/v1/flows/out", None, Some(&viewer), None).await;
+    let (status, _) = send_request(
+        &app,
+        "PUT",
+        "/api/v1/flows/out",
+        None,
+        Some(&admin),
+        Some(
+            json!({"name": "Out", "trigger_config": {"type": "manual"}, "nodes": masked["nodes"]}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let stored = storage.get_flow("out").await.unwrap().unwrap().nodes;
+    assert!(stored.contains("Bearer top-secret"), "{stored}");
+    assert!(stored.contains(":pa55word@"), "{stored}");
 }

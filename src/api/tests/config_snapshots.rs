@@ -121,3 +121,97 @@ async fn test_rollback_restores_recipes() {
     assert_eq!(listed[0]["name"], "summer");
     assert_eq!(listed[0]["values"], recipe["values"]);
 }
+
+/// A rollback must not bring back a flow webhook token that was replaced
+/// (for example because it leaked).
+#[tokio::test]
+async fn test_rollback_keeps_the_current_flow_webhook_token() {
+    let state = seeded_admin_app_state().await;
+    let storage = state.storage.clone();
+    let app = create_router(state);
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+    storage
+        .create_flow("hooked", "Hooked", false, r#"{"type":"webhook"}"#, "[]")
+        .await
+        .unwrap();
+    storage
+        .set_flow_webhook_token_hash("hooked", "old-leaked-hash")
+        .await
+        .unwrap();
+    let (status, snap) = send_request(
+        &app,
+        "POST",
+        "/api/v1/config/snapshots",
+        None,
+        Some(&cookie),
+        Some(serde_json::json!({"label": "with old token"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    storage
+        .set_flow_webhook_token_hash("hooked", "new-hash")
+        .await
+        .unwrap();
+
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        &format!("/api/v1/config/snapshots/{}/rollback", snap["id"]),
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        storage
+            .get_flow_webhook_token_hash("hooked")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("new-hash")
+    );
+}
+
+/// Snapshots hold whole flows, http_out headers included: their diff is for
+/// roles that configure, like the snapshots themselves.
+#[tokio::test]
+async fn test_config_diff_is_for_roles_that_configure() {
+    let state = seeded_admin_app_state().await;
+    let storage = state.storage.clone();
+    let hash = crate::api::auth::hash_password("password-123");
+    storage
+        .create_user("victor", &hash, "", "viewer")
+        .await
+        .unwrap();
+    let app = create_router(state);
+    let admin = format!("voltrus_token={}", admin_cookie(&app).await);
+    let viewer = format!(
+        "voltrus_token={}",
+        login_cookie(&app, "victor", "password-123").await
+    );
+    let a = storage
+        .create_config_snapshot(Some("a"), None, "manual", None)
+        .await
+        .unwrap();
+    storage
+        .create_flow(
+            "out",
+            "Out",
+            false,
+            r#"{"type":"manual"}"#,
+            r#"[{"id":"h","type":"http_out","url":"https://hooks.invalid/","headers":{"Authorization":"Bearer diff-secret"}}]"#,
+        )
+        .await
+        .unwrap();
+    let b = storage
+        .create_config_snapshot(Some("b"), None, "manual", None)
+        .await
+        .unwrap();
+    let uri = format!("/api/v1/docs/config-diff?from={a}&to={b}");
+    let (status, _) = send_request(&app, "GET", &uri, None, Some(&viewer), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, body) = send_request(&app, "GET", &uri, None, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.to_string().contains("diff-secret"));
+}

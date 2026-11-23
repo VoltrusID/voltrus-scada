@@ -9,6 +9,40 @@ use vt_ui::theme::*;
 use super::host;
 use crate::console::{Console, Phase};
 
+/// Why the server wants a new password, in the web client's words.
+fn change_reason(expired: bool) -> &'static str {
+    if expired {
+        "Your password has expired. Set a new one to continue."
+    } else {
+        "You must set a new password before continuing."
+    }
+}
+
+/// The problems with the console's trust settings, as a warning line.
+fn trust_note(theme: &Theme) -> Option<AnyElement> {
+    let problems = voltrus_scada_native::tls::problems();
+    if problems.is_empty() {
+        return None;
+    }
+    Some(
+        div()
+            .flex()
+            .items_start()
+            .gap(SPACE_4)
+            .px(SPACE_6)
+            .py(SPACE_5)
+            .rounded(RADIUS_MD)
+            .bg(theme.warning.alpha(0.1))
+            .border_1()
+            .border_color(theme.warning.alpha(0.3))
+            .text_size(FONT_SMALL)
+            .text_color(theme.warning)
+            .child(vt_ui::icon(Icon::CircleAlert, ICON_MD, theme.warning))
+            .child(div().flex_1().min_w_0().child(problems.join("\n")))
+            .into_any_element(),
+    )
+}
+
 pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
     let changing = console.phase == Phase::ChangePassword;
@@ -24,7 +58,7 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     let (title, subtitle) = if changing {
         (
             "Choose a new password",
-            format!("{username} signed in with a generated password. Replace it before you start."),
+            format!("{username}: {}", change_reason(console.password_expired)),
         )
     } else {
         (
@@ -104,6 +138,8 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                 ),
         )
         .child(fields)
+        // A `ca_file` in config.toml that could not be used (in full).
+        .children(trust_note(&theme))
         .when_some(console.error.clone(), |this, error| {
             this.child(
                 div()
@@ -179,7 +215,15 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                     div()
                         .text_size(FONT_TITLE)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("Voltrus SCADA"),
+                        .child(crate::console::shell::product_name(console)),
+                )
+                .children(
+                    crate::console::shell::product_subtitle(console).map(|subtitle| {
+                        div()
+                            .text_size(FONT_CAPTION)
+                            .text_color(theme.fg_muted)
+                            .child(subtitle)
+                    }),
                 )
                 .children(edition),
         )
@@ -191,4 +235,18 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                 .child(concat!("Voltrus SCADA console ", env!("CARGO_PKG_VERSION"))),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::change_reason;
+
+    #[test]
+    fn an_expired_password_is_not_called_generated() {
+        let expired = change_reason(true);
+        assert!(expired.contains("has expired"), "{expired}");
+        let reset = change_reason(false);
+        assert!(reset.contains("must set a new password"), "{reset}");
+        assert!(!reset.contains("generated") && !expired.contains("generated"));
+    }
 }

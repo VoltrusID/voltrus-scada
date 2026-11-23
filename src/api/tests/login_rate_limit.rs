@@ -80,6 +80,8 @@ async fn spoofed_forwarded_for_from_remote_peer_does_not_evade_limit() {
     );
 }
 
+/// The default `trusted_proxy` reads X-Forwarded-For from a proxy on this
+/// machine: clients behind it are limited one by one.
 #[tokio::test]
 async fn loopback_proxy_forwarded_ip_is_limited_per_real_client() {
     let app = create_router(seeded_admin_app_state().await);

@@ -10,7 +10,12 @@ import { RouterProvider } from '@tanstack/react-router'
 import { router } from './router'
 import { toast } from './components/Toast'
 import { isSignatureCancelled } from './signature/logic'
-import { isPasswordChangeRequiredError } from './session'
+import { isPasswordChangeRequiredError, isSessionExpiredError } from './session'
+import { installChunkReload } from './chunkReload'
+import { ErrorBoundary } from './components/ErrorBoundary'
+
+// A redeploy while this page is open leaves it asking for chunks that are gone.
+installChunkReload()
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +31,8 @@ const queryClient = new QueryClient({
         if (isSignatureCancelled(err)) return
         // The change-password screen replaces the app: no toast.
         if (isPasswordChangeRequiredError(err)) return
+        // The login screen says why the session ended.
+        if (isSessionExpiredError(err)) return
         toast.error(err.message || 'Request failed')
       },
     },
@@ -33,14 +40,14 @@ const queryClient = new QueryClient({
 })
 
 queryClient.getQueryCache().config.onError = (error: any) => {
-  if (isPasswordChangeRequiredError(error)) return
+  if (isPasswordChangeRequiredError(error) || isSessionExpiredError(error)) return
   toast.error(error.message || 'Request failed')
 }
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <App><RouterProvider router={router} /></App>
+      <App><ErrorBoundary fullScreen><RouterProvider router={router} /></ErrorBoundary></App>
     </QueryClientProvider>
   </StrictMode>
 )

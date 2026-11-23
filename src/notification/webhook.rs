@@ -18,12 +18,18 @@ pub struct WebhookPayload {
 ///
 /// Retries with exponential backoff, same pattern as the HttpOut flow node.
 pub async fn send_webhook_alarm(url: &str, payload: &WebhookPayload) -> Result<()> {
-    let client = reqwest::Client::new();
+    crate::security::outbound::check_url(url).map_err(anyhow::Error::msg)?;
+    let client = crate::security::outbound::client(None);
+    // Logs and errors (which reach flow runs and the notification test) name
+    // the URL without its password, and reqwest errors without their URL.
+    let target = url;
+    let url = crate::security::redact::mask_url(target);
+    let url = url.as_str();
     let max_retries: u32 = 3;
 
     for attempt in 0..=max_retries {
         let resp = client
-            .post(url)
+            .post(target)
             .header("Content-Type", "application/json")
             .json(payload)
             .timeout(std::time::Duration::from_secs(10))
@@ -63,6 +69,7 @@ pub async fn send_webhook_alarm(url: &str, payload: &WebhookPayload) -> Result<(
                 }
             }
             Err(e) => {
+                let e = e.without_url();
                 if attempt < max_retries {
                     let delay = 500 * 2u64.pow(attempt);
                     tracing::warn!(
@@ -102,6 +109,25 @@ pub fn format_triggered_at(epoch_secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_failed_webhook_never_shows_the_url_password() {
+        let url = format!("http://user:{}@unresolvable.invalid/hook", "topsecretpw");
+        let payload = WebhookPayload {
+            severity: "warning".into(),
+            source_key: "k".into(),
+            source_name: "n".into(),
+            value: 1.0,
+            threshold: 0.0,
+            message: "m".into(),
+            triggered_at: "t".into(),
+            device_info: "d".into(),
+        };
+        let err = send_webhook_alarm(&url, &payload).await.unwrap_err();
+        let shown = format!("{err:#}");
+        assert!(shown.contains("unresolvable.invalid"), "{shown}");
+        assert!(!shown.contains("topsecretpw"), "{shown}");
+    }
 
     #[test]
     fn test_format_triggered_at_valid() {

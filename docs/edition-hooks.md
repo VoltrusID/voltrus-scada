@@ -19,7 +19,7 @@ paths, so keep them fast: read your settings from memory or one indexed query.
 |---|---|---|
 | `validate_new_password(&PasswordCheck) -> Result<(), String>` | before a password is stored | `Ok(())` |
 | `password_changed(username, password_hash, PasswordChangeKind)` | after a password is stored | nothing |
-| `password_expired(&User) -> bool` | at sign-in, after the password checked out (and by `/auth/me` while `must_change_password` is set) | `false` |
+| `password_expired(&User) -> bool` | at sign-in, after the password checked out, at every refresh (and by `/auth/me` while `must_change_password` is set) | `false` |
 | `session_policy(username, role) -> SessionPolicy` | at sign-in, `/auth/me`, every refresh and activity ping | no limits |
 | `signature_required(&ActionContext) -> Option<SignatureRequirement>` | before every signable action | `None` |
 | `record_signature(&SignatureRecord) -> anyhow::Result<Option<String>>` | after the core verified a signature, before the action runs | `Ok(None)` |
@@ -62,7 +62,12 @@ Where it is called:
   core sets `must_change_password` on the account until the password is
   changed, so every session of that user is held, not only this one. The
   web client then shows the change-password screen with "Your password has
-  expired".
+  expired". It is asked again at every `POST /api/v1/auth/refresh`, so a
+  password that expires during a session holds that session (and the
+  others) from the next refresh on.
+* A self-service password change revokes the user's other refresh tokens:
+  every other session ends at its next refresh; the one that changed the
+  password stays.
 * A session whose user has `must_change_password` set (generated first admin
   password, CLI `--reset-admin-password`, or an expired password) may only
   change the password and leave: `POST /api/v1/auth/change-password`,
@@ -205,6 +210,8 @@ format is the same everywhere:
 | `mode_switch` | `POST /api/v1/flows/{id}/start`, `…/stop` (optional body); MCP `start_flow`/`stop_flow` | `flow:<id>` | `{mode: "start"\|"stop", flow_id, name}` |
 | `mode_switch` | `POST /api/v1/flows/{id}/run` (manual run; body `{input?, signature?}`) | `flow:<id>` | `{mode: "run", flow_id, name}` |
 | `mode_switch` | `PATCH /api/v1/data-sources/{id}/write-policy` (body fields plus `signature`) | `data_source:<id>:write_policy` | `{mode: "write_policy", tag_id, policy}` |
+| `mode_switch` | `POST /api/v1/config/snapshots/{id}/rollback` (optional body); it rewrites tags with their write policies | `config_snapshot:<id>:rollback` | `{mode: "config_rollback", snapshot_id}` |
+| `tag_write` | `POST /api/v1/voltrus-plc/devices/{id}/write` (body `{variable, value, reason?, signature?}`); the variable must be read by a tag of the device, whose write policy applies | `data_source:<id>` | as for `POST /api/v1/tags/{id}/write` |
 
 "Optional body" means the route accepts no body (as before) or a JSON body
 `{"signature": {...}}` with `Content-Type: application/json`.

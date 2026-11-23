@@ -62,6 +62,11 @@ pub(crate) fn ask(
     }
     ensure_fields(console, window, cx);
     let state = console.state::<SignState>();
+    // One prompt at a time: a request still waiting for an earlier one
+    // is declined rather than left waiting unseen.
+    let replaced = state
+        .action
+        .take_if(|shown| *shown != action && matches!(shown, Signable::Request { .. }));
     let again = state.action.as_ref() == Some(&action) && ask.error.is_some();
     state.action = Some(action);
     state.request = ask.request;
@@ -72,6 +77,9 @@ pub(crate) fn ask(
     // A first prompt starts empty; asking again keeps the reason typed.
     if !again {
         clear(reason.as_ref(), cx);
+    }
+    if let Some(replaced) = replaced {
+        console.send(Command::DeclineSign(replaced));
     }
     if !console.overlay_is(ID) {
         let overlay = Overlay::modal(ID, px(480.0), render, cx);
@@ -206,6 +214,11 @@ fn cancel(console: &mut Console, window: &mut Window, cx: &mut Context<Console>)
     clear(password.as_ref(), cx);
     console.close_overlay(window, cx);
     if let Some(action) = action {
+        // A request waiting for the signature fails now instead of waiting
+        // for the session to end; other actions were never sent.
+        if matches!(action, Signable::Request { .. }) {
+            console.send(Command::DeclineSign(action.clone()));
+        }
         console.show_toast(
             format!("{}: not signed, not sent", action.describe()),
             false,
@@ -474,5 +487,41 @@ mod tests {
         assert!(h.commands().is_empty());
         assert!(!h.update(|console, _, _| console.overlay_is(ID)));
         assert_eq!(password_text(&mut h), "");
+    }
+
+    #[gpui::test]
+    fn a_waiting_request_is_declined_on_esc_or_when_another_asks(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("operator");
+        h.commands();
+        let load = Signable::Request {
+            id: 7,
+            what: "Load recipe 4".into(),
+        };
+        h.event(Event::SignatureNeeded {
+            action: load.clone(),
+            ask: asking(),
+        });
+        // A second request asks before the first is answered.
+        let stop = Signable::Request {
+            id: 8,
+            what: "Stop flow f".into(),
+        };
+        h.event(Event::SignatureNeeded {
+            action: stop.clone(),
+            ask: asking(),
+        });
+        let sent = h.commands();
+        assert!(
+            matches!(sent.as_slice(), [Command::DeclineSign(declined)] if *declined == load),
+            "{sent:?}"
+        );
+        h.update(cancel);
+        let sent = h.commands();
+        assert!(
+            matches!(sent.as_slice(), [Command::DeclineSign(declined)] if *declined == stop),
+            "{sent:?}"
+        );
+        assert!(!h.update(|console, _, _| console.overlay_is(ID)));
     }
 }

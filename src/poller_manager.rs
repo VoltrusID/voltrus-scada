@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use crate::cache::DeviceCache;
 #[cfg(feature = "modbus")]
 use crate::models::DeviceConfig;
+use crate::models::DeviceStatus;
 #[cfg(feature = "dnp3")]
 use crate::models::Dnp3DeviceConfig;
 #[cfg(feature = "ethernet-ip")]
@@ -236,9 +237,19 @@ impl PollerManager {
         self.handles.write().await.insert(device_id, handle);
     }
 
+    /// Stop a device's poller. Its cached values stay visible but are marked
+    /// offline (bad quality): nothing refreshes them any more, so alarms,
+    /// history and the screens must not keep treating them as current.
     pub async fn stop(&self, device_id: &str) {
-        if let Some(handle) = self.handles.write().await.remove(device_id) {
+        let handle = self.handles.write().await.remove(device_id);
+        if let Some(handle) = handle {
             handle.abort();
+            // Wait for the task to end so a cache write it had in progress
+            // cannot land after the status below.
+            let _ = handle.await;
+            self.cache
+                .set_status(device_id, DeviceStatus::Offline)
+                .await;
         }
     }
 
@@ -249,9 +260,13 @@ impl PollerManager {
     }
 
     pub async fn stop_all(&self) {
-        let mut handles = self.handles.write().await;
-        for (_, handle) in handles.drain() {
+        let stopped: Vec<(String, JoinHandle<()>)> = self.handles.write().await.drain().collect();
+        for (_, handle) in &stopped {
             handle.abort();
+        }
+        for (id, handle) in stopped {
+            let _ = handle.await;
+            self.cache.set_status(&id, DeviceStatus::Offline).await;
         }
     }
 
@@ -427,6 +442,36 @@ mod tests {
         manager.start_configured(&previously_running).await.unwrap();
         let running = manager.running_ids().await;
         assert_eq!(running, vec!["enip_1".to_string()]);
+        manager.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_stopped_device_goes_offline_with_bad_values() {
+        let manager = manager_with_devices().await;
+        manager.start_all_enabled().await.unwrap();
+        // As if the poller had read a good value.
+        manager
+            .cache
+            .update(
+                "enip_1",
+                std::collections::HashMap::from([("flow".into(), 12.0)]),
+                false,
+            )
+            .await;
+        manager
+            .cache
+            .set_status("enip_1", DeviceStatus::Online)
+            .await;
+        manager.stop("enip_1").await;
+        let snap = manager
+            .cache
+            .get_all()
+            .await
+            .into_iter()
+            .find(|s| s.device_id == "enip_1")
+            .unwrap();
+        assert_eq!(snap.status, DeviceStatus::Offline);
+        assert!(snap.quality_of("flow").is_bad());
         manager.stop_all().await;
     }
 }

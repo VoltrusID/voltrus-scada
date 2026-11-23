@@ -46,6 +46,15 @@ export async function diffSnapshots(
   return fetchJson<ConfigDiff>(`/api/v1/config/snapshots/${fromId}/diff/${toId}`)
 }
 
+/**
+ * Roll back to a snapshot. The edition may want it signed: the server answers
+ * 428 and fetchOk prompts for the signature, then sends the request again with
+ * `{"signature": {password, meaning, reason}}` as its JSON body.
+ */
 export async function rollback(id: number): Promise<void> {
-  await fetchOk(`/api/v1/config/snapshots/${id}/rollback`, { method: 'POST' })
+  await fetchOk(`/api/v1/config/snapshots/${id}/rollback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}',
+  })
 }

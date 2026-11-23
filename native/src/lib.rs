@@ -15,6 +15,8 @@
 //!   convention, annotations and the tag detail's history queries.
 //! - [`device_file`]: Modbus Poll and BACnet Explorer device files, parsed
 //!   for import (a port of the web client's `deviceFileImport.ts`).
+//! - [`tls`]: the certificates trusted for `https://` and `wss://` (the
+//!   system's store, webpki roots, an optional `ca_file`).
 //! - [`zone`]: the operator's time zone with its daylight-saving rules, for
 //!   showing and reading local times.
 //! - [`mimic`]: HMI mimic screens: the server's SCADA rows, the editable
@@ -29,5 +31,6 @@ pub mod screens;
 pub mod signature;
 pub mod stress;
 pub mod tag_api;
+pub mod tls;
 pub mod ws_types;
 pub mod zone;

@@ -484,6 +484,16 @@ pub async fn refresh_token(
                     .into_response());
             }
 
+            // A password that expired since sign-in holds the session to a
+            // change, as at sign-in (the hook is asked again on every refresh).
+            let shared = state.public_demo.is_shared(&user.username, &user.role);
+            if !shared && !user.must_change_password && state.ext.password_expired(&user).await {
+                let _ = state
+                    .storage
+                    .set_must_change_password(&user.username, true)
+                    .await;
+            }
+
             // Create new tokens
             let ttl_ms = super::access_ttl_ms(&policy, started, now);
             let new_access =
@@ -583,6 +593,7 @@ pub async fn seed(State(state): State<AppState>) -> Result<impl IntoResponse, Ap
 pub async fn change_password(
     State(state): State<AppState>,
     Extension(auth): Extension<super::super::AuthUser>,
+    jar: CookieJar,
     Json(body): Json<ChangePasswordRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     if state.public_demo.is_shared(&auth.username, &auth.role) {
@@ -624,6 +635,15 @@ pub async fn change_password(
 
     let hash = hash_password(&body.new_password);
     state.storage.update_user_password(user.id, &hash).await?;
+    // Sign out every other session of the user (a stolen session must not
+    // outlive the password it was opened with); this one keeps its refresh token.
+    let own_refresh = jar
+        .get("voltrus_refresh")
+        .map(|c| hash_refresh_token(c.value()));
+    state
+        .storage
+        .revoke_other_user_refresh_tokens(&user.username, own_refresh.as_deref())
+        .await?;
     if user.username == "admin" {
         crate::storage::remove_initial_admin_password(state.storage.db_path());
     }

@@ -63,6 +63,14 @@ pub struct AppConfig {
     pub device_templates: DeviceTemplatesConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Where webhooks and flow HTTP nodes may send requests
+    /// (`crate::security::outbound`).
+    #[serde(default)]
+    pub outbound_http: crate::security::outbound::OutboundPolicy,
+    /// The reverse proxy or tunnel whose header names the client address.
+    /// Default: `X-Forwarded-For` from this machine (127.0.0.1, ::1).
+    #[serde(default)]
+    pub trusted_proxy: crate::security::TrustedProxy,
 }
 
 /// Longest accepted `login_hint`.
@@ -166,6 +174,10 @@ pub struct MqttBrokerConfig {
     pub max_connections: u32,
     #[serde(default)]
     pub auth: MqttAuthConfig,
+    /// Topics the broker page keeps last values for. Past this, the topic
+    /// updated longest ago is forgotten to make room for a new one.
+    #[serde(default = "default_mqtt_max_tracked_topics")]
+    pub max_tracked_topics: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -198,6 +210,7 @@ impl Default for MqttBrokerConfig {
             port: default_mqtt_port(),
             max_connections: default_mqtt_max_connections(),
             auth: MqttAuthConfig::default(),
+            max_tracked_topics: default_mqtt_max_tracked_topics(),
         }
     }
 }
@@ -207,6 +220,9 @@ fn default_mqtt_port() -> u16 {
 }
 fn default_mqtt_max_connections() -> u32 {
     100
+}
+pub fn default_mqtt_max_tracked_topics() -> usize {
+    10_000
 }
 fn default_mqtt_auth_mode() -> String {
     "none".to_string()
@@ -561,13 +577,47 @@ pub fn default_interval() -> u64 {
     1000
 }
 
+/// Register order of 32- and 64-bit Modbus values (docs/device-templates.md).
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Endianness {
     #[default]
     Big,
     Little,
     Swapped,
+    /// As `little` for 32-bit values; 64-bit values high dword first, each
+    /// dword low word first. How `little` read float64 up to v0.51.
+    LittleDword,
+    /// As `swapped` for 32-bit values; 64-bit values high dword first, each
+    /// dword byte-reversed. How `swapped` read float64 up to v0.51.
+    SwappedDword,
+}
+
+impl Endianness {
+    /// Every name, as stored and accepted.
+    pub const NAMES: [&'static str; 5] =
+        ["big", "little", "swapped", "little_dword", "swapped_dword"];
+
+    /// The order a stored name stands for; anything unknown is `big`.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "little" => Self::Little,
+            "swapped" => Self::Swapped,
+            "little_dword" => Self::LittleDword,
+            "swapped_dword" => Self::SwappedDword,
+            _ => Self::Big,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Big => "big",
+            Self::Little => "little",
+            Self::Swapped => "swapped",
+            Self::LittleDword => "little_dword",
+            Self::SwappedDword => "swapped_dword",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

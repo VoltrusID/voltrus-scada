@@ -162,6 +162,7 @@ impl Storage {
             total_running_secs,
             total_planned_secs,
             downtime_count,
+            tracking: None,
         })
     }
 

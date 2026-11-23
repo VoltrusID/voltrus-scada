@@ -68,7 +68,7 @@ export function WritePolicyEditor({ tagId, tagName, currentPolicy, isAdmin, onSa
       onClick={handleBackdropClick}
     >
       <div
-        style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 460, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}
+        style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 460, maxWidth: 'calc(100vw - 32px)', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}

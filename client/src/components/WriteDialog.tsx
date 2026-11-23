@@ -51,7 +51,7 @@ export function WriteDialog({ tagId, tagName, currentValue, policy, onClose }: P
       onClick={handleBackdropClick}
     >
       <div
-        style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 440, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}
+        style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 440, maxWidth: 'calc(100vw - 32px)', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}

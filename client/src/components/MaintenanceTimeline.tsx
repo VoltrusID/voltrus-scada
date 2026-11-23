@@ -115,7 +115,7 @@ export function MaintenanceTimeline({ assetId }: Props) {
               alignSelf: 'flex-end',
               background: 'var(--cyan)',
               borderColor: 'var(--cyan)',
-              color: '#fff',
+              color: 'var(--on-accent)',
               opacity: createLog.isPending || !description.trim() || !technician.trim() ? 0.5 : 1,
               cursor: createLog.isPending || !description.trim() || !technician.trim() ? 'not-allowed' : 'pointer',
             }}

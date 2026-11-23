@@ -10,11 +10,15 @@
 //! used to go.
 //!
 //! [`LocalZone::refresh`] picks up a change of the computer's zone while the
-//! console runs. `jiff` caches the system zone for five minutes, so it reads
-//! what `jiff` would read (`TZ`, then the `/etc/localtime` link) itself and
-//! compares it with the last read: two cheap system calls a tick.
+//! console runs. `jiff` caches the system zone for five minutes, so on Unix
+//! it reads what `jiff` would read (`TZ`, then the `/etc/localtime` link)
+//! itself and compares it with the last read: two cheap system calls a
+//! tick. Elsewhere (Windows has no such link) it compares the zone `jiff`
+//! reports and its offset now on each tick, which notices a change within
+//! `jiff`'s five minutes.
 
 use std::ffi::OsString;
+#[cfg(unix)]
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -23,6 +27,7 @@ use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset};
 
+#[cfg(unix)]
 const LOCALTIME: &str = "/etc/localtime";
 
 /// A time zone with its offset rules; cheap to clone.
@@ -47,14 +52,27 @@ enum Source {
 #[derive(Debug, PartialEq, Eq)]
 struct SystemKey {
     tz_env: Option<OsString>,
+    #[cfg(unix)]
     localtime: Option<PathBuf>,
+    /// Without a link to watch: the zone the system reports (its name) and
+    /// its offset now, in seconds.
+    #[cfg(not(unix))]
+    reported: Option<(Option<String>, i32)>,
 }
 
 impl SystemKey {
     fn read() -> Self {
         Self {
             tz_env: std::env::var_os("TZ"),
+            #[cfg(unix)]
             localtime: std::fs::read_link(LOCALTIME).ok(),
+            #[cfg(not(unix))]
+            reported: TimeZone::try_system().ok().map(|tz| {
+                (
+                    tz.iana_name().map(str::to_owned),
+                    tz.to_offset(Timestamp::now()).seconds(),
+                )
+            }),
         }
     }
 }
@@ -155,8 +173,9 @@ impl LocalZone {
 }
 
 /// The zone for what the system says, as `jiff` reads it: `TZ` first, then
-/// `/etc/localtime`.
+/// `/etc/localtime` (on Unix; elsewhere what the system reports).
 fn resolve(key: &SystemKey) -> TimeZone {
+    #[cfg(unix)]
     if key.tz_env.is_none() {
         if let Some(tz) = key.localtime.as_deref().and_then(from_link) {
             return tz;
@@ -168,17 +187,21 @@ fn resolve(key: &SystemKey) -> TimeZone {
             return tz;
         }
     }
+    #[cfg(not(unix))]
+    let _ = key;
     // `TZ` is fixed for the process, so `jiff`'s cached answer cannot be
     // stale for it.
     TimeZone::system()
 }
 
+#[cfg(unix)]
 fn from_link(target: &Path) -> Option<TimeZone> {
     TimeZone::get(zone_name(target.to_str()?)?).ok()
 }
 
 /// The IANA name at the end of a link into a zoneinfo directory:
 /// `/var/db/timezone/zoneinfo/Asia/Jakarta` is `Asia/Jakarta`.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn zone_name(target: &str) -> Option<&str> {
     const DIRECTORY: &str = "zoneinfo/";
     let at = target.rfind(DIRECTORY)?;
@@ -330,6 +353,25 @@ mod tests {
     }
 
     #[test]
+    fn reading_the_system_twice_gives_the_same_key() {
+        assert_eq!(SystemKey::read(), SystemKey::read());
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn a_changed_report_gives_the_new_zone() {
+        let old = SystemKey {
+            tz_env: None,
+            reported: Some((Some("Asia/Jakarta".into()), 7 * 3600)),
+        };
+        let new = SystemKey {
+            tz_env: None,
+            reported: Some((Some("America/New_York".into()), -5 * 3600)),
+        };
+        assert_ne!(old, new);
+    }
+
+    #[test]
     fn only_a_system_zone_follows_the_system() {
         assert!(new_york().refresh().is_none());
         assert!(LocalZone::utc().refresh().is_none());
@@ -338,6 +380,7 @@ mod tests {
         assert!(system.refresh().is_none());
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_changed_link_gives_the_new_zone() {
         let old = SystemKey {

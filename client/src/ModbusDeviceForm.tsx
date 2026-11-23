@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { MODBUS_ENDIANNESS } from './deviceFileImport'
 import { inputStyle, monoInputStyle, labelStyle, labelTextStyle } from './styles'
 import { useScanModbusRegisters } from './queries'
 import { useNetworks } from './queries/networks'
@@ -24,9 +26,9 @@ interface Props {
 
 const REG_TYPES = ['float32', 'int32', 'uint16', 'int16']
 const REG_AREAS = ['holding', 'input', 'coil', 'discrete']
-const ENCODINGS = ['big', 'little', 'swapped']
 
 export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) {
+  const { t } = useTranslation()
   const source = device ?? dupDevice
   const isEdit = !!device
   const [id, setId] = useState(dupDevice ? '' : (source?.id ?? ''))
@@ -116,7 +118,7 @@ export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) 
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }} onClick={onClose}>
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 520, maxHeight: '80vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 520, maxWidth: 'calc(100vw - 32px)', maxHeight: '80vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
           {isEdit ? `Edit: ${device!.name}` : 'Add Modbus Device'}
         </div>
@@ -133,7 +135,7 @@ export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) 
             <label style={labelStyle}><span style={labelTextStyle}>Port</span><input type="number" value={port} onChange={e => setPort(parseInt(e.target.value) || 502)} style={monoInputStyle} /></label>
             <label style={labelStyle}><span style={labelTextStyle}>Unit ID</span><input type="number" value={unitId} onChange={e => setUnitId(parseInt(e.target.value) || 1)} style={monoInputStyle} /></label>
             <label style={labelStyle}><span style={labelTextStyle}>Interval (ms)</span><input type="number" value={intervalMs} onChange={e => setIntervalMs(parseInt(e.target.value) || 1000)} style={monoInputStyle} /></label>
-            <label style={labelStyle}><span style={labelTextStyle}>Endianness</span><select value={endianness} onChange={e => setEndianness(e.target.value)} style={inputStyle}>{ENCODINGS.map(e => <option key={e} value={e}>{e}</option>)}</select></label>
+            <label style={labelStyle}><span style={labelTextStyle}>{t('devices.endianness')}</span><select value={endianness} onChange={e => setEndianness(e.target.value)} style={inputStyle}>{MODBUS_ENDIANNESS.map(e => <option key={e} value={e}>{t(`devices.endiannessOptions.${e}`)}</option>)}</select></label>
             <label style={labelStyle}><span style={labelTextStyle}>Network</span><select value={network} onChange={e => setNetwork(e.target.value)} style={inputStyle}><option value="">Default</option>{networksData?.configured_networks?.map(n => <option key={n} value={n}>{n}</option>)}</select></label>
           </div>
 
@@ -174,7 +176,7 @@ export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) 
       {/* Scan Dialog */}
       {showScanDialog && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }} onClick={() => setShowScanDialog(false)}>
-          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 560, maxHeight: '80vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 560, maxWidth: 'calc(100vw - 32px)', maxHeight: '80vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
               <span style={{ fontSize: 13, fontWeight: 600 }}>Scan Modbus Registers</span>
               <button onClick={() => setShowScanDialog(false)} aria-label="Close" style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, transition: 'color 0.15s' }}>

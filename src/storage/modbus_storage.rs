@@ -39,11 +39,7 @@ impl Storage {
             let tx = conn.unchecked_transaction().context("Begin tx failed")?;
 
             for device in &devices {
-                let endianness = match device.endianness {
-                    crate::models::Endianness::Big => "big",
-                    crate::models::Endianness::Little => "little",
-                    crate::models::Endianness::Swapped => "swapped",
-                };
+                let endianness = device.endianness.name();
                 tx.execute(
                     "INSERT OR IGNORE INTO modbus_devices (id, name, ip, port, unit_id, interval_ms, endianness, enabled, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?8)",
                     rusqlite::params![device.id, device.id, device.ip, device.port, device.unit_id, device.interval_ms, endianness, now],

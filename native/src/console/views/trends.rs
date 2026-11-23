@@ -81,7 +81,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     } else {
         chosen
             .iter()
-            .filter_map(|index| console.store.tags[*index].history.latest())
+            .filter_map(|index| console.store.tags[*index].latest())
             .map(|(at, _)| at)
             .reduce(f64::max)
             .unwrap_or_else(now_ms)
@@ -95,7 +95,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             Series {
                 label: tag.label.clone(),
                 color: theme.series(position),
-                history: tag.history.clone(),
+                history: tag.chart(),
                 stepped: false,
             }
         })

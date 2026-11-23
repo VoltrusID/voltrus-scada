@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import { DataPoint } from './types';
-import { fmtTs, safeMinMax, toHexColor } from './styles';
+import { fmtTs, safeMinMax, toHexColor, themeColor } from './styles';
 import { useCanvasSize } from './hooks/useCanvasSize';
 
 export interface OverlaySeries {
@@ -93,7 +93,7 @@ export function DetailChart({ data: rawData, color: rawColor, warn, crit, unit, 
     for (let i = 0; i <= 5; i++) { const y = pT + (cH / 5) * i; ctx.beginPath(); ctx.moveTo(pL, y); ctx.lineTo(W - pR, y); ctx.stroke() }
 
     // Y labels
-    ctx.fillStyle = '#52525b'; ctx.font = "11px 'SF Mono','JetBrains Mono',Menlo,monospace"; ctx.textAlign = 'right'
+    ctx.fillStyle = themeColor('--text-muted', '#85858e'); ctx.font = "11px 'SF Mono','JetBrains Mono',Menlo,monospace"; ctx.textAlign = 'right'
     for (let i = 0; i <= 5; i++) { const v = yMin + ((yMax - yMin) / 5) * (5 - i); ctx.fillText(v.toFixed(1), pL - 8, pT + (cH / 5) * i + 4) }
 
     // X labels — adaptive, only for visible range

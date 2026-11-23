@@ -190,13 +190,16 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Lock the account until `locked_until` and start the failure count
+    /// over, so that once the lock ends it takes another full run of wrong
+    /// passwords to lock it again (not a single one).
     pub async fn lock_account(&self, username: &str, locked_until: i64) -> Result<()> {
         let conn = self.conn.clone();
         let username = username.to_string();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             conn.execute(
-                "UPDATE users SET locked_until = ?1 WHERE username = ?2",
+                "UPDATE users SET locked_until = ?1, failed_attempts = 0 WHERE username = ?2",
                 rusqlite::params![locked_until, username],
             )
             .context("Lock account failed")?;
@@ -371,6 +374,59 @@ impl Storage {
             )
             .context("Revoke refresh token failed")?;
             Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Revoke every live refresh token of `username` except the one whose
+    /// hash is `keep` (the session that asked, e.g. for a password change).
+    pub async fn revoke_other_user_refresh_tokens(
+        &self,
+        username: &str,
+        keep: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.clone();
+        let username = username.to_string();
+        let keep = keep.unwrap_or_default().to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "UPDATE refresh_tokens SET revoked_at = ?1 WHERE username = ?2 AND revoked_at IS NULL AND token_hash <> ?3",
+                rusqlite::params![crate::timeutil::now_secs(), username, keep],
+            )
+            .context("Revoke other refresh tokens failed")?;
+            Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Whether the sign-in session of `username` that began at
+    /// `session_started_at` is still open: one of its refresh tokens is
+    /// unexpired and not revoked, or was revoked less than `grace_secs` ago
+    /// (a refresh revokes the old token just before it stores the new one).
+    pub async fn session_alive(
+        &self,
+        username: &str,
+        session_started_at: i64,
+        grace_secs: i64,
+    ) -> Result<bool> {
+        let conn = self.conn.clone();
+        let username = username.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let now = crate::timeutil::now_secs();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM refresh_tokens
+                     WHERE username = ?1 AND COALESCE(session_started_at, created_at) = ?2
+                       AND expires_at > ?3 AND (revoked_at IS NULL OR revoked_at >= ?4)",
+                    rusqlite::params![username, session_started_at, now, now - grace_secs],
+                    |row| row.get(0),
+                )
+                .context("Session lookup failed")?;
+            Ok(n > 0)
         })
         .await
         .context("Task join failed")?

@@ -203,7 +203,15 @@ reverse proxy or tunnel on the same machine that sends `X-Forwarded-Proto: https
 For a public demo with one shared read-only login, create a `viewer` account and
 set `shared_accounts: [guest]` and `login_hint: "Demo: sign in as guest / ..."`:
 the hint appears under the sign-in form, and visitors can neither change that
-account's password or preferences nor lock it with wrong passwords.
+account's password or preferences nor lock it with wrong passwords. Also set
+`outbound_http: {allow_private_networks: false}` there (see Network behaviour).
+
+Behind a reverse proxy or tunnel on the same machine, login limits and the audit
+trail see each client's address from `X-Forwarded-For`, read from the right, as
+long as the proxy appends to it (nginx `$proxy_add_x_forwarded_for`; Caddy and
+cloudflared do). For a proxy on another machine, or one that only sets
+`X-Real-IP` or `CF-Connecting-IP`, set `trusted_proxy` (see
+[`config.yaml`](config.yaml)).
 
 Open <http://localhost:3000>. The first start generates a random admin
 password and writes it to `initial-admin-password` next to the database
@@ -289,6 +297,24 @@ local model server such as Ollama, which keeps it all on your network).
 The API documentation page (`/api/docs`, signed-in users only) loads its viewer
 script from a public CDN; the OpenAPI document at `/api/v1/openapi.json` does not.
 
+Requests to URLs that users configure (outbound webhooks and their test button,
+alarm webhooks, flow `http_out` nodes) follow no redirects and never go to a
+link-local address such as the cloud metadata service (169.254.169.254).
+This machine (loopback, and its own LAN and public addresses) is refused unless
+`outbound_http.allow_loopback: true`; private networks are allowed unless
+`outbound_http.allow_private_networks: false`. Host names are checked after
+they resolve, and `HTTP_PROXY`/`HTTPS_PROXY` are not used for these requests.
+The webhook test button reports the HTTP status only, not the response body.
+The AI copilot's base URL is not restricted (a local model server is the usual
+setup); changing it without entering a key again removes the stored key.
+
+Readers who may not configure (viewers, operators, read-only API keys) see
+header values and URL passwords of outbound webhooks and flow `http_out` nodes
+as `********`; an editor that saves the masked value back keeps the stored one,
+as long as the node still posts to the same scheme, host and port (otherwise
+the secrets must be entered again). Errors stored for flow runs and webhook
+tests name URLs without their password.
+
 ## Development
 
 ```bash
@@ -313,7 +339,7 @@ sdks/           TypeScript and Python SDKs (MIT)
 native/         experimental native operator console (GPUI), see native/README-native.md
 scenarios/      simulated plants for testing
 deploy/         example systemd unit
-docs/           open-core split, MCP server, live stream, notes
+docs/           open-core split, MCP server, live stream, upgrade notes
 ```
 
 ## Contributing

@@ -40,7 +40,7 @@ impl TagView {
             Rc::from([])
         } else {
             // The newest `samples`: skipping is O(1) on the store's deque.
-            let from = tag.history.len().saturating_sub(samples);
+            let from = tag.len().saturating_sub(samples);
             tag.samples().skip(from).collect()
         };
         Self {

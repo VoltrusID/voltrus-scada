@@ -4,6 +4,11 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use std::collections::HashMap;
 
+/// Largest count a multi-instance pattern accepts (pumps 1..n, lights).
+pub const MAX_INSTANCE_COUNT: u32 = 100;
+/// Largest number of tags one template may expand to.
+pub const MAX_EXPANDED_TAGS: usize = 2000;
+
 /// Instantiate a vertical template into the database.
 /// Creates devices, data sources (tags), alarm configs, screen, and flow rules.
 pub struct Instantiator<'a> {
@@ -39,8 +44,43 @@ impl<'a> Instantiator<'a> {
         counts
     }
 
+    /// Checks the instance counts before anything is expanded: every count must be
+    /// 1..=[`MAX_INSTANCE_COUNT`] and the template may expand to at most
+    /// [`MAX_EXPANDED_TAGS`] tags. Without this a count of `u32::MAX` would try to
+    /// build billions of tags in memory.
+    pub fn check_limits(&self) -> std::result::Result<(), String> {
+        for (key, &count) in &self.instance_counts {
+            if !(1..=MAX_INSTANCE_COUNT).contains(&count) {
+                return Err(format!(
+                    "instance_counts.{key} must be 1-{MAX_INSTANCE_COUNT}"
+                ));
+            }
+        }
+        let total: usize = self
+            .template
+            .tags
+            .iter()
+            .map(|tag| {
+                if tag.name_pattern.contains("{n}") {
+                    self.instance_counts.get("n").copied().unwrap_or(2) as usize
+                } else if tag.name_pattern.contains("{light}") {
+                    self.instance_counts.get("light").copied().unwrap_or(4) as usize
+                } else {
+                    1
+                }
+            })
+            .sum();
+        if total > MAX_EXPANDED_TAGS {
+            return Err(format!(
+                "These instance counts make {total} tags; the limit is {MAX_EXPANDED_TAGS}"
+            ));
+        }
+        Ok(())
+    }
+
     /// Execute the full instantiation
     pub async fn instantiate(&self) -> Result<InstantiationResult> {
+        self.check_limits().map_err(anyhow::Error::msg)?;
         let device_id = self.device_id();
         let mut created_tags = Vec::new();
         let mut created_alarms = Vec::new();
@@ -313,4 +353,48 @@ pub struct InstantiationResult {
     pub tags: Vec<String>,
     pub alarms: Vec<String>,
     pub flows: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vertical_templates::definitions;
+
+    async fn storage() -> Storage {
+        Storage::new_in_memory().unwrap()
+    }
+
+    fn template_with_n() -> VerticalTemplate {
+        definitions::all_templates()
+            .into_iter()
+            .find(|t| t.tags.iter().any(|tag| tag.name_pattern.contains("{n}")))
+            .expect("a template with an {n} pattern")
+    }
+
+    #[tokio::test]
+    async fn huge_instance_count_is_refused_before_expansion() {
+        let storage = storage().await;
+        let counts = HashMap::from([("n".to_string(), u32::MAX)]);
+        let inst = Instantiator::new(&storage, template_with_n(), "x".into(), counts);
+        assert!(inst.check_limits().is_err());
+        assert!(inst.instantiate().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn zero_count_is_refused_and_defaults_pass() {
+        let storage = storage().await;
+        let zero = HashMap::from([("n".to_string(), 0)]);
+        let inst = Instantiator::new(&storage, template_with_n(), "x".into(), zero);
+        assert!(inst.check_limits().is_err());
+        let inst = Instantiator::new(
+            &storage,
+            template_with_n(),
+            "x".into(),
+            Instantiator::default_instance_counts(),
+        );
+        assert!(inst.check_limits().is_ok());
+        let max = HashMap::from([("n".to_string(), MAX_INSTANCE_COUNT)]);
+        let inst = Instantiator::new(&storage, template_with_n(), "x".into(), max);
+        assert!(inst.check_limits().is_ok());
+    }
 }

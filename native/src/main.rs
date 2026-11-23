@@ -326,6 +326,7 @@ fn main() -> ExitCode {
             cx.set_menus(console::menus());
             cx.on_action(|_: &console::Quit, cx| cx.quit());
 
+            console::config::trust_ca_file();
             let (runtime, events) = match voltrus_scada_native::runtime::start() {
                 Ok(started) => started,
                 Err(error) => {
@@ -501,6 +502,8 @@ mod tests {
 
     #[test]
     fn stress_options_parse_and_need_stress() {
+        let report = std::env::temp_dir().join("report.txt");
+        let report_arg = report.to_str().expect("a UTF-8 temp dir");
         let plan = parse(&args(&[
             "--stress",
             "--stress-tags",
@@ -512,7 +515,7 @@ mod tests {
             "--stress-seconds",
             "20",
             "--stress-report",
-            "/tmp/report.txt",
+            report_arg,
         ]))
         .unwrap()
         .stress
@@ -527,7 +530,7 @@ mod tests {
                 },
                 switch_every: None,
                 stop_after: Some(Duration::from_secs(20)),
-                report: Some(PathBuf::from("/tmp/report.txt")),
+                report: Some(report.clone()),
             }
         );
         assert_eq!(

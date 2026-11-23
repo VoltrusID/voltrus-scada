@@ -14,7 +14,7 @@ use gpui::{
     SharedString, Window, canvas, div, fill, img, point, px, size,
 };
 use vt_ui::Icon;
-use vt_ui::chart::{History, format_value, sparkline, value_scale};
+use vt_ui::chart::{format_value, value_scale};
 use vt_ui::components::{pill, status_dot};
 use vt_ui::theme::*;
 
@@ -118,6 +118,9 @@ fn reading_color(tag: &Tag, own: Hsla, theme: &Theme) -> Hsla {
     }
 }
 
+/// Columns of a card's sparkline: about one per two pixels of a wide card.
+const SPARK_COLUMNS: usize = 160;
+
 /// The sparklines' span: as far back as the store's history reaches, within
 /// two and fifteen minutes (the Overview's rule).
 pub(super) fn spark_span(store: &Store, now_ms: f64) -> f64 {
@@ -155,9 +158,9 @@ pub(super) fn body(
 }
 
 fn spark(tag: &Tag, own: Hsla, now_ms: f64, span: f64, theme: &Theme) -> AnyElement {
-    let history = tag.history.clone();
     let guides = Guides {
-        history: history.clone(),
+        range: tag.range(now_ms - span),
+        latest: tag.latest(),
         now_ms,
         span,
         limits: [
@@ -192,12 +195,13 @@ fn spark(tag: &Tag, own: Hsla, now_ms: f64, span: f64, theme: &Theme) -> AnyElem
                     .absolute()
                     .size_full(),
                 )
-                .child(
-                    div()
-                        .absolute()
-                        .size_full()
-                        .child(sparkline(history, own, now_ms, span)),
-                ),
+                .child(div().absolute().size_full().child(super::spark::spark(
+                    tag,
+                    own,
+                    now_ms,
+                    span,
+                    SPARK_COLUMNS,
+                ))),
         )
         .child(
             div()
@@ -221,7 +225,9 @@ fn spark(tag: &Tag, own: Hsla, now_ms: f64, span: f64, theme: &Theme) -> AnyElem
 /// The sparkline's limit lines and latest-value dot, on the sparkline's
 /// own scale.
 struct Guides {
-    history: std::rc::Rc<History>,
+    /// The values' extent in the span, and the newest sample.
+    range: Option<(f64, f64)>,
+    latest: Option<(f64, f64)>,
     now_ms: f64,
     span: f64,
     limits: [(f64, Hsla); 2],
@@ -232,7 +238,7 @@ impl Guides {
     #[allow(clippy::cast_possible_truncation)]
     fn paint(&self, bounds: Bounds<Pixels>, window: &mut Window) {
         let since = self.now_ms - self.span;
-        let Some((low, high)) = self.history.range(since) else {
+        let Some((low, high)) = self.range else {
             return;
         };
         let (low, high) = value_scale(low, high);
@@ -252,7 +258,7 @@ impl Guides {
                 window.paint_path(path, color.opacity(0.55));
             }
         }
-        if let Some((at, value)) = self.history.latest()
+        if let Some((at, value)) = self.latest
             && value.is_finite()
         {
             let share = ((at - since) / self.span).clamp(0.0, 1.0) as f32;

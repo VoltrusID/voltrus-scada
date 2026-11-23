@@ -97,6 +97,8 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     let config_path = args.get(1).map(|s| s.as_str()).unwrap_or("config.yaml");
     let app_config = config::load_config(config_path)?;
+    crate::security::outbound::set_policy(app_config.outbound_http);
+    crate::security::set_trusted_proxy(app_config.trusted_proxy.clone());
 
     tracing::info!(
         "Loaded config: {} devices in YAML, port {}",
@@ -171,11 +173,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     // Load device configs from DB and start pollers. The passive node of a
     // redundant pair starts none: its peer owns the devices until it takes over.
-    let poller_manager = PollerManager::new(
-        cache.clone(),
-        storage.clone(),
-        network::NetworkManager::new(app_config.networks.clone()),
-    );
+    let network_manager = network::NetworkManager::new(app_config.networks.clone());
+    let poller_manager =
+        PollerManager::new(cache.clone(), storage.clone(), network_manager.clone());
     if crate::node_role::polls_devices() {
         match poller_manager.start_all_enabled().await {
             Ok(started) => tracing::info!("Started {started} device poller(s)"),
@@ -203,7 +203,10 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         None => None,
     };
 
-    // Spawn persistence task
+    // Spawn persistence task. A message on `flush_tx` asks for one last
+    // cycle at shutdown; the task answers once the samples are written.
+    let (flush_tx, mut flush_rx) =
+        tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(1);
     {
         let cache = cache.clone();
         let storage = storage.clone();
@@ -220,15 +223,32 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                 crate::alarm_delay::DelayState,
             > = std::collections::HashMap::new();
             let mut history_filter = crate::deadband::HistoryFilter::new();
+            let mut tag_changes = crate::notification::TagChangeTracker::default();
+            let tag_change_queue = crate::notification::TagChangeQueue::start(
+                storage.clone(),
+                crate::notification::TAG_CHANGE_QUEUE_CAPACITY,
+                crate::notification::TAG_CHANGE_WORKERS,
+            );
             loop {
-                ticker.tick().await;
+                let flush_ack = tokio::select! {
+                    _ = ticker.tick() => None,
+                    ack = flush_rx.recv() => ack,
+                };
                 // The passive node of a redundant pair never stores samples or
                 // raises alarms: the active node does, and replication feeds this one.
                 if !crate::node_role::is_active() {
+                    if let Some(ack) = flush_ack {
+                        let _ = ack.send(());
+                        return;
+                    }
                     continue;
                 }
                 let snapshots = cache.get_all().await;
                 if snapshots.is_empty() {
+                    if let Some(ack) = flush_ack {
+                        let _ = ack.send(());
+                        return;
+                    }
                     continue;
                 }
                 let mut records = Vec::new();
@@ -273,6 +293,11 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                     history_filter.reset();
                     tracing::error!("Persistence error: {e}");
                 }
+                if let Some(ack) = flush_ack {
+                    tracing::info!("Final persistence pass wrote {} sample(s)", records.len());
+                    let _ = ack.send(());
+                    return;
+                }
 
                 // Evaluate alarm thresholds
                 if let Ok(sources) = sources {
@@ -311,22 +336,26 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                                     .is_in_cooldown(&source.key, severity)
                                     .await
                                     .unwrap_or(false);
-                                let mut may_fire = !has_unresolved && !in_cooldown;
                                 // ISA-18.2 on delay: the raised condition must persist
                                 // for on_delay seconds before the alarm fires. While
-                                // suppressed by an existing alarm or cooldown, drop any
-                                // pending so a fresh delay starts after it resolves.
-                                if on_delay > 0 {
-                                    if may_fire {
-                                        let state =
-                                            alarm_delays.entry(source.key.clone()).or_default();
-                                        may_fire = crate::alarm_delay::update_delay(
-                                            state, true, on_delay, 0, now,
-                                        ) == crate::alarm_delay::DelayTransition::Fire;
-                                    } else if let Some(state) = alarm_delays.get_mut(&source.key) {
-                                        state.pending_since = None;
-                                    }
-                                }
+                                // suppressed by an existing alarm or cooldown, a fresh
+                                // delay starts after it resolves. The condition being
+                                // back also restarts any off delay.
+                                let may_fire = match alarm_delays.get_mut(&source.key) {
+                                    Some(state) => crate::alarm_delay::raised(
+                                        state,
+                                        !has_unresolved && !in_cooldown,
+                                        on_delay,
+                                        now,
+                                    ),
+                                    None if on_delay > 0 => crate::alarm_delay::raised(
+                                        alarm_delays.entry(source.key.clone()).or_default(),
+                                        !has_unresolved && !in_cooldown,
+                                        on_delay,
+                                        now,
+                                    ),
+                                    None => !has_unresolved && !in_cooldown,
+                                };
                                 if may_fire {
                                     let msg = if alarm_type == "low" {
                                         format!(
@@ -460,13 +489,29 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                 // Dispatch tag_change webhooks for the latest data.
                 // We do this after persistence + alarm evaluation, not on every
                 // tick — outbound webhooks get the latest snapshot values.
-                {
-                    let storage_wh = storage.clone();
+                // Webhooks are loaded once per cycle and fire only for tags
+                // whose value or quality changed since the last one sent.
+                let webhooks = storage
+                    .get_outbound_webhooks_for_event("tag_change")
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("Failed to load outbound webhooks: {e}");
+                        Vec::new()
+                    });
+                if !webhooks.is_empty() {
+                    let mut queue_full = 0usize;
+                    let present: std::collections::HashSet<&str> =
+                        snapshots.iter().map(|s| s.device_id.as_str()).collect();
+                    tag_changes.retain_devices(&present);
                     for snap in &snapshots {
                         if snap.status != DeviceStatus::Online {
                             continue;
                         }
                         for (metric, value) in &snap.metrics {
+                            let quality = snap.quality_of(metric);
+                            if !tag_changes.changed(&snap.device_id, metric, *value, quality) {
+                                continue;
+                            }
                             let payload = serde_json::json!({
                                 "event": "tag_change",
                                 "device_id": snap.device_id,
@@ -474,15 +519,21 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                                 "value": value,
                                 "timestamp": snap.timestamp,
                                 "status": "online",
-                                "quality": snap.quality_of(metric),
+                                "quality": quality,
                             });
-                            crate::notification::dispatch_outbound_webhooks(
-                                &storage_wh,
-                                "tag_change",
-                                &payload,
-                            )
-                            .await;
+                            // Recorded only once queued: a change the full
+                            // queue refused is offered again next cycle.
+                            if tag_change_queue.enqueue(&webhooks, payload) {
+                                tag_changes.record(&snap.device_id, metric, *value, quality);
+                            } else {
+                                queue_full += 1;
+                            }
                         }
+                    }
+                    if queue_full > 0 {
+                        tracing::warn!(
+                            "tag_change webhook queue full: {queue_full} change(s) wait for the next cycle"
+                        );
                     }
                 }
             }
@@ -542,7 +593,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     // Shared Modbus connection pool (used by both command queue and direct writes)
     #[cfg(feature = "modbus")]
-    let modbus_pool = std::sync::Arc::new(crate::modbus::ModbusPool::new());
+    let modbus_pool = std::sync::Arc::new(
+        crate::modbus::ModbusPool::new().with_network_manager(network_manager.clone()),
+    );
 
     // Spawn command queue processor
     #[cfg(feature = "modbus")]
@@ -609,6 +662,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     let (audit_logger, audit_rx) = crate::security::AuditLogger::new();
     crate::security::AuditLogger::spawn_writer(storage.clone(), audit_rx);
+    let shutdown_audit = audit_logger.clone();
 
     // Initialize MQTT broker
     #[cfg(feature = "mqtt-broker")]
@@ -739,7 +793,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         config_path: config_path.to_string(),
         ws_manager: ws_manager.clone(),
         mqtt_broker_state,
-        network_manager: network::NetworkManager::new(app_config.networks.clone()),
+        network_manager: network_manager.clone(),
         health_monitor,
         widget_registry: widget_sdk::WidgetRegistry::new(std::path::PathBuf::from(
             "voltrus/widgets",
@@ -757,16 +811,24 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     let listener = bind_listener(&addr).await?;
 
-    let shutdown = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("Failed to install Ctrl+C handler");
-        tracing::info!("Received shutdown signal, draining connections...");
+    let shutdown = async move {
+        shutdown_signal().await;
+        tracing::info!("Received shutdown signal, saving data...");
+        flush_before_exit(
+            &flush_tx,
+            &shutdown_audit,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
 
-        // Give connections 3s to drain, then force quit
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        tracing::info!("Drain timeout, forcing shutdown");
-        std::process::exit(0);
+        // Live streams never end on their own: give connections 3 s to
+        // drain, then exit.
+        tracing::info!("Draining connections...");
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            tracing::info!("Drain timeout, forcing shutdown");
+            std::process::exit(0);
+        });
     };
 
     // `serve(listener, router)` runs `Router::clone().with_state(())` for every accepted
@@ -783,6 +845,61 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     tracing::info!("Server shutdown complete");
     Ok(())
+}
+
+/// Resolves on Ctrl+C, or SIGTERM on Unix (systemd, Docker and Kubernetes
+/// stop a service with SIGTERM).
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            tracing::warn!("Ctrl+C handler unavailable: {e}");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                tracing::warn!("SIGTERM handler unavailable: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+}
+
+/// Before exiting: one last persistence pass for the samples read since the
+/// previous one, then let the audit writer store what is queued. Bounded by
+/// `limit` so a stuck database cannot hold the process up.
+async fn flush_before_exit(
+    flush_tx: &tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
+    audit: &crate::security::AuditLogger,
+    limit: std::time::Duration,
+) {
+    let deadline = tokio::time::Instant::now() + limit;
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    let persisted = async {
+        flush_tx.send(ack_tx).await.ok()?;
+        ack_rx.await.ok()
+    };
+    if tokio::time::timeout_at(deadline, persisted).await.is_err() {
+        tracing::warn!("Final persistence pass did not finish in time");
+    }
+    while audit.queued() > 0 {
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!("{} audit event(s) not written before exit", audit.queued());
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 }
 
 /// Listen on `addr`, with TCP_NODELAY on every accepted socket: live-data frames are
@@ -806,6 +923,42 @@ fn set_nodelay(tcp_stream: &mut tokio::net::TcpStream) {
 mod tests {
     use super::*;
     use axum::serve::Listener;
+
+    #[tokio::test]
+    async fn shutdown_waits_for_the_final_persistence_pass() {
+        let (flush_tx, mut flush_rx) =
+            tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(1);
+        let written = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let w = written.clone();
+        tokio::spawn(async move {
+            let ack = flush_rx.recv().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            w.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = ack.send(());
+        });
+        let (audit, _rx) = crate::security::AuditLogger::new();
+        flush_before_exit(&flush_tx, &audit, std::time::Duration::from_secs(5)).await;
+        assert!(written.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn shutdown_flush_is_bounded() {
+        // Nobody answers the flush and the audit queue is never read.
+        let (flush_tx, _flush_rx) = tokio::sync::mpsc::channel(1);
+        let (audit, _rx) = crate::security::AuditLogger::new();
+        audit.log(crate::security::AuditEvent {
+            action: "test".into(),
+            username: "u".into(),
+            resource: "r".into(),
+            details: None,
+        });
+        assert_eq!(audit.queued(), 1);
+        let started = std::time::Instant::now();
+        flush_before_exit(&flush_tx, &audit, std::time::Duration::from_millis(200)).await;
+        let took = started.elapsed();
+        assert!(took >= std::time::Duration::from_millis(200));
+        assert!(took < std::time::Duration::from_secs(2));
+    }
 
     #[tokio::test]
     async fn accepted_sockets_have_tcp_nodelay() {

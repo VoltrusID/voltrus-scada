@@ -10,7 +10,18 @@ let nextId = 0
 type Listener = (t: ToastMessage) => void
 const listeners = new Set<Listener>()
 
+/** The same message is shown once per this many ms, so a failing poll does not stack toasts. */
+export const TOAST_DEDUPE_MS = 5000
+const lastShown = new Map<string, number>()
+
 function emit(text: string, type: ToastMessage['type'] = 'error') {
+  const key = `${type}:${text}`
+  const now = Date.now()
+  if (now - (lastShown.get(key) ?? -Infinity) < TOAST_DEDUPE_MS) return
+  lastShown.set(key, now)
+  if (lastShown.size > 50) {
+    for (const [k, at] of lastShown) if (now - at >= TOAST_DEDUPE_MS) lastShown.delete(k)
+  }
   const toast: ToastMessage = { id: nextId++, text, type }
   listeners.forEach(fn => fn(toast))
 }

@@ -674,7 +674,6 @@ async fn clock_tick(shared: &Shared, last_run: &mut HashMap<String, std::time::I
     let now = std::time::Instant::now();
     let now_secs = crate::timeutil::now_secs();
     let minute = now_secs.div_euclid(60);
-    let local = crate::flow_engine::cron::local_time(now_secs);
     {
         let flows = shared.flows.read().await;
         for flow in flows.values() {
@@ -697,7 +696,7 @@ async fn clock_tick(shared: &Shared, last_run: &mut HashMap<String, std::time::I
                         .get(&flow.id)
                         .is_some_and(|m| *m == minute);
                     let due =
-                        !fired_this_minute && Cron::parse(cron).is_ok_and(|c| c.matches(local));
+                        !fired_this_minute && Cron::parse(cron).is_ok_and(|c| c.due(now_secs));
                     if due {
                         shared.schedule_last.insert(flow.id.clone(), minute);
                     }

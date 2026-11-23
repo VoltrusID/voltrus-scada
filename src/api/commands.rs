@@ -467,6 +467,59 @@ async fn insert_write(
     Ok(cmd)
 }
 
+/// Record a write that went straight to a device instead of through the
+/// queue (the Voltrus PLC write endpoint) as a finished command: it counts
+/// toward the tag's `write_max_rate` like a queued write, and the command
+/// audit trail holds who wrote what, the reason and the previous value.
+pub async fn record_direct_write(
+    storage: &crate::storage::Storage,
+    username: &str,
+    req: TagWriteSubmission,
+    checked: CheckedWrite,
+    result: &crate::models::WriteResult,
+) -> Result<Command, WriteError> {
+    let CheckedWrite {
+        reason,
+        target,
+        command_id,
+        previous,
+        ..
+    } = checked;
+    let now = crate::timeutil::now_secs();
+    let status = if result.success {
+        CommandStatus::Acked
+    } else {
+        CommandStatus::Failed
+    };
+    let cmd = Command {
+        id: command_id,
+        data_source_id: req.tag_id,
+        device_id: target.device_id,
+        protocol: target.protocol,
+        value: req.value.to_string(),
+        status: status.as_str().to_string(),
+        policy: req.policy,
+        scheduled_at: None,
+        retry_count: 0,
+        max_retries: 0,
+        error_message: result.error.clone(),
+        created_at: now,
+        sent_at: Some(now),
+        acked_at: result.success.then_some(now),
+        resolved_at: Some(now),
+        created_by: username.to_string(),
+        device_ref: target.device_ref,
+        readback_status: None,
+        readback_value: None,
+        readback_attempts: 0,
+        readback_ts: None,
+    };
+    storage
+        .insert_command_audited(&cmd, reason.as_deref(), previous)
+        .await?;
+    Ok(cmd)
+}
+
 // ── Get Command Status ──
 
 /// GET /api/v1/commands/{command_id}

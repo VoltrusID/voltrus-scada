@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn saved_messages_say_what_the_server_held_back() {
         let saved = Saved {
-            file: PathBuf::from("/tmp/telemetry.json"),
+            file: std::env::temp_dir().join("telemetry.json"),
             rows: 1000,
             total: Some(52_340),
         };

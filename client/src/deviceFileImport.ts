@@ -54,6 +54,10 @@ export interface ParsedDeviceFile<T> {
 
 export const MODBUS_TYPES = ['int16', 'uint16', 'int32', 'float32', 'float64']
 export const MODBUS_AREAS = ['holding', 'input', 'coil', 'discrete']
+/** Register orders of 32- and 64-bit values. The `_dword` ones keep the
+ *  float64 layout `little` and `swapped` had up to v0.51
+ *  (docs/device-templates.md). */
+export const MODBUS_ENDIANNESS = ['big', 'little', 'swapped', 'little_dword', 'swapped_dword'] as const
 export const BACNET_TYPES = [
   'analogInput', 'analogOutput', 'analogValue',
   'binaryInput', 'binaryOutput', 'binaryValue',
@@ -106,7 +110,7 @@ export function parseModbusDeviceFile(text: string): ParsedDeviceFile<ModbusImpo
     if (!isInt(unit, 0, 255)) { out.errors.push(`${label}: unit_id ${String(unit)} is not 0-255`); return }
     if (!isInt(interval, 1, 3_600_000)) { out.errors.push(`${label}: interval_ms ${String(interval)} is not a positive number`); return }
     const endianness = str(raw.endianness) || 'big'
-    if (!['big', 'little', 'swapped'].includes(endianness)) { out.errors.push(`${label}: endianness '${endianness}' is not big, little or swapped`); return }
+    if (!(MODBUS_ENDIANNESS as readonly string[]).includes(endianness)) { out.errors.push(`${label}: endianness '${endianness}' is not ${MODBUS_ENDIANNESS.join(', ')}`); return }
     if (!Array.isArray(raw.registers)) { out.errors.push(`${label}: registers is missing`); return }
     const registers: ModbusImportRegister[] = []
     raw.registers.forEach((r, j) => {

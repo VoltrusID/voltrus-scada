@@ -6136,6 +6136,7 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls",
+ "rustls-native-certs",
  "rustls-pemfile",
  "rustls-pki-types",
  "serde",
@@ -7696,6 +7697,7 @@ dependencies = [
  "futures-util",
  "log",
  "rustls",
+ "rustls-native-certs",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls",
@@ -8387,6 +8389,9 @@ dependencies = [
  "lyon",
  "reqwest",
  "rmp-serde",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "time",
@@ -8394,6 +8399,8 @@ dependencies = [
  "tokio-tungstenite 0.26.2",
  "toml 0.8.23",
  "vt-ui",
+ "webpki-roots 0.26.11",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -2,7 +2,7 @@ use crate::api::*;
 use crate::models::*;
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Extension, Path, State},
     http::StatusCode,
 };
 
@@ -78,10 +78,57 @@ pub async fn diff_snapshots(
     Ok(Json(diff))
 }
 
+/// `POST /config/snapshots/{id}/rollback` body (optional): the signature
+/// when the edition asks for one.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct RollbackBody {
+    #[serde(default)]
+    pub signature: Option<SignatureInput>,
+}
+
+/// Roll the configuration back to a snapshot. It rewrites devices, tags
+/// (with their write policies), flows, screens and recipes, so it is a mode
+/// switch the add-on edition may want signed, like a write-policy change, and
+/// it is audited with the signature. A flow keeps its current webhook token.
 pub async fn rollback(
     state: State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<ApiKeyAuth>>,
     Path(id): Path<i64>,
-) -> Result<StatusCode, StatusCode> {
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let body: RollbackBody = if body.iter().all(u8::is_ascii_whitespace) {
+        RollbackBody::default()
+    } else {
+        match serde_json::from_slice(&body) {
+            Ok(b) => b,
+            Err(e) => {
+                return AppError::bad_request(format!("invalid body: {e}")).into_response();
+            }
+        }
+    };
+    match state.storage.get_config_snapshot(id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+    let resource = format!("config_snapshot:{id}:rollback");
+    let signed = match super::signature::authorize_action(
+        &state,
+        &user,
+        super::signature::origin_of(&user, api_key.is_some()),
+        crate::edition::SignedAction::ModeSwitch,
+        resource.clone(),
+        serde_json::json!({"mode": "config_rollback", "snapshot_id": id}),
+        body.signature.as_ref(),
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(e) => return e.into_response(),
+    };
+
     // Create a pre-rollback snapshot
     let _ = state
         .storage
@@ -96,14 +143,25 @@ pub async fn rollback(
         )
         .await;
 
-    let rolled_back = state.storage.rollback_to_snapshot(id).await.map_err(|e| {
-        tracing::error!("Rollback to config snapshot #{id} failed: {e:#}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-    if rolled_back {
-        Ok(StatusCode::NO_CONTENT)
-    } else {
-        Err(StatusCode::NOT_FOUND)
+    match state.storage.rollback_to_snapshot(id).await {
+        Ok(true) => {
+            let mut details = format!("Rolled the configuration back to snapshot #{id}");
+            if let Some(signed) = &signed {
+                details.push_str(&signed.audit_suffix());
+            }
+            state.audit_logger.log(crate::security::AuditEvent {
+                action: "config_rollback".to_string(),
+                username: user.username.clone(),
+                resource,
+                details: Some(details),
+            });
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => {
+            tracing::error!("Rollback to config snapshot #{id} failed: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
     }
 }
 

@@ -38,6 +38,11 @@ impl AuditLogger {
         )
     }
 
+    /// Events queued and not yet taken by the writer.
+    pub fn queued(&self) -> usize {
+        self.sender.max_capacity() - self.sender.capacity()
+    }
+
     pub fn log(&self, event: AuditEvent) {
         match self.sender.try_send(event) {
             Ok(()) => {}

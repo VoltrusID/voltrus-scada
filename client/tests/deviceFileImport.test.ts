@@ -69,3 +69,16 @@ test('BACnet files still import', () => {
   assert.deepEqual(errors, [])
   assert.equal(devices[0].objects[0].property, 'presentValue')
 })
+
+test('every register order the server knows is accepted, others are not', () => {
+  const parse = (endianness: string) =>
+    parseModbusDeviceFile(JSON.stringify({ id: 'd', name: 'D', ip: '10.0.0.1', endianness, registers: [{ name: 'v', offset: 0, register_type: 'float64' }] }))
+  for (const e of ['big', 'little', 'swapped', 'little_dword', 'swapped_dword']) {
+    const { devices, errors } = parse(e)
+    assert.deepEqual(errors, [], e)
+    assert.equal(devices[0].endianness, e)
+  }
+  const { errors } = parse('middle')
+  assert.equal(errors.length, 1)
+  assert.match(errors[0], /little_dword/)
+})

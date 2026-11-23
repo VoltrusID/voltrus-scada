@@ -59,3 +59,32 @@ test('the password-change error is recognised so nothing toasts it', () => {
   assert.equal(isPasswordChangeRequiredError(copy), true)
   assert.equal(isPasswordChangeRequiredError(new Error('Request failed: 403')), false)
 })
+
+test('any refused refresh ends the session, with or without a reason code', async () => {
+  const { refreshRefused } = await import('../src/session.ts')
+  assert.equal(refreshRefused(401), true)
+  assert.equal(refreshRefused(500), false, 'a restarting server keeps the session')
+  assert.equal(refreshRefused(502), false)
+  assert.equal(refreshRefused(200), false)
+  assert.equal(sessionEndMessage('session_ended', 900), 'Your session has ended. Please sign in again.')
+})
+
+test('login, /auth/me and SSO answers give the same session fields', async () => {
+  const { sessionFromAuthBody } = await import('../src/session.ts')
+  const me = sessionFromAuthBody({
+    authenticated: true, username: 'op', role: 'operator', shared: false,
+    must_change_password: false, password_expired: true,
+    session: { idle_timeout_secs: 600, absolute_timeout_secs: null },
+  })
+  assert.deepEqual(me, {
+    authenticated: true, username: 'op', role: 'operator', shared: false,
+    mustChangePassword: false, passwordExpired: true,
+    policy: { idleTimeoutSecs: 600, absoluteTimeoutSecs: null },
+  })
+  // A login response has no `authenticated`; the typed name is the fallback.
+  const login = sessionFromAuthBody({ role: 'admin' }, 'alice')
+  assert.equal(login.authenticated, true)
+  assert.equal(login.username, 'alice')
+  assert.equal(sessionFromAuthBody({ authenticated: false }).authenticated, false)
+  assert.equal(sessionFromAuthBody(null).role, 'user')
+})
