@@ -44,6 +44,7 @@ mod tag_tree;
 mod ui_preferences;
 mod users;
 
+mod vertical_templates;
 pub use helpers::*;
 
 use super::{AppState, create_router};

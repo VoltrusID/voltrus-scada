@@ -925,10 +925,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/ai/templates", get(ai_copilot::list_templates))
         .route("/api/v1/templates", get(vertical_templates::list_templates))
         .route(
-            "/api/v1/templates/preview",
-            post(vertical_templates::preview_template),
-        )
-        .route(
             "/api/v1/device-templates",
             get(device_templates::list_templates),
         )
@@ -1265,6 +1261,12 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/templates/{id}/instantiate",
             post(vertical_templates::instantiate_template),
+        )
+        // Preview expands the template like instantiate does, so it sits in the
+        // same configuration tier.
+        .route(
+            "/api/v1/templates/preview",
+            post(vertical_templates::preview_template),
         );
     // Operator routes whose handlers write no audit entry of their own: the
     // middleware records who changed what (see audit_writes_middleware).
