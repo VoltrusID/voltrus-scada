@@ -74,7 +74,8 @@ JetBrains Mono for values.
   link is live the chart moves on once a second. A tag on the chart keeps
   a day of history (its range fetched from the server when it is added):
   live values of the last 15 minutes at full rate, older ones thinned to
-  one per 20 seconds. The other tags keep 35 minutes, what the sparklines
+  one per 20 seconds, as do the tags the shown mimic screen's trend widgets
+  draw (an hour fetched for them). The other tags keep 35 minutes, what the sparklines
   and the mimic's faceplate draw, so a plant of thousands of tags does not
   hold a day of each.
 - **Data Manager** (More menu, palette; offered to a role that sees at least

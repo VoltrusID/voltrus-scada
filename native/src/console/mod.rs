@@ -122,6 +122,10 @@ pub fn range_ms(range: &str) -> f64 {
 /// (15 min) and the mimic's faceplate (30 min) draw.
 pub const SHORT_HISTORY_RANGE: &str = "30m";
 
+/// The history fetched for a tag a mimic trend widget draws (up to 300
+/// samples; a tag polled every 10 s fills them in 50 minutes).
+pub const MIMIC_HISTORY_RANGE: &str = "1h";
+
 /// The server's `range` parameter that covers a trend range.
 pub fn history_range(range: &str) -> &str {
     if range == "5m" { "30m" } else { range }
@@ -282,6 +286,10 @@ pub struct Console {
     pub selected: Option<i64>,
     /// Tags (data source ids) on the Trends chart.
     pub trend: BTreeSet<i64>,
+    /// Tags drawn by the trend widgets of the mimic screen last shown: they
+    /// keep a long history too (a widget draws up to 300 samples, which
+    /// for a slowly polled tag reach back further than the short stretch).
+    pub mimic_trend: BTreeSet<i64>,
     pub range: &'static str,
     pub inputs: Inputs,
     pub busy: bool,
@@ -547,6 +555,7 @@ impl Console {
             switched_at: Instant::now(),
             selected: None,
             trend: BTreeSet::new(),
+            mimic_trend: BTreeSet::new(),
             range: launch.range.unwrap_or("1h"),
             inputs,
             busy: false,
@@ -1024,6 +1033,7 @@ impl Console {
         self.devices.clear();
         self.selected = None;
         self.trend.clear();
+        self.mimic_trend.clear();
         self.reset_session(window, cx);
         for nav in self.lists.values_mut() {
             nav.cursor = None;
@@ -1445,32 +1455,51 @@ impl Console {
         cx.notify();
     }
 
-    /// Keep a day of history only for the tags on the Trends chart (the
-    /// others keep the short stretch the sparklines and faceplates draw),
-    /// and fetch the trend range for the tags that need it: the newly
-    /// trended ones, or all of them (`all`) after a new tag list or range.
+    /// Keep a day of history only for the tags on the Trends chart and on
+    /// the shown mimic's trend widgets (the others keep the short stretch
+    /// the sparklines and faceplates draw), and fetch history for the tags
+    /// that need it: the newly kept ones, or every trended one (`all`)
+    /// after a new tag list or range.
     pub fn sync_trend(&mut self, all: bool) {
-        let added = self.store.keep_long(&self.trend);
+        let long: BTreeSet<i64> = self.trend.union(&self.mimic_trend).copied().collect();
+        let added = self.store.keep_long(&long);
         if self.stress.is_some() {
             return;
         }
-        let ids: Vec<i64> = if all {
-            self.trend.iter().copied().collect()
-        } else {
-            added
+        let keys = |ids: &mut dyn Iterator<Item = i64>| -> Vec<String> {
+            let mut keys: Vec<String> = ids
+                .filter_map(|id| self.store.get(id))
+                .map(|tag| tag.info.key.clone())
+                .collect();
+            keys.sort();
+            keys.dedup();
+            keys
         };
-        let mut keys: Vec<String> = ids
-            .iter()
-            .filter_map(|id| self.store.get(*id))
-            .map(|tag| tag.info.key.clone())
-            .collect();
-        keys.sort();
-        keys.dedup();
-        if !keys.is_empty() {
-            self.send(Command::History {
-                range: history_range(self.range).to_owned(),
-                keys,
-            });
+        let trend = if all {
+            keys(&mut self.trend.iter().copied())
+        } else {
+            keys(&mut added.iter().copied().filter(|id| self.trend.contains(id)))
+        };
+        let mimic = keys(&mut added.iter().copied().filter(|id| !self.trend.contains(id)));
+        for (range, keys) in [
+            (history_range(self.range), trend),
+            (MIMIC_HISTORY_RANGE, mimic),
+        ] {
+            if !keys.is_empty() {
+                self.send(Command::History {
+                    range: range.to_owned(),
+                    keys,
+                });
+            }
+        }
+    }
+
+    /// The shown mimic screen's trend widgets draw these tags: keep their
+    /// history long (see [`Self::sync_trend`]).
+    pub fn set_mimic_trend(&mut self, tags: BTreeSet<i64>) {
+        if self.mimic_trend != tags {
+            self.mimic_trend = tags;
+            self.sync_trend(false);
         }
     }
 
