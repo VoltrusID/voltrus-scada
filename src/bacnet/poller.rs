@@ -108,88 +108,51 @@ async fn try_poll_cycle(config: &BacnetDeviceConfig) -> Result<HashMap<String, f
 
         let response_data = client_send_confirmed(&socket, addr, service_data)?;
 
-        // Parse response - extract property values
-        let mut result = HashMap::new();
-
-        // Simple response parsing: scan for known tags
-        // PropertyValue encoding: tag byte indicates type
-        // 0x44 = Real (4 bytes), 0x55 = Double (8 bytes),
-        // 0x21 = Boolean, 0x31 = Unsigned (1-4 bytes), 0x33 = Enum (1-4 bytes)
-        let data = &response_data;
-        let mut pos = 0;
-        let mut obj_idx = 0;
-
-        while pos < data.len() && obj_idx < objects.len() {
-            // Look for property value tags
-            if pos + 1 < data.len() {
-                let tag = data[pos];
-                let value = match tag {
-                    0x44 if pos + 5 <= data.len() => {
-                        // Real (f32)
-                        let bytes: [u8; 4] = data[pos + 1..pos + 5]
-                            .try_into()
-                            .map_err(|_| anyhow::anyhow!("parse f32 bytes"))?;
-                        Some(f32::from_be_bytes(bytes) as f64)
-                    }
-                    0x55 if pos + 9 <= data.len() => {
-                        // Double (f64)
-                        let bytes: [u8; 8] = data[pos + 1..pos + 9]
-                            .try_into()
-                            .map_err(|_| anyhow::anyhow!("parse f64 bytes"))?;
-                        Some(f64::from_be_bytes(bytes))
-                    }
-                    0x22 if pos + 3 <= data.len() => {
-                        // Unsigned 2-byte
-                        Some(((data[pos + 1] as u32) << 8 | data[pos + 2] as u32) as f64)
-                    }
-                    0x21 if pos + 2 <= data.len() => {
-                        // Unsigned 1-byte
-                        Some(data[pos + 1] as f64)
-                    }
-                    0x24 if pos + 5 <= data.len() => {
-                        // Unsigned 4-byte
-                        let bytes: [u8; 4] = data[pos + 1..pos + 5]
-                            .try_into()
-                            .map_err(|_| anyhow::anyhow!("parse u32 bytes"))?;
-                        Some(u32::from_be_bytes(bytes) as f64)
-                    }
-                    0x31 => {
-                        // Boolean true
-                        Some(1.0)
-                    }
-                    0x30 => {
-                        // Boolean false
-                        Some(0.0)
-                    }
-                    0x32 if pos + 3 <= data.len() => {
-                        // Enum 2-byte
-                        Some(((data[pos + 1] as u32) << 8 | data[pos + 2] as u32) as f64)
-                    }
-                    _ => None,
-                };
-
-                if let Some(v) = value {
-                    let (name, _, _, _) = &objects[obj_idx];
-                    result.insert(name.clone(), v);
-                    obj_idx += 1;
-                }
-            }
-            pos += 1;
-        }
-
-        // Objects the answer held no value for (an error result, or a type
-        // the scan does not decode) are NaN, which the cache marks bad,
-        // instead of disappearing from the device.
-        for (name, _, _, _) in &objects[obj_idx..] {
-            result.insert(name.clone(), f64::NAN);
-        }
-
-        Ok(result)
+        let decoded = super::rpm::decode_rpm_ack(&response_data)
+            .context("Invalid ReadPropertyMultiple-ACK")?;
+        Ok(map_rpm_results(&objects, &decoded))
     })
     .await
     .context("Task join failed")??;
 
     Ok(metrics)
+}
+
+/// Match the decoded ACK to the configured points by object and property.
+/// A property the device answered with an error, a non-numeric value, or no
+/// answer at all is NaN, which the cache stores as bad quality.
+fn map_rpm_results(
+    objects: &[(
+        String,
+        bacnet_rs::object::ObjectType,
+        u32,
+        PropertyIdentifier,
+    )],
+    decoded: &[super::rpm::RpmObject],
+) -> HashMap<String, f64> {
+    use super::rpm::RpmValue;
+    let mut by_key: HashMap<(u32, u32, u32), f64> = HashMap::new();
+    for obj in decoded {
+        for prop in &obj.properties {
+            if prop.array_index.is_some() {
+                continue;
+            }
+            let v = match prop.value {
+                RpmValue::Number(v) => v,
+                RpmValue::Unsupported | RpmValue::Error { .. } => f64::NAN,
+            };
+            by_key
+                .entry((obj.object_type, obj.instance, prop.property_id))
+                .or_insert(v);
+        }
+    }
+    objects
+        .iter()
+        .map(|(name, ot, inst, pid)| {
+            let key = (u32::from(*ot), *inst, u32::from(*pid));
+            (name.clone(), by_key.get(&key).copied().unwrap_or(f64::NAN))
+        })
+        .collect()
 }
 
 /// Send a confirmed request reusing an existing bound socket.
@@ -250,10 +213,24 @@ fn client_send_confirmed(
                 let npdu_start = 4;
                 if let Ok((_npdu, npdu_len)) = Npdu::decode(&buf[npdu_start..len]) {
                     let apdu_start = npdu_start + npdu_len;
-                    if let Ok(Apdu::ComplexAck { service_data, .. }) =
-                        Apdu::decode(&buf[apdu_start..len])
-                    {
-                        return Ok(service_data);
+                    match Apdu::decode(&buf[apdu_start..len]) {
+                        Ok(Apdu::ComplexAck { service_data, .. }) => return Ok(service_data),
+                        Ok(Apdu::Error {
+                            error_class,
+                            error_code,
+                            ..
+                        }) => anyhow::bail!(
+                            "BACnet ReadPropertyMultiple error (class {error_class}, code {error_code})"
+                        ),
+                        Ok(Apdu::Reject { reject_reason, .. }) => {
+                            anyhow::bail!("BACnet ReadPropertyMultiple rejected: {reject_reason:?}")
+                        }
+                        Ok(Apdu::Abort { abort_reason, .. }) => {
+                            anyhow::bail!(
+                                "BACnet ReadPropertyMultiple aborted (reason {abort_reason})"
+                            )
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -264,4 +241,95 @@ fn client_send_confirmed(
     }
 
     anyhow::bail!("BACnet ReadPropertyMultiple timeout for {}", target_addr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bacnet_rs::object::ObjectType;
+
+    #[test]
+    fn maps_values_by_object_and_property_and_marks_errors_bad() {
+        let objects = vec![
+            (
+                "temp".to_string(),
+                ObjectType::AnalogInput,
+                5,
+                PropertyIdentifier::PresentValue,
+            ),
+            (
+                "missing".to_string(),
+                ObjectType::AnalogInput,
+                1,
+                PropertyIdentifier::PresentValue,
+            ),
+            (
+                "fan".to_string(),
+                ObjectType::BinaryOutput,
+                2,
+                PropertyIdentifier::PresentValue,
+            ),
+            (
+                "unanswered".to_string(),
+                ObjectType::AnalogValue,
+                9,
+                PropertyIdentifier::PresentValue,
+            ),
+        ];
+        // Device answers in a different order than asked.
+        let data = [
+            0x0C, 0x01, 0x00, 0x00, 0x02, 0x1E, 0x29, 0x55, 0x4E, 0x91, 0x01, 0x4F,
+            0x1F, // BO 2
+            0x0C, 0x00, 0x00, 0x00, 0x01, 0x1E, 0x29, 0x55, 0x5E, 0x91, 0x01, 0x91, 0x1F, 0x5F,
+            0x1F, // AI 1 error
+            0x0C, 0x00, 0x00, 0x00, 0x05, 0x1E, 0x29, 0x55, 0x4E, 0x44, 0x41, 0x90, 0x00, 0x00,
+            0x4F, 0x1F, // AI 5 = 18.0
+        ];
+        let decoded = crate::bacnet::rpm::decode_rpm_ack(&data).unwrap();
+        let m = map_rpm_results(&objects, &decoded);
+        assert_eq!(m["temp"], 18.0);
+        assert_eq!(m["fan"], 1.0);
+        assert!(m["missing"].is_nan());
+        assert!(m["unanswered"].is_nan());
+    }
+
+    /// A full poll cycle against a UDP responder that answers with a
+    /// standard ReadPropertyMultiple-ACK (Present_Value 85 = 0x55 and all).
+    #[tokio::test]
+    async fn poll_cycle_reads_a_standard_ack() {
+        let device = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = device.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1500];
+            let (_, src) = device.recv_from(&mut buf).unwrap();
+            let mut msg = vec![0x01, 0x00, 0x30, 0x01, 0x0E];
+            msg.extend_from_slice(&[
+                0x0C, 0x00, 0x00, 0x00, 0x05, 0x1E, 0x29, 0x55, 0x4E, 0x44, 0x41, 0x90, 0x00, 0x00,
+                0x4F, 0x1F,
+            ]);
+            let mut out = vec![0x81, 0x0A, 0x00, 0x00];
+            out.extend_from_slice(&msg);
+            let len = out.len() as u16;
+            out[2..4].copy_from_slice(&len.to_be_bytes());
+            device.send_to(&out, src).unwrap();
+        });
+        let config = BacnetDeviceConfig {
+            id: "bacnet_t".into(),
+            ip: "127.0.0.1".into(),
+            port,
+            device_instance: 1,
+            interval_ms: 1000,
+            cov_enabled: false,
+            cov_lifetime: 0,
+            objects: vec![crate::models::BacnetObjectConfig {
+                object_type: "analogInput".into(),
+                object_instance: 5,
+                property: "presentValue".into(),
+                name: "temp".into(),
+                cov_increment: 0.0,
+            }],
+        };
+        let m = try_poll_cycle(&config).await.unwrap();
+        assert_eq!(m["temp"], 18.0);
+    }
 }
