@@ -1,4 +1,5 @@
 import { TabList } from './TabList'
+import { useRole } from '../RoleContext'
 import { useState } from 'react'
 import { useTemplates, useTemplate, usePreviewTemplate, useInstantiateTemplate } from '../queries/templates'
 import type { TemplateSummary } from '../queries/templates'
@@ -6,6 +7,8 @@ import type { TemplateSummary } from '../queries/templates'
 // ── Component ──
 
 export function TemplatesPanel() {
+  // Preview and instantiate need the configuration role on the server; others may only browse.
+  const { canConfigure } = useRole()
   const [tab, setTab] = useState<'browse' | 'detail' | 'instantiate'>('browse')
   const [selectedIndustry, setSelectedIndustry] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -32,6 +35,7 @@ export function TemplatesPanel() {
   }
 
   const preview = () => {
+    if (!canConfigure) return
     if (!selectedId) return
     previewM.mutate(
       { template_id: selectedId, instance_counts: { n: parseInt(instanceCount) || 2 } },
@@ -76,7 +80,7 @@ export function TemplatesPanel() {
         tabs={[
           { id: 'browse', label: 'Browse' },
           { id: 'detail', label: 'Detail', disabled: !selectedId },
-          { id: 'instantiate', label: 'Instantiate', disabled: !selectedId },
+          { id: 'instantiate', label: 'Instantiate', disabled: !selectedId || !canConfigure },
         ]}
       />
 
@@ -178,7 +182,9 @@ export function TemplatesPanel() {
           </div>
 
           <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-            <button onClick={preview} style={{ padding: '8px 16px', borderRadius: 6, border: 'none', background: '#f97316', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Preview &amp; Instantiate</button>
+            {canConfigure
+              ? <button onClick={preview} style={{ padding: '8px 16px', borderRadius: 6, border: 'none', background: '#f97316', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Preview &amp; Instantiate</button>
+              : <span style={{ alignSelf: 'center', fontSize: 13, color: 'var(--muted)' }}>Previewing and instantiating a template needs the configuration role.</span>}
             <button onClick={() => setTab('browse')} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--fg)', cursor: 'pointer', fontSize: 13 }}>Back</button>
           </div>
         </>
