@@ -777,10 +777,6 @@ pub fn create_router(state: AppState) -> Router {
             get(system_docs::get_automation_docs),
         )
         .route("/api/v1/docs/export", get(system_docs::export_docs))
-        .route(
-            "/api/v1/docs/config-diff",
-            get(system_docs::get_config_diff),
-        )
         .route("/api/v1/auth/change-password", post(auth::change_password))
         .route("/api/v1/data", get(data::get_data))
         .route("/api/v1/data/export", get(data::export_data))
@@ -1345,6 +1341,12 @@ pub fn create_router(state: AppState) -> Router {
             .route(
                 "/api/v1/config/snapshots/{id}",
                 get(config_snapshots::get_snapshot).delete(config_snapshots::delete_snapshot),
+            )
+            // Snapshots hold whole flows (http_out headers included), so the
+            // diff of two is for roles that configure, like the snapshots.
+            .route(
+                "/api/v1/docs/config-diff",
+                get(system_docs::get_config_diff),
             )
             .route(
                 "/api/v1/config/snapshots/{from_id}/diff/{to_id}",
