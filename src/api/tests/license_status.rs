@@ -189,3 +189,22 @@ async fn system_features_exposes_site_and_support() {
     assert_eq!(body["license"]["support"], "active");
     assert_eq!(body["license"]["tier"], "integrator");
 }
+
+#[tokio::test]
+async fn public_status_never_shows_the_licence_key() {
+    let key = ["TEST", "ABCD", "EFGH", "1234"].join("-");
+    let app = test_app_with_license_status(crate::license::LicenseStatus::Valid {
+        license_key: key.clone(),
+        expires_at: None,
+        days_remaining: None,
+        tier: Some("enterprise".to_string()),
+        grace: false,
+        legacy_white_label: false,
+        site: None,
+        support_until: None,
+    });
+    let (_, body) = get_status(app).await;
+    assert_eq!(body["status"], "Valid");
+    assert_eq!(body["license_key"], "****1234");
+    assert!(!body.to_string().contains("EFGH"));
+}
