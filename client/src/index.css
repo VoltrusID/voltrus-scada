@@ -25,7 +25,8 @@
   --border-light: #3f3f46;
   --text: #e4e4e7;
   --text-dim: #a1a1aa;
-  --text-muted: #71717a;
+  /* 5.2:1 on --card: secondary text must meet WCAG AA (4.5:1). */
+  --text-muted: #85858e;
   --warn: #f59e0b;
   --crit: #ef4444;
   --ok: #22c55e;
@@ -74,12 +75,13 @@
   --text: #111827;
   --text-dim: #4b5563;
   --text-muted: #6b7280;
-  --warn: #d97706;
+  /* Status and accent colours are used as text: each is at least 4.5:1 on --bg and --card. */
+  --warn: #b45309;
   --crit: #dc2626;
-  --ok: #16a34a;
-  --cyan: #16a34a;
+  --ok: #15803d;
+  --cyan: #15803d;
   --fg: var(--text);
-  --green: #16a34a;
+  --green: #15803d;
   --muted: var(--text-muted);
   --shadow: 0 1px 3px rgba(0,0,0,.1);
   --input-bg: #ffffff;
@@ -94,10 +96,11 @@
   --hmi-detail: #6b717a;
   --hmi-pipe-hi: #e9ecef;
   --hmi-pipe-lo: #8d939b;
-  --hmi-run: #1f9d57;
-  --hmi-fault: #d92d2d;
-  --hmi-warn: #d99000;
-  --hmi-stale: #b936c9;
+  /* State colours label symbols on the light stage: at least 4.5:1 on --hmi-stage. */
+  --hmi-run: #11713b;
+  --hmi-fault: #b91c1c;
+  --hmi-warn: #875a00;
+  --hmi-stale: #9b2aaa;
   --hmi-liquid-hi: #7db6ea;
   --hmi-liquid-lo: #2a6bb5;
   --hmi-bulk-hi: #d9c49b;

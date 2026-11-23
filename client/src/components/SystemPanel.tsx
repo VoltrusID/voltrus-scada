@@ -7,6 +7,7 @@ import { ProjectWizard } from './ProjectWizard'
 import { HealthCheckPanel } from './HealthCheckPanel'
 import { SmtpSettingsPanel } from './SmtpSettingsPanel'
 import { StorageSettings } from './StorageSettings'
+import { TabList, TabPanel } from './TabList'
 
 type SystemTab = 'overview' | 'docs' | 'templates' | 'config' | 'wizard' | 'health' | 'storage' | 'smtp' | 'tools'
 
@@ -17,35 +18,33 @@ interface Props {
 export function SystemPanel({ systemInfo }: Props) {
   const [tab, setTab] = useState<SystemTab>('overview')
 
-  const tabStyle = (active: boolean) => ({
-    padding: '8px 16px', cursor: 'pointer', fontSize: 13,
-    color: active ? 'var(--fg)' : 'var(--muted)',
-    borderBottom: active ? '2px solid #f97316' : '2px solid transparent',
-  } as React.CSSProperties)
+  const tabs: { id: SystemTab; label: string }[] = [
+    { id: 'overview', label: 'System' },
+    { id: 'docs', label: 'Documentation' },
+    { id: 'templates', label: 'Templates' },
+    { id: 'wizard', label: 'Wizard' },
+    { id: 'health', label: 'Health' },
+    { id: 'storage', label: 'Storage' },
+    { id: 'config', label: 'Config' },
+    { id: 'smtp', label: 'SMTP' },
+    { id: 'tools', label: 'Tools' },
+  ]
 
   return (
     <div style={{ padding: 8, overflowY: 'auto', height: '100%', boxSizing: 'border-box' }}>
-      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 16 }}>
-        <div style={tabStyle(tab === 'overview')} onClick={() => setTab('overview')}>System</div>
-        <div style={tabStyle(tab === 'docs')} onClick={() => setTab('docs')}>Documentation</div>
-        <div style={tabStyle(tab === 'templates')} onClick={() => setTab('templates')}>Templates</div>
-        <div style={tabStyle(tab === 'wizard')} onClick={() => setTab('wizard')}>Wizard</div>
-        <div style={tabStyle(tab === 'health')} onClick={() => setTab('health')}>Health</div>
-        <div style={tabStyle(tab === 'storage')} onClick={() => setTab('storage')}>Storage</div>
-        <div style={tabStyle(tab === 'config')} onClick={() => setTab('config')}>Config</div>
-        <div style={tabStyle(tab === 'smtp')} onClick={() => setTab('smtp')}>SMTP</div>
-        <div style={tabStyle(tab === 'tools')} onClick={() => setTab('tools')}>Tools</div>
-      </div>
+      <TabList tabs={tabs} value={tab} onChange={setTab} label="System sections" idPrefix="system" />
 
-      {tab === 'overview' && <SystemOverview systemInfo={systemInfo} />}
-      {tab === 'docs' && <DocsPanel />}
-      {tab === 'templates' && <TemplatesPanel />}
-      {tab === 'wizard' && <ProjectWizard onClose={() => setTab('overview')} />}
-      {tab === 'health' && <HealthCheckPanel />}
-      {tab === 'storage' && <StorageSettings />}
-      {tab === 'config' && <ConfigSnapshotPanel />}
-      {tab === 'smtp' && <SmtpSettingsPanel />}
-      {tab === 'tools' && <ToolsPanel />}
+      <TabPanel idPrefix="system" id={tab}>
+        {tab === 'overview' && <SystemOverview systemInfo={systemInfo} />}
+        {tab === 'docs' && <DocsPanel />}
+        {tab === 'templates' && <TemplatesPanel />}
+        {tab === 'wizard' && <ProjectWizard onClose={() => setTab('overview')} />}
+        {tab === 'health' && <HealthCheckPanel />}
+        {tab === 'storage' && <StorageSettings />}
+        {tab === 'config' && <ConfigSnapshotPanel />}
+        {tab === 'smtp' && <SmtpSettingsPanel />}
+        {tab === 'tools' && <ToolsPanel />}
+      </TabPanel>
     </div>
   )
 }

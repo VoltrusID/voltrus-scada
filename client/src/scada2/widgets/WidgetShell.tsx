@@ -20,6 +20,8 @@ interface WidgetShellProps {
   onMove: (id: string, x: number, y: number) => void
   onResize: (id: string, x: number, y: number, width: number, height: number) => void
   onWriteValue?: (value: number) => void
+  /** In run mode, activating the widget does something (opens its faceplate): make it a keyboard button. */
+  activatable?: boolean
 }
 
 // SVG symbols draw strokes right at their edge, so they must not be clipped.
@@ -38,7 +40,7 @@ const HANDLES = {
 
 export default function WidgetShell({
   instance, sensor, data, sensors, currentValues,
-  editMode, selected, scale, locked, onSelect, onMove, onResize, onWriteValue,
+  editMode, selected, scale, locked, onSelect, onMove, onResize, onWriteValue, activatable = false,
 }: WidgetShellProps) {
   const [hover, setHover] = useState(false)
 
@@ -92,6 +94,17 @@ export default function WidgetShell({
       <div
         onMouseDown={editMode ? () => onSelect(instance.id) : undefined}
         onClick={editMode ? undefined : () => onSelect(instance.id)}
+        {...(!editMode && activatable ? {
+          role: 'button',
+          tabIndex: 0,
+          'aria-label': `${sensor?.name ?? instance.type}: open faceplate`,
+          'aria-pressed': selected,
+          onKeyDown: (e: React.KeyboardEvent) => {
+            if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
+            e.preventDefault()
+            onSelect(instance.id)
+          },
+        } : {})}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         style={{

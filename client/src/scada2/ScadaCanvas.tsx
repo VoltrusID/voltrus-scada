@@ -50,6 +50,8 @@ interface Props {
   onClickEmpty: () => void
   onPointerMove?: (x: number, y: number) => void
   onWriteValue?: (widgetId: string, sensorId: number, value: number) => void
+  /** Run mode: which widgets open something when activated (keyboard-focusable). */
+  isActivatable?: (w: ScadaLayoutState['widgets'][number]) => boolean
   children?: React.ReactNode // connection layer overlay
 }
 
@@ -57,7 +59,7 @@ const snap = (v: number) => Math.round(v / GRID) * GRID
 
 export const ScadaCanvas: React.FC<Props> = ({
   layout, sensors, currentValues, editMode, selectedId, zoom, showGrid, cursor, locked, onScaleChange,
-  onSelectWidget, onMoveWidget, onResizeWidget, onDrop, onClickEmpty, onPointerMove, onWriteValue, children,
+  onSelectWidget, onMoveWidget, onResizeWidget, onDrop, onClickEmpty, onPointerMove, onWriteValue, isActivatable, children,
 }) => {
   const viewportRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
@@ -138,6 +140,7 @@ export const ScadaCanvas: React.FC<Props> = ({
                 onSelect: onSelectWidget,
                 onMove: onMoveWidget,
                 onResize: onResizeWidget,
+                activatable: !editMode && !!isActivatable?.(w),
                 onWriteValue: onWriteValue && w.sensorId != null
                   ? (value: number) => onWriteValue(w.id, w.sensorId!, value)
                   : undefined,

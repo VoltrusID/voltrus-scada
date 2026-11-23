@@ -68,3 +68,13 @@ export const touchBtnStyle: React.CSSProperties = {
   minWidth: 44,
   padding: '10px 18px',
 };
+
+/**
+ * A theme colour for canvas drawing, which cannot use var(): read from the
+ * root element, so axis labels follow the light or dark theme.
+ */
+export function themeColor(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+  return v || fallback
+}

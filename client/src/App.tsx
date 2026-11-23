@@ -726,7 +726,7 @@ export function AppInner() {
 
       <Footer activeAlarmCount={activeAlarms.count} alarmsUnavailable={alarmsUnavailable} viewMode={viewMode} activeScreen={activeScreen} screens={screens} />
       <ToastContainer />
-      <SignatureDialog />
+      <SignatureDialog username={authUser} />
       {/* router outlet (child route components render null; AppInner owns all chrome) */}
       <span style={{ display: 'none' }}><Outlet /></span>
     </div>

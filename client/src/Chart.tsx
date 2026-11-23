@@ -1,5 +1,5 @@
 import { useRef, useEffect, lazy, Suspense } from 'react';
-import { safeMinMax, toHexColor } from './styles';
+import { safeMinMax, toHexColor, themeColor } from './styles';
 import { useCanvasSize } from './hooks/useCanvasSize';
 import { gaugeBands } from './gaugeMath';
 
@@ -27,7 +27,7 @@ function SparklineChart({ data, color: rawColor, warn, crit, simulated }: { data
     let yMin = rawMin - 2, yMax = rawMax + 2; if (yMax - yMin < 4) { yMin--; yMax++; }
     const toX = (i: number) => pL + (i / (data.length - 1)) * cW;
     const toY = (v: number) => pT + cH - ((v - yMin) / (yMax - yMin)) * cH;
-    ctx.fillStyle = '#52525b'; ctx.font = "10px 'SF Mono','JetBrains Mono',Menlo,monospace"; ctx.textAlign = 'right';
+    ctx.fillStyle = themeColor('--text-muted', '#85858e'); ctx.font = "10px 'SF Mono','JetBrains Mono',Menlo,monospace"; ctx.textAlign = 'right';
     for (let i = 0; i <= 4; i++) { const v = yMin + ((yMax - yMin) / 4) * (4 - i); ctx.fillText(v.toFixed(1), pL - 6, pT + (cH / 4) * i + 3); }
     ctx.setLineDash([4, 4]);
     if (warn >= yMin && warn <= yMax) { ctx.strokeStyle = 'rgba(234,179,8,0.3)'; ctx.beginPath(); ctx.moveTo(pL, toY(warn)); ctx.lineTo(W - pR, toY(warn)); ctx.stroke(); }
@@ -168,13 +168,13 @@ function GaugeChart({ value, min, max, warn, crit, color: rawColor, decimals, un
 
     // Unit text
     if (unit) {
-      ctx.fillStyle = '#71717a';
+      ctx.fillStyle = themeColor('--text-muted', '#85858e');
       ctx.font = "11px 'SF Pro Text',-apple-system,sans-serif";
       ctx.fillText(unit, cx, cy + 40);
     }
 
     // Min/max labels
-    ctx.fillStyle = '#52525b';
+    ctx.fillStyle = themeColor('--text-muted', '#85858e');
     ctx.font = "10px 'SF Mono','JetBrains Mono',Menlo,monospace";
     ctx.textAlign = 'center';
     ctx.fillText(min.toFixed(0), cx - r - 4, cy + 14);

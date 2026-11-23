@@ -5,7 +5,7 @@ import * as THREE from 'three'
 import type { SensorConfig, SensorData } from '../types'
 import type { ConnectionInstance, WidgetInstance } from '../scada2/widgets/types'
 import { useSensorCurrentValue, useTrackedCurrentValues } from '../store/dashboardStore'
-import { symbolLiveState, stateText, stateColor, type SymbolLiveState } from '../scada2/hmi/SymbolView'
+import { symbolLiveState, stateText, type SymbolLiveState } from '../scada2/hmi/SymbolView'
 import { Faceplate } from '../scada2/hmi/Faceplate'
 import { AlarmBanner } from '../scada2/AlarmBanner'
 import { isRunning } from '../scada2/connections/ConnectionLayer'
@@ -28,6 +28,11 @@ interface Props {
   /** Switch to the hand-placed free layout. */
   onFreeLayout?: () => void
 }
+
+/** The 3D view and its overlays are dark in both themes, so they use the dark HMI state colours. */
+const HMI_ON_DARK = { run: '#34c47a', warn: '#f5b21b', fault: '#f04646', stale: '#d65ce8', idle: '#a1a1aa' } as const
+const plateStateColor = (st: SymbolLiveState['state']) =>
+  st === 'running' ? HMI_ON_DARK.run : st === 'fault' ? HMI_ON_DARK.fault : st === 'stale' ? HMI_ON_DARK.stale : HMI_ON_DARK.idle
 
 const fmt = (d: SensorData | undefined, s: SensorConfig | undefined) => (d?.value == null ? '' : d.value.toFixed(s?.decimals ?? 1))
 
@@ -73,12 +78,12 @@ function TagPlate({ it, live, value, unit, selected }: { it: PlacedItem; live: S
   const showState = it.def.binding === 'state' && it.widget.sensorId != null
   if (!label && !showValue) return null
   const alarm = live.alarm
-  const border = alarm === 'crit' ? 'var(--hmi-fault)' : alarm === 'warn' ? 'var(--hmi-warn)' : selected ? 'var(--cyan)' : 'rgba(255,255,255,.14)'
+  const border = alarm === 'crit' ? HMI_ON_DARK.fault : alarm === 'warn' ? HMI_ON_DARK.warn : selected ? '#22d3ee' : 'rgba(255,255,255,.14)'
   return (
     <Html position={[0, it.top + 0.35, 0]} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}>
       <div className={alarm === 'crit' || live.state === 'fault' ? 'hmi-blink' : undefined} style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, padding: '3px 7px', borderRadius: 4, whiteSpace: 'nowrap',
-        background: 'rgba(13,15,18,.86)', border: `1px solid ${live.state === 'fault' ? 'var(--hmi-fault)' : border}`,
+        background: 'rgba(13,15,18,.86)', border: `1px solid ${live.state === 'fault' ? HMI_ON_DARK.fault : border}`,
         fontFamily: 'Inter, sans-serif', boxShadow: '0 4px 14px rgba(0,0,0,.4)',
       }}>
         {label && <div style={{ fontSize: 11, fontWeight: 700, color: '#e8edf2', letterSpacing: '.02em' }}>{label}</div>}
@@ -88,7 +93,7 @@ function TagPlate({ it, live, value, unit, selected }: { it: PlacedItem; live: S
             {unit && <span style={{ color: '#8b95a1', fontSize: 10, marginLeft: 3 }}>{unit}</span>}
           </div>
         )}
-        {showState && <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: stateColor(live.state) }}>{stateText(it.def, live.state)}</div>}
+        {showState && <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: plateStateColor(live.state) }}>{stateText(it.def, live.state)}</div>}
       </div>
     </Html>
   )
@@ -173,9 +178,9 @@ function StateLegend({ items, sensorById }: { items: PlacedItem[]; sensorById: M
   }
   return (
     <>
-      <Legend color="var(--hmi-run)">Running {counts.running ?? 0}</Legend>
+      <Legend color={HMI_ON_DARK.run}>Running {counts.running ?? 0}</Legend>
       <Legend color="#7d8792">Stopped {counts.stopped ?? 0}</Legend>
-      <Legend color="var(--hmi-fault)">Tripped {counts.fault ?? 0}</Legend>
+      <Legend color={HMI_ON_DARK.fault}>Tripped {counts.fault ?? 0}</Legend>
     </>
   )
 }
@@ -321,7 +326,7 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
           <div style={{ padding: '8px 12px', borderRadius: 6, background: 'rgba(13,15,18,.78)', border: '1px solid rgba(255,255,255,.08)', backdropFilter: 'blur(4px)' }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#e8edf2' }}>{String(header).replace('Process Overview', '3D Plant Twin')}</div>
             <div style={{ marginTop: 3, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#8b95a1' }}>
-              <span style={{ width: 7, height: 7, borderRadius: 4, background: 'var(--hmi-run)' }} /> live · {items.length} assets · {routes.filter(r => r.kind === 'flow').length} pipe runs
+              <span style={{ width: 7, height: 7, borderRadius: 4, background: HMI_ON_DARK.run }} /> live · {items.length} assets · {routes.filter(r => r.kind === 'flow').length} pipe runs
             </div>
           </div>
           <span style={{ flex: 1 }} />

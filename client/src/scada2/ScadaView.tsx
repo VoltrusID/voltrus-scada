@@ -466,6 +466,7 @@ export const ScadaView: React.FC<Props> = ({
             onResizeWidget={(id, x, y, width, height) => dispatch({ type: 'RESIZE_WIDGET', id, x, y, width, height })}
             onDrop={handleDrop}
             onWriteValue={canOperate ? handleWriteValue : undefined}
+            isActivatable={w => w.sensorId != null && FACEPLATE_TYPES.has(w.type)}
             onClickEmpty={() => { setSelection(null); setConnectFrom(null); setFaceplateId(null) }}
             onPointerMove={editMode && connectFrom ? (x, y) => setPointer({ x, y }) : undefined}
           >
