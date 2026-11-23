@@ -10,6 +10,17 @@ persist_interval_secs: 5
 # Use true behind an HTTPS proxy that runs on another machine.
 # cookie_secure: auto
 
+# Reverse proxy or tunnel in front of the server. By default no forwarding
+# header is trusted and the client address (login limits, audit, security log)
+# is the TCP peer. Behind a proxy every client then shows as the proxy's
+# address and shares its login limit, so name the header the proxy writes:
+# x-forwarded-for (read from the right: the first hop that is not one of
+# `addresses`), x-real-ip or cf-connecting-ip (Cloudflare and its tunnel). The
+# header is read only from `addresses` (default 127.0.0.1 and ::1).
+# trusted_proxy:
+#   header: x-forwarded-for
+#   addresses: ["127.0.0.1", "::1"]
+
 # Where outbound webhooks, alarm webhooks and flow http_out nodes may send
 # requests. Link-local addresses (the cloud metadata service 169.254.169.254)
 # are always refused and redirects are never followed. Private networks are

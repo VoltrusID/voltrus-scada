@@ -174,12 +174,115 @@ pub async fn login_ip_rate_limit_middleware(
     resp
 }
 
+/// The header a reverse proxy or tunnel in front of the server writes the
+/// client's address into (`trusted_proxy.header` in config.yaml).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProxyHeader {
+    /// No proxy header is trusted: the client is the TCP peer (default).
+    #[default]
+    None,
+    /// `X-Forwarded-For`, read from the right: the first hop that is not a
+    /// trusted proxy address is the client.
+    XForwardedFor,
+    /// `X-Real-IP` (nginx `real_ip`).
+    XRealIp,
+    /// `CF-Connecting-IP` (Cloudflare and its tunnel).
+    CfConnectingIp,
+}
+
+/// `trusted_proxy:` in config.yaml: which header carries the client address,
+/// and which peers may send it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct TrustedProxy {
+    #[serde(default)]
+    pub header: ProxyHeader,
+    /// Addresses of the proxies (default: this machine, 127.0.0.1 and ::1).
+    /// The header is read only when the TCP peer is one of them.
+    #[serde(default = "default_proxy_addresses")]
+    pub addresses: Vec<std::net::IpAddr>,
+}
+
+fn default_proxy_addresses() -> Vec<std::net::IpAddr> {
+    vec![
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+    ]
+}
+
+impl Default for TrustedProxy {
+    fn default() -> Self {
+        Self {
+            header: ProxyHeader::None,
+            addresses: default_proxy_addresses(),
+        }
+    }
+}
+
+impl TrustedProxy {
+    fn trusts(&self, ip: std::net::IpAddr) -> bool {
+        let ip = match ip {
+            std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped().map(std::net::IpAddr::V4).unwrap_or(ip),
+            v4 => v4,
+        };
+        self.addresses.contains(&ip)
+    }
+
+    /// The client address of a request from `peer` with `headers`.
+    pub fn client_ip(&self, peer: SocketAddr, headers: &axum::http::HeaderMap) -> String {
+        let peer_ip = peer.ip();
+        if self.header == ProxyHeader::None || !self.trusts(peer_ip) {
+            return peer_ip.to_string();
+        }
+        let value = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        let parse = |s: &str| s.trim().parse::<std::net::IpAddr>().ok();
+        let forwarded = match self.header {
+            ProxyHeader::None => None,
+            ProxyHeader::CfConnectingIp => value("cf-connecting-ip").and_then(parse),
+            ProxyHeader::XRealIp => value("x-real-ip").and_then(parse),
+            // Every proxy appends the address it got the request from, so the
+            // rightmost hop that is not one of ours is the client; anything to
+            // its left was written by the client and can be anything.
+            ProxyHeader::XForwardedFor => {
+                let hops: Vec<&str> = headers
+                    .get_all("x-forwarded-for")
+                    .iter()
+                    .filter_map(|v| v.to_str().ok())
+                    .flat_map(|v| v.split(','))
+                    .collect();
+                let mut client = None;
+                for hop in hops.iter().rev() {
+                    match parse(hop) {
+                        Some(ip) if self.trusts(ip) => client = Some(ip),
+                        Some(ip) => {
+                            client = Some(ip);
+                            break;
+                        }
+                        None => break,
+                    }
+                }
+                client
+            }
+        };
+        forwarded.unwrap_or(peer_ip).to_string()
+    }
+}
+
+static TRUSTED_PROXY: std::sync::RwLock<Option<TrustedProxy>> = std::sync::RwLock::new(None);
+
+/// Apply the config's `trusted_proxy` (called once at startup).
+pub fn set_trusted_proxy(proxy: TrustedProxy) {
+    *TRUSTED_PROXY.write().unwrap_or_else(|e| e.into_inner()) = Some(proxy);
+}
+
 /// Client IP for rate limiting and auditing.
 ///
-/// Uses the TCP peer address. Proxy headers (`CF-Connecting-IP`, then the first
-/// `X-Forwarded-For` hop, then `X-Real-IP`) are only trusted when the peer is
-/// loopback, i.e. a local reverse proxy or tunnel; a remote client cannot spoof
-/// them. Returns `"unknown"` when no peer address was recorded (test oneshots).
+/// The TCP peer address, unless `trusted_proxy` in config.yaml names a header
+/// and the peer is one of its addresses (default: loopback); then the
+/// address in that header ([`TrustedProxy::client_ip`]). With no
+/// `trusted_proxy` configured, no header is trusted, so a client cannot pick
+/// its own address. Returns `"unknown"` when no peer address was recorded
+/// (test oneshots).
 pub fn client_ip(req: &Request) -> String {
     let peer = req
         .extensions()
@@ -194,23 +297,11 @@ pub fn client_ip_from_parts(peer: Option<SocketAddr>, headers: &axum::http::Head
     let Some(peer) = peer else {
         return "unknown".to_string();
     };
-    if peer.ip().is_loopback() {
-        let forwarded = headers
-            .get("cf-connecting-ip")
-            .and_then(|v| v.to_str().ok())
-            .or_else(|| {
-                headers
-                    .get("x-forwarded-for")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.split(',').next())
-            })
-            .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
-            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok());
-        if let Some(ip) = forwarded {
-            return ip.to_string();
-        }
+    let guard = TRUSTED_PROXY.read().unwrap_or_else(|e| e.into_inner());
+    match guard.as_ref() {
+        Some(proxy) => proxy.client_ip(peer, headers),
+        None => peer.ip().to_string(),
     }
-    peer.ip().to_string()
 }
 
 /// Whether the request reached us over HTTPS: the server does not terminate TLS,

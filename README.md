@@ -206,6 +206,12 @@ the hint appears under the sign-in form, and visitors can neither change that
 account's password or preferences nor lock it with wrong passwords. Also set
 `outbound_http: {allow_private_networks: false}` there (see Network behaviour).
 
+Behind a reverse proxy or tunnel, set `trusted_proxy` (header `x-forwarded-for`,
+`x-real-ip` or `cf-connecting-ip`) so that login limits and the audit trail see
+each client's address. Without it no forwarding header is trusted, and every
+client behind the proxy shares the proxy's address and its login limit.
+[`config.yaml`](config.yaml) has the details.
+
 Open <http://localhost:3000>. The first start generates a random admin
 password and writes it to `initial-admin-password` next to the database
 (readable by the owner only); the log shows the path, never the password.

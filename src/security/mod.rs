@@ -134,30 +134,93 @@ mod tests {
         req
     }
 
-    #[test]
-    fn client_ip_ignores_proxy_headers_from_remote_peer() {
-        let req = req_from(
-            "203.0.113.7:5000",
-            &[
-                ("cf-connecting-ip", "1.2.3.4"),
-                ("x-forwarded-for", "5.6.7.8"),
-            ],
-        );
-        assert_eq!(client_ip(&req), "203.0.113.7");
+    fn proxy(header: ProxyHeader) -> TrustedProxy {
+        TrustedProxy {
+            header,
+            ..TrustedProxy::default()
+        }
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> axum::http::HeaderMap {
+        let mut map = axum::http::HeaderMap::new();
+        for (k, v) in pairs {
+            map.append(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                v.parse().unwrap(),
+            );
+        }
+        map
+    }
+
+    fn peer(s: &str) -> std::net::SocketAddr {
+        s.parse().unwrap()
     }
 
     #[test]
-    fn client_ip_trusts_proxy_headers_from_loopback_in_order() {
-        let both = req_from(
-            "127.0.0.1:5000",
-            &[
-                ("x-forwarded-for", "5.6.7.8, 10.0.0.1"),
-                ("cf-connecting-ip", "1.2.3.4"),
-            ],
+    fn client_ip_trusts_no_header_unless_configured() {
+        let h = headers(&[
+            ("cf-connecting-ip", "1.2.3.4"),
+            ("x-forwarded-for", "5.6.7.8"),
+        ]);
+        // Default (no trusted_proxy): the peer, even from loopback.
+        assert_eq!(
+            TrustedProxy::default().client_ip(peer("127.0.0.1:5000"), &h),
+            "127.0.0.1"
         );
-        assert_eq!(client_ip(&both), "1.2.3.4");
-        let xff = req_from("[::1]:5000", &[("x-forwarded-for", " 5.6.7.8 , 10.0.0.1")]);
-        assert_eq!(client_ip(&xff), "5.6.7.8");
+        // Configured, but from a peer that is not a trusted proxy.
+        assert_eq!(
+            proxy(ProxyHeader::CfConnectingIp).client_ip(peer("203.0.113.7:5000"), &h),
+            "203.0.113.7"
+        );
+        // Without a configuration the request-level helper uses the peer.
+        assert_eq!(
+            client_ip(&req_from(
+                "127.0.0.1:5000",
+                &[("x-forwarded-for", "5.6.7.8")]
+            )),
+            "127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn client_ip_reads_only_the_configured_header() {
+        let h = headers(&[
+            ("x-forwarded-for", "5.6.7.8"),
+            ("cf-connecting-ip", "1.2.3.4"),
+        ]);
+        let local = peer("127.0.0.1:5000");
+        assert_eq!(
+            proxy(ProxyHeader::CfConnectingIp).client_ip(local, &h),
+            "1.2.3.4"
+        );
+        assert_eq!(
+            proxy(ProxyHeader::XForwardedFor).client_ip(local, &h),
+            "5.6.7.8"
+        );
+        assert_eq!(
+            proxy(ProxyHeader::XRealIp).client_ip(local, &h),
+            "127.0.0.1"
+        );
+    }
+
+    #[test]
+    fn forwarded_for_is_read_from_the_right() {
+        let p = TrustedProxy {
+            header: ProxyHeader::XForwardedFor,
+            addresses: vec!["127.0.0.1".parse().unwrap(), "10.0.0.2".parse().unwrap()],
+        };
+        // The client wrote 192.0.2.66 itself; the proxy appended the real peer.
+        let h = headers(&[("x-forwarded-for", "192.0.2.66, 198.51.100.9")]);
+        assert_eq!(p.client_ip(peer("127.0.0.1:1"), &h), "198.51.100.9");
+        // A chain of our own proxies is skipped.
+        let h = headers(&[("x-forwarded-for", "192.0.2.66, 198.51.100.9, 10.0.0.2")]);
+        assert_eq!(
+            p.client_ip(peer("[::ffff:127.0.0.1]:1"), &h),
+            "198.51.100.9"
+        );
+        // Garbage stops the walk at the peer.
+        let h = headers(&[("x-forwarded-for", "nonsense")]);
+        assert_eq!(p.client_ip(peer("127.0.0.1:1"), &h), "127.0.0.1");
     }
 
     #[test]
