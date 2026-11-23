@@ -43,11 +43,14 @@ pub async fn write_tag(
         _ => {}
     }
 
+    let bind_addr = pool.bind_address(config.network.as_deref()).await;
+
     if register.register_area == "coil" {
         return write_coil(
             pool,
             &config.id,
             socket_addr,
+            bind_addr,
             config.unit_id,
             register.protocol_address(),
             value != 0.0,
@@ -62,7 +65,7 @@ pub async fn write_tag(
     };
 
     let ctx_result = pool
-        .get_or_connect(&config.id, socket_addr, config.unit_id, None)
+        .get_or_connect(&config.id, socket_addr, config.unit_id, bind_addr)
         .await;
 
     let mut ctx = match ctx_result {
@@ -131,13 +134,14 @@ async fn write_coil(
     pool: &crate::modbus::pool::ModbusPool,
     device_id: &str,
     socket_addr: std::net::SocketAddr,
+    bind_addr: Option<std::net::SocketAddr>,
     unit_id: u8,
     address: u16,
     coil_on: bool,
     start: std::time::Instant,
 ) -> WriteResult {
     let ctx_result = pool
-        .get_or_connect(device_id, socket_addr, unit_id, None)
+        .get_or_connect(device_id, socket_addr, unit_id, bind_addr)
         .await;
 
     let mut ctx = match ctx_result {

@@ -171,11 +171,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     // Load device configs from DB and start pollers. The passive node of a
     // redundant pair starts none: its peer owns the devices until it takes over.
-    let poller_manager = PollerManager::new(
-        cache.clone(),
-        storage.clone(),
-        network::NetworkManager::new(app_config.networks.clone()),
-    );
+    let network_manager = network::NetworkManager::new(app_config.networks.clone());
+    let poller_manager =
+        PollerManager::new(cache.clone(), storage.clone(), network_manager.clone());
     if crate::node_role::polls_devices() {
         match poller_manager.start_all_enabled().await {
             Ok(started) => tracing::info!("Started {started} device poller(s)"),
@@ -542,7 +540,9 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     // Shared Modbus connection pool (used by both command queue and direct writes)
     #[cfg(feature = "modbus")]
-    let modbus_pool = std::sync::Arc::new(crate::modbus::ModbusPool::new());
+    let modbus_pool = std::sync::Arc::new(
+        crate::modbus::ModbusPool::new().with_network_manager(network_manager.clone()),
+    );
 
     // Spawn command queue processor
     #[cfg(feature = "modbus")]
@@ -739,7 +739,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         config_path: config_path.to_string(),
         ws_manager: ws_manager.clone(),
         mqtt_broker_state,
-        network_manager: network::NetworkManager::new(app_config.networks.clone()),
+        network_manager: network_manager.clone(),
         health_monitor,
         widget_registry: widget_sdk::WidgetRegistry::new(std::path::PathBuf::from(
             "voltrus/widgets",
