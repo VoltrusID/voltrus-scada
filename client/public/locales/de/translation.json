@@ -426,7 +426,8 @@
     "pageCrashed": "Auf dieser Seite ist ein Fehler aufgetreten",
     "pageCrashedDesc": "Der Rest der Anwendung läuft weiter. Versuchen Sie es erneut oder kehren Sie zum Dashboard zurück.",
     "reload": "Neu laden",
-    "tryAgain": "Erneut versuchen"
+    "tryAgain": "Erneut versuchen",
+    "serverDown": "Der Server ist nicht erreichbar. Neuer Versuch erfolgt automatisch."
   },
   "history": {
     "loadFailed": "Der Verlauf konnte nicht geladen werden."

@@ -17,15 +17,18 @@ describe('the app error boundary', () => {
     expect(screen.getByText('page')).toBeTruthy()
   })
 
-  it('reloads once for a chunk that is gone after a redeploy', async () => {
+  it('a missing chunk with the server down keeps the in-app screen and reloads once it is back', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    const reload = vi.fn()
-    vi.stubGlobal('location', { ...window.location, reload })
+    let up = false
+    vi.stubGlobal('fetch', vi.fn(async () => { if (!up) throw new TypeError('Failed to fetch'); return new Response(null, { status: 200 }) }))
     const Page = lazy(() => Promise.reject(new TypeError('Failed to fetch dynamically imported module: /assets/Page.js')))
     render(<ErrorBoundary><Suspense fallback={null}><Page /></Suspense></ErrorBoundary>)
-    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('not reachable'))
     expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy()
-    expect(sessionStorage.getItem('voltrus:chunk-reload-at')).not.toBeNull()
+    expect(sessionStorage.getItem('voltrus:chunk-reload-at')).toBeNull()
+    up = true
+    window.dispatchEvent(new Event('online'))
+    await waitFor(() => expect(sessionStorage.getItem('voltrus:chunk-reload-at')).not.toBeNull())
     vi.unstubAllGlobals()
   })
 

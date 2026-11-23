@@ -424,7 +424,8 @@
     "pageCrashed": "此页面出现错误",
     "pageCrashedDesc": "应用的其他部分仍在运行。请重试，或返回仪表板。",
     "reload": "重新加载",
-    "tryAgain": "重试"
+    "tryAgain": "重试",
+    "serverDown": "无法连接服务器。正在自动重试。"
   },
   "history": {
     "loadFailed": "无法加载历史数据。"

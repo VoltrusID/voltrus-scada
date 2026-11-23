@@ -43,9 +43,50 @@ export function reloadOnceForNewBuild(deps: ReloadDeps = defaultDeps()): boolean
   return true
 }
 
-/** Vite reports a failed chunk preload with this event; reloading replaces the stale page. */
+/**
+ * Whether the server answers at all. A reload while it is down would replace
+ * the app with the browser's own error page, which never retries.
+ */
+export async function serverReachable(fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  try {
+    const r = await fetchImpl('/', { method: 'HEAD', cache: 'no-store', credentials: 'same-origin' })
+    return r.status < 500
+  } catch {
+    return false
+  }
+}
+
+export type RecoveryOutcome = 'reloaded' | 'server-down' | 'guarded'
+
+let inFlight: Promise<RecoveryOutcome> | null = null
+
+/** Reload for a new build only once the server is reachable; one probe at a time. */
+export function reloadIfServerUp(
+  deps: ReloadDeps = defaultDeps(),
+  probe: () => Promise<boolean> = () => serverReachable(),
+): Promise<RecoveryOutcome> {
+  if (inFlight) return inFlight
+  inFlight = (async () => {
+    try {
+      if (!(await probe())) return 'server-down'
+      return reloadOnceForNewBuild(deps) ? 'reloaded' : 'guarded'
+    } finally {
+      inFlight = null
+    }
+  })()
+  return inFlight
+}
+
+/** Delay before the next recovery attempt: 5 s doubling to a minute. */
+export function recoveryDelayMs(attempt: number): number {
+  return Math.min(5_000 * 2 ** attempt, CHUNK_RELOAD_GUARD_MS)
+}
+
+/**
+ * Vite reports a failed chunk preload with this event. The error still reaches
+ * the ErrorBoundary, which keeps an in-app screen and retries; here the page is
+ * reloaded at once if the server is up (it was a redeploy).
+ */
 export function installChunkReload(): void {
-  window.addEventListener('vite:preloadError', event => {
-    if (reloadOnceForNewBuild()) event.preventDefault()
-  })
+  window.addEventListener('vite:preloadError', () => { void reloadIfServerUp() })
 }

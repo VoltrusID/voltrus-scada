@@ -426,7 +426,8 @@
     "pageCrashed": "Something went wrong on this page",
     "pageCrashedDesc": "The rest of the app keeps running. Try again, or go back to the dashboard.",
     "reload": "Reload",
-    "tryAgain": "Try again"
+    "tryAgain": "Try again",
+    "serverDown": "The server is not reachable. Retrying automatically."
   },
   "history": {
     "loadFailed": "History could not be loaded."

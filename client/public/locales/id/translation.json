@@ -424,7 +424,8 @@
     "pageCrashed": "Terjadi kesalahan di halaman ini",
     "pageCrashedDesc": "Bagian lain aplikasi tetap berjalan. Coba lagi, atau kembali ke dasbor.",
     "reload": "Muat Ulang",
-    "tryAgain": "Coba lagi"
+    "tryAgain": "Coba lagi",
+    "serverDown": "Server tidak dapat dijangkau. Mencoba lagi secara otomatis."
   },
   "history": {
     "loadFailed": "Riwayat tidak dapat dimuat."
