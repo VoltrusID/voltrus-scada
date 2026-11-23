@@ -71,9 +71,9 @@ impl CommandQueue {
             if !crate::node_role::is_active() {
                 continue;
             }
+            // Retried every tick until it succeeds.
             if !recovered {
-                recovered = true;
-                self.fail_interrupted().await;
+                recovered = self.fail_interrupted().await;
             }
             self.check_readbacks().await;
             if let Err(e) = self.process_queue().await {
@@ -83,19 +83,29 @@ impl CommandQueue {
     }
 
     /// Commands a previous run left mid-delivery are failed, never resent.
-    async fn fail_interrupted(&self) {
+    /// False when the sweep could not run (it is tried again).
+    async fn fail_interrupted(&self) -> bool {
         match self.storage.fail_interrupted_commands().await {
-            Ok(0) => {}
-            Ok(n) => tracing::warn!(
-                "{n} command(s) were being sent when the server stopped; marked failed"
-            ),
-            Err(e) => tracing::warn!("Could not resolve interrupted commands: {e}"),
+            Ok(0) => true,
+            Ok(n) => {
+                tracing::warn!(
+                    "{n} command(s) were being sent when the server stopped; marked failed"
+                );
+                true
+            }
+            Err(e) => {
+                tracing::warn!("Could not resolve interrupted commands: {e}");
+                false
+            }
         }
     }
 
     async fn process_queue(&self) -> anyhow::Result<()> {
         let commands = self.storage.get_queued_commands().await?;
-        let mut ready = Vec::new();
+        // Devices whose oldest due command has been looked at: a device takes
+        // its commands in order, so a newer one never overtakes an older one
+        // that is waiting out a retry backoff (and later overwrites it).
+        let mut device_seen = std::collections::HashSet::new();
 
         for cmd in &commands {
             let now = crate::timeutil::now_secs();
@@ -146,6 +156,11 @@ impl CommandQueue {
                 continue; // Not yet time
             }
 
+            // -- Order: only the oldest due command of a device is considered --
+            if !device_seen.insert(cmd.device_id) {
+                continue;
+            }
+
             // -- Retry backoff: don't hammer a failing device. --
             // Exponential backoff off retry_count (2^n s, capped at 60s). sent_at
             // records the last send and survives the queued→sent→queued retry
@@ -190,22 +205,20 @@ impl CommandQueue {
                 continue;
             }
 
-            // Claim the device; a second command for it in this pass waits
-            // for the next one.
+            // Claim the device and deliver in a task of its own, released
+            // when it finishes: devices do not wait for each other, and the
+            // queue keeps serving the others while one is slow.
             if !self.in_flight.write().await.insert(cmd.device_id) {
                 continue;
             }
-            ready.push((cmd, ds, cache_device_id));
+            let queue = self.clone();
+            let cmd = cmd.clone();
+            tokio::spawn(async move {
+                queue
+                    .with_in_flight(cmd.device_id, queue.deliver(&cmd, ds, &cache_device_id))
+                    .await;
+            });
         }
-
-        // Different devices are written concurrently, so one slow or
-        // unreachable device does not hold up the others.
-        futures_util::future::join_all(ready.into_iter().map(|(cmd, ds, cache_device_id)| {
-            self.with_in_flight(cmd.device_id, async move {
-                self.deliver(cmd, ds, &cache_device_id).await
-            })
-        }))
-        .await;
 
         Ok(())
     }
@@ -236,7 +249,21 @@ impl CommandQueue {
             .update_command_status(&cmd.id, "sent", None, "system", None)
             .await?;
 
-        let result = self.execute_write(cmd).await;
+        let started = std::time::Instant::now();
+        let result = match tokio::time::timeout(
+            std::time::Duration::from_secs(WRITE_TIMEOUT_SECS),
+            self.execute_write(cmd),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => crate::models::WriteResult {
+                success: false,
+                device_response: None,
+                error: Some(format!("Write timed out after {WRITE_TIMEOUT_SECS}s")),
+                latency_ms: started.elapsed().as_millis() as u64,
+            },
+        };
 
         // -- Handle result --
         if result.success {
@@ -251,9 +278,28 @@ impl CommandQueue {
                 .clone()
                 .unwrap_or_else(|| "OK".to_string());
             self.publish_ack_event(&cmd.id, &response, result.latency_ms);
-            self.storage
+            // The device took the write: losing that to a passing storage
+            // error would leave the command "sent" for good, so try again.
+            let mut attempt = 1;
+            while let Err(e) = self
+                .storage
                 .update_command_status(&cmd.id, "acked", None, "system", None)
-                .await?;
+                .await
+            {
+                if attempt >= ACK_RECORD_ATTEMPTS {
+                    return Err(e.context(format!(
+                        "command {} was acknowledged by the device but could not be recorded",
+                        cmd.id
+                    )));
+                }
+                tracing::warn!(
+                    "Recording the ack of command {} failed, retrying: {e}",
+                    cmd.id
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(200 * u64::from(attempt)))
+                    .await;
+                attempt += 1;
+            }
 
             // The cache keeps showing what the device last reported: an ack
             // says the device took the write, not that the value is in
@@ -509,5 +555,112 @@ mod tests {
         assert!(storage.get_queued_commands().await.unwrap().is_empty());
         let audit = storage.get_command_audit("c3").await.unwrap();
         assert!(audit.iter().any(|a| a.new_status == "failed"));
+    }
+
+    fn queued_command(id: &str, created_at: i64) -> crate::models::Command {
+        crate::models::Command {
+            id: id.into(),
+            data_source_id: 999,
+            device_id: 5,
+            protocol: "modbus".into(),
+            value: "1".into(),
+            status: "pending".into(),
+            policy: "immediate".into(),
+            scheduled_at: None,
+            retry_count: 0,
+            max_retries: 3,
+            error_message: None,
+            created_at,
+            sent_at: None,
+            acked_at: None,
+            resolved_at: None,
+            created_by: "admin".into(),
+            device_ref: "plc".into(),
+            readback_status: None,
+            readback_value: None,
+            readback_attempts: 0,
+            readback_ts: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_newer_command_waits_for_an_older_one_in_backoff() {
+        let storage = Storage::new_in_memory().unwrap();
+        let cache = DeviceCache::new();
+        cache
+            .update(
+                "plc",
+                std::collections::HashMap::from([("sp".into(), 1.0)]),
+                false,
+            )
+            .await;
+        cache
+            .set_status("plc", crate::models::DeviceStatus::Online)
+            .await;
+        let now = crate::timeutil::now_secs();
+        // The older command failed once just now and is backing off.
+        let mut older = queued_command("old", now - 10);
+        older.status = "queued".into();
+        older.retry_count = 1;
+        older.sent_at = Some(now);
+        storage.insert_command(&older).await.unwrap();
+        storage
+            .insert_command(&queued_command("new", now - 5))
+            .await
+            .unwrap();
+
+        let q = queue(storage.clone(), cache);
+        q.process_queue().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let newer = storage.get_command("new").await.unwrap().unwrap();
+        assert_eq!(
+            newer.status, "pending",
+            "the newer command must not overtake"
+        );
+        assert_eq!(newer.sent_at, None);
+        assert!(q.in_flight.read().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_oldest_command_of_a_device_goes_first() {
+        let storage = Storage::new_in_memory().unwrap();
+        let cache = DeviceCache::new();
+        cache
+            .update(
+                "plc",
+                std::collections::HashMap::from([("sp".into(), 1.0)]),
+                false,
+            )
+            .await;
+        cache
+            .set_status("plc", crate::models::DeviceStatus::Online)
+            .await;
+        let now = crate::timeutil::now_secs();
+        storage
+            .insert_command(&queued_command("a", now - 10))
+            .await
+            .unwrap();
+        storage
+            .insert_command(&queued_command("b", now - 5))
+            .await
+            .unwrap();
+        let q = queue(storage.clone(), cache);
+        q.process_queue().await.unwrap();
+        // The write itself fails (no such tag); what matters is which was tried.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !q.in_flight.read().await.is_empty() {
+            assert!(std::time::Instant::now() < deadline);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let a = storage.get_command("a").await.unwrap().unwrap();
+        let b = storage.get_command("b").await.unwrap().unwrap();
+        assert!(a.sent_at.is_some(), "the oldest was sent");
+        assert_eq!(b.sent_at, None, "the newer one waits");
+    }
+
+    #[tokio::test]
+    async fn the_restart_sweep_reports_success() {
+        let q = queue(Storage::new_in_memory().unwrap(), DeviceCache::new());
+        assert!(q.fail_interrupted().await);
     }
 }
