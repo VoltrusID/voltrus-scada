@@ -230,7 +230,18 @@ pub async fn dispatch_outbound_webhooks(
             return;
         }
     };
-    fire_outbound_webhooks(storage, &webhooks, payload);
+    // Alarm (and other rare) events are never dropped: each delivery waits
+    // for one of the alarm slots, which tag_change traffic does not use.
+    for target in webhook_targets(&webhooks, payload) {
+        let storage = storage.clone();
+        let payload = payload.clone();
+        tokio::spawn(async move {
+            let Ok(_slot) = ALARM_SLOTS.clone().acquire_owned().await else {
+                return;
+            };
+            deliver(&storage, &target, &payload).await;
+        });
+    }
 }
 
 /// One HTTP client for every outbound webhook, so deliveries share its
@@ -238,17 +249,167 @@ pub async fn dispatch_outbound_webhooks(
 static WEBHOOK_CLIENT: std::sync::LazyLock<reqwest::Client> =
     std::sync::LazyLock::new(reqwest::Client::new);
 
-/// Outbound webhook deliveries (with their retries) running at once. Past
-/// this, new deliveries are dropped and counted rather than queued without
-/// bound behind a slow or unreachable receiver.
-const MAX_WEBHOOK_DELIVERIES: usize = 32;
+/// Alarm webhook deliveries (with their retries) running at once. More
+/// wait their turn; none is dropped.
+const MAX_ALARM_DELIVERIES: usize = 16;
 
-static WEBHOOK_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+static ALARM_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     std::sync::LazyLock::new(|| {
-        std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_WEBHOOK_DELIVERIES))
+        std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_ALARM_DELIVERIES))
     });
 
-static WEBHOOKS_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// One webhook a payload goes to, read from its stored row.
+#[derive(Debug, Clone)]
+pub struct WebhookTarget {
+    id: i64,
+    url: String,
+    headers: std::collections::HashMap<String, String>,
+    retry_count: u32,
+    timeout_ms: u64,
+}
+
+/// The webhooks of `webhooks` whose device filter lets `payload` through.
+pub fn webhook_targets(
+    webhooks: &[serde_json::Value],
+    payload: &serde_json::Value,
+) -> Vec<WebhookTarget> {
+    let payload_device = payload
+        .get("device_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    webhooks
+        .iter()
+        .filter_map(|wh| {
+            let url = wh.get("url").and_then(|v| v.as_str())?.to_string();
+            let device_filter = wh
+                .get("device_filter")
+                .and_then(|v| v.as_str())
+                .unwrap_or("\"all\"");
+            // Device filter: "all" or JSON array of device IDs
+            if device_filter != "\"all\"" && device_filter != "all" {
+                let filter_str = device_filter.trim_matches('"');
+                let allowed: Vec<String> = if filter_str.starts_with('[') {
+                    serde_json::from_str::<Vec<String>>(filter_str).unwrap_or_default()
+                } else {
+                    filter_str.split(',').map(|s| s.to_string()).collect()
+                };
+                if !allowed.is_empty() && !allowed.iter().any(|d| d == payload_device) {
+                    return None;
+                }
+            }
+            Some(WebhookTarget {
+                id: wh.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+                url,
+                headers: wh
+                    .get("headers")
+                    .and_then(|v| v.as_str())
+                    .and_then(|h| serde_json::from_str(h).ok())
+                    .unwrap_or_default(),
+                retry_count: wh.get("retry_count").and_then(|v| v.as_u64()).unwrap_or(3) as u32,
+                timeout_ms: wh
+                    .get("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(10000),
+            })
+        })
+        .collect()
+}
+
+/// POST `payload` to one webhook with its retries, then record the outcome.
+async fn deliver(storage: &Storage, target: &WebhookTarget, payload: &serde_json::Value) {
+    let now = crate::timeutil::now_secs();
+    let mut success = false;
+    for attempt in 0..=target.retry_count {
+        let mut request = WEBHOOK_CLIENT
+            .post(&target.url)
+            .json(payload)
+            .timeout(std::time::Duration::from_millis(target.timeout_ms));
+        for (k, v) in &target.headers {
+            request = request.header(k, v);
+        }
+        let failure = match request.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                tracing::info!(
+                    "Outbound webhook {} fired to {} (attempt {})",
+                    target.id,
+                    target.url,
+                    attempt + 1
+                );
+                success = true;
+                break;
+            }
+            Ok(resp) => format!("returned {}", resp.status()),
+            Err(e) => format!("error: {e}"),
+        };
+        if attempt < target.retry_count {
+            let delay = 500 * 2u64.pow(attempt.min(10));
+            tracing::warn!(
+                "Outbound webhook {} {failure}, retrying in {delay}ms",
+                target.id
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+        }
+    }
+    let status_str = if success { "success" } else { "error" };
+    if let Err(e) = storage
+        .update_outbound_webhook_status(target.id, Some(now), Some(status_str.to_string()))
+        .await
+    {
+        tracing::warn!("Failed to update outbound webhook status: {}", e);
+    }
+}
+
+/// One tag change waiting to be delivered to its webhooks.
+struct TagChangeJob {
+    payload: serde_json::Value,
+    targets: Vec<WebhookTarget>,
+}
+
+/// Bounded queue of tag_change deliveries, drained by a fixed set of
+/// workers. A full queue refuses a change instead of growing; the caller
+/// then leaves it unrecorded so the next cycle offers it again.
+#[derive(Clone)]
+pub struct TagChangeQueue {
+    tx: tokio::sync::mpsc::Sender<TagChangeJob>,
+    /// Held so the queue stays open while the queue handle lives.
+    _rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<TagChangeJob>>>,
+}
+
+/// Tag changes waiting for delivery.
+pub const TAG_CHANGE_QUEUE_CAPACITY: usize = 10_000;
+/// Workers delivering tag changes; each sends one change at a time.
+pub const TAG_CHANGE_WORKERS: usize = 8;
+
+impl TagChangeQueue {
+    pub fn start(storage: Storage, capacity: usize, workers: usize) -> Self {
+        let (tx, rx) = tokio::sync::mpsc::channel::<TagChangeJob>(capacity.max(1));
+        let rx = std::sync::Arc::new(tokio::sync::Mutex::new(rx));
+        for _ in 0..workers {
+            let rx = rx.clone();
+            let storage = storage.clone();
+            tokio::spawn(async move {
+                loop {
+                    let job = rx.lock().await.recv().await;
+                    let Some(job) = job else { break };
+                    for target in &job.targets {
+                        deliver(&storage, target, &job.payload).await;
+                    }
+                }
+            });
+        }
+        Self { tx, _rx: rx }
+    }
+
+    /// Queue `payload` for the webhooks that take it. False when the queue
+    /// is full (nothing was queued).
+    pub fn enqueue(&self, webhooks: &[serde_json::Value], payload: serde_json::Value) -> bool {
+        let targets = webhook_targets(webhooks, &payload);
+        if targets.is_empty() {
+            return true;
+        }
+        self.tx.try_send(TagChangeJob { payload, targets }).is_ok()
+    }
+}
 
 /// Remembers the last value and quality sent per tag, so `tag_change`
 /// webhooks fire when a tag changes rather than on every persistence cycle.
@@ -258,32 +419,33 @@ pub struct TagChangeTracker {
 }
 
 impl TagChangeTracker {
-    /// True when the tag's value or quality differs from the last call (or
-    /// this is the first one), and records it.
+    /// True when the tag's value or quality differs from the last one
+    /// recorded (or none is).
     pub fn changed(
-        &mut self,
+        &self,
         device_id: &str,
         metric: &str,
         value: f64,
         quality: crate::quality::Quality,
     ) -> bool {
         // Compared by bits so a NaN that stays NaN is not a change.
-        let now = (value.to_bits(), quality);
-        match self
-            .last
-            .get_mut(&(device_id.to_string(), metric.to_string()))
-        {
-            Some(prev) if *prev == now => false,
-            Some(prev) => {
-                *prev = now;
-                true
-            }
-            None => {
-                self.last
-                    .insert((device_id.to_string(), metric.to_string()), now);
-                true
-            }
-        }
+        self.last
+            .get(&(device_id.to_string(), metric.to_string()))
+            .is_none_or(|prev| *prev != (value.to_bits(), quality))
+    }
+
+    /// Record what was queued for a tag.
+    pub fn record(
+        &mut self,
+        device_id: &str,
+        metric: &str,
+        value: f64,
+        quality: crate::quality::Quality,
+    ) {
+        self.last.insert(
+            (device_id.to_string(), metric.to_string()),
+            (value.to_bits(), quality),
+        );
     }
 
     /// Forget tags of devices that are no longer present.
@@ -292,164 +454,124 @@ impl TagChangeTracker {
     }
 }
 
-/// Fire `payload` at the already-loaded `webhooks` that subscribe to its
-/// event (see `dispatch_outbound_webhooks`).
-pub fn fire_outbound_webhooks(
-    storage: &Storage,
-    webhooks: &[serde_json::Value],
-    payload: &serde_json::Value,
-) {
-    if webhooks.is_empty() {
-        return;
-    }
-
-    // Extract device_id from payload for device filtering
-    let payload_device = payload
-        .get("device_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    let now = crate::timeutil::now_secs();
-
-    for wh in webhooks {
-        let wh_id = wh.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let url = match wh.get("url").and_then(|v| v.as_str()) {
-            Some(u) => u.to_string(),
-            None => continue,
-        };
-        let device_filter = wh
-            .get("device_filter")
-            .and_then(|v| v.as_str())
-            .unwrap_or("\"all\"")
-            .to_string();
-        let headers_str = wh
-            .get("headers")
-            .and_then(|v| v.as_str())
-            .unwrap_or("{}")
-            .to_string();
-        let retry_count = wh.get("retry_count").and_then(|v| v.as_u64()).unwrap_or(3) as u32;
-        let timeout_ms = wh
-            .get("timeout_ms")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(10000);
-
-        // Device filter: "all" or JSON array of device IDs
-        if device_filter != "\"all\"" && device_filter != "all" {
-            let filter_str = device_filter.trim_matches('"');
-            let allowed: Vec<String> = if filter_str.starts_with('[') {
-                // JSON array like ["plc1","plc2"]
-                serde_json::from_str::<Vec<String>>(filter_str).unwrap_or_default()
-            } else {
-                filter_str.split(',').map(|s| s.to_string()).collect()
-            };
-            if !allowed.is_empty() && !allowed.iter().any(|d| d == payload_device) {
-                continue;
-            }
-        }
-
-        // Fire the webhook with retry
-        let Ok(slot) = WEBHOOK_SLOTS.clone().try_acquire_owned() else {
-            let n = WEBHOOKS_DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
-            if n == 1 || n.is_multiple_of(1000) {
-                tracing::warn!(
-                    "Outbound webhook {wh_id} skipped: {MAX_WEBHOOK_DELIVERIES} deliveries \
-                     already in progress ({n} skipped so far)"
-                );
-            }
-            continue;
-        };
-        let storage_clone = storage.clone();
-        let payload_clone = payload.clone();
-        tokio::spawn(async move {
-            let _slot = slot;
-            let client = &*WEBHOOK_CLIENT;
-            let mut success = false;
-
-            for attempt in 0..=retry_count {
-                let mut request = client
-                    .post(&url)
-                    .json(&payload_clone)
-                    .timeout(std::time::Duration::from_millis(timeout_ms));
-
-                // Add custom headers
-                if let Ok(hdrs) =
-                    serde_json::from_str::<std::collections::HashMap<String, String>>(&headers_str)
-                {
-                    for (k, v) in &hdrs {
-                        request = request.header(k, v);
-                    }
-                }
-
-                match request.send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        tracing::info!(
-                            "Outbound webhook {} fired to {} (attempt {})",
-                            wh_id,
-                            url,
-                            attempt + 1
-                        );
-                        success = true;
-                        break;
-                    }
-                    Ok(resp) => {
-                        let status = resp.status();
-                        if attempt < retry_count {
-                            let delay = 500 * 2u64.pow(attempt);
-                            tracing::warn!(
-                                "Outbound webhook {} returned {}, retrying in {}ms",
-                                wh_id,
-                                status,
-                                delay
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                        }
-                    }
-                    Err(e) => {
-                        if attempt < retry_count {
-                            let delay = 500 * 2u64.pow(attempt);
-                            tracing::warn!(
-                                "Outbound webhook {} error: {}, retrying in {}ms",
-                                wh_id,
-                                e,
-                                delay
-                            );
-                            tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                        }
-                    }
-                }
-            }
-
-            // Update last_triggered status
-            let status_str = if success { "success" } else { "error" };
-            if let Err(e) = storage_clone
-                .update_outbound_webhook_status(wh_id, Some(now), Some(status_str.to_string()))
-                .await
-            {
-                tracing::warn!("Failed to update outbound webhook status: {}", e);
-            }
-        });
-    }
-}
-
 #[cfg(test)]
 mod tag_change_tests {
-    use super::TagChangeTracker;
+    use super::*;
     use crate::quality::Quality;
 
     #[test]
-    fn fires_on_change_only() {
+    fn changed_compares_with_what_was_recorded() {
         let mut t = TagChangeTracker::default();
         assert!(t.changed("plc", "temp", 20.0, Quality::Good));
+        // Not recorded (not queued): still a change next time.
+        assert!(t.changed("plc", "temp", 20.0, Quality::Good));
+        t.record("plc", "temp", 20.0, Quality::Good);
         assert!(!t.changed("plc", "temp", 20.0, Quality::Good));
         assert!(t.changed("plc", "temp", 20.5, Quality::Good));
-        assert!(t.changed("plc", "temp", 20.5, Quality::Uncertain));
-        assert!(t.changed("plc", "temp", f64::NAN, Quality::Bad));
+        assert!(t.changed("plc", "temp", 20.0, Quality::Uncertain));
+        t.record("plc", "temp", f64::NAN, Quality::Bad);
         assert!(!t.changed("plc", "temp", f64::NAN, Quality::Bad));
-        assert!(t.changed("plc2", "temp", 20.5, Quality::Uncertain));
 
-        let present = std::collections::HashSet::from(["plc2"]);
-        t.retain_devices(&present);
+        t.record("plc2", "temp", 1.0, Quality::Good);
+        t.retain_devices(&std::collections::HashSet::from(["plc2"]));
         assert!(t.changed("plc", "temp", f64::NAN, Quality::Bad));
-        assert!(!t.changed("plc2", "temp", 20.5, Quality::Uncertain));
+        assert!(!t.changed("plc2", "temp", 1.0, Quality::Good));
+    }
+
+    #[test]
+    fn device_filter_selects_targets() {
+        let hooks = vec![
+            serde_json::json!({"id": 1, "url": "http://a", "device_filter": "\"all\""}),
+            serde_json::json!({"id": 2, "url": "http://b", "device_filter": "[\"plc\"]"}),
+            serde_json::json!({"id": 3, "url": "http://c", "device_filter": "other"}),
+        ];
+        let ids: Vec<i64> = webhook_targets(&hooks, &serde_json::json!({"device_id": "plc"}))
+            .iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids, [1, 2]);
+    }
+
+    /// A local HTTP endpoint that counts the POSTs it receives.
+    async fn counting_server() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let h = hits.clone();
+        let app = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move || {
+                let h = h.clone();
+                async move {
+                    h.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    "ok"
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, hits)
+    }
+
+    #[tokio::test]
+    async fn every_changed_tag_is_delivered() {
+        let (url, hits) = counting_server().await;
+        let storage = Storage::new_in_memory().unwrap();
+        let queue = TagChangeQueue::start(storage, TAG_CHANGE_QUEUE_CAPACITY, 4);
+        let hooks = vec![serde_json::json!({"id": 1, "url": url, "retry_count": 0})];
+        let mut tracker = TagChangeTracker::default();
+        // 200 tags change in one cycle: all are queued, recorded and sent.
+        for i in 0..200 {
+            let metric = format!("m{i}");
+            assert!(tracker.changed("plc", &metric, 1.0, Quality::Good));
+            assert!(queue.enqueue(
+                &hooks,
+                serde_json::json!({"device_id": "plc", "metric": metric})
+            ));
+            tracker.record("plc", &metric, 1.0, Quality::Good);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while hits.load(std::sync::atomic::Ordering::SeqCst) < 200 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "only {hits:?} delivered"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_full_queue_refuses_instead_of_dropping_silently() {
+        let storage = Storage::new_in_memory().unwrap();
+        // No workers: nothing drains the queue.
+        let queue = TagChangeQueue::start(storage, 3, 0);
+        let hooks = vec![serde_json::json!({"id": 1, "url": "http://127.0.0.1:9/"})];
+        let accepted = (0..10)
+            .filter(|i| queue.enqueue(&hooks, serde_json::json!({"metric": i})))
+            .count();
+        assert_eq!(accepted, 3);
+    }
+
+    #[tokio::test]
+    async fn alarm_webhooks_are_never_dropped() {
+        let (url, hits) = counting_server().await;
+        let storage = Storage::new_in_memory().unwrap();
+        storage
+            .create_outbound_webhook("a", &url, "[\"alarm\"]", "\"all\"", "{}", true, 0, 5000)
+            .await
+            .unwrap();
+        // Far more alarms at once than there are alarm slots.
+        for i in 0..(MAX_ALARM_DELIVERIES * 3) {
+            dispatch_outbound_webhooks(&storage, "alarm", &serde_json::json!({"alarm_id": i}))
+                .await;
+        }
+        let want = MAX_ALARM_DELIVERIES * 3;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while hits.load(std::sync::atomic::Ordering::SeqCst) < want {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "only {hits:?} of {want}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 }

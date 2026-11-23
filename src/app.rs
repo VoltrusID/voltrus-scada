@@ -222,6 +222,11 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
             > = std::collections::HashMap::new();
             let mut history_filter = crate::deadband::HistoryFilter::new();
             let mut tag_changes = crate::notification::TagChangeTracker::default();
+            let tag_change_queue = crate::notification::TagChangeQueue::start(
+                storage.clone(),
+                crate::notification::TAG_CHANGE_QUEUE_CAPACITY,
+                crate::notification::TAG_CHANGE_WORKERS,
+            );
             loop {
                 let flush_ack = tokio::select! {
                     _ = ticker.tick() => None,
@@ -492,6 +497,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                         Vec::new()
                     });
                 if !webhooks.is_empty() {
+                    let mut queue_full = 0usize;
                     let present: std::collections::HashSet<&str> =
                         snapshots.iter().map(|s| s.device_id.as_str()).collect();
                     tag_changes.retain_devices(&present);
@@ -513,10 +519,19 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                                 "status": "online",
                                 "quality": quality,
                             });
-                            crate::notification::fire_outbound_webhooks(
-                                &storage, &webhooks, &payload,
-                            );
+                            // Recorded only once queued: a change the full
+                            // queue refused is offered again next cycle.
+                            if tag_change_queue.enqueue(&webhooks, payload) {
+                                tag_changes.record(&snap.device_id, metric, *value, quality);
+                            } else {
+                                queue_full += 1;
+                            }
                         }
+                    }
+                    if queue_full > 0 {
+                        tracing::warn!(
+                            "tag_change webhook queue full: {queue_full} change(s) wait for the next cycle"
+                        );
                     }
                 }
             }
