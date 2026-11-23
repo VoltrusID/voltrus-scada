@@ -9,6 +9,15 @@ use vt_ui::theme::*;
 use super::host;
 use crate::console::{Console, Phase};
 
+/// Why the server wants a new password, in the web client's words.
+fn change_reason(expired: bool) -> &'static str {
+    if expired {
+        "Your password has expired. Set a new one to continue."
+    } else {
+        "You must set a new password before continuing."
+    }
+}
+
 pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     let theme = theme(cx).clone();
     let changing = console.phase == Phase::ChangePassword;
@@ -24,7 +33,7 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
     let (title, subtitle) = if changing {
         (
             "Choose a new password",
-            format!("{username} signed in with a generated password. Replace it before you start."),
+            format!("{username}: {}", change_reason(console.password_expired)),
         )
     } else {
         (
@@ -191,4 +200,18 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                 .child(concat!("Voltrus SCADA console ", env!("CARGO_PKG_VERSION"))),
         )
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::change_reason;
+
+    #[test]
+    fn an_expired_password_is_not_called_generated() {
+        let expired = change_reason(true);
+        assert!(expired.contains("has expired"), "{expired}");
+        let reset = change_reason(false);
+        assert!(reset.contains("must set a new password"), "{reset}");
+        assert!(!reset.contains("generated") && !expired.contains("generated"));
+    }
 }

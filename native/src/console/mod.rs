@@ -282,6 +282,9 @@ pub struct Console {
     pub inputs: Inputs,
     pub busy: bool,
     pub error: Option<String>,
+    /// The password the server wants changed has expired (rather than
+    /// being a generated one): the change card says so.
+    pub password_expired: bool,
     pub write_result: Option<(i64, Result<String, String>)>,
     /// The tag whose write awaits the server's answer.
     pub writing: Option<i64>,
@@ -540,6 +543,7 @@ impl Console {
             range: launch.range.unwrap_or("1h"),
             inputs,
             busy: false,
+            password_expired: false,
             error: None,
             write_result: None,
             writing: None,
@@ -693,6 +697,7 @@ impl Console {
                 role,
                 server,
                 must_change_password,
+                password_expired,
             } => {
                 self.busy = false;
                 self.error = None;
@@ -718,6 +723,7 @@ impl Console {
                 self.inputs
                     .password
                     .update(cx, |field, cx| field.set_text("", cx));
+                self.password_expired = password_expired;
                 if must_change_password {
                     self.phase = Phase::ChangePassword;
                 } else {
@@ -764,7 +770,10 @@ impl Console {
                 }
                 self.send(Command::Subscribe(self.store.keys()));
                 if self.stress.is_none() {
-                    self.send(Command::History(history_range(self.range).to_owned()));
+                    self.send(Command::History {
+                        range: history_range(self.range).to_owned(),
+                        keys: Vec::new(),
+                    });
                 }
                 if let Some(index) = self
                     .pending_tag
@@ -1419,10 +1428,21 @@ impl Console {
         if self.range != range {
             self.range = range;
             if self.stress.is_none() {
-                self.send(Command::History(history_range(range).to_owned()));
+                self.send(Command::History {
+                    range: history_range(range).to_owned(),
+                    keys: Vec::new(),
+                });
             }
         }
         cx.notify();
+    }
+
+    /// The user pressed a key, clicked or scrolled: the runtime reports it
+    /// (throttled) while the session has an idle timeout.
+    pub fn note_activity(&self) {
+        if self.user.is_some() && self.stress.is_none() {
+            self.send(Command::Activity);
+        }
     }
 
     // ── Commands to the server ────────────────────────────────────────────

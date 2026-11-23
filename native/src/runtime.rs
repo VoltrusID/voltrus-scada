@@ -9,10 +9,20 @@
 //! the server answers, and a signed-out session's answers are dropped.
 //!
 //! The session renews its tokens with its refresh token
-//! (`POST /auth/refresh`), before they expire and before a reconnect; the
-//! password is not kept (only while the server wants it changed). When the
-//! server refuses a renewal (revoked, expired, account locked) the session
-//! ends instead of trying again.
+//! (`POST /auth/refresh`) at two thirds of the lifetime the server gave the
+//! token, before a reconnect, and when a request is refused with 401 (the
+//! request is then sent once more); the password is not kept (only while
+//! the server wants it changed). When the server refuses a renewal
+//! (revoked, idle or too long, account locked) the session ends instead of
+//! trying again, saying why.
+//!
+//! While the session has an idle timeout, the window reports the user's
+//! input ([`Command::Activity`]) and the actor tells the server
+//! (`POST /auth/activity`) at most once per min(60 s, timeout / 3).
+//!
+//! The WebSocket is pinged every [`PING_EVERY`]; a socket silent for
+//! [`SILENT_FOR`] is taken for dead and reconnected, so a link that died
+//! without a close does not pass for live.
 //!
 //! # Generic REST calls
 //!
@@ -29,14 +39,17 @@ use std::fmt;
 use std::hash::{BuildHasher, Hasher};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::de::DeserializeOwned;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::api::{self, Alarm, DataSource, HistorySeries, Method, VoltrusApi};
+use crate::api::{
+    self, Alarm, DataSource, HistorySeries, HookRequest, Hooks, Method, SessionEnd, SessionPolicy,
+    VoltrusApi,
+};
 use crate::signature::{self, Ask, Signable, Signature};
 use crate::stress::{self, StressFeed, StressOptions};
 use crate::tag_api::{self, WriteMode};
@@ -201,9 +214,19 @@ pub enum Command {
         action: Signable,
         signature: Signature,
     },
+    /// The user declined to sign `action` (closed the prompt): a request
+    /// waiting for the signature ([`Signable::Request`]) fails.
+    DeclineSign(Signable),
+    /// The user pressed a key, clicked or scrolled: reported to the server
+    /// (throttled) while the session has an idle timeout.
+    Activity,
     RefreshAlarms,
-    /// Load history for every tag over `range` (`30m`, `1h`, `6h`, `24h`, `7d`).
-    History(String),
+    /// Load history over `range` (`30m`, `1h`, `6h`, `24h`, `7d`) for the
+    /// tags with these keys, or every tag when empty.
+    History {
+        range: String,
+        keys: Vec<String>,
+    },
     /// A generic REST call for the session; answered by [`Event::Reply`]
     /// with the same key.
     Call {
@@ -266,8 +289,14 @@ impl fmt::Debug for Command {
                 .field("action", action)
                 .field("signature", signature)
                 .finish(),
+            Self::DeclineSign(action) => f.debug_tuple("DeclineSign").field(action).finish(),
+            Self::Activity => f.write_str("Activity"),
             Self::RefreshAlarms => f.write_str("RefreshAlarms"),
-            Self::History(range) => f.debug_tuple("History").field(range).finish(),
+            Self::History { range, keys } => f
+                .debug_struct("History")
+                .field("range", range)
+                .field("keys", keys)
+                .finish(),
             Self::Call { key, .. } => f
                 .debug_struct("Call")
                 .field("key", key)
@@ -331,6 +360,8 @@ pub enum Event {
         server: String,
         /// The server wants a new password before the operator works.
         must_change_password: bool,
+        /// ... because the old one expired (not a generated one).
+        password_expired: bool,
     },
     SignInFailed(String),
     PasswordChanged(Result<(), String>),
@@ -485,6 +516,8 @@ enum Input {
     Renew(u64, u64),
     /// A REST answer for session `u64`.
     Rest(u64, Rest),
+    /// A request of session `u64` asks for a renewal or a signature.
+    Hook(u64, HookRequest),
 }
 
 enum Socket {
@@ -529,13 +562,17 @@ struct SignInError {
     message: String,
     /// The server refused the credentials (not merely unreachable).
     refused: bool,
+    /// The server ended the session (idle, or at its maximum length).
+    end: Option<SessionEnd>,
 }
 
 impl SignInError {
     fn new(error: &anyhow::Error) -> Self {
+        let server = error.downcast_ref::<api::ServerError>();
         Self {
             message: error.to_string(),
             refused: api::refused(error),
+            end: server.and_then(|error| SessionEnd::from_code(error.code.as_deref())),
         }
     }
 }
@@ -546,6 +583,8 @@ struct Tokens {
     token: String,
     /// The server revoked the one the renewal sent.
     refresh: String,
+    /// How long the server lets the new token live, when it said.
+    ttl: Option<Duration>,
 }
 
 /// Renew the tokens with a copy of the session's client and its refresh
@@ -556,6 +595,7 @@ async fn renew_tokens(mut api: VoltrusApi) -> Result<Tokens, SignInError> {
         Ok(()) => Ok(Tokens {
             token: api.token.unwrap_or_default(),
             refresh: api.refresh.unwrap_or_default(),
+            ttl: api.token_ttl,
         }),
         Err(error) => Err(SignInError::new(&error)),
     }
@@ -714,6 +754,16 @@ struct Session {
     renewal: u64,
     /// The closed socket to reopen once the renewal on its way ends.
     reopen: Option<u64>,
+    /// The server's idle and absolute limits for this session.
+    policy: SessionPolicy,
+    /// When user input was last reported (`POST /auth/activity`).
+    activity: Option<Instant>,
+    /// Requests refused with 401 waiting for the renewal on its way.
+    renew_waiters: Vec<oneshot::Sender<Option<String>>>,
+    /// Requests waiting for the user's signature, by request id.
+    signing: HashMap<u64, oneshot::Sender<Option<Signature>>>,
+    /// Forwards the session's [`HookRequest`]s to the actor.
+    _hooks: AbortOnDrop,
 }
 
 /// How the server starts the refusal (WebSocket `AuthError`, REST 403 `code`)
@@ -730,9 +780,35 @@ pub fn ws_url(base: &str) -> String {
     format!("{scheme}/api/v1/ws")
 }
 
-/// Renewing this often keeps the 15-minute session token fresh for REST
-/// calls.
+/// Renewing this often keeps the core's 15-minute session token fresh,
+/// when the server does not say how long its token lives.
 const RENEW_EVERY: Duration = Duration::from_secs(10 * 60);
+
+/// When to renew a token the server lets live `ttl`: at two thirds of it
+/// (an edition may shorten tokens to its idle timeout or to what is left of
+/// the session), [`RENEW_EVERY`] when it did not say.
+pub fn renew_after(ttl: Option<Duration>) -> Duration {
+    ttl.map_or(RENEW_EVERY, |ttl| (ttl * 2 / 3).max(Duration::from_secs(1)))
+}
+
+/// How often the WebSocket is pinged.
+pub const PING_EVERY: Duration = Duration::from_secs(15);
+
+/// A WebSocket that brings nothing (not even the answer to a ping) for this
+/// long is dead: closed and reconnected.
+pub const SILENT_FOR: Duration = Duration::from_secs(30);
+
+/// The WebSocket's keep-alive: pings and how long silence may last.
+#[derive(Debug, Clone, Copy)]
+struct Heartbeat {
+    ping: Duration,
+    silent: Duration,
+}
+
+const HEARTBEAT: Heartbeat = Heartbeat {
+    ping: PING_EVERY,
+    silent: SILENT_FOR,
+};
 
 /// After a renewal the server did not answer, try again this soon: the
 /// token still has minutes left.
@@ -855,6 +931,8 @@ struct Actor {
     /// Session and socket ids. Never reused, so neither a signed-out
     /// session's answers nor an old socket's messages pass for current ones.
     ids: u64,
+    /// The sockets' keep-alive (shorter in tests).
+    heartbeat: Heartbeat,
 }
 
 impl Actor {
@@ -866,6 +944,7 @@ impl Actor {
             stress: None,
             subscribed: Vec::new(),
             ids: 0,
+            heartbeat: HEARTBEAT,
         }
     }
 
@@ -886,6 +965,13 @@ impl Actor {
                 if self.session.as_ref().is_some_and(|s| s.id == session) {
                     self.rest(rest);
                 }
+            }
+            Input::Hook(session, request) => {
+                if self.session.as_ref().is_some_and(|s| s.id == session) {
+                    self.hook(request);
+                }
+                // Else the request's answer is dropped with it: a renewal
+                // reads as failed, a signature as declined.
             }
         }
         true
@@ -909,8 +995,9 @@ impl Actor {
                             role: login.role,
                             server: api.base.clone(),
                             must_change_password: must_change,
+                            password_expired: login.password_expired,
                         });
-                        self.begin(api, must_change.then_some(password));
+                        self.begin(api, must_change.then_some(password), login.session);
                     }
                     Err(error) => {
                         self.out.send(Event::SignInFailed(error.to_string()));
@@ -969,17 +1056,27 @@ impl Actor {
                 None,
             ),
             Command::Sign { action, signature } => self.signable(action, Some(signature)),
+            Command::DeclineSign(Signable::Request { id, .. }) => {
+                if let Some(answer) = self.session.as_mut().and_then(|s| s.signing.remove(&id)) {
+                    let _ = answer.send(None);
+                }
+            }
+            Command::DeclineSign(_) => {}
+            Command::Activity => self.activity(Instant::now()),
             Command::Unshelve(id) => {
                 self.action(format!("Unshelve alarm {id}"), move |api| {
                     Box::pin(async move { api.unshelve_alarm(id).await })
                 });
             }
             Command::RefreshAlarms => self.refresh_alarms(),
-            Command::History(range) => {
+            Command::History { range, keys } => {
                 if let Some(s) = &self.session {
                     let api = s.api.clone();
                     spawn_rest(&self.inputs, s.id, async move {
-                        let result = api.history(&range).await.map_err(|error| error.to_string());
+                        let result = api
+                            .history(&range, &keys)
+                            .await
+                            .map_err(|error| error.to_string());
                         Rest::History { range, result }
                     });
                 }
@@ -1054,13 +1151,29 @@ impl Actor {
     /// loads nothing: the server answers everything but the change with 403
     /// `password_change_required` (and refuses the socket), so the feed
     /// starts once the change is done ([`Self::open_feed`]).
-    fn begin(&mut self, api: VoltrusApi, password: Option<String>) {
+    fn begin(&mut self, api: VoltrusApi, password: Option<String>, policy: SessionPolicy) {
         self.subscribed.clear();
         let id = self.next_id();
         let generation = self.next_id();
         let held = password.is_some();
-        // The server's tokens last 15 minutes; renew well before.
-        schedule(&self.inputs, RENEW_EVERY, Input::Renew(id, 0));
+        // Renew well before the token expires.
+        schedule(
+            &self.inputs,
+            renew_after(api.token_ttl),
+            Input::Renew(id, 0),
+        );
+        // The session's requests renew a refused token and ask for
+        // signatures through the actor.
+        let (hooks, mut requests) = mpsc::unbounded_channel::<HookRequest>();
+        let inputs = self.inputs.clone();
+        let forward = AbortOnDrop(tokio::spawn(async move {
+            while let Some(request) = requests.recv().await {
+                if inputs.send(Input::Hook(id, request)).is_err() {
+                    break;
+                }
+            }
+        }));
+        let api = api.with_hooks(Hooks::new(hooks));
         self.session = Some(Session {
             id,
             api,
@@ -1075,6 +1188,11 @@ impl Actor {
             renewing: false,
             renewal: 0,
             reopen: None,
+            policy,
+            activity: None,
+            renew_waiters: Vec::new(),
+            signing: HashMap::new(),
+            _hooks: forward,
         });
         if !held {
             self.open_feed();
@@ -1090,12 +1208,85 @@ impl Actor {
         s.held = false;
         s.generation = generation;
         let token = s.api.token.clone().unwrap_or_default();
-        s.reader = spawn_socket(self.inputs.clone(), generation, ws_url(&s.api.base), token);
+        s.reader = spawn_socket(
+            self.inputs.clone(),
+            generation,
+            ws_url(&s.api.base),
+            token,
+            self.heartbeat,
+        );
+        self.load();
+    }
+
+    /// Fetch the session's tags and open alarms (at the start, and after a
+    /// reconnect: the list may have changed while the link was down).
+    fn load(&mut self) {
+        let Some(s) = &self.session else {
+            return;
+        };
         let tags = s.api.clone();
         spawn_rest(&self.inputs, s.id, async move {
             Rest::Tags(tags.data_sources().await.map_err(|error| error.to_string()))
         });
         self.refresh_alarms();
+    }
+
+    /// The user did something: tell the server, at most once per the
+    /// policy's interval, while the session has an idle timeout.
+    fn activity(&mut self, now: Instant) {
+        let Some(s) = self.session.as_mut() else {
+            return;
+        };
+        let Some(interval) = s.policy.activity_interval() else {
+            return;
+        };
+        if s.activity
+            .is_some_and(|last| now.duration_since(last) < interval)
+        {
+            return;
+        }
+        s.activity = Some(now);
+        let api = s.api.clone();
+        tokio::spawn(async move {
+            // A failure needs no answer: a session the server ended is
+            // refused at its next renewal, which says why.
+            let _ = api.record_activity().await;
+        });
+    }
+
+    /// A request of the session asks for a renewal or a signature.
+    fn hook(&mut self, request: HookRequest) {
+        let Some(s) = self.session.as_mut() else {
+            return;
+        };
+        match request {
+            HookRequest::Renew { stale, answer } => {
+                // Renewed since the request went out: it retries with the
+                // current token.
+                if s.api.token.as_deref() != Some(stale.as_str()) {
+                    let _ = answer.send(s.api.token.clone());
+                    return;
+                }
+                s.renew_waiters.push(answer);
+                self.start_renewal();
+            }
+            HookRequest::Sign {
+                id,
+                what,
+                ask,
+                answer,
+            } => {
+                s.signing.insert(id, answer);
+                self.out.send(Event::SignatureNeeded {
+                    action: Signable::Request { id, what },
+                    ask,
+                });
+            }
+            HookRequest::Signed { id, what, result } => self.out.send(Event::Signed {
+                action: Signable::Request { id, what },
+                result: result.map(|()| None),
+            }),
+        }
     }
 
     /// Drop the session (its socket task is aborted and its answers
@@ -1109,6 +1300,13 @@ impl Actor {
     /// The server refused the session's credentials: end it, as signing in
     /// again with them would only count towards locking the account.
     fn refuse(&mut self, reason: &str) {
+        self.refuse_for(reason, None);
+    }
+
+    /// [`Self::refuse`], saying why when the server ended the session
+    /// itself (idle, or at its maximum length).
+    fn refuse_for(&mut self, reason: &str, end: Option<SessionEnd>) {
+        let policy = self.session.as_ref().map(|s| s.policy).unwrap_or_default();
         if let Some(mut s) = self.end_session() {
             for tag in s.writes.abandon() {
                 self.out.send(Event::Written {
@@ -1127,9 +1325,14 @@ impl Actor {
             )));
             return;
         }
+        if let Some(end) = end {
+            self.out
+                .send(Event::Link(Link::Failed(end.message(&policy))));
+            return;
+        }
         let reason = reason.trim_end_matches('.');
         self.out.send(Event::Link(Link::Failed(format!(
-            "Not authorised: {reason}. Sign in again."
+            "Your session ended ({reason}). Please sign in again."
         ))));
     }
 
@@ -1150,7 +1353,11 @@ impl Actor {
         if let Some(s) = &self.session {
             let api = s.api.clone();
             spawn_rest(&self.inputs, s.id, async move {
-                let result = call(api).await.map_err(|error| error.to_string());
+                let result = match call(api).await {
+                    // Declined at the signature prompt, which said so.
+                    Err(error) if api::declined(&error) => Ok(()),
+                    result => result.map_err(|error| error.to_string()),
+                };
                 Rest::Action { action, result }
             });
         }
@@ -1170,6 +1377,24 @@ impl Actor {
             self.write(tag, value, signature);
             return;
         }
+        if let Signable::Request { id, .. } = &action {
+            // A request waiting in the shared request path: it goes again
+            // with the signature and reports through its hooks.
+            let waiting = self.session.as_mut().and_then(|s| s.signing.remove(id));
+            match (waiting, signature) {
+                (Some(answer), Some(signature)) => {
+                    let _ = answer.send(Some(signature));
+                }
+                (Some(answer), None) => {
+                    let _ = answer.send(None);
+                }
+                (None, _) => self.out.send(Event::Signed {
+                    action,
+                    result: Err("The request is no longer waiting".into()),
+                }),
+            }
+            return;
+        }
         let Some(s) = &self.session else {
             if signature.is_some() {
                 self.out.send(Event::Signed {
@@ -1179,7 +1404,8 @@ impl Actor {
             }
             return;
         };
-        let api = s.api.clone();
+        // These ask for a signature through their own events.
+        let api = s.api.unsigned();
         let signed = signature.is_some();
         spawn_rest(&self.inputs, s.id, async move {
             let signature = signature.as_ref();
@@ -1222,6 +1448,7 @@ impl Actor {
                     }
                     None => Ok(None),
                 },
+                Signable::Request { .. } => Ok(None),
             };
             let ask = result.as_ref().err().and_then(signature::ask);
             Rest::Signable {
@@ -1394,9 +1621,9 @@ impl Actor {
     /// that waited for it.
     fn renewed(&mut self, result: Result<Tokens, SignInError>) {
         if let Err(error) = &result
-            && error.refused
+            && (error.refused || error.end.is_some())
         {
-            self.refuse(&error.message);
+            self.refuse_for(&error.message, error.end);
             return;
         }
         let generation = self.next_id();
@@ -1405,6 +1632,11 @@ impl Actor {
         };
         s.renewing = false;
         s.renewal += 1;
+        // Requests refused with 401 retry with the new token, or fail.
+        let fresh = result.as_ref().ok().map(|tokens| tokens.token.clone());
+        for waiter in s.renew_waiters.drain(..) {
+            let _ = waiter.send(fresh.clone());
+        }
         let reopen = s
             .reopen
             .take()
@@ -1413,7 +1645,12 @@ impl Actor {
             Ok(tokens) => {
                 s.api.token = Some(tokens.token.clone());
                 s.api.refresh = Some(tokens.refresh);
-                schedule(&self.inputs, RENEW_EVERY, Input::Renew(s.id, s.renewal));
+                s.api.token_ttl = tokens.ttl;
+                schedule(
+                    &self.inputs,
+                    renew_after(tokens.ttl),
+                    Input::Renew(s.id, s.renewal),
+                );
                 if reopen.is_some() {
                     s.generation = generation;
                     // Replaces (and so aborts) the previous socket's task.
@@ -1422,12 +1659,14 @@ impl Actor {
                         generation,
                         ws_url(&s.api.base),
                         tokens.token,
+                        self.heartbeat,
                     );
                 }
             }
             Err(error) => {
-                // The old token serves a few more minutes.
-                schedule(&self.inputs, RENEW_RETRY, Input::Renew(s.id, s.renewal));
+                // The old token may serve a little longer.
+                let retry = RENEW_RETRY.min(renew_after(s.api.token_ttl));
+                schedule(&self.inputs, retry, Input::Renew(s.id, s.renewal));
                 if let Some(socket) = reopen {
                     s.failures += 1;
                     let wait = backoff(s.failures);
@@ -1448,6 +1687,7 @@ impl Actor {
                 let Some(s) = self.session.as_mut().filter(|s| s.generation == generation) else {
                     return;
                 };
+                let reconnected = s.failures > 0;
                 s.failures = 0;
                 if !self.subscribed.is_empty() {
                     let _ = sender.try_send(ClientMessage::Subscribe {
@@ -1456,6 +1696,11 @@ impl Actor {
                 }
                 s.socket = Some(sender);
                 self.out.send(Event::Link(Link::Live));
+                // Tags may have been added, changed or removed, and alarms
+                // raised or cleared, while the link was down.
+                if reconnected {
+                    self.load();
+                }
             }
             Socket::Message(generation, message) => {
                 if self
@@ -1623,6 +1868,7 @@ fn spawn_stress(out: Out, options: StressOptions) -> AbortOnDrop {
             role: "admin".into(),
             server: STRESS_SERVER.into(),
             must_change_password: false,
+            password_expired: false,
         });
         out.send(Event::Link(Link::Live));
         out.send(Event::Tags(feed.tags()));
@@ -1648,15 +1894,24 @@ fn spawn_stress(out: Out, options: StressOptions) -> AbortOnDrop {
 }
 
 /// Connect, authenticate, then forward every server message tagged with
-/// `generation` until the socket closes or the returned handle is dropped.
+/// `generation` until the socket closes, falls silent for longer than the
+/// heartbeat allows, or the returned handle is dropped.
 fn spawn_socket(
     inputs: mpsc::UnboundedSender<Input>,
     generation: u64,
     url: String,
     token: String,
+    heartbeat: Heartbeat,
 ) -> AbortOnDrop {
     AbortOnDrop(tokio::spawn(async move {
-        let reason = match tokio_tungstenite::connect_async(url.as_str()).await {
+        let connected = tokio_tungstenite::connect_async_tls_with_config(
+            url.as_str(),
+            None,
+            false,
+            crate::tls::ws_connector(),
+        )
+        .await;
+        let reason = match connected {
             Err(error) => format!("Cannot reach {url}: {error}"),
             Ok((socket, _)) => {
                 let (mut sink, mut stream) = socket.split();
@@ -1673,19 +1928,44 @@ fn spawn_socket(
                     let (sender, mut queue) = mpsc::channel::<ClientMessage>(64);
                     let _ = inputs.send(Input::Socket(Socket::Open(generation, sender)));
                     // Stops with the reader, also when the reader is aborted.
+                    // Pings while idle, so a live server always has
+                    // something to answer.
                     let writer = AbortOnDrop(tokio::spawn(async move {
-                        while let Some(message) = queue.recv().await {
-                            // Named maps: the encoding the server itself sends.
-                            let Ok(bytes) = rmp_serde::to_vec_named(&message) else {
-                                continue;
+                        let mut ping = tokio::time::interval_at(
+                            tokio::time::Instant::now() + heartbeat.ping,
+                            heartbeat.ping,
+                        );
+                        ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        loop {
+                            let frame = tokio::select! {
+                                message = queue.recv() => {
+                                    let Some(message) = message else { break };
+                                    // Named maps: the encoding the server itself sends.
+                                    let Ok(bytes) = rmp_serde::to_vec_named(&message) else {
+                                        continue;
+                                    };
+                                    Message::Binary(bytes.into())
+                                }
+                                _ = ping.tick() => Message::Ping(Vec::new().into()),
                             };
-                            if sink.send(Message::Binary(bytes.into())).await.is_err() {
+                            if sink.send(frame).await.is_err() {
                                 break;
                             }
                         }
                     }));
                     let mut reason = "The server closed the connection".to_owned();
-                    while let Some(frame) = stream.next().await {
+                    loop {
+                        let Ok(frame) = tokio::time::timeout(heartbeat.silent, stream.next()).await
+                        else {
+                            reason = format!(
+                                "No answer from the server for {} s",
+                                heartbeat.silent.as_secs_f32().round()
+                            );
+                            break;
+                        };
+                        let Some(frame) = frame else {
+                            break;
+                        };
                         match frame {
                             Ok(Message::Binary(data)) => {
                                 if let Ok(message) = rmp_serde::from_slice::<ServerMessage>(&data)
@@ -1701,6 +1981,7 @@ fn spawn_socket(
                                 reason = error.to_string();
                                 break;
                             }
+                            // Pongs and other frames only show the link lives.
                             Ok(_) => {}
                         }
                     }
@@ -1751,7 +2032,7 @@ mod tests {
             api.token = Some("token".into());
             let _entered = self.runtime.enter();
             api.refresh = Some("refresh".into());
-            self.actor.begin(api, None);
+            self.actor.begin(api, None, SessionPolicy::default());
             self.session().id
         }
 
@@ -1783,6 +2064,7 @@ mod tests {
         SignInError {
             message: message.into(),
             refused: true,
+            end: None,
         }
     }
 
@@ -1790,6 +2072,7 @@ mod tests {
         SignInError {
             message: "connect failed".into(),
             refused: false,
+            end: None,
         }
     }
 
@@ -2137,6 +2420,7 @@ mod tests {
         Tokens {
             token: token.into(),
             refresh: refresh.into(),
+            ttl: None,
         }
     }
 
@@ -2166,7 +2450,7 @@ mod tests {
         let events = h.events();
         assert!(is_failed(
             events.last(),
-            "Not authorised: Invalid credentials"
+            "Your session ended (Invalid credentials)"
         ));
     }
 
@@ -2185,7 +2469,7 @@ mod tests {
         assert!(h.actor.session.is_none());
         assert!(is_failed(
             h.events().last(),
-            "Account locked. Try again later. Sign in again."
+            "Your session ended (Account locked. Try again later). Please sign in again."
         ));
 
         h.sign_in();
@@ -2207,6 +2491,317 @@ mod tests {
     }
 
     #[test]
+    fn renewals_come_at_two_thirds_of_the_token_lifetime() {
+        assert_eq!(renew_after(None), RENEW_EVERY);
+        assert_eq!(
+            renew_after(Some(Duration::from_secs(15 * 60))),
+            Duration::from_secs(10 * 60)
+        );
+        // An edition's 5-minute idle timeout shortens the token.
+        assert_eq!(
+            renew_after(Some(Duration::from_secs(300))),
+            Duration::from_secs(200)
+        );
+        assert_eq!(
+            renew_after(Some(Duration::from_millis(900))),
+            Duration::from_secs(1)
+        );
+    }
+
+    fn sign_in_with(h: &mut Harness, policy: SessionPolicy) -> u64 {
+        let mut api = VoltrusApi::new("http://127.0.0.1:9");
+        api.token = Some("token".into());
+        api.refresh = Some("refresh".into());
+        let _entered = h.runtime.enter();
+        h.actor.begin(api, None, policy);
+        h.session().id
+    }
+
+    #[test]
+    fn user_input_is_reported_throttled_only_with_an_idle_timeout() {
+        let mut h = Harness::new();
+        h.sign_in();
+        let start = Instant::now();
+        {
+            let _entered = h.runtime.enter();
+            h.actor.activity(start);
+        }
+        assert_eq!(h.session().activity, None, "no idle timeout, no reports");
+
+        let mut h = Harness::new();
+        sign_in_with(
+            &mut h,
+            SessionPolicy {
+                idle_timeout_secs: Some(120),
+                absolute_timeout_secs: None,
+            },
+        );
+        let _entered = h.runtime.enter();
+        h.actor.activity(start);
+        assert_eq!(h.session().activity, Some(start));
+        // Within a third of the timeout: not again.
+        h.actor.activity(start + Duration::from_secs(39));
+        assert_eq!(h.session().activity, Some(start));
+        h.actor.activity(start + Duration::from_secs(40));
+        assert_eq!(h.session().activity, Some(start + Duration::from_secs(40)));
+    }
+
+    #[test]
+    fn a_session_the_server_ended_says_why_in_the_web_clients_words() {
+        let mut h = Harness::new();
+        let id = sign_in_with(
+            &mut h,
+            SessionPolicy {
+                idle_timeout_secs: Some(15 * 60),
+                absolute_timeout_secs: None,
+            },
+        );
+        h.feed(Input::Rest(
+            id,
+            Rest::Renewed(Err(SignInError {
+                message: "Signed out after a period of inactivity".into(),
+                refused: true,
+                end: Some(SessionEnd::Idle),
+            })),
+        ));
+        assert!(h.actor.session.is_none());
+        assert!(is_failed(
+            h.events().last(),
+            "You were signed out after 15 minutes of inactivity."
+        ));
+
+        let id = h.sign_in();
+        h.feed(Input::Rest(
+            id,
+            Rest::Renewed(Err(SignInError {
+                message: "The session reached its maximum length; sign in again".into(),
+                refused: true,
+                end: Some(SessionEnd::Expired),
+            })),
+        ));
+        assert!(is_failed(
+            h.events().last(),
+            "Your session reached its maximum length. Please sign in again."
+        ));
+    }
+
+    #[test]
+    fn a_refused_request_waits_for_one_renewal_and_gets_its_token() {
+        let mut h = Harness::new();
+        let id = h.sign_in();
+        // Renewed since the request went out: the current token at once.
+        let (answer, mut early) = oneshot::channel();
+        h.feed(Input::Hook(
+            id,
+            HookRequest::Renew {
+                stale: "older".into(),
+                answer,
+            },
+        ));
+        assert_eq!(early.try_recv(), Ok(Some("token".into())));
+        assert!(!h.session().renewing);
+
+        // Still the token refused: one renewal for both waiters.
+        let (first, mut one) = oneshot::channel();
+        let (second, mut two) = oneshot::channel();
+        for answer in [first, second] {
+            h.feed(Input::Hook(
+                id,
+                HookRequest::Renew {
+                    stale: "token".into(),
+                    answer,
+                },
+            ));
+        }
+        assert!(h.session().renewing);
+        h.feed(Input::Rest(id, Rest::Renewed(Ok(tokens("fresh", "r2")))));
+        assert_eq!(one.try_recv(), Ok(Some("fresh".into())));
+        assert_eq!(two.try_recv(), Ok(Some("fresh".into())));
+
+        // A renewal that fails answers `None`: the request fails as it was.
+        let (answer, mut failed) = oneshot::channel();
+        h.feed(Input::Hook(
+            id,
+            HookRequest::Renew {
+                stale: "fresh".into(),
+                answer,
+            },
+        ));
+        h.feed(Input::Rest(id, Rest::Renewed(Err(unreachable()))));
+        assert_eq!(failed.try_recv(), Ok(None));
+    }
+
+    #[test]
+    fn a_request_waiting_for_a_signature_gets_it_or_is_declined() {
+        let mut h = Harness::new();
+        let id = h.sign_in();
+        h.events();
+        let ask = Ask {
+            request: crate::ws_types::SignatureRequired {
+                action: "recipe_load".into(),
+                meaning: "I approve".into(),
+            },
+            error: None,
+        };
+        let (answer, mut signed) = oneshot::channel();
+        h.feed(Input::Hook(
+            id,
+            HookRequest::Sign {
+                id: 41,
+                what: "Load recipe 4".into(),
+                ask: ask.clone(),
+                answer,
+            },
+        ));
+        let action = Signable::Request {
+            id: 41,
+            what: "Load recipe 4".into(),
+        };
+        assert!(matches!(
+            h.events().as_slice(),
+            [Event::SignatureNeeded { action: asked, .. }] if *asked == action
+        ));
+        let signature = signature::signature(&ask.request, "secret", "batch").unwrap();
+        h.feed(Input::Command(Command::Sign {
+            action: action.clone(),
+            signature: signature.clone(),
+        }));
+        assert_eq!(signed.try_recv(), Ok(Some(signature)));
+        h.feed(Input::Hook(
+            id,
+            HookRequest::Signed {
+                id: 41,
+                what: "Load recipe 4".into(),
+                result: Ok(()),
+            },
+        ));
+        assert!(matches!(
+            h.events().as_slice(),
+            [Event::Signed {
+                result: Ok(None),
+                ..
+            }]
+        ));
+
+        let (answer, mut declined) = oneshot::channel();
+        h.feed(Input::Hook(
+            id,
+            HookRequest::Sign {
+                id: 42,
+                what: "Stop flow f".into(),
+                ask,
+                answer,
+            },
+        ));
+        h.feed(Input::Command(Command::DeclineSign(Signable::Request {
+            id: 42,
+            what: "Stop flow f".into(),
+        })));
+        assert_eq!(declined.try_recv(), Ok(None));
+    }
+
+    #[test]
+    fn a_reconnect_after_a_drop_loads_the_tags_and_alarms_again() {
+        let mut h = Harness::new();
+        let id = h.sign_in();
+        let generation = h.session().generation;
+        let (sender, _queue) = mpsc::channel(4);
+        h.socket(Socket::Open(generation, sender));
+        h.run_for(Duration::from_millis(50));
+        while h.inputs.try_recv().is_ok() {}
+        h.feed(Input::Rest(id, Rest::Alarms(Ok((Vec::new(), false)))));
+        h.socket(Socket::Closed(generation, "gone".into()));
+        h.feed(Input::Retry(generation));
+        h.feed(Input::Rest(id, Rest::Renewed(Ok(tokens("fresh", "r2")))));
+        let current = h.session().generation;
+        let (sender, _queue) = mpsc::channel(4);
+        h.socket(Socket::Open(current, sender));
+        h.run_for(Duration::from_millis(200));
+        let reloaded: Vec<Input> = std::iter::from_fn(|| h.inputs.try_recv().ok()).collect();
+        assert!(
+            reloaded
+                .iter()
+                .any(|input| matches!(input, Input::Rest(_, Rest::Tags(_)))),
+            "the tag list is fetched again"
+        );
+        assert!(h.session().alarms.running, "and the alarms");
+    }
+
+    /// A WebSocket server on 127.0.0.1 that completes the handshake and
+    /// then reads (answering pings) or not.
+    fn websocket_server(h: &Harness, reads: bool) -> String {
+        let listener = h.runtime.block_on(async {
+            tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("listener")
+        });
+        let url = format!("http://{}", listener.local_addr().expect("address"));
+        h.runtime.spawn(async move {
+            let Ok((stream, _)) = listener.accept().await else {
+                return;
+            };
+            let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                return;
+            };
+            if reads {
+                while let Some(Ok(_)) = socket.next().await {}
+            } else {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                drop(socket);
+            }
+        });
+        url
+    }
+
+    fn closed_reason(h: &mut Harness) -> Option<String> {
+        std::iter::from_fn(|| h.inputs.try_recv().ok()).find_map(|input| match input {
+            Input::Socket(Socket::Closed(_, reason)) => Some(reason),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_silent_socket_is_closed_and_a_pinged_one_stays() {
+        let mut h = Harness::new();
+        h.actor.heartbeat = Heartbeat {
+            ping: Duration::from_millis(50),
+            silent: Duration::from_millis(250),
+        };
+        let url = websocket_server(&h, false);
+        h.sign_in_at(&url);
+        h.run_for(Duration::from_millis(800));
+        let reason = closed_reason(&mut h).expect("the silent socket closes");
+        assert!(reason.contains("No answer from the server"), "{reason}");
+
+        let mut h = Harness::new();
+        h.actor.heartbeat = Heartbeat {
+            ping: Duration::from_millis(50),
+            silent: Duration::from_millis(250),
+        };
+        let url = websocket_server(&h, true);
+        h.sign_in_at(&url);
+        h.run_for(Duration::from_millis(800));
+        assert_eq!(closed_reason(&mut h), None, "pongs keep it open");
+    }
+
+    #[test]
+    fn a_closed_socket_leaves_live() {
+        let mut h = Harness::new();
+        h.sign_in();
+        let generation = h.session().generation;
+        let (sender, _queue) = mpsc::channel(4);
+        h.socket(Socket::Open(generation, sender));
+        h.socket(Socket::Closed(
+            generation,
+            "No answer from the server for 30 s".into(),
+        ));
+        assert!(matches!(
+            h.events().last(),
+            Some(Event::Link(Link::Reconnecting { reason, .. })) if reason.contains("No answer")
+        ));
+    }
+
+    #[test]
     fn a_session_held_for_a_password_change_opens_its_feed_once_changed() {
         let mut h = Harness::new();
         let mut api = VoltrusApi::new("http://127.0.0.1:9");
@@ -2214,7 +2809,8 @@ mod tests {
         api.refresh = Some("refresh".into());
         {
             let _entered = h.runtime.enter();
-            h.actor.begin(api, Some("generated".into()));
+            h.actor
+                .begin(api, Some("generated".into()), SessionPolicy::default());
         }
         let id = h.session().id;
         let generation = h.session().generation;

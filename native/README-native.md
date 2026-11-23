@@ -271,11 +271,21 @@ JetBrains Mono for values.
   pick.
 
 The network side runs on its own tokio thread: it signs in, keeps the
-WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s), and
-renews the 15-minute session token with the session's refresh token
-(`POST /auth/refresh`) every 10 minutes and before each reconnect (30
-seconds after a renewal the server did not answer), so REST calls keep
-working. It does not keep the password (only while the server wants it
+WebSocket open (pinged every 15 s; 30 s without a word from the server
+counts as a dead link, which leaves Live and reconnects), reconnects with
+backoff (2 s, 5 s, then every 10 s) and loads the tags and alarms again
+after a reconnect, and renews the session token with the session's
+refresh token (`POST /auth/refresh`) at two thirds of the lifetime the
+server gave it (10 of the core's 15 minutes; less when an edition's idle
+timeout or session limit shortens it), before each reconnect, and when a
+request is refused with 401 (which is then sent once more), so REST calls
+keep working. While the server's session policy has an idle timeout, key
+presses, clicks and scrolling are reported (`POST /auth/activity`, at most
+once per min(60 s, timeout / 3)), so only an operator who walked away is
+signed out; a session the server ended says why, in the web client's
+words. A request any edition wants signed (an electronic signature)
+asks for it in the same prompt as tag writes and alarm actions and is sent
+again with it, whatever the page. It does not keep the password (only while the server wants it
 changed), and a renewal or a sign-in elsewhere leaves the user's other
 sessions alone (a sign-in replaces only the refresh token it presents). Only the operator's own
 sign-in waits for the server; every other REST call (tags, alarms,
@@ -283,7 +293,7 @@ history, alarm actions, password changes, renewals) runs on its own and
 never holds up the tag stream. Answers that arrive after the session ended
 are dropped. When the server refuses a renewal (the refresh token revoked
 or expired, for instance after a password or role change, or a deletion) the session
-ends with "Not authorised". Signing out, quitting and starting a stress
+ends and the sign-in card says so. Signing out, quitting and starting a stress
 test all sign the session out of the server, which revokes its refresh
 token. When a session ends (sign-out, a refused renewal, or before the next
 sign-in) every page's state goes with it; only the operator's own
