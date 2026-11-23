@@ -14,14 +14,67 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::extract::{Extension, State};
-use axum::http::{HeaderName, HeaderValue};
+use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures_util::stream::{self, Stream};
 
+use super::auth_middleware::ApiKeyAuth;
+use super::websocket::WsPrincipal;
 use super::{AppState, AuthUser};
 use crate::ws_manager::{WsFrame, WsManager};
 use crate::ws_types::ServerMessage;
+
+/// How often an open stream re-reads its user or key (as the WebSocket does).
+#[cfg(not(test))]
+const RECHECK_INTERVAL: Duration = super::websocket::RECHECK_INTERVAL;
+#[cfg(test)]
+const RECHECK_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Who holds the stream open: a local user or an API key (re-read like the
+/// WebSocket's principal), or a sign-in provider's bearer token (asked of the
+/// add-on edition again).
+enum Principal {
+    Local(WsPrincipal),
+    Bearer(String),
+}
+
+impl Principal {
+    fn of(user: &AuthUser, key: Option<&ApiKeyAuth>, headers: &HeaderMap) -> Self {
+        if let Some(key) = key {
+            return Principal::Local(WsPrincipal::ApiKey(key.id));
+        }
+        let bearer = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+        let has_cookie = axum_extra::extract::CookieJar::from_headers(headers)
+            .get("voltrus_token")
+            .is_some_and(|c| !c.value().is_empty());
+        match bearer {
+            Some(token) if !has_cookie => Principal::Bearer(token.to_string()),
+            _ => Principal::Local(WsPrincipal::User(user.username.clone())),
+        }
+    }
+
+    /// Whether the principal may still read the stream: not disabled or
+    /// deleted, key not revoked or expired, no password change pending.
+    /// Fails closed on a storage error.
+    async fn still_allowed(&self, state: &AppState) -> bool {
+        match self {
+            Principal::Local(p) => p.current_role(state).await.is_some(),
+            Principal::Bearer(token) => {
+                let Some(identity) = state.ext.authenticate_bearer(token).await else {
+                    return false;
+                };
+                match state.storage.get_user_by_username(&identity.username).await {
+                    Ok(user) => !user.is_some_and(|u| u.disabled),
+                    Err(_) => false,
+                }
+            }
+        }
+    }
+}
 
 /// Removes the connection from the manager when the client goes away and the
 /// response stream is dropped.
@@ -90,7 +143,10 @@ fn frame_to_event(frame: WsFrame) -> Option<Event> {
 pub async fn sse_handler(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
+    key: Option<Extension<ApiKeyAuth>>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
+    let principal = Principal::of(&user, key.as_ref().map(|Extension(k)| k), &headers);
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let conn_id = format!("sse-{}", SEQ.fetch_add(1, Ordering::Relaxed));
     let permissions = super::websocket::role_to_permissions(&user.role);
@@ -117,11 +173,53 @@ pub async fn sse_handler(
     };
     let hello = stream::iter(to_event(&hello).map(Ok::<_, Infallible>));
 
-    let live = stream::unfold((rx, registration), |(mut rx, registration)| async move {
+    // The principal is read again every RECHECK_INTERVAL: a disabled user, a
+    // revoked key or a pending password change ends the stream with an
+    // AuthError event, as the WebSocket closes.
+    let recheck = tokio::time::interval_at(
+        tokio::time::Instant::now() + RECHECK_INTERVAL,
+        RECHECK_INTERVAL,
+    );
+    struct Live {
+        rx: tokio::sync::mpsc::Receiver<WsFrame>,
+        registration: Registration,
+        recheck: tokio::time::Interval,
+        principal: Principal,
+        state: AppState,
+        ended: bool,
+    }
+    let live = Live {
+        rx,
+        registration,
+        recheck,
+        principal,
+        state,
+        ended: false,
+    };
+    let live = stream::unfold(live, |mut live| async move {
+        if live.ended {
+            return None;
+        }
         loop {
-            let frame = rx.recv().await?;
-            if let Some(event) = frame_to_event(frame) {
-                return Some((Ok::<_, Infallible>(event), (rx, registration)));
+            tokio::select! {
+                _ = live.recheck.tick() => {
+                    if !live.principal.still_allowed(&live.state).await {
+                        tracing::info!(
+                            "SSE: access gone, closing conn={}",
+                            live.registration.conn_id
+                        );
+                        live.ended = true;
+                        let bye = ServerMessage::AuthError {
+                            message: "Access revoked".to_string(),
+                        };
+                        return to_event(&bye).map(|e| (Ok::<_, Infallible>(e), live));
+                    }
+                }
+                frame = live.rx.recv() => {
+                    if let Some(event) = frame_to_event(frame?) {
+                        return Some((Ok::<_, Infallible>(event), live));
+                    }
+                }
             }
         }
     });
@@ -245,5 +343,40 @@ mod tests {
 
         drop(body);
         assert_eq!(manager.connection_count(), 0, "the client left");
+    }
+
+    #[tokio::test]
+    async fn stream_ends_when_the_user_is_disabled() {
+        let state = seeded_admin_app_state().await;
+        let manager = state.ws_manager.clone();
+        let storage = state.storage.clone();
+        let hash = crate::api::auth::hash_password("password-123");
+        storage
+            .create_user("vic", &hash, "", "viewer")
+            .await
+            .unwrap();
+        let app = crate::api::create_router(state);
+        let cookie = format!(
+            "voltrus_token={}",
+            login_cookie(&app, "vic", "password-123").await
+        );
+
+        let resp = app.oneshot(stream_request(Some(&cookie))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let mut body = resp.into_body().into_data_stream();
+        let hello = next_chunk(&mut body).await;
+        assert!(hello.contains("event: AuthOk"), "{hello}");
+
+        let vic = storage.get_user_by_username("vic").await.unwrap().unwrap();
+        storage.set_user_disabled(vic.id, true).await.unwrap();
+
+        let bye = next_chunk(&mut body).await;
+        assert!(bye.contains("event: AuthError"), "{bye}");
+        let end = tokio::time::timeout(Duration::from_secs(5), body.next())
+            .await
+            .expect("the stream ends");
+        assert!(end.is_none(), "no more events after AuthError");
+        drop(body);
+        assert_eq!(manager.connection_count(), 0);
     }
 }

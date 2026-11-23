@@ -26,6 +26,10 @@ The first event of a stream is `AuthOk` (the signed-in user and permissions), as
 the WebSocket. A comment line is sent every 15 seconds to keep proxies from closing an
 idle stream. A value that is NaN (a failed read) is `null` in JSON.
 
+The user or key behind a stream is checked again every 30 seconds, as on the
+WebSocket: when the user is disabled or deleted, must change their password, or
+the key is revoked or expired, the stream sends an `AuthError` event and ends.
+
 Each tag update may also carry `data_quality` and `ts_ms`. `ts_ms` is when the value
 was read, in Unix milliseconds. `data_quality` is one of `good`, `uncertain`,
 `uncertain_stale` (not refreshed for three poll intervals), `bad`,

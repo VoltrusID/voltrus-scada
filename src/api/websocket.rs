@@ -54,7 +54,7 @@ pub async fn websocket_handler(
 /// How often an open socket re-reads its user or key, so a disabled or deleted
 /// user, or a revoked or expired key, loses the live feed within this delay
 /// even if it never writes.
-const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+pub(super) const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Who is on the other end of a socket. Only the identity is kept: the role is
 /// read from the database again on every write and every [`RECHECK_INTERVAL`].
