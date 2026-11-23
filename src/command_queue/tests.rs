@@ -16,6 +16,8 @@ use crate::models::Command;
 struct Memory {
     holding: Vec<u16>,
     coils: Vec<bool>,
+    /// Answer every write with a Modbus exception.
+    refuse: bool,
 }
 
 #[derive(Clone)]
@@ -29,6 +31,9 @@ impl Service for MemoryService {
 
     fn call(&self, req: Self::Request) -> Self::Future {
         let mut m = self.0.lock().unwrap();
+        if m.refuse {
+            return std::future::ready(Err(ExceptionCode::IllegalDataAddress));
+        }
         let out = match req {
             Request::WriteSingleRegister(a, w) => {
                 m.holding[a as usize] = w;
@@ -121,6 +126,7 @@ async fn queued_writes_use_the_registers_type_scale_and_area() {
     let memory = Arc::new(Mutex::new(Memory {
         holding: vec![0; 32],
         coils: vec![false; 16],
+        refuse: false,
     }));
     let addr = start_server(memory.clone()).await;
 
@@ -183,4 +189,49 @@ async fn queued_writes_use_the_registers_type_scale_and_area() {
         "the coil write left holding register 3 alone"
     );
     assert_eq!(m.holding[8] as i16, -123);
+}
+
+#[tokio::test]
+async fn a_modbus_exception_is_a_failed_write() {
+    let memory = Arc::new(Mutex::new(Memory {
+        holding: vec![0; 32],
+        coils: vec![false; 16],
+        refuse: true,
+    }));
+    let addr = start_server(memory.clone()).await;
+    let storage = crate::storage::Storage::new_in_memory().unwrap();
+    let registers: Vec<crate::models::ModbusRegisterInput> =
+        serde_json::from_value(serde_json::json!([
+            {"name": "setpoint", "offset": 4, "register_type": "uint16"},
+            {"name": "pump", "offset": 3, "register_type": "uint16", "register_area": "coil"},
+        ]))
+        .unwrap();
+    storage
+        .create_modbus_device(
+            "plc",
+            "PLC",
+            &addr.ip().to_string(),
+            addr.port(),
+            1,
+            1000,
+            "big",
+            &registers,
+        )
+        .await
+        .unwrap();
+    let setpoint = tag(&storage, "setpoint", "{}").await;
+    let pump = tag(&storage, "plc.pump", "{}").await;
+    let queue = CommandQueue::new(
+        storage,
+        crate::cache::DeviceCache::new(),
+        Arc::new(crate::modbus::ModbusPool::new()),
+    );
+
+    let r = queue.execute_write(&command(setpoint, "7")).await;
+    assert!(!r.success, "{r:?}");
+    assert!(r.error.unwrap().contains("exception"));
+    let r = queue.execute_write(&command(pump, "1")).await;
+    assert!(!r.success, "{r:?}");
+    assert!(r.error.unwrap().contains("exception"));
+    assert_eq!(memory.lock().unwrap().holding[4], 0);
 }

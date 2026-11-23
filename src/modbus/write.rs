@@ -97,7 +97,7 @@ pub async fn write_tag(
     };
 
     match write_result {
-        Ok(Ok(_)) => {
+        Ok(Ok(Ok(()))) => {
             pool.return_connection(&config.id, ctx).await;
             WriteResult {
                 success: true,
@@ -106,6 +106,16 @@ pub async fn write_tag(
                     register.name, protocol_addr, value, words
                 )),
                 error: None,
+                latency_ms: start.elapsed().as_millis() as u64,
+            }
+        }
+        // The device answered with a Modbus exception: it refused the write.
+        Ok(Ok(Err(code))) => {
+            pool.return_connection(&config.id, ctx).await;
+            WriteResult {
+                success: false,
+                device_response: None,
+                error: Some(format!("Device refused the write: Modbus exception {code}")),
                 latency_ms: start.elapsed().as_millis() as u64,
             }
         }
@@ -164,7 +174,7 @@ async fn write_coil(
     .await;
 
     match result {
-        Ok(Ok(_)) => {
+        Ok(Ok(Ok(()))) => {
             pool.return_connection(device_id, ctx).await;
             WriteResult {
                 success: true,
@@ -181,7 +191,7 @@ async fn write_coil(
             .await;
 
             match fallback {
-                Ok(Ok(_)) => {
+                Ok(Ok(Ok(()))) => {
                     pool.return_connection(device_id, ctx).await;
                     WriteResult {
                         success: true,
@@ -190,6 +200,17 @@ async fn write_coil(
                             address, coil_on
                         )),
                         error: None,
+                        latency_ms: start.elapsed().as_millis() as u64,
+                    }
+                }
+                Ok(Ok(Err(code))) => {
+                    pool.return_connection(device_id, ctx).await;
+                    WriteResult {
+                        success: false,
+                        device_response: None,
+                        error: Some(format!(
+                            "Device refused the coil write: Modbus exception {code}"
+                        )),
                         latency_ms: start.elapsed().as_millis() as u64,
                     }
                 }
