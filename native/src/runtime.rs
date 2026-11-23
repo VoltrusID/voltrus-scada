@@ -551,6 +551,11 @@ enum Rest {
     PasswordChanged(Result<(), String>),
     /// A renewal (`POST /auth/refresh`): the new tokens.
     Renewed(Result<Tokens, SignInError>),
+    /// An activity report sent at that moment: whether the server took it.
+    Activity {
+        at: Instant,
+        ok: bool,
+    },
     Reply {
         key: CallKey,
         reply: Reply,
@@ -1247,10 +1252,11 @@ impl Actor {
         }
         s.activity = Some(now);
         let api = s.api.clone();
-        tokio::spawn(async move {
-            // A failure needs no answer: a session the server ended is
-            // refused at its next renewal, which says why.
-            let _ = api.record_activity().await;
+        spawn_rest(&self.inputs, s.id, async move {
+            Rest::Activity {
+                at: now,
+                ok: api.record_activity().await.is_ok(),
+            }
         });
     }
 
@@ -1612,6 +1618,18 @@ impl Actor {
                 }
             }
             Rest::Renewed(result) => self.renewed(result),
+            // Not taken (the link dropped, a renewal raced it): the next
+            // input reports again instead of waiting out the interval. A
+            // session the server ended is refused at its next renewal,
+            // which says why.
+            Rest::Activity { at, ok } => {
+                if !ok
+                    && let Some(s) = self.session.as_mut()
+                    && s.activity == Some(at)
+                {
+                    s.activity = None;
+                }
+            }
             Rest::Reply { key, reply } => self.out.send(Event::Reply { key, reply }),
         }
     }
@@ -2543,7 +2561,30 @@ mod tests {
         h.actor.activity(start + Duration::from_secs(39));
         assert_eq!(h.session().activity, Some(start));
         h.actor.activity(start + Duration::from_secs(40));
-        assert_eq!(h.session().activity, Some(start + Duration::from_secs(40)));
+        let sent = start + Duration::from_secs(40);
+        assert_eq!(h.session().activity, Some(sent));
+        drop(_entered);
+        // A report the server did not take does not count: the next
+        // input reports again.
+        let id = h.session().id;
+        h.feed(Input::Rest(
+            id,
+            Rest::Activity {
+                at: start,
+                ok: false,
+            },
+        ));
+        assert_eq!(h.session().activity, Some(sent), "an older report");
+        h.feed(Input::Rest(id, Rest::Activity { at: sent, ok: true }));
+        assert_eq!(h.session().activity, Some(sent));
+        h.feed(Input::Rest(
+            id,
+            Rest::Activity {
+                at: sent,
+                ok: false,
+            },
+        ));
+        assert_eq!(h.session().activity, None);
     }
 
     #[test]
