@@ -230,7 +230,75 @@ pub async fn dispatch_outbound_webhooks(
             return;
         }
     };
+    fire_outbound_webhooks(storage, &webhooks, payload);
+}
 
+/// One HTTP client for every outbound webhook, so deliveries share its
+/// connection pool instead of each building its own.
+static WEBHOOK_CLIENT: std::sync::LazyLock<reqwest::Client> =
+    std::sync::LazyLock::new(reqwest::Client::new);
+
+/// Outbound webhook deliveries (with their retries) running at once. Past
+/// this, new deliveries are dropped and counted rather than queued without
+/// bound behind a slow or unreachable receiver.
+const MAX_WEBHOOK_DELIVERIES: usize = 32;
+
+static WEBHOOK_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_WEBHOOK_DELIVERIES))
+    });
+
+static WEBHOOKS_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Remembers the last value and quality sent per tag, so `tag_change`
+/// webhooks fire when a tag changes rather than on every persistence cycle.
+#[derive(Default)]
+pub struct TagChangeTracker {
+    last: std::collections::HashMap<(String, String), (u64, crate::quality::Quality)>,
+}
+
+impl TagChangeTracker {
+    /// True when the tag's value or quality differs from the last call (or
+    /// this is the first one), and records it.
+    pub fn changed(
+        &mut self,
+        device_id: &str,
+        metric: &str,
+        value: f64,
+        quality: crate::quality::Quality,
+    ) -> bool {
+        // Compared by bits so a NaN that stays NaN is not a change.
+        let now = (value.to_bits(), quality);
+        match self
+            .last
+            .get_mut(&(device_id.to_string(), metric.to_string()))
+        {
+            Some(prev) if *prev == now => false,
+            Some(prev) => {
+                *prev = now;
+                true
+            }
+            None => {
+                self.last
+                    .insert((device_id.to_string(), metric.to_string()), now);
+                true
+            }
+        }
+    }
+
+    /// Forget tags of devices that are no longer present.
+    pub fn retain_devices(&mut self, present: &std::collections::HashSet<&str>) {
+        self.last.retain(|(d, _), _| present.contains(d.as_str()));
+    }
+}
+
+/// Fire `payload` at the already-loaded `webhooks` that subscribe to its
+/// event (see `dispatch_outbound_webhooks`).
+pub fn fire_outbound_webhooks(
+    storage: &Storage,
+    webhooks: &[serde_json::Value],
+    payload: &serde_json::Value,
+) {
     if webhooks.is_empty() {
         return;
     }
@@ -280,10 +348,21 @@ pub async fn dispatch_outbound_webhooks(
         }
 
         // Fire the webhook with retry
+        let Ok(slot) = WEBHOOK_SLOTS.clone().try_acquire_owned() else {
+            let n = WEBHOOKS_DROPPED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if n == 1 || n.is_multiple_of(1000) {
+                tracing::warn!(
+                    "Outbound webhook {wh_id} skipped: {MAX_WEBHOOK_DELIVERIES} deliveries \
+                     already in progress ({n} skipped so far)"
+                );
+            }
+            continue;
+        };
         let storage_clone = storage.clone();
         let payload_clone = payload.clone();
         tokio::spawn(async move {
-            let client = reqwest::Client::new();
+            let _slot = slot;
+            let client = &*WEBHOOK_CLIENT;
             let mut success = false;
 
             for attempt in 0..=retry_count {
@@ -349,5 +428,28 @@ pub async fn dispatch_outbound_webhooks(
                 tracing::warn!("Failed to update outbound webhook status: {}", e);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tag_change_tests {
+    use super::TagChangeTracker;
+    use crate::quality::Quality;
+
+    #[test]
+    fn fires_on_change_only() {
+        let mut t = TagChangeTracker::default();
+        assert!(t.changed("plc", "temp", 20.0, Quality::Good));
+        assert!(!t.changed("plc", "temp", 20.0, Quality::Good));
+        assert!(t.changed("plc", "temp", 20.5, Quality::Good));
+        assert!(t.changed("plc", "temp", 20.5, Quality::Uncertain));
+        assert!(t.changed("plc", "temp", f64::NAN, Quality::Bad));
+        assert!(!t.changed("plc", "temp", f64::NAN, Quality::Bad));
+        assert!(t.changed("plc2", "temp", 20.5, Quality::Uncertain));
+
+        let present = std::collections::HashSet::from(["plc2"]);
+        t.retain_devices(&present);
+        assert!(t.changed("plc", "temp", f64::NAN, Quality::Bad));
+        assert!(!t.changed("plc2", "temp", 20.5, Quality::Uncertain));
     }
 }

@@ -221,6 +221,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                 crate::alarm_delay::DelayState,
             > = std::collections::HashMap::new();
             let mut history_filter = crate::deadband::HistoryFilter::new();
+            let mut tag_changes = crate::notification::TagChangeTracker::default();
             loop {
                 let flush_ack = tokio::select! {
                     _ = ticker.tick() => None,
@@ -481,13 +482,28 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                 // Dispatch tag_change webhooks for the latest data.
                 // We do this after persistence + alarm evaluation, not on every
                 // tick — outbound webhooks get the latest snapshot values.
-                {
-                    let storage_wh = storage.clone();
+                // Webhooks are loaded once per cycle and fire only for tags
+                // whose value or quality changed since the last one sent.
+                let webhooks = storage
+                    .get_outbound_webhooks_for_event("tag_change")
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("Failed to load outbound webhooks: {e}");
+                        Vec::new()
+                    });
+                if !webhooks.is_empty() {
+                    let present: std::collections::HashSet<&str> =
+                        snapshots.iter().map(|s| s.device_id.as_str()).collect();
+                    tag_changes.retain_devices(&present);
                     for snap in &snapshots {
                         if snap.status != DeviceStatus::Online {
                             continue;
                         }
                         for (metric, value) in &snap.metrics {
+                            let quality = snap.quality_of(metric);
+                            if !tag_changes.changed(&snap.device_id, metric, *value, quality) {
+                                continue;
+                            }
                             let payload = serde_json::json!({
                                 "event": "tag_change",
                                 "device_id": snap.device_id,
@@ -495,14 +511,11 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                                 "value": value,
                                 "timestamp": snap.timestamp,
                                 "status": "online",
-                                "quality": snap.quality_of(metric),
+                                "quality": quality,
                             });
-                            crate::notification::dispatch_outbound_webhooks(
-                                &storage_wh,
-                                "tag_change",
-                                &payload,
-                            )
-                            .await;
+                            crate::notification::fire_outbound_webhooks(
+                                &storage, &webhooks, &payload,
+                            );
                         }
                     }
                 }
