@@ -1,3 +1,5 @@
+import { TabList } from './TabList'
+import { useRole } from '../RoleContext'
 import { useState } from 'react'
 import { useTemplates, useTemplate, usePreviewTemplate, useInstantiateTemplate } from '../queries/templates'
 import type { TemplateSummary } from '../queries/templates'
@@ -5,6 +7,8 @@ import type { TemplateSummary } from '../queries/templates'
 // ── Component ──
 
 export function TemplatesPanel() {
+  // Preview and instantiate need the configuration role on the server; others may only browse.
+  const { canConfigure } = useRole()
   const [tab, setTab] = useState<'browse' | 'detail' | 'instantiate'>('browse')
   const [selectedIndustry, setSelectedIndustry] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -31,6 +35,7 @@ export function TemplatesPanel() {
   }
 
   const preview = () => {
+    if (!canConfigure) return
     if (!selectedId) return
     previewM.mutate(
       { template_id: selectedId, instance_counts: { n: parseInt(instanceCount) || 2 } },
@@ -55,12 +60,6 @@ export function TemplatesPanel() {
   const industries = templatesQ.data?.industries || []
   const industryName = (id: string) => industries.find(i => i.id === id)?.name || id
 
-  const tabStyle = (active: boolean) => ({
-    padding: '8px 16px', cursor: 'pointer', fontSize: 13,
-    color: active ? 'var(--fg)' : 'var(--muted)',
-    borderBottom: active ? '2px solid #f97316' : '2px solid transparent',
-  })
-
   const cardBase = { background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: 20, cursor: 'pointer', transition: 'border-color 0.2s' } as React.CSSProperties
   const badge = (bg: string, c: string) => ({ display: 'inline-block', padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, background: bg, color: c })
 
@@ -73,11 +72,17 @@ export function TemplatesPanel() {
         Pre-built configurations for specific industries. Select → Preview → Instantiate.
       </p>
 
-      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid var(--border)', marginBottom: 16 }}>
-        <div style={tabStyle(tab === 'browse')} onClick={() => { setTab('browse'); setSelectedId(null) }}>Browse</div>
-        <div style={tabStyle(tab === 'detail')} onClick={() => { if (selectedId) setTab('detail') }}>Detail</div>
-        <div style={tabStyle(tab === 'instantiate')} onClick={() => { if (selectedId) setTab('instantiate') }}>Instantiate</div>
-      </div>
+      <TabList
+        label="Template steps"
+        idPrefix="templates"
+        value={tab}
+        onChange={id => { if (id === 'browse') setSelectedId(null); setTab(id) }}
+        tabs={[
+          { id: 'browse', label: 'Browse' },
+          { id: 'detail', label: 'Detail', disabled: !selectedId },
+          { id: 'instantiate', label: 'Instantiate', disabled: !selectedId || !canConfigure },
+        ]}
+      />
 
       {(templatesQ.error || detailQ.error || previewM.isError || instantiateM.isError) && (
         <div style={{ color: '#ef4444', fontSize: 13, marginBottom: 12 }}>
@@ -104,9 +109,10 @@ export function TemplatesPanel() {
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 16 }}>
             {templates.map(t => (
-              <div key={t.id} onClick={() => selectTemplate(t.id)} style={{
+              <button type="button" key={t.id} onClick={() => selectTemplate(t.id)} aria-pressed={selectedId === t.id} style={{
                 ...cardBase,
                 borderColor: selectedId === t.id ? '#f97316' : undefined,
+                textAlign: 'left', color: 'inherit', font: 'inherit', width: '100%',
               }}>
                 <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 6 }}>{t.name}</div>
                 <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.4, marginBottom: 12 }}>{t.description}</div>
@@ -117,7 +123,7 @@ export function TemplatesPanel() {
                   <span style={badge('rgba(139,92,246,.12)', '#8b5cf6')}>{t.flow_count} flows</span>
                   {t.has_oee && <span style={badge('rgba(249,115,22,.12)', '#f97316')}>OEE</span>}
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </>
@@ -176,7 +182,9 @@ export function TemplatesPanel() {
           </div>
 
           <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
-            <button onClick={preview} style={{ padding: '8px 16px', borderRadius: 6, border: 'none', background: '#f97316', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Preview &amp; Instantiate</button>
+            {canConfigure
+              ? <button onClick={preview} style={{ padding: '8px 16px', borderRadius: 6, border: 'none', background: '#f97316', color: '#fff', cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>Preview &amp; Instantiate</button>
+              : <span style={{ alignSelf: 'center', fontSize: 13, color: 'var(--muted)' }}>Previewing and instantiating a template needs the configuration role.</span>}
             <button onClick={() => setTab('browse')} style={{ padding: '8px 16px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--fg)', cursor: 'pointer', fontSize: 13 }}>Back</button>
           </div>
         </>

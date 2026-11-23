@@ -36,7 +36,8 @@
     "error": "Error",
     "success": "Success",
     "warning": "Warning",
-    "info": "Info"
+    "info": "Info",
+    "ok": "OK"
   },
   "auth": {
     "login": "Log In",
@@ -51,7 +52,26 @@
     "confirmPassword": "Confirm new password",
     "passwordMismatch": "Passwords do not match",
     "passwordTooShort": "Password must be at least 8 characters",
-    "changePasswordBtn": "Change Password"
+    "changePasswordBtn": "Change Password",
+    "signIn": "Sign In",
+    "usernamePlaceholder": "Enter your username",
+    "passwordPlaceholder": "Enter your password",
+    "showPassword": "Show password",
+    "hidePassword": "Hide password",
+    "passwordExpiredDesc": "Your password has expired. Set a new one to continue.",
+    "currentPassword": "Current Password",
+    "currentPasswordPlaceholder": "Enter current password",
+    "currentPasswordRequired": "Current password is required",
+    "newPasswordLabel": "New Password",
+    "newPasswordPlaceholder": "Min 8 characters",
+    "confirmPasswordLabel": "Confirm Password",
+    "confirmPasswordPlaceholder": "Re-enter your password",
+    "updatePassword": "Update Password",
+    "updating": "Updating...",
+    "changeFailed": "Failed to change password",
+    "strengthWeak": "Weak",
+    "strengthGood": "Good",
+    "strengthStrong": "Strong"
   },
   "nav": {
     "live": "Live",
@@ -97,7 +117,45 @@
     "critical": "Critical",
     "warning": "Warning",
     "cooldown": "Cooldown",
-    "cooldownSecs": "Alarm cooldown (seconds)"
+    "cooldownSecs": "Alarm cooldown (seconds)",
+    "panel": "Alarm Panel",
+    "all": "All",
+    "info": "Info",
+    "ackAll": "Ack All",
+    "ackAllLabel": "Acknowledge all alarms",
+    "tabAlarms": "Alarms",
+    "tabAnalytics": "Analytics",
+    "tabAudit": "Audit",
+    "last24h": "last 24h",
+    "shelfAlarm": "Shelf Alarm",
+    "reasonOptional": "Reason (optional)",
+    "durationMin": "{{count}} min",
+    "durationHour": "{{count}} h",
+    "history": "History",
+    "loadingHistory": "Loading history...",
+    "noHistory": "No history",
+    "byName": "by {{name}}",
+    "system": "system",
+    "loadingAnalytics": "Loading analytics...",
+    "flood": "Alarm flood detected: {{n}} alarms in the last 5 minutes",
+    "avgAck": "Average time to acknowledge:",
+    "top10": "Top 10 Most Frequent (24h)",
+    "noData": "No alarm data",
+    "loadingAudit": "Loading audit trail...",
+    "noAudit": "No audit entries",
+    "alarmNumber": "Alarm #{{id}}",
+    "none": "No alarms",
+    "unavailable": "Alarms unavailable.",
+    "unavailableEmpty": "The server did not answer, so active alarms cannot be shown.",
+    "unavailableStale": "The server did not answer; this list may be out of date.",
+    "unavailableCount": "Alarms unavailable: the server did not answer. The count may be out of date.",
+    "acknowledgedBy": "Acknowledged by {{name}}",
+    "shelvedBadge": "SHELVED",
+    "swipeAck": "Ack",
+    "ackAlarm": "Acknowledge alarm: {{name}}",
+    "toggleHistory": "Toggle history: {{name}}",
+    "filterLabel": "Filter: {{name}}",
+    "tabLabel": "Tab: {{name}}"
   },
   "commands": {
     "title": "Commands",
@@ -158,7 +216,19 @@
     "memory": "Memory",
     "disk": "Disk",
     "database": "Database Size",
-    "process": "Process"
+    "process": "Process",
+    "sections": "System sections",
+    "tabs": {
+      "overview": "System",
+      "docs": "Documentation",
+      "templates": "Templates",
+      "wizard": "Wizard",
+      "health": "Health",
+      "storage": "Storage",
+      "config": "Config",
+      "smtp": "SMTP",
+      "tools": "Tools"
+    }
   },
   "data": {
     "export": "Export Data",
@@ -310,5 +380,57 @@
     "noAssets": "No assets found",
     "noConflicts": "No IP conflicts detected",
     "notFound": "Asset not found"
+  },
+  "session": {
+    "expired": "Your session reached its maximum length. Please sign in again.",
+    "ended": "Your session has ended. Please sign in again.",
+    "idleMinutes_one": "You were signed out after {{count}} minute of inactivity.",
+    "idleMinutes_other": "You were signed out after {{count}} minutes of inactivity.",
+    "idle": "You were signed out after a period of inactivity.",
+    "renewFailed": "Could not reach the server to renew the session"
+  },
+  "footer": {
+    "live": "LIVE",
+    "liveSse": "LIVE (SSE)",
+    "connecting": "CONNECTING",
+    "overview": "Overview",
+    "alarmCount_one": "{{count}} Alarm",
+    "alarmCount_other": "{{count}} Alarms",
+    "alarmsUnavailable": "ALARMS UNAVAILABLE",
+    "viewCards": "Grid",
+    "viewCanvas": "Canvas",
+    "viewTwin": "3D",
+    "viewScada": "SCADA"
+  },
+  "signature": {
+    "title": "Electronic signature required",
+    "signingAs": "Signing as <b>{{name}}</b>. Your password confirms it is you.",
+    "confirmsYou": "Your password confirms it is you.",
+    "youAreSigning": "You are signing",
+    "yourPassword": "Your password",
+    "reason": "Reason",
+    "reasonPlaceholder": "Why you are doing this",
+    "sign": "Sign",
+    "enterPassword": "Enter your password",
+    "enterReason": "Enter the reason"
+  },
+  "dialog": {
+    "shortcut": "Shortcut",
+    "none": "None",
+    "record": "Record",
+    "pressKey": "Press a key...",
+    "clear": "Clear"
+  },
+  "errors": {
+    "pageNotLoaded": "This page could not be loaded",
+    "pageNotLoadedDesc": "The server may have been updated or is not reachable. Reloading fetches the current version.",
+    "pageCrashed": "Something went wrong on this page",
+    "pageCrashedDesc": "The rest of the app keeps running. Try again, or go back to the dashboard.",
+    "reload": "Reload",
+    "tryAgain": "Try again",
+    "serverDown": "The server is not reachable. Retrying automatically."
+  },
+  "history": {
+    "loadFailed": "History could not be loaded."
   }
 }

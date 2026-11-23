@@ -15,6 +15,9 @@ const None = () => null
 
 export const rootRoute = createRootRoute({
   component: AppInner,
+  // Leave errors to the app's ErrorBoundary (main.tsx), which reloads for a
+  // missing chunk and offers a retry, instead of the router's bare message.
+  errorComponent: ({ error }) => { throw error },
   // Optional search schema (defaults resolved in App.tsx via ??). Keeping
   // fields optional avoids making `search` mandatory on every navigate and
   // lets setters merge with `(prev) => ({ ...prev, x })` updaters.

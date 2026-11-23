@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { edition, brandAccent, brandAccentText, type BrandingSettings, type LoginProvidersProps } from './edition'
 import { loginHintFrom } from './sharedAccount'
 
@@ -30,6 +31,7 @@ const INPUT: React.CSSProperties = {
 type LoginSession = LoginProvidersProps['onLoggedIn']
 
 export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onLogin: (u: string, p: string) => void; onExternalLogin: LoginSession; error: string; branding: BrandingSettings }) {
+  const { t } = useTranslation()
   const [user, setUser] = useState('')
   const [pass, setPass] = useState('')
   const [showPass, setShowPass] = useState(false)
@@ -48,8 +50,7 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
   const focusRing = (el: HTMLInputElement) => { el.style.borderColor = tint(accent, 50); el.style.boxShadow = `0 0 0 3px ${tint(accent, 10)}` }
 
   return (
-    <div style={{
-      height: '100vh',
+    <div className="viewport-min-height" style={{
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -92,12 +93,12 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
         {/* Form */}
         <form onSubmit={submit} style={{ padding: '28px 36px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <label htmlFor="login-username" style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Username</label>
+            <label htmlFor="login-username" style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>{t('auth.username')}</label>
             <input
               id="login-username"
               value={user}
               onChange={e => setUser(e.target.value)}
-              placeholder="Enter your username"
+              placeholder={t('auth.usernamePlaceholder')}
               style={INPUT}
               autoComplete="username"
               autoFocus
@@ -108,14 +109,14 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <label htmlFor="login-password" style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Password</label>
+            <label htmlFor="login-password" style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>{t('auth.password')}</label>
             <div style={{ position: 'relative' }}>
               <input
                 id="login-password"
                 type={showPass ? 'text' : 'password'}
                 value={pass}
                 onChange={e => setPass(e.target.value)}
-                placeholder="Enter your password"
+                placeholder={t('auth.passwordPlaceholder')}
                 style={{ ...INPUT, paddingRight: 42 }}
                 autoComplete="current-password"
                 aria-required="true"
@@ -131,7 +132,7 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}
                 tabIndex={-1}
-                aria-label={showPass ? 'Hide password' : 'Show password'}
+                aria-label={showPass ? t('auth.hidePassword') : t('auth.showPassword')}
               >
                 {showPass ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
@@ -177,7 +178,7 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
             onMouseEnter={e => { e.currentTarget.style.opacity = '0.85' }}
             onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
           >
-            Sign In
+            {t('auth.signIn')}
           </button>
           {hint && (
             <p style={{ margin: 0, fontSize: 12, color: 'var(--muted)', textAlign: 'center', overflowWrap: 'anywhere' }}>{hint}</p>

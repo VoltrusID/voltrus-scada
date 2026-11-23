@@ -53,7 +53,7 @@ export function NotificationBell({ authed }: { authed: boolean }) {
             top: -4,
             right: -4,
             background: 'var(--warn)',
-            color: '#fff',
+            color: 'var(--on-accent)',
             borderRadius: '50%',
             width: 16,
             height: 16,

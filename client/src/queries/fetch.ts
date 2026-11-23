@@ -1,11 +1,16 @@
+import i18n from 'i18next'
 import { completeSignature } from '../signature/logic'
 import { canPromptForSignature, requestSignature } from '../signature/prompt'
 import {
-  isPasswordChangeRequired, PasswordChangeRequiredError, sessionEndReason, type SessionEndReason,
+  isPasswordChangeRequired, PasswordChangeRequiredError, refreshRefused, SessionExpiredError,
+  sessionEndReason, type SessionEndReason,
 } from '../session'
 
+/** `refused`: the server said the session is over. `failed`: no usable answer (offline, 5xx). */
+type RefreshOutcome = 'ok' | 'refused' | 'failed'
+
 // Global in-flight refresh promise to prevent multiple simultaneous refresh attempts
-let refreshing: Promise<boolean> | null = null
+let refreshing: Promise<RefreshOutcome> | null = null
 
 type SessionEndedListener = (reason: SessionEndReason) => void
 const sessionEndedListeners = new Set<SessionEndedListener>()
@@ -33,13 +38,16 @@ export async function checkPasswordChange(r: Response): Promise<Response> {
   throw new PasswordChangeRequiredError(message)
 }
 
-/** Called when a refresh is refused because the session hit its idle or absolute limit. */
+/**
+ * Called when the server refuses to refresh the session: it hit its idle or
+ * absolute limit, or it is gone for another reason (`session_ended`).
+ */
 export function onSessionEnded(fn: SessionEndedListener): () => void {
   sessionEndedListeners.add(fn)
   return () => { sessionEndedListeners.delete(fn) }
 }
 
-async function doRefresh(): Promise<boolean> {
+async function doRefresh(): Promise<RefreshOutcome> {
   if (refreshing) {
     return refreshing
   }
@@ -49,13 +57,14 @@ async function doRefresh(): Promise<boolean> {
         method: 'POST',
         credentials: 'include',
       })
-      if (r.status === 401) {
-        const reason = sessionEndReason(await r.json().catch(() => null))
-        if (reason) sessionEndedListeners.forEach(fn => fn(reason))
+      if (refreshRefused(r.status)) {
+        const reason = sessionEndReason(await r.json().catch(() => null)) ?? 'session_ended'
+        sessionEndedListeners.forEach(fn => fn(reason))
+        return 'refused'
       }
-      return r.ok
+      return r.ok ? 'ok' : 'failed'
     } catch {
-      return false
+      return 'failed'
     } finally {
       refreshing = null
     }
@@ -69,13 +78,14 @@ export async function fetchWithRefresh(
 ): Promise<Response> {
   const r = await fetch(url, { credentials: 'include', ...init })
   if (r.status === 401) {
-    const ok = await doRefresh()
-    if (ok) {
+    const outcome = await doRefresh()
+    if (outcome === 'ok') {
       return checkPasswordChange(await fetch(url, { credentials: 'include', ...init }))
     }
-    // Don't hard-redirect — throw so React Query handles it gracefully.
-    // The App component's auth gate will show the login screen.
-    throw new Error('Session expired')
+    // Refused: the session is over and the login screen says so; nothing else should.
+    if (outcome === 'refused') throw new SessionExpiredError()
+    // The server could not be asked: the session may still be good, so report it like any failure.
+    throw new Error(i18n.t('session.renewFailed', { defaultValue: 'Could not reach the server to renew the session' }))
   }
   return checkPasswordChange(r)
 }
@@ -95,8 +105,8 @@ export async function fetchSigned(url: string, init?: RequestInit): Promise<Resp
   })
 }
 
-export async function fetchJson<T>(url: string): Promise<T> {
-  const r = await fetchWithRefresh(url)
+export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const r = await fetchWithRefresh(url, init)
   if (!r.ok) throw new Error(`fetch ${url} failed: ${r.status}`)
   return r.json()
 }

@@ -5,6 +5,10 @@ import {
   VoltrusWebSocket,
   WS_FAILURES_BEFORE_FALLBACK,
   SSE_PROBE_INTERVAL_MS,
+  RECONNECT_JITTER,
+  KEEPALIVE_INTERVAL_MS,
+  STALE_AFTER_MS,
+  jittered,
   setWsInstance,
   wsWriteTagResult,
   type TagUpdate,
@@ -254,7 +258,7 @@ test('a refused SSE stream is retried, and disconnect stops everything', () => {
   first.readyState = FakeEventSource.CLOSED // a 401 or a proxy answering with HTML
   first.onerror?.()
   assert.equal(FakeEventSource.instances.length, 1)
-  advance(1000)
+  advance(1000 * (1 + RECONNECT_JITTER))
   assert.equal(FakeEventSource.instances.length, 2, 'a new stream was opened')
   assert.equal(first.closed, true)
 
@@ -323,4 +327,100 @@ test('a device that does not answer in time leaves the write queued, and no sock
   assert.equal(await queued, 'queued')
   setWsInstance(null)
   assert.equal(await wsWriteTagResult(7, 1, 20), null)
+})
+
+// ── Reconnect timing and dead-socket detection ──
+
+test('reconnect delays are spread ±30 % around the back-off', () => {
+  assert.equal(jittered(1000, () => 0), 700)
+  assert.equal(jittered(1000, () => 1), 1300)
+  assert.equal(jittered(1000, () => 0.5), 1000)
+  for (let i = 0; i < 50; i++) {
+    const d = jittered(30_000)
+    assert.ok(d >= 21_000 && d <= 39_000, String(d))
+  }
+})
+
+function withWindow(fn: (fire: (name: string) => void, doc: { visibilityState: string }) => void) {
+  const listeners = new Map<string, Set<() => void>>()
+  const target = {
+    addEventListener(name: string, f: () => void) { (listeners.get(name) ?? listeners.set(name, new Set()).get(name)!).add(f) },
+    removeEventListener(name: string, f: () => void) { listeners.get(name)?.delete(f) },
+  }
+  const doc = { visibilityState: 'visible', ...target }
+  g.window = target
+  g.document = doc
+  try {
+    fn(name => listeners.get(name)?.forEach(f => f()), doc)
+  } finally {
+    delete g.window
+    delete g.document
+  }
+}
+
+test('coming back online retries at once instead of waiting out the back-off', () => {
+  withWindow((fire, doc) => {
+    const c = new VoltrusWebSocket()
+    c.connect(WS_URL)
+    for (let i = 0; i < 4; i++) { lastWs().fail(); advance(60_000) }
+    lastWs().fail()
+    const before = FakeWebSocket.instances.length
+    doc.visibilityState = 'hidden'
+    fire('visibilitychange')
+    assert.equal(FakeWebSocket.instances.length, before, 'a hidden tab keeps waiting')
+    doc.visibilityState = 'visible'
+    fire('online')
+    assert.equal(FakeWebSocket.instances.length, before + 1, 'retried immediately')
+    fire('online')
+    assert.equal(FakeWebSocket.instances.length, before + 1, 'nothing to retry while a socket is open')
+    c.disconnect()
+    fire('online')
+    assert.equal(FakeWebSocket.instances.length, before + 1, 'listeners removed on disconnect')
+  })
+})
+
+test('an open socket pings the server', () => {
+  const c = new VoltrusWebSocket()
+  c.connect(WS_URL)
+  lastWs().open()
+  lastWs().hear({ type: 'AuthOk', user: 'a', permissions: [] })
+  advance(KEEPALIVE_INTERVAL_MS)
+  const sent = lastWs().sent.map(b => (decode(b as Uint8Array) as { type: string }).type)
+  assert.deepEqual(sent, ['Ping'])
+  c.disconnect()
+})
+
+test('a silent socket is replaced once the server is known to answer pings', () => {
+  const c = new VoltrusWebSocket()
+  let drops = 0
+  c.onDisconnect(() => { drops += 1 })
+  c.connect(WS_URL)
+  const ws = lastWs()
+  ws.open()
+  ws.hear({ type: 'AuthOk', user: 'a', permissions: [] })
+  ws.hear({ type: 'Pong' })
+  advance(STALE_AFTER_MS - 1)
+  assert.equal(drops, 0)
+  ws.hear({ type: 'Pong' })
+  advance(STALE_AFTER_MS - 1)
+  assert.equal(drops, 0, 'traffic pushes the deadline back')
+  advance(1)
+  assert.equal(drops, 1, 'silent for too long: treated as gone')
+  assert.equal(ws.readyState, 3)
+  const count = FakeWebSocket.instances.length
+  advance(2000)
+  assert.equal(FakeWebSocket.instances.length, count + 1, 'and a new socket is opened')
+  c.disconnect()
+})
+
+test('a server that never answers pings is not judged by silence', () => {
+  const c = new VoltrusWebSocket()
+  let drops = 0
+  c.onDisconnect(() => { drops += 1 })
+  c.connect(WS_URL)
+  lastWs().open()
+  lastWs().hear({ type: 'AuthOk', user: 'a', permissions: [] })
+  advance(STALE_AFTER_MS * 5)
+  assert.equal(drops, 0)
+  c.disconnect()
 })

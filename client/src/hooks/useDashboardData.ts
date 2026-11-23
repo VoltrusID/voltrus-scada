@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { SensorConfig, SensorData, DataPoint, LIVE_PTS } from '../types'
 import { expandCompactData, alarmStatus } from '../utils'
 import { historyUrl } from '../historyQuery'
@@ -73,7 +73,13 @@ export function useDashboardData(
   }, [authed, sensors, actions, historyReady])
 
   // ── History fetch ────────────────────────────────────────────────
+  // Each change of range, screen or tag aborts the request before it, so a slow
+  // answer for the old selection can never overwrite the new one.
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [historyAttempt, setHistoryAttempt] = useState(0)
+  const retryHistory = useCallback(() => setHistoryAttempt(n => n + 1), [])
   useEffect(() => {
+    setHistoryError(null)
     if (mode !== 'history') { actions.setHistoryMap(null); return }
     // The detail chart needs one tag; the dashboard, the tags of its screen.
     const url = historyUrl({
@@ -85,20 +91,28 @@ export function useDashboardData(
       keyedBy: 'id',
     })
     const wanted = detailSensor ? [detailSensor] : screenSensors
-    fetchJson<{ data: Record<string, any> }>(url).then(result => {
-      if (!result.data) return
-      const expanded = expandCompactData(result.data)
+    const ctrl = new AbortController()
+    fetchJson<{ data: Record<string, any> }>(url, { signal: ctrl.signal }).then(result => {
+      if (ctrl.signal.aborted) return
+      const expanded = expandCompactData(result.data ?? {})
       const remapped: Record<string, DataPoint[]> = {}
       for (const s of wanted) {
         const pts = expanded[String(s.id)]
         if (pts) remapped[String(s.id)] = pts
       }
       actions.setHistoryMap(remapped)
+    }).catch((err: unknown) => {
+      if (ctrl.signal.aborted) return
+      setHistoryError(err instanceof Error && err.message ? err.message : 'History could not be loaded')
     })
-  }, [mode, historyRange, historyDetail, activeScreen, screenSensors, historyAutoAgg, detailSensor, actions])
+    return () => ctrl.abort()
+  }, [mode, historyRange, historyDetail, activeScreen, screenSensors, historyAutoAgg, detailSensor, actions, historyAttempt])
 
   return {
     historyReady,
     systemInfo,
+    /** The last history request failed (null while loading or after success). */
+    historyError,
+    retryHistory,
   }
 }

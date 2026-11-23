@@ -36,7 +36,8 @@
     "error": "Fehler",
     "success": "Erfolg",
     "warning": "Warnung",
-    "info": "Info"
+    "info": "Info",
+    "ok": "OK"
   },
   "auth": {
     "login": "Anmelden",
@@ -51,7 +52,26 @@
     "confirmPassword": "Neues Passwort bestätigen",
     "passwordMismatch": "Passwörter stimmen nicht überein",
     "passwordTooShort": "Passwort muss mindestens 8 Zeichen lang sein",
-    "changePasswordBtn": "Passwort ändern"
+    "changePasswordBtn": "Passwort ändern",
+    "signIn": "Anmelden",
+    "usernamePlaceholder": "Benutzernamen eingeben",
+    "passwordPlaceholder": "Passwort eingeben",
+    "showPassword": "Passwort anzeigen",
+    "hidePassword": "Passwort verbergen",
+    "passwordExpiredDesc": "Ihr Passwort ist abgelaufen. Legen Sie ein neues fest, um fortzufahren.",
+    "currentPassword": "Aktuelles Passwort",
+    "currentPasswordPlaceholder": "Aktuelles Passwort eingeben",
+    "currentPasswordRequired": "Das aktuelle Passwort ist erforderlich",
+    "newPasswordLabel": "Neues Passwort",
+    "newPasswordPlaceholder": "Mindestens 8 Zeichen",
+    "confirmPasswordLabel": "Passwort bestätigen",
+    "confirmPasswordPlaceholder": "Passwort erneut eingeben",
+    "updatePassword": "Passwort ändern",
+    "updating": "Wird geändert...",
+    "changeFailed": "Passwort konnte nicht geändert werden",
+    "strengthWeak": "Schwach",
+    "strengthGood": "Gut",
+    "strengthStrong": "Stark"
   },
   "nav": {
     "live": "Live",
@@ -87,17 +107,55 @@
   "alarms": {
     "title": "Alarme",
     "active": "Aktiv",
-    "acknowledged": "Bestätigt",
+    "acknowledged": "Quittiert",
     "shelved": "Zurückgestellt",
-    "acknowledge": "Bestätigen",
-    "acknowledgeAll": "Alle bestätigen",
+    "acknowledge": "Quittieren",
+    "acknowledgeAll": "Alle quittieren",
     "shelf": "Zurückstellen",
     "unshelf": "Wiederherstellen",
     "noActiveAlarms": "Keine aktiven Alarme",
     "critical": "Kritisch",
     "warning": "Warnung",
     "cooldown": "Abklingzeit",
-    "cooldownSecs": "Alarm-Abklingzeit (Sekunden)"
+    "cooldownSecs": "Alarm-Abklingzeit (Sekunden)",
+    "panel": "Alarmübersicht",
+    "all": "Alle",
+    "info": "Info",
+    "ackAll": "Alle quittieren",
+    "ackAllLabel": "Alle Alarme quittieren",
+    "tabAlarms": "Alarme",
+    "tabAnalytics": "Analyse",
+    "tabAudit": "Audit",
+    "last24h": "in 24 h",
+    "shelfAlarm": "Alarm zurückstellen",
+    "reasonOptional": "Grund (optional)",
+    "durationMin": "{{count}} Min.",
+    "durationHour": "{{count}} Std.",
+    "history": "Verlauf",
+    "loadingHistory": "Verlauf wird geladen...",
+    "noHistory": "Kein Verlauf",
+    "byName": "von {{name}}",
+    "system": "System",
+    "loadingAnalytics": "Analyse wird geladen...",
+    "flood": "Alarmflut erkannt: {{n}} Alarme in den letzten 5 Minuten",
+    "avgAck": "Mittlere Zeit bis zur Quittierung:",
+    "top10": "Top 10 der häufigsten Alarme (24 h)",
+    "noData": "Keine Alarmdaten",
+    "loadingAudit": "Audit-Protokoll wird geladen...",
+    "noAudit": "Keine Audit-Einträge",
+    "alarmNumber": "Alarm #{{id}}",
+    "none": "Keine Alarme",
+    "unavailable": "Alarme nicht verfügbar.",
+    "unavailableEmpty": "Der Server antwortet nicht, daher können aktive Alarme nicht angezeigt werden.",
+    "unavailableStale": "Der Server antwortet nicht; diese Liste ist möglicherweise veraltet.",
+    "unavailableCount": "Alarme nicht verfügbar: Der Server antwortet nicht. Die Anzahl ist möglicherweise veraltet.",
+    "acknowledgedBy": "Quittiert von {{name}}",
+    "shelvedBadge": "ZURÜCKGESTELLT",
+    "swipeAck": "Quitt.",
+    "ackAlarm": "Alarm quittieren: {{name}}",
+    "toggleHistory": "Verlauf ein/aus: {{name}}",
+    "filterLabel": "Filter: {{name}}",
+    "tabLabel": "Tab: {{name}}"
   },
   "commands": {
     "title": "Befehle",
@@ -158,7 +216,19 @@
     "memory": "Speicher",
     "disk": "Festplatte",
     "database": "Datenbankgröße",
-    "process": "Prozess"
+    "process": "Prozess",
+    "sections": "Systembereiche",
+    "tabs": {
+      "overview": "System",
+      "docs": "Dokumentation",
+      "templates": "Vorlagen",
+      "wizard": "Assistent",
+      "health": "Zustand",
+      "storage": "Speicher",
+      "config": "Konfiguration",
+      "smtp": "SMTP",
+      "tools": "Werkzeuge"
+    }
   },
   "data": {
     "export": "Daten exportieren",
@@ -310,5 +380,57 @@
     "noAssets": "Keine Anlagen gefunden",
     "noConflicts": "Keine IP-Konflikte erkannt",
     "notFound": "Anlage nicht gefunden"
+  },
+  "session": {
+    "expired": "Ihre Sitzung hat die maximale Dauer erreicht. Bitte melden Sie sich erneut an.",
+    "ended": "Ihre Sitzung wurde beendet. Bitte melden Sie sich erneut an.",
+    "idleMinutes_one": "Sie wurden nach {{count}} Minute Inaktivität abgemeldet.",
+    "idleMinutes_other": "Sie wurden nach {{count}} Minuten Inaktivität abgemeldet.",
+    "idle": "Sie wurden nach längerer Inaktivität abgemeldet.",
+    "renewFailed": "Der Server war nicht erreichbar, um die Sitzung zu verlängern"
+  },
+  "footer": {
+    "live": "LIVE",
+    "liveSse": "LIVE (SSE)",
+    "connecting": "VERBINDE",
+    "overview": "Übersicht",
+    "alarmCount_one": "{{count}} Alarm",
+    "alarmCount_other": "{{count}} Alarme",
+    "alarmsUnavailable": "ALARME NICHT VERFÜGBAR",
+    "viewCards": "Raster",
+    "viewCanvas": "Arbeitsfläche",
+    "viewTwin": "3D",
+    "viewScada": "SCADA"
+  },
+  "signature": {
+    "title": "Elektronische Signatur erforderlich",
+    "signingAs": "Sie signieren als <b>{{name}}</b>. Ihr Passwort bestätigt, dass Sie es sind.",
+    "confirmsYou": "Ihr Passwort bestätigt, dass Sie es sind.",
+    "youAreSigning": "Sie signieren",
+    "yourPassword": "Ihr Passwort",
+    "reason": "Grund",
+    "reasonPlaceholder": "Warum Sie dies tun",
+    "sign": "Signieren",
+    "enterPassword": "Geben Sie Ihr Passwort ein",
+    "enterReason": "Geben Sie den Grund ein"
+  },
+  "dialog": {
+    "shortcut": "Tastenkürzel",
+    "none": "Keins",
+    "record": "Aufnehmen",
+    "pressKey": "Taste drücken...",
+    "clear": "Entfernen"
+  },
+  "errors": {
+    "pageNotLoaded": "Diese Seite konnte nicht geladen werden",
+    "pageNotLoadedDesc": "Der Server wurde möglicherweise aktualisiert oder ist nicht erreichbar. Neu laden holt die aktuelle Version.",
+    "pageCrashed": "Auf dieser Seite ist ein Fehler aufgetreten",
+    "pageCrashedDesc": "Der Rest der Anwendung läuft weiter. Versuchen Sie es erneut oder kehren Sie zum Dashboard zurück.",
+    "reload": "Neu laden",
+    "tryAgain": "Erneut versuchen",
+    "serverDown": "Der Server ist nicht erreichbar. Neuer Versuch erfolgt automatisch."
+  },
+  "history": {
+    "loadFailed": "Der Verlauf konnte nicht geladen werden."
   }
 }

@@ -117,6 +117,8 @@ interface Props {
   editMode: boolean
   onBrandingClick: () => void
   activeAlarmCount: number
+  /** The active alarm count could not be fetched. */
+  alarmsUnavailable?: boolean
   effectiveNavShortcuts: Record<string, string>
   showShortcutsPanel: boolean
   onToggleShortcutsPanel: () => void
@@ -265,7 +267,7 @@ const Icons = {
 
 export function AppHeader({
   branding, editMode, onBrandingClick,
-  activeAlarmCount, effectiveNavShortcuts,
+  activeAlarmCount, alarmsUnavailable = false, effectiveNavShortcuts,
   showShortcutsPanel, onToggleShortcutsPanel, shortcutsPanel,
   mode, onSettingsClick, onDataManagerClick, onFlowsClick, onTagsClick, isAdmin, canOperate = isAdmin,
   username, onLogout, onAlarmPanelToggle, onCommandPanelToggle, onExportClick, onShiftHandoverToggle,
@@ -429,7 +431,7 @@ export function AppHeader({
           {!isMobile && <div style={DIVIDER_V} />}
 
           {/* Unified bell */}
-          <UnifiedBell authed={true} activeAlarmCount={activeAlarmCount} onOpenAlarmPanel={onAlarmPanelToggle} />
+          <UnifiedBell authed={true} activeAlarmCount={activeAlarmCount} alarmsUnavailable={alarmsUnavailable} onOpenAlarmPanel={onAlarmPanelToggle} />
 
           {/* Keyboard shortcuts (desktop only) */}
           {!isMobile && (

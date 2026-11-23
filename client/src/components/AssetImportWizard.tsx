@@ -112,7 +112,7 @@ export function AssetImportWizard({ onClose }: Props) {
       <div
         style={{
           background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10,
-          width: 520, maxHeight: '85vh', display: 'flex', flexDirection: 'column',
+          width: 520, maxWidth: 'calc(100vw - 32px)', maxHeight: '85vh', display: 'flex', flexDirection: 'column',
         }}
         onClick={e => e.stopPropagation()}
       >
@@ -312,7 +312,7 @@ export function AssetImportWizard({ onClose }: Props) {
                   onClick={onClose}
                   style={{
                     padding: '8px 14px', borderRadius: 6, border: '1px solid var(--cyan)',
-                    background: 'var(--cyan)', color: '#fff', cursor: 'pointer',
+                    background: 'var(--cyan)', color: 'var(--on-accent)', cursor: 'pointer',
                     fontSize: 13, fontWeight: 600,
                   }}
                 >

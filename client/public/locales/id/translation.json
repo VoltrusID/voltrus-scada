@@ -36,7 +36,8 @@
     "error": "Kesalahan",
     "success": "Berhasil",
     "warning": "Peringatan",
-    "info": "Informasi"
+    "info": "Informasi",
+    "ok": "OK"
   },
   "auth": {
     "login": "Masuk",
@@ -51,7 +52,26 @@
     "confirmPassword": "Konfirmasi kata sandi baru",
     "passwordMismatch": "Kata sandi tidak cocok",
     "passwordTooShort": "Kata sandi harus minimal 8 karakter",
-    "changePasswordBtn": "Ubah Kata Sandi"
+    "changePasswordBtn": "Ubah Kata Sandi",
+    "signIn": "Masuk",
+    "usernamePlaceholder": "Masukkan nama pengguna",
+    "passwordPlaceholder": "Masukkan kata sandi",
+    "showPassword": "Tampilkan kata sandi",
+    "hidePassword": "Sembunyikan kata sandi",
+    "passwordExpiredDesc": "Kata sandi Anda sudah kedaluwarsa. Buat kata sandi baru untuk melanjutkan.",
+    "currentPassword": "Kata Sandi Saat Ini",
+    "currentPasswordPlaceholder": "Masukkan kata sandi saat ini",
+    "currentPasswordRequired": "Kata sandi saat ini wajib diisi",
+    "newPasswordLabel": "Kata Sandi Baru",
+    "newPasswordPlaceholder": "Minimal 8 karakter",
+    "confirmPasswordLabel": "Konfirmasi Kata Sandi",
+    "confirmPasswordPlaceholder": "Masukkan ulang kata sandi",
+    "updatePassword": "Perbarui Kata Sandi",
+    "updating": "Memperbarui...",
+    "changeFailed": "Gagal mengganti kata sandi",
+    "strengthWeak": "Lemah",
+    "strengthGood": "Cukup",
+    "strengthStrong": "Kuat"
   },
   "nav": {
     "live": "Langsung",
@@ -97,7 +117,45 @@
     "critical": "Kritis",
     "warning": "Peringatan",
     "cooldown": "Jeda",
-    "cooldownSecs": "Jeda alarm (detik)"
+    "cooldownSecs": "Jeda alarm (detik)",
+    "panel": "Panel Alarm",
+    "all": "Semua",
+    "info": "Info",
+    "ackAll": "Konfirmasi Semua",
+    "ackAllLabel": "Konfirmasi semua alarm",
+    "tabAlarms": "Alarm",
+    "tabAnalytics": "Analitik",
+    "tabAudit": "Audit",
+    "last24h": "dalam 24 jam",
+    "shelfAlarm": "Tunda Alarm",
+    "reasonOptional": "Alasan (opsional)",
+    "durationMin": "{{count}} mnt",
+    "durationHour": "{{count}} jam",
+    "history": "Riwayat",
+    "loadingHistory": "Memuat riwayat...",
+    "noHistory": "Belum ada riwayat",
+    "byName": "oleh {{name}}",
+    "system": "sistem",
+    "loadingAnalytics": "Memuat analitik...",
+    "flood": "Banjir alarm terdeteksi: {{n}} alarm dalam 5 menit terakhir",
+    "avgAck": "Rata-rata waktu hingga dikonfirmasi:",
+    "top10": "10 Alarm Tersering (24 jam)",
+    "noData": "Tidak ada data alarm",
+    "loadingAudit": "Memuat jejak audit...",
+    "noAudit": "Tidak ada entri audit",
+    "alarmNumber": "Alarm #{{id}}",
+    "none": "Tidak ada alarm",
+    "unavailable": "Alarm tidak tersedia.",
+    "unavailableEmpty": "Server tidak menjawab, sehingga alarm aktif tidak bisa ditampilkan.",
+    "unavailableStale": "Server tidak menjawab; daftar ini mungkin sudah tidak terbaru.",
+    "unavailableCount": "Alarm tidak tersedia: server tidak menjawab. Jumlahnya mungkin sudah tidak terbaru.",
+    "acknowledgedBy": "Dikonfirmasi oleh {{name}}",
+    "shelvedBadge": "DITUNDA",
+    "swipeAck": "Konfirmasi",
+    "ackAlarm": "Konfirmasi alarm: {{name}}",
+    "toggleHistory": "Tampilkan riwayat: {{name}}",
+    "filterLabel": "Filter: {{name}}",
+    "tabLabel": "Tab: {{name}}"
   },
   "commands": {
     "title": "Perintah",
@@ -158,7 +216,19 @@
     "memory": "Memori",
     "disk": "Disk",
     "database": "Ukuran Database",
-    "process": "Proses"
+    "process": "Proses",
+    "sections": "Bagian sistem",
+    "tabs": {
+      "overview": "Sistem",
+      "docs": "Dokumentasi",
+      "templates": "Templat",
+      "wizard": "Wizard",
+      "health": "Kesehatan",
+      "storage": "Penyimpanan",
+      "config": "Konfigurasi",
+      "smtp": "SMTP",
+      "tools": "Alat"
+    }
   },
   "data": {
     "export": "Ekspor Data",
@@ -310,5 +380,55 @@
     "noAssets": "Tidak ada aset ditemukan",
     "noConflicts": "Tidak ada konflik IP terdeteksi",
     "notFound": "Aset tidak ditemukan"
+  },
+  "session": {
+    "expired": "Sesi Anda telah mencapai batas waktu maksimum. Silakan masuk lagi.",
+    "ended": "Sesi Anda telah berakhir. Silakan masuk lagi.",
+    "idleMinutes_other": "Anda dikeluarkan setelah {{count}} menit tidak ada aktivitas.",
+    "idle": "Anda dikeluarkan karena tidak ada aktivitas selama beberapa waktu.",
+    "renewFailed": "Tidak dapat menghubungi server untuk memperpanjang sesi"
+  },
+  "footer": {
+    "live": "LANGSUNG",
+    "liveSse": "LANGSUNG (SSE)",
+    "connecting": "MENYAMBUNG",
+    "overview": "Ringkasan",
+    "alarmCount_other": "{{count}} Alarm",
+    "alarmsUnavailable": "ALARM TIDAK TERSEDIA",
+    "viewCards": "Kisi",
+    "viewCanvas": "Kanvas",
+    "viewTwin": "3D",
+    "viewScada": "SCADA"
+  },
+  "signature": {
+    "title": "Tanda tangan elektronik diperlukan",
+    "signingAs": "Menandatangani sebagai <b>{{name}}</b>. Kata sandi Anda membuktikan bahwa ini memang Anda.",
+    "confirmsYou": "Kata sandi Anda membuktikan bahwa ini memang Anda.",
+    "youAreSigning": "Yang Anda tandatangani",
+    "yourPassword": "Kata sandi Anda",
+    "reason": "Alasan",
+    "reasonPlaceholder": "Mengapa Anda melakukan ini",
+    "sign": "Tandatangani",
+    "enterPassword": "Masukkan kata sandi Anda",
+    "enterReason": "Masukkan alasannya"
+  },
+  "dialog": {
+    "shortcut": "Pintasan",
+    "none": "Tidak ada",
+    "record": "Rekam",
+    "pressKey": "Tekan tombol...",
+    "clear": "Hapus"
+  },
+  "errors": {
+    "pageNotLoaded": "Halaman ini tidak dapat dimuat",
+    "pageNotLoadedDesc": "Server mungkin baru diperbarui atau tidak dapat dijangkau. Memuat ulang akan mengambil versi terbaru.",
+    "pageCrashed": "Terjadi kesalahan di halaman ini",
+    "pageCrashedDesc": "Bagian lain aplikasi tetap berjalan. Coba lagi, atau kembali ke dasbor.",
+    "reload": "Muat Ulang",
+    "tryAgain": "Coba lagi",
+    "serverDown": "Server tidak dapat dijangkau. Mencoba lagi secara otomatis."
+  },
+  "history": {
+    "loadFailed": "Riwayat tidak dapat dimuat."
   }
 }

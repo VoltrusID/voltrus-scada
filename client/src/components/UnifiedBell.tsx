@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useUserNotifications, useMarkNotificationRead, useDismissNotification, type UserNotification } from '../queries'
 
 const ICON_BTN: React.CSSProperties = {
@@ -34,10 +35,13 @@ const TAB_STYLE = (active: boolean): React.CSSProperties => ({
 interface Props {
   authed: boolean
   activeAlarmCount: number
+  /** The alarm count could not be fetched: the 0 above means "unknown", not "no alarms". */
+  alarmsUnavailable?: boolean
   onOpenAlarmPanel: () => void
 }
 
-export function UnifiedBell({ authed, activeAlarmCount, onOpenAlarmPanel }: Props) {
+export function UnifiedBell({ authed, activeAlarmCount, alarmsUnavailable = false, onOpenAlarmPanel }: Props) {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'notifications' | 'alarms'>('alarms')
   const dropdownRef = useRef<HTMLDivElement>(null)
@@ -73,13 +77,13 @@ export function UnifiedBell({ authed, activeAlarmCount, onOpenAlarmPanel }: Prop
 
   const totalCount = activeAlarmCount + unreadCount
   const hasAlarm = activeAlarmCount > 0
-  const hasNotif = unreadCount > 0
+  const hasNotif = unreadCount > 0 || alarmsUnavailable
 
   const formatTime = (ts: number) => {
     const diff = Math.floor(Date.now() / 1000) - ts
     if (diff < 60) return 'just now'
     if (diff < 3600) return `${Math.floor(diff / 60)}m ago`
-    if (diff < 86400) return `${Math.floor(diff / 86400)}h ago`
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`
     return `${Math.floor(diff / 86400)}d ago`
   }
 
@@ -87,7 +91,7 @@ export function UnifiedBell({ authed, activeAlarmCount, onOpenAlarmPanel }: Prop
     <div style={{ position: 'relative' }} ref={dropdownRef}>
       <button
         onClick={() => setOpen(o => !o)}
-        aria-label={`Notifications & alarms${totalCount > 0 ? ` (${totalCount})` : ''}`}
+        aria-label={`Notifications & alarms${totalCount > 0 ? ` (${totalCount})` : ''}${alarmsUnavailable ? `, ${t('alarms.unavailable')}` : ''}`}
         style={{
           ...ICON_BTN,
           borderColor: hasAlarm ? 'var(--crit)' : hasNotif ? 'var(--warn)' : 'var(--border)',
@@ -98,6 +102,13 @@ export function UnifiedBell({ authed, activeAlarmCount, onOpenAlarmPanel }: Prop
           <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
           <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
         </svg>
+        {alarmsUnavailable && totalCount === 0 && (
+          <span title={t('alarms.unavailable')} style={{
+            position: 'absolute', top: -4, right: -4,
+            background: 'var(--warn)', color: 'var(--on-accent)', borderRadius: '50%', minWidth: 16, height: 16,
+            fontSize: 11, display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800,
+          }}>!</span>
+        )}
         {totalCount > 0 && (
           <span style={{
             position: 'absolute', top: -4, right: -4,
@@ -140,7 +151,12 @@ export function UnifiedBell({ authed, activeAlarmCount, onOpenAlarmPanel }: Prop
           {/* Alarms tab */}
           {tab === 'alarms' && (
             <div style={{ overflowY: 'auto', flex: 1 }}>
-              {activeAlarmCount === 0 ? (
+              {alarmsUnavailable && (
+                <div role="alert" style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontSize: 12, color: 'var(--warn)', fontWeight: 600 }}>
+                  {t('alarms.unavailableCount')}
+                </div>
+              )}
+              {activeAlarmCount === 0 && alarmsUnavailable ? null : activeAlarmCount === 0 ? (
                 <div style={{ padding: '32px 24px', textAlign: 'center', color: 'var(--muted)', fontSize: 13 }}>
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--ok)" strokeWidth="1.5" style={{ margin: '0 auto 12px', display: 'block' }}>
                     <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>

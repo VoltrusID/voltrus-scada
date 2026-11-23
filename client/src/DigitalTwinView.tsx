@@ -13,7 +13,7 @@ import { ConnectionLines } from './twin/ConnectionLines'
 import { EquipmentLabel } from './twin/EquipmentLabel'
 import { EquipmentPalette } from './twin/EquipmentPalette'
 import { DEFAULT_EQUIPMENT } from './twin/defaults'
-import { useDashboardSelector } from './store/dashboardStore'
+import { useSensorCurrentValue, useTrackedCurrentValues } from './store/dashboardStore'
 
 interface FlowConnection {
   from: string
@@ -41,13 +41,12 @@ interface Props {
 
 const ROTATION_STEP = Math.PI / 12 // 15 degrees
 
-function DraggableEquipment({ equipment, onDragEnd, onRotate, onClick, sensors, currentValues, editable, highlight, children }: {
+function DraggableEquipment({ equipment, onDragEnd, onRotate, onClick, sensors, editable, highlight, children }: {
   equipment: TwinEquipment
   onDragEnd: (id: string, pos: [number, number, number]) => void
   onRotate: (id: string, rotation: number) => void
   onClick: () => void
   sensors: SensorConfig[]
-  currentValues: Record<string, SensorData>
   editable: boolean
   highlight?: boolean
   children: React.ReactNode
@@ -128,7 +127,6 @@ function DraggableEquipment({ equipment, onDragEnd, onRotate, onClick, sensors, 
       <EquipmentLabel
         name={equipment.name}
         sensors={sensors}
-        currentValues={currentValues}
       />
     </group>
   )
@@ -158,7 +156,6 @@ export function DigitalTwinView(props: Props) {
 
 /** Hand-placed equipment twin for screens without a SCADA layout. */
 function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onEquipmentClick, onSwitchToCards, onSensorUpdate, onSaveLayouts, onSaveConnections, onSaveCamera, onBackToPlant }: Props & { onBackToPlant?: () => void }) {
-  const currentValues = useDashboardSelector(s => s.currentValues)
   const [equipment, setEquipment] = useState<TwinEquipment[]>(DEFAULT_EQUIPMENT.map(e => ({ ...e })))
   const [twinEditMode, setTwinEditMode] = useState(false)
   const [bindingEquipmentId, setBindingEquipmentId] = useState<string | null>(null)
@@ -250,31 +247,6 @@ function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onE
         )}
       </div>
     )
-  }
-
-  const renderModel = (eq: TwinEquipment) => {
-    const eqSensors = getSensorsForEquipment(eq.id)
-    let statusColor: string | undefined
-    if (eqSensors.length > 0) {
-      const hasCrit = eqSensors.some(s => {
-        const cv = currentValues[s.id]
-        return cv && cv.value >= cv.crit
-      })
-      const hasWarn = eqSensors.some(s => {
-        const cv = currentValues[s.id]
-        return cv && cv.value >= cv.warn
-      })
-      statusColor = hasCrit ? '#ef4444' : hasWarn ? '#eab308' : undefined
-    }
-    const p: ModelProps = {
-      w: 3, d: 2, h: 2, level: null, value: '', config: {}, runState: 'idle',
-      state: statusColor === '#ef4444' ? 'fault' : eqSensors.length ? 'running' : 'idle',
-    }
-    switch (eq.type) {
-      case 'solar_panel': return <SolarArrayModel {...p} />
-      case 'inverter': return <CabinetModel {...p} w={1.6} d={1.4} screen />
-      case 'gateway': return <CabinetModel {...p} w={1} d={1} />
-    }
   }
 
   const eqMap = new Map(equipment.map(e => [e.id, e]))
@@ -424,11 +396,10 @@ function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onE
                 }
               }}
               sensors={getSensorsForEquipment(eq.id)}
-              currentValues={currentValues}
               editable={twinEditMode}
               highlight={connectFrom === eq.id}
             >
-              {renderModel(eq)}
+              <FreeEquipmentModel type={eq.type} sensors={getSensorsForEquipment(eq.id)} />
             </DraggableEquipment>
           ))}
         </Canvas>
@@ -462,7 +433,6 @@ function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onE
               <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.3)' }}>No sensors available</div>
             ) : sensors.map(s => {
               const bound = boundIds.has(s.id)
-              const cv = currentValues[s.id]
               return (
                 <label key={s.id} style={{
                   display: 'flex', alignItems: 'center', gap: 10, padding: '6px 8px', marginBottom: 2,
@@ -475,17 +445,44 @@ function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onE
                     <div style={{ fontSize: 12, color: bound ? '#e5e7eb' : 'rgba(255,255,255,0.4)' }}>{s.name}</div>
                     <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.25)' }}>{s.key} · {s.unit || '—'}</div>
                   </div>
-                  {cv && (
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: s.color, fontWeight: 600 }}>
-                      {cv.value != null && !Number.isNaN(cv.value) ? cv.value.toFixed(s.decimals) : '—'}
-                    </div>
-                  )}
+                  <BindingValue sensor={s} />
                 </label>
               )
             })}
           </div>
         )
       })()}
+    </div>
+  )
+}
+
+/** Model of a hand-placed item, coloured by its bound tags; subscribed to those tags only. */
+function FreeEquipmentModel({ type, sensors }: { type: EquipmentType; sensors: SensorConfig[] }) {
+  const values = useTrackedCurrentValues()
+  let statusColor: string | undefined
+  if (sensors.length > 0) {
+    const hasCrit = sensors.some(s => { const cv = values[String(s.id)]; return cv && cv.value >= cv.crit })
+    const hasWarn = sensors.some(s => { const cv = values[String(s.id)]; return cv && cv.value >= cv.warn })
+    statusColor = hasCrit ? '#ef4444' : hasWarn ? '#eab308' : undefined
+  }
+  const p: ModelProps = {
+    w: 3, d: 2, h: 2, level: null, value: '', config: {}, runState: 'idle',
+    state: statusColor === '#ef4444' ? 'fault' : sensors.length ? 'running' : 'idle',
+  }
+  switch (type) {
+    case 'solar_panel': return <SolarArrayModel {...p} />
+    case 'inverter': return <CabinetModel {...p} w={1.6} d={1.4} screen />
+    case 'gateway': return <CabinetModel {...p} w={1} d={1} />
+    default: return null
+  }
+}
+
+function BindingValue({ sensor }: { sensor: SensorConfig }) {
+  const cv = useSensorCurrentValue(sensor.id)
+  if (!cv) return null
+  return (
+    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: sensor.color, fontWeight: 600 }}>
+      {cv.value != null && !Number.isNaN(cv.value) ? cv.value.toFixed(sensor.decimals) : '—'}
     </div>
   )
 }

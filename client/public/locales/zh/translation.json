@@ -36,7 +36,8 @@
     "error": "错误",
     "success": "成功",
     "warning": "警告",
-    "info": "信息"
+    "info": "信息",
+    "ok": "确定"
   },
   "auth": {
     "login": "登录",
@@ -51,7 +52,26 @@
     "confirmPassword": "确认新密码",
     "passwordMismatch": "密码不匹配",
     "passwordTooShort": "密码至少需要8个字符",
-    "changePasswordBtn": "修改密码"
+    "changePasswordBtn": "修改密码",
+    "signIn": "登录",
+    "usernamePlaceholder": "请输入用户名",
+    "passwordPlaceholder": "请输入密码",
+    "showPassword": "显示密码",
+    "hidePassword": "隐藏密码",
+    "passwordExpiredDesc": "您的密码已过期。请设置新密码后继续。",
+    "currentPassword": "当前密码",
+    "currentPasswordPlaceholder": "请输入当前密码",
+    "currentPasswordRequired": "必须输入当前密码",
+    "newPasswordLabel": "新密码",
+    "newPasswordPlaceholder": "至少 8 个字符",
+    "confirmPasswordLabel": "确认密码",
+    "confirmPasswordPlaceholder": "请再次输入密码",
+    "updatePassword": "更新密码",
+    "updating": "正在更新...",
+    "changeFailed": "修改密码失败",
+    "strengthWeak": "弱",
+    "strengthGood": "中",
+    "strengthStrong": "强"
   },
   "nav": {
     "live": "实时",
@@ -88,16 +108,54 @@
     "title": "告警",
     "active": "活动",
     "acknowledged": "已确认",
-    "shelved": "已搞置",
+    "shelved": "已搁置",
     "acknowledge": "确认",
     "acknowledgeAll": "全部确认",
-    "shelf": "搞置",
-    "unshelf": "取消搞置",
+    "shelf": "搁置",
+    "unshelf": "取消搁置",
     "noActiveAlarms": "无活动告警",
     "critical": "严重",
     "warning": "警告",
     "cooldown": "冷却",
-    "cooldownSecs": "告警冷却（秒）"
+    "cooldownSecs": "告警冷却（秒）",
+    "panel": "告警面板",
+    "all": "全部",
+    "info": "信息",
+    "ackAll": "全部确认",
+    "ackAllLabel": "确认所有告警",
+    "tabAlarms": "告警",
+    "tabAnalytics": "分析",
+    "tabAudit": "审计",
+    "last24h": "过去 24 小时",
+    "shelfAlarm": "搁置告警",
+    "reasonOptional": "原因（可选）",
+    "durationMin": "{{count}} 分钟",
+    "durationHour": "{{count}} 小时",
+    "history": "历史",
+    "loadingHistory": "正在加载历史...",
+    "noHistory": "暂无历史",
+    "byName": "操作人：{{name}}",
+    "system": "系统",
+    "loadingAnalytics": "正在加载分析...",
+    "flood": "检测到告警泛滥：过去 5 分钟内有 {{n}} 条告警",
+    "avgAck": "平均确认时间：",
+    "top10": "最频繁的 10 个告警（24 小时）",
+    "noData": "暂无告警数据",
+    "loadingAudit": "正在加载审计记录...",
+    "noAudit": "暂无审计记录",
+    "alarmNumber": "告警 #{{id}}",
+    "none": "无告警",
+    "unavailable": "告警不可用。",
+    "unavailableEmpty": "服务器未响应，无法显示当前告警。",
+    "unavailableStale": "服务器未响应；此列表可能已过时。",
+    "unavailableCount": "告警不可用：服务器未响应。计数可能已过时。",
+    "acknowledgedBy": "已由 {{name}} 确认",
+    "shelvedBadge": "已搁置",
+    "swipeAck": "确认",
+    "ackAlarm": "确认告警：{{name}}",
+    "toggleHistory": "切换历史：{{name}}",
+    "filterLabel": "筛选：{{name}}",
+    "tabLabel": "标签页：{{name}}"
   },
   "commands": {
     "title": "指令",
@@ -158,7 +216,19 @@
     "memory": "内存",
     "disk": "磁盘",
     "database": "数据库大小",
-    "process": "进程"
+    "process": "进程",
+    "sections": "系统分区",
+    "tabs": {
+      "overview": "系统",
+      "docs": "文档",
+      "templates": "模板",
+      "wizard": "向导",
+      "health": "健康",
+      "storage": "存储",
+      "config": "配置",
+      "smtp": "SMTP",
+      "tools": "工具"
+    }
   },
   "data": {
     "export": "导出数据",
@@ -310,5 +380,55 @@
     "noAssets": "未找到资产",
     "noConflicts": "未检测到IP冲突",
     "notFound": "资产未找到"
+  },
+  "session": {
+    "expired": "您的会话已达到最长时限。请重新登录。",
+    "ended": "您的会话已结束。请重新登录。",
+    "idleMinutes_other": "由于 {{count}} 分钟无操作，您已被登出。",
+    "idle": "由于一段时间无操作，您已被登出。",
+    "renewFailed": "无法连接服务器以续期会话"
+  },
+  "footer": {
+    "live": "实时",
+    "liveSse": "实时（SSE）",
+    "connecting": "正在连接",
+    "overview": "总览",
+    "alarmCount_other": "{{count}} 条告警",
+    "alarmsUnavailable": "告警不可用",
+    "viewCards": "网格",
+    "viewCanvas": "画布",
+    "viewTwin": "3D",
+    "viewScada": "SCADA"
+  },
+  "signature": {
+    "title": "需要电子签名",
+    "signingAs": "以 <b>{{name}}</b> 身份签名。您的密码用于确认是您本人。",
+    "confirmsYou": "您的密码用于确认是您本人。",
+    "youAreSigning": "您正在签署",
+    "yourPassword": "您的密码",
+    "reason": "原因",
+    "reasonPlaceholder": "说明执行此操作的原因",
+    "sign": "签名",
+    "enterPassword": "请输入您的密码",
+    "enterReason": "请输入原因"
+  },
+  "dialog": {
+    "shortcut": "快捷键",
+    "none": "无",
+    "record": "录制",
+    "pressKey": "请按键...",
+    "clear": "清除"
+  },
+  "errors": {
+    "pageNotLoaded": "无法加载此页面",
+    "pageNotLoadedDesc": "服务器可能已更新或无法访问。重新加载可获取当前版本。",
+    "pageCrashed": "此页面出现错误",
+    "pageCrashedDesc": "应用的其他部分仍在运行。请重试，或返回仪表板。",
+    "reload": "重新加载",
+    "tryAgain": "重试",
+    "serverDown": "无法连接服务器。正在自动重试。"
+  },
+  "history": {
+    "loadFailed": "无法加载历史数据。"
   }
 }
