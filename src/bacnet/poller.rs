@@ -188,6 +188,13 @@ fn read_chunk(
     }
 }
 
+/// The numeric abort reason. bacnet-rs 0.3.0 gives it as a `u8`, 0.3.2 as
+/// an `AbortReason` enum that converts to one; Core's lock resolves the
+/// first and the Enterprise build the second, so both must compile.
+fn abort_code(reason: impl Into<u8>) -> u8 {
+    reason.into()
+}
+
 /// The device refused because its answer would need segmentation or does
 /// not fit its buffer.
 #[derive(Debug)]
@@ -320,9 +327,9 @@ fn client_send_confirmed(
                         // 1 buffer-overflow, 4 segmentation-not-supported,
                         // 11 APDU too long
                         Ok(Apdu::Abort { abort_reason, .. })
-                            if matches!(abort_reason, 1 | 4 | 11) =>
+                            if matches!(abort_code(abort_reason), 1 | 4 | 11) =>
                         {
-                            return Err(TooLarge(abort_reason).into());
+                            return Err(TooLarge(abort_code(abort_reason)).into());
                         }
                         Ok(Apdu::Error {
                             error_class,
