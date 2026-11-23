@@ -640,7 +640,9 @@ impl NodeConfig {
                             break;
                         }
                         Ok(resp) => last_error = Some(format!("HTTP {}", resp.status())),
-                        Err(e) => last_error = Some(e.to_string()),
+                        // The error text names the URL, password included: drop it
+                        // (the run's error is readable by every signed-in user).
+                        Err(e) => last_error = Some(e.without_url().to_string()),
                     }
                     if attempt < *retry_count {
                         tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt + 1)))

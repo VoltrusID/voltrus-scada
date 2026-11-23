@@ -143,6 +143,7 @@ pub async fn deliver_to_settings(
                 // config is a JSON array of webhook URLs
                 for url in targets() {
                     if let Err(e) = send_webhook(&url, delivery).await {
+                        let url = crate::security::redact::mask_url(&url);
                         errors.push(format!("webhook {url}: {e}"));
                     }
                 }
@@ -313,7 +314,7 @@ pub async fn dispatch_outbound_webhooks(
                         tracing::info!(
                             "Outbound webhook {} fired to {} (attempt {})",
                             wh_id,
-                            url,
+                            crate::security::redact::mask_url(&url),
                             attempt + 1
                         );
                         success = true;
@@ -338,7 +339,7 @@ pub async fn dispatch_outbound_webhooks(
                             tracing::warn!(
                                 "Outbound webhook {} error: {}, retrying in {}ms",
                                 wh_id,
-                                e,
+                                e.without_url(),
                                 delay
                             );
                             tokio::time::sleep(std::time::Duration::from_millis(delay)).await;

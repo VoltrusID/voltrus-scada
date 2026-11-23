@@ -246,6 +246,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_out_errors_never_show_the_url_password() {
+        let url = format!("http://user:{}@unresolvable.invalid/hook", "topsecretpw");
+        let g = graph(
+            json!([{"id": "h", "type": "http_out", "url": url, "timeout_ms": 2000}]),
+            json!([{"from": "trigger", "to": "h"}]),
+        );
+        let e = env(Storage::new_in_memory().unwrap());
+        let r = execute(&g, "trigger", 0, msg(json!({})), &e).await;
+        assert!(!r.ok);
+        let shown = serde_json::to_string(&r.trace).unwrap() + &format!("{:?}", r.error);
+        assert!(shown.contains("HttpOut failed"), "{shown}");
+        assert!(!shown.contains("topsecretpw"), "{shown}");
+    }
+
+    #[tokio::test]
     async fn filter_reject_goes_to_port_1() {
         let g = graph(
             json!([

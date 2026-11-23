@@ -28,8 +28,10 @@ persist_interval_secs: 5
 # requests. Link-local addresses (the cloud metadata service 169.254.169.254)
 # are always refused and redirects are never followed. Private networks are
 # allowed by default (plants post to hosts on their LAN); set false on a server
-# reachable from the internet, such as a public demo. Loopback (this machine)
-# is refused unless allowed. Host names are checked after they resolve.
+# reachable from the internet, such as a public demo. This machine (loopback and
+# its own LAN and public addresses) is refused unless allow_loopback is true.
+# Host names are checked after they resolve; proxies from HTTP_PROXY /
+# HTTPS_PROXY are not used for these requests.
 # outbound_http:
 #   allow_private_networks: true
 #   allow_loopback: false

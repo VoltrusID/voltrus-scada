@@ -300,12 +300,13 @@ script from a public CDN; the OpenAPI document at `/api/v1/openapi.json` does no
 Requests to URLs that users configure (outbound webhooks and their test button,
 alarm webhooks, flow `http_out` nodes) follow no redirects and never go to a
 link-local address such as the cloud metadata service (169.254.169.254).
-Loopback is refused unless `outbound_http.allow_loopback: true`; private
-networks are allowed unless `outbound_http.allow_private_networks: false`.
-Host names are checked after they resolve. The webhook test button reports the
-HTTP status only, not the response body. The AI copilot's base URL is not
-restricted (a local model server is the usual setup); changing it without
-entering a key again removes the stored key.
+This machine (loopback, and its own LAN and public addresses) is refused unless
+`outbound_http.allow_loopback: true`; private networks are allowed unless
+`outbound_http.allow_private_networks: false`. Host names are checked after
+they resolve, and `HTTP_PROXY`/`HTTPS_PROXY` are not used for these requests.
+The webhook test button reports the HTTP status only, not the response body.
+The AI copilot's base URL is not restricted (a local model server is the usual
+setup); changing it without entering a key again removes the stored key.
 
 Readers who may not configure (viewers, operators, read-only API keys) see
 header values and URL passwords of outbound webhooks and flow `http_out` nodes

@@ -6,7 +6,9 @@
 //!
 //! Always refused: link-local addresses (169.254.0.0/16 with the cloud
 //! metadata service at 169.254.169.254, fe80::/10), unspecified and multicast
-//! addresses. Loopback (127.0.0.0/8, ::1) only with `allow_loopback`.
+//! addresses. Loopback (127.0.0.0/8, ::1) and this machine's own interface
+//! addresses (LAN and public) only with `allow_loopback`. IPv4 addresses
+//! carried in IPv6 (mapped, compatible, NAT64, 6to4) are judged as IPv4.
 //! Private ranges (10/8, 172.16/12, 192.168/16, 100.64/10, fc00::/7) are
 //! allowed by default, since a plant posts to hosts on its own network; set
 //! `allow_private_networks: false` on a server reachable from the internet
@@ -27,7 +29,8 @@ pub struct OutboundPolicy {
     /// Private and carrier-grade NAT ranges (default true).
     #[serde(default = "default_true")]
     pub allow_private_networks: bool,
-    /// This machine: 127.0.0.0/8 and ::1 (default false).
+    /// This machine: 127.0.0.0/8, ::1 and its own interface addresses
+    /// (default false).
     #[serde(default)]
     pub allow_loopback: bool,
 }
@@ -65,11 +68,34 @@ fn is_private_v4(ip: Ipv4Addr) -> bool {
     ip.is_private() || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64.0.0/10
 }
 
+/// The IPv4 address an IPv6 address carries, when it is one of the forms
+/// that reach an IPv4 host: IPv4-mapped `::ffff:a.b.c.d`, IPv4-compatible
+/// `::a.b.c.d`, NAT64 `64:ff9b::a.b.c.d` and 6to4 `2002:aabb:ccdd::/48`.
+fn embedded_v4(v6: Ipv6Addr) -> Option<Ipv4Addr> {
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        return Some(v4);
+    }
+    let seg = v6.segments();
+    let low = Ipv4Addr::from((u32::from(seg[6]) << 16) | u32::from(seg[7]));
+    if seg[..6] == [0, 0, 0, 0, 0, 0] && v6 != Ipv6Addr::LOCALHOST && !v6.is_unspecified() {
+        return Some(low); // IPv4-compatible
+    }
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return Some(low); // NAT64 well-known prefix
+    }
+    if seg[0] == 0x2002 {
+        return Some(Ipv4Addr::from(
+            (u32::from(seg[1]) << 16) | u32::from(seg[2]),
+        )); // 6to4
+    }
+    None
+}
+
 /// Why `ip` is refused under `policy`, or `None` when it is allowed.
 pub fn refusal(ip: IpAddr, policy: OutboundPolicy) -> Option<&'static str> {
-    // An IPv4 address written as IPv6 (::ffff:a.b.c.d) is judged as IPv4.
+    // An IPv4 address carried in IPv6 is judged as that IPv4 address.
     let ip = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        IpAddr::V6(v6) => embedded_v4(v6).map(IpAddr::V4).unwrap_or(ip),
         v4 => v4,
     };
     match ip {
@@ -109,6 +135,40 @@ pub fn refusal(ip: IpAddr, policy: OutboundPolicy) -> Option<&'static str> {
     }
 }
 
+/// This machine's own addresses (every interface, LAN and public ones
+/// included), read at most once a minute.
+fn own_addresses() -> Vec<IpAddr> {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Vec<IpAddr>)>> =
+        std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, addrs)) = cache.as_ref()
+        && at.elapsed() < Duration::from_secs(60)
+    {
+        return addrs.clone();
+    }
+    let nets = sysinfo::Networks::new_with_refreshed_list();
+    let addrs: Vec<IpAddr> = nets
+        .values()
+        .flat_map(|data| data.ip_networks().iter().map(|n| n.addr))
+        .collect();
+    *cache = Some((std::time::Instant::now(), addrs.clone()));
+    addrs
+}
+
+/// [`refusal`] on this machine: without `allow_loopback`, the machine's own
+/// interface addresses are refused like loopback (a request to its LAN or
+/// public address reaches the same services as one to 127.0.0.1).
+pub fn refusal_here(ip: IpAddr, policy: OutboundPolicy) -> Option<&'static str> {
+    refusal(ip, policy).or_else(|| {
+        let ip = match ip {
+            IpAddr::V6(v6) => embedded_v4(v6).map(IpAddr::V4).unwrap_or(ip),
+            v4 => v4,
+        };
+        (!policy.allow_loopback && own_addresses().contains(&ip))
+            .then_some("this machine's own address is not allowed (outbound_http.allow_loopback)")
+    })
+}
+
 /// Check a URL before a request: http or https, and when the host is an IP
 /// address, an allowed one. Host names are checked when they resolve.
 pub fn check_url(url: &str) -> Result<(), String> {
@@ -126,7 +186,7 @@ pub fn check_url(url: &str) -> Result<(), String> {
     else {
         return Ok(());
     };
-    match refusal(ip, policy()) {
+    match refusal_here(ip, policy()) {
         Some(why) => Err(format!("{ip}: {why}")),
         None => Ok(()),
     }
@@ -147,12 +207,12 @@ impl reqwest::dns::Resolve for PolicyResolver {
             let allowed: Vec<SocketAddr> = addrs
                 .iter()
                 .copied()
-                .filter(|a| refusal(a.ip(), policy).is_none())
+                .filter(|a| refusal_here(a.ip(), policy).is_none())
                 .collect();
             if allowed.is_empty() {
                 let why = addrs
                     .first()
-                    .and_then(|a| refusal(a.ip(), policy))
+                    .and_then(|a| refusal_here(a.ip(), policy))
                     .unwrap_or("no address");
                 return Err(format!("{host}: {why}").into());
             }
@@ -161,17 +221,23 @@ impl reqwest::dns::Resolve for PolicyResolver {
     }
 }
 
-/// The HTTP client for user-configured URLs: no redirects, host names
-/// resolved through [`PolicyResolver`]. Call [`check_url`] before each
-/// request for URLs with an IP address as host.
+/// The HTTP client for user-configured URLs: no redirects, no proxy from
+/// the environment (`HTTP_PROXY`/`HTTPS_PROXY` would resolve the host
+/// itself, past [`PolicyResolver`]), host names resolved through
+/// [`PolicyResolver`]. Call [`check_url`] before each request for URLs with
+/// an IP address as host.
 pub fn client(timeout: Option<Duration>) -> reqwest::Client {
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .dns_resolver(Arc::new(PolicyResolver));
     if let Some(t) = timeout {
         builder = builder.timeout(t);
     }
-    builder.build().unwrap_or_else(|_| reqwest::Client::new())
+    // Never fall back to a default client: it would have none of the rules.
+    builder
+        .build()
+        .expect("the HTTP client for outbound requests could not be built")
 }
 
 #[cfg(test)]
@@ -231,7 +297,78 @@ mod tests {
     }
 
     #[test]
+    fn ipv4_carried_in_ipv6_is_judged_as_ipv4() {
+        let default = OutboundPolicy::default();
+        for a in [
+            "::169.254.169.254",  // IPv4-compatible
+            "64:ff9b::a9fe:a9fe", // NAT64 of 169.254.169.254
+            "2002:a9fe:a9fe::1",  // 6to4 of 169.254.169.254
+            "64:ff9b::7f00:1",    // NAT64 of 127.0.0.1
+            "2002:7f00:1::1",     // 6to4 of 127.0.0.1
+        ] {
+            assert!(refusal(ip(a), default).is_some(), "{a}");
+        }
+        assert!(refusal(ip("2001:db8::1"), default).is_none());
+    }
+
+    /// This machine's address on a non-loopback interface, found by asking
+    /// the OS which source address it would use (no packet is sent).
+    fn lan_ip() -> Option<IpAddr> {
+        let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+        socket.connect("10.255.255.255:9").ok()?;
+        let ip = socket.local_addr().ok()?.ip();
+        (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+    }
+
+    #[test]
+    fn this_machines_own_addresses_count_as_loopback() {
+        let Some(own) = lan_ip() else {
+            return; // no non-loopback interface here
+        };
+        let default = OutboundPolicy::default();
+        assert!(refusal_here(own, default).is_some(), "{own}");
+        let local = OutboundPolicy {
+            allow_private_networks: true,
+            allow_loopback: true,
+        };
+        if refusal(own, local).is_none() {
+            assert!(refusal_here(own, local).is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_client_follows_no_redirect() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let router = axum::Router::new().route(
+                "/hook",
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::FOUND,
+                        [("location", "http://169.254.169.254/")],
+                        "",
+                    )
+                }),
+            );
+            axum::serve(listener, router).await.unwrap();
+        });
+        // check_url is not asked here (loopback is refused by default); the
+        // client alone must hand back the redirect instead of following it.
+        let resp = client(Some(Duration::from_secs(5)))
+            .post(format!("http://127.0.0.1:{port}/hook"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 302);
+    }
+
+    #[test]
     fn urls_with_refused_ip_hosts_fail_the_check() {
+        assert!(
+            check_url("http://2130706433/").is_err(),
+            "decimal 127.0.0.1"
+        );
         assert!(check_url("http://169.254.169.254/latest/meta-data/").is_err());
         assert!(check_url("http://[::1]:8080/").is_err());
         assert!(check_url("ftp://example.com/").is_err());
