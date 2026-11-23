@@ -4,28 +4,24 @@
 # main and by hand) screenshots of every page. No secrets: safe for forks.
 name: Native console
 
-# The console does not build against the server crate; its tests read a
-# few server sources (the wire format and the admin types), which are the
-# only server paths listed. Server-only changes do not run this workflow.
+# Server sources too: the macOS job builds the server and runs the
+# end-to-end test against the solar-farm scenario, and the console's tests
+# read a few server sources (the wire format, the admin types).
 on:
   push:
     branches: [main, native-v2, native-parity, 'native-*']
     paths:
       - native/**
-      - src/ws_types.rs
-      - src/models/rbac_types.rs
-      - src/api/auth/users.rs
-      - src/api/api_keys.rs
+      - src/**
+      - scenarios/solar-farm/**
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/native.yml
   pull_request:
     paths:
       - native/**
-      - src/ws_types.rs
-      - src/models/rbac_types.rs
-      - src/api/auth/users.rs
-      - src/api/api_keys.rs
+      - src/**
+      - scenarios/solar-farm/**
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/native.yml
@@ -61,8 +57,17 @@ jobs:
             pkg-config clang cmake libasound2-dev libfontconfig-dev libfreetype-dev \
             libwayland-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev libvulkan1
 
-      # Saved from main only, and only when the lock file changed, so pull
-      # requests and repeated runs do not each store a copy.
+      - name: Toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+          rustc --version
+          echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' '-')" >> "$GITHUB_OUTPUT"
+
+      # Keyed by the compiler and the lock file; saved from main only, after
+      # a passing run, and only when the key changed, so pull requests and
+      # repeated runs do not each store a copy.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache
         with:
@@ -70,15 +75,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: native-linux-${{ hashFiles('Cargo.lock') }}
+          key: native-linux-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
+            native-linux-${{ steps.toolchain.outputs.rustc }}-
             native-linux-
-
-      - name: Toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
-          rustc --version
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -90,7 +90,7 @@ jobs:
         run: cargo test --locked -p voltrus-scada-native
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
@@ -102,6 +102,9 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 60
+    env:
+      # Lints the code only Windows compiles (cfg(not(unix)) and the like).
+      RUSTFLAGS: -D warnings
     defaults:
       run:
         shell: bash
@@ -110,6 +113,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' '-')" >> "$GITHUB_OUTPUT"
+
+      # Keyed by the compiler and the lock file; saved from main only, after
+      # a passing run, and only when the key changed, so pull requests and
+      # repeated runs do not each store a copy.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache
         with:
@@ -117,15 +131,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: native-windows-${{ hashFiles('Cargo.lock') }}
+          key: native-windows-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
+            native-windows-${{ steps.toolchain.outputs.rustc }}-
             native-windows-
-
-      - name: Toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustc --version
 
       - name: Build
         run: cargo build --locked -p voltrus-scada-native --all-targets
@@ -134,7 +143,7 @@ jobs:
         run: cargo test --locked -p voltrus-scada-native
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
@@ -152,9 +161,17 @@ jobs:
         with:
           persist-credentials: false
 
-      # Restore and save separately so a failing build still keeps the compiled
-      # dependencies (GPUI and the server's protocol stacks take most of a cold
-      # build); saved from main only, when the lock file changed.
+      - name: Toolchain
+        id: toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' '-')" >> "$GITHUB_OUTPUT"
+
+      # Keyed by the compiler and the lock file; saved from main only, after
+      # a passing run, and only when the key changed, so pull requests and
+      # repeated runs do not each store a copy.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache
         with:
@@ -162,15 +179,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: native-macos-${{ hashFiles('Cargo.lock') }}
+          key: native-macos-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
+            native-macos-${{ steps.toolchain.outputs.rustc }}-
             native-macos-
-
-      - name: Toolchain
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-          rustc --version
 
       # One build for the console, the server and the simulator, so shared
       # dependencies compile once with the same features.
@@ -181,7 +193,7 @@ jobs:
         run: cargo build --locked --release --workspace --bin voltrus-native --bin voltrus --bin modbus-sim
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        if: always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        if: success() && github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
         with:
           path: |
             ~/.cargo/registry
