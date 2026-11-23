@@ -509,8 +509,8 @@ export function AppInner() {
   }, [activeAlarms.count, startAlarm, stopAlarm])
 
   // ── Render gates ─────────────────────────────────────────────────
-  if (!i18nReady) return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>Loading...</div>
-  if (authLoading) return <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>{t('common.loading')}</div>
+  if (!i18nReady) return <div className="viewport-height" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>Loading...</div>
+  if (authLoading) return <div className="viewport-height" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>{t('common.loading')}</div>
   if (!authed) return <LoginScreen onLogin={handleLogin} onExternalLogin={handleExternalLogin} error={loginError} branding={branding} />
 
   if (mustChangePassword) {
@@ -524,7 +524,7 @@ export function AppInner() {
   return (
     <RoleContext.Provider value={abilities}>
     <LicenseContext.Provider value={licenseInfo}>
-    <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <div className="viewport-height" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
       <a href="#main-content" className="skip-to-content">Skip to content</a>
       {edition.Banners && <edition.Banners />}
       <header role="banner">

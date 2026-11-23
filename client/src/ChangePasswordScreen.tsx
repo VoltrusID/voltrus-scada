@@ -43,8 +43,7 @@ export function ChangePasswordScreen({ onSubmit, expired }: { onSubmit: (oldPass
   const strengthColor = ['', '#ef4444', '#f59e0b', '#22c55e'][strength]
 
   return (
-    <div style={{
-      height: '100vh',
+    <div className="viewport-min-height" style={{
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',

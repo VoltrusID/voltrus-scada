@@ -48,8 +48,7 @@ export function LoginScreen({ onLogin, onExternalLogin, error, branding }: { onL
   const focusRing = (el: HTMLInputElement) => { el.style.borderColor = tint(accent, 50); el.style.boxShadow = `0 0 0 3px ${tint(accent, 10)}` }
 
   return (
-    <div style={{
-      height: '100vh',
+    <div className="viewport-min-height" style={{
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',

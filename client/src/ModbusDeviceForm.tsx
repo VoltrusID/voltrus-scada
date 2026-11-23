@@ -116,7 +116,7 @@ export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) 
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 60 }} onClick={onClose}>
-      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 520, maxHeight: '80vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+      <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 520, maxWidth: 'calc(100vw - 32px)', maxHeight: '80vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
         <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', fontSize: 13, fontWeight: 600 }}>
           {isEdit ? `Edit: ${device!.name}` : 'Add Modbus Device'}
         </div>
@@ -174,7 +174,7 @@ export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) 
       {/* Scan Dialog */}
       {showScanDialog && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 70 }} onClick={() => setShowScanDialog(false)}>
-          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 560, maxHeight: '80vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
+          <div style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 560, maxWidth: 'calc(100vw - 32px)', maxHeight: '80vh', overflow: 'auto' }} onClick={e => e.stopPropagation()}>
             <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center' }}>
               <span style={{ fontSize: 13, fontWeight: 600 }}>Scan Modbus Registers</span>
               <button onClick={() => setShowScanDialog(false)} aria-label="Close" style={{ marginLeft: 'auto', background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: 4, transition: 'color 0.15s' }}>

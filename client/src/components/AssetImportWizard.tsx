@@ -112,7 +112,7 @@ export function AssetImportWizard({ onClose }: Props) {
       <div
         style={{
           background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10,
-          width: 520, maxHeight: '85vh', display: 'flex', flexDirection: 'column',
+          width: 520, maxWidth: 'calc(100vw - 32px)', maxHeight: '85vh', display: 'flex', flexDirection: 'column',
         }}
         onClick={e => e.stopPropagation()}
       >

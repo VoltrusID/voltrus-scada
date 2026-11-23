@@ -5,6 +5,17 @@
   padding: 0;
 }
 
+/* Full screen height that excludes a mobile browser's collapsing toolbars
+   (100dvh); 100vh first for browsers without dynamic viewport units. */
+.viewport-height {
+  height: 100vh;
+  height: 100dvh;
+}
+.viewport-min-height {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
 /* ── Dark theme (default) ── */
 :root,
 [data-theme="dark"] {
