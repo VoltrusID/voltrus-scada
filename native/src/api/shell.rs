@@ -1,7 +1,9 @@
 //! Mirrors of what the console's shell asks the server: the user's
 //! preferences (`settings/ui-theme`, `settings/ui-lang`), the alarm
 //! cooldown, keyboard shortcuts, user notifications, the licence
-//! (`/api/license/status`) and the sign-in methods (`auth/providers`).
+//! (`/api/license/status`), the sign-in methods (`auth/providers`) and a
+//! licensed white-label brand (`settings/branding`, served by an add-on
+//! edition; Core answers 404).
 //! Field names and shapes follow `src/api/{settings,shortcuts,
 //! user_notifications,license}.rs` and `src/api/auth/providers.rs`.
 
@@ -334,6 +336,60 @@ impl AuthProviders {
     }
 }
 
+/// `GET /api/v1/settings/branding` (public, white-label editions only):
+/// the product name, a line under it, a logo and an accent colour, as the
+/// web client's `edition/branding.ts` reads them. Empty fields keep
+/// Voltrus's own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct Branding {
+    pub title: String,
+    pub subtitle: String,
+    pub logo: String,
+    pub accent: Option<String>,
+}
+
+impl Branding {
+    /// The product name to show, when the brand sets one.
+    pub fn title(&self) -> Option<&str> {
+        Some(self.title.trim()).filter(|title| !title.is_empty())
+    }
+
+    pub fn subtitle(&self) -> Option<&str> {
+        Some(self.subtitle.trim()).filter(|subtitle| !subtitle.is_empty())
+    }
+
+    /// The accent as `0xRRGGBB` when it is a `#rgb` or `#rrggbb` colour
+    /// (anything else keeps the theme's).
+    pub fn accent_rgb(&self) -> Option<u32> {
+        let hex = self.accent.as_deref()?.trim().strip_prefix('#')?;
+        if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return None;
+        }
+        let full = match hex.len() {
+            3 => hex.chars().flat_map(|c| [c, c]).collect::<String>(),
+            6 => hex.to_owned(),
+            _ => return None,
+        };
+        u32::from_str_radix(&full, 16).ok()
+    }
+
+    /// Whether text on the accent reads better white than near-black
+    /// (the web client's `brandAccentText`).
+    pub fn white_on_accent(rgb: u32) -> bool {
+        let channel = |shift: u32| {
+            let c = f64::from((rgb >> shift) & 0xff) / 255.0;
+            if c <= 0.039_28 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        let luminance = 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0);
+        1.05 / (luminance + 0.05) >= (luminance + 0.05) / 0.053
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,5 +533,32 @@ mod tests {
             others[1].method(),
             SignInMethod::Unavailable("Turned off on the server".into())
         );
+    }
+
+    #[test]
+    fn a_brand_reads_like_the_web_clients() {
+        let brand: Branding = serde_json::from_str(
+            r##"{"title": " Acme Water ", "subtitle": "", "logo": "", "accent": "#0055aa"}"##,
+        )
+        .unwrap();
+        assert_eq!(brand.title(), Some("Acme Water"));
+        assert_eq!(brand.subtitle(), None);
+        assert_eq!(brand.accent_rgb(), Some(0x0055aa));
+        let short = Branding {
+            accent: Some("#fa0".into()),
+            ..Branding::default()
+        };
+        assert_eq!(short.accent_rgb(), Some(0xffaa00));
+        for bad in ["", "0055aa", "#05a5", "#zzzzzz", "red"] {
+            let brand = Branding {
+                accent: Some(bad.into()),
+                ..Branding::default()
+            };
+            assert_eq!(brand.accent_rgb(), None, "{bad}");
+        }
+        assert_eq!(Branding::default().title(), None);
+        // Dark blue takes white text, yellow near-black.
+        assert!(Branding::white_on_accent(0x0055aa));
+        assert!(!Branding::white_on_accent(0xffdd00));
     }
 }

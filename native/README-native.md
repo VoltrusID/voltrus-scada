@@ -13,7 +13,9 @@ JetBrains Mono for values.
 ## What it does
 
 - **Sign in** under the Voltrus logo, with the server address, username and
-  password. The address and username are remembered in
+  password. A server whose licence includes white-label branding shows its
+  product name, the line under it and its accent colour instead of
+  Voltrus's (the logo stays Voltrus's). The address and username are remembered in
   `<config dir>/voltrus-native/config.toml`
   (`~/Library/Application Support/voltrus-native/` on macOS); the password
   never is. When the server flags a generated or reset password, the console

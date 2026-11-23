@@ -188,7 +188,15 @@ pub fn render(console: &mut Console, cx: &mut Context<Console>) -> AnyElement {
                     div()
                         .text_size(FONT_TITLE)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child("Voltrus SCADA"),
+                        .child(crate::console::shell::product_name(console)),
+                )
+                .children(
+                    crate::console::shell::product_subtitle(console).map(|subtitle| {
+                        div()
+                            .text_size(FONT_CAPTION)
+                            .text_color(theme.fg_muted)
+                            .child(subtitle)
+                    }),
                 )
                 .children(edition),
         )
