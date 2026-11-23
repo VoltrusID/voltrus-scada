@@ -495,12 +495,26 @@ pub async fn write_variable(
         Err(e) => return Ok(e.into_response()),
     };
 
+    let previous = checked.previous;
     let result = write_tag(&device.url, &device.transport, variable_name, value).await;
+    // Counts toward the tag's write_max_rate, and goes into the command
+    // audit trail, like a queued write.
+    if let Err(e) = crate::api::commands::record_direct_write(
+        &state.storage,
+        &user.username,
+        submission,
+        checked,
+        &result,
+    )
+    .await
+    {
+        tracing::error!("Recording the direct PLC write failed: {}", e.message());
+    }
 
     let mut details = json!({
         "variable": variable_name,
         "tag_id": tag_id,
-        "previous": checked.previous,
+        "previous": previous,
         "value": value,
         "reason": reason,
         "success": result.success,

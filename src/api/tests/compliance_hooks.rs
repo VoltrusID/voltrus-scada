@@ -1181,4 +1181,26 @@ async fn a_direct_plc_write_follows_the_tag_write_policy_and_signature() {
     let details = event.details.as_deref().unwrap();
     assert!(details.contains("\"value\":10.0"), "{details}");
     assert!(details.contains("signature=sig-1"), "{details}");
+
+    // The write is in the command trail and counts toward write_max_rate.
+    let recent = f.state.storage.count_recent_writes(tag, 60).await.unwrap();
+    assert_eq!(recent, 1);
+    f.state
+        .storage
+        .update_write_policy(
+            tag,
+            &crate::models::WritePolicyUpdate {
+                writable: None,
+                write_min: None,
+                write_max: None,
+                write_max_rate: Some(Some(1)),
+                write_requires_reason: None,
+                write_deadband: None,
+            },
+        )
+        .await
+        .unwrap();
+    let (status, body) =
+        write(json!({"variable": "speed", "value": 20.0, "signature": signature("admin")})).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
 }
