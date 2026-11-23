@@ -1,11 +1,12 @@
 import { lazy, Suspense, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { SensorGrid } from '../SensorGrid'
-import { CanvasView } from '../CanvasView'
 import { ScreenLayouts, CanvasLayoutItem, SensorConfig } from '../types'
 import type { LayoutItem } from '../types'
 import type { DashboardWidget } from '../dashboardWidgets'
 
+// The free canvas (react-rnd) is not the default view: load it when opened.
+const CanvasView = lazy(() => import('../CanvasView').then(m => ({ default: m.CanvasView })))
 const DigitalTwinView = lazy(() => import('../DigitalTwinView').then(m => ({ default: m.DigitalTwinView })))
 const ScadaView = lazy(() => import('../scada2/ScadaView').then(m => ({ default: m.ScadaView })))
 
@@ -92,6 +93,7 @@ export function MainContent({
 
   if (viewMode === 'canvas') {
     return (
+      <Suspense fallback={null}>
       <CanvasView
         screenSensors={screenSensors}
         canvasLayouts={canvasLayouts}
@@ -107,6 +109,7 @@ export function MainContent({
         shortcuts={shortcuts}
         mode={mode}
       />
+      </Suspense>
     )
   }
 

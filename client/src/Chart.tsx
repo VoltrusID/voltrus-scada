@@ -1,6 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react';
-import { marked } from 'marked';
-import DOMPurify from 'dompurify';
+import { useRef, useEffect, lazy, Suspense } from 'react';
 import { safeMinMax, toHexColor } from './styles';
 import { useCanvasSize } from './hooks/useCanvasSize';
 import { gaugeBands } from './gaugeMath';
@@ -205,29 +203,8 @@ function ImageCard({ imageUrl }: { imageUrl: string }) {
 
 // ── Text (Markdown) ──
 
-function TextCard({ text }: { text: string }) {
-  const html = useMemo(() => {
-    if (!text) return '';
-    const raw = marked.parse(text, { async: false }) as string;
-    return DOMPurify.sanitize(raw);
-  }, [text]);
-
-  if (!text) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--muted)', fontSize: 12 }}>
-        No text configured
-      </div>
-    );
-  }
-
-  return (
-    <div
-      style={{ padding: '12px 16px', overflow: 'auto', height: '100%', fontSize: 14, lineHeight: 1.6, color: 'var(--fg)' }}
-      dangerouslySetInnerHTML={{ __html: html }}
-      className="md-text"
-    />
-  );
-}
+// marked and DOMPurify only load when a text card is on screen.
+const TextCard = lazy(() => import('./TextCard').then(m => ({ default: m.TextCard })));
 
 // ── Dispatcher ──
 
@@ -258,7 +235,7 @@ export function Chart({ chartType, data: rawData, color, warn, crit, min, max, d
     case 'image':
       return <ImageCard imageUrl={imageUrl || ''} />;
     case 'text':
-      return <TextCard text={textContent || ''} />;
+      return <Suspense fallback={null}><TextCard text={textContent || ''} /></Suspense>;
     default:
       return <SparklineChart data={data} color={color} warn={warn} crit={crit} simulated={simulated} />;
   }
