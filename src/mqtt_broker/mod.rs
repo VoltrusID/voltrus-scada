@@ -72,10 +72,33 @@ const MAX_RECENT_MESSAGES: usize = 500;
 const MAX_TOPIC_MESSAGES: usize = 50;
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
+/// Make room in a full topic map: forget the tenth of `max` (at least one)
+/// updated longest ago, in one pass, so a stream of new topics costs one
+/// scan per `max / 10` inserts rather than one per insert.
+fn evict_oldest(topics: &mut HashMap<String, TopicInfo>, max: usize) {
+    let batch = (max / 10).max(1);
+    let target = max.saturating_sub(batch);
+    if topics.len() <= target {
+        return;
+    }
+    let remove = topics.len() - target;
+    let mut ages: Vec<(i64, String)> = topics
+        .values()
+        .map(|t| (t.last_update, t.topic.clone()))
+        .collect();
+    ages.select_nth_unstable(remove - 1);
+    for (_, name) in &ages[..remove] {
+        topics.remove(name);
+    }
+}
+
 /// In-memory tracker of topics and messages passing through the broker.
 #[derive(Clone)]
 pub struct TopicTracker {
     topics: Arc<RwLock<HashMap<String, TopicInfo>>>,
+    /// Most topics kept: clients that put ids or timestamps in topic names
+    /// would otherwise grow the map without end.
+    max_topics: Arc<std::sync::atomic::AtomicUsize>,
     recent_messages: Arc<RwLock<VecDeque<RecentMessage>>>,
     event_tx: broadcast::Sender<MqttEvent>,
 }
@@ -84,9 +107,18 @@ impl TopicTracker {
     pub fn new() -> Self {
         Self {
             topics: Arc::new(RwLock::new(HashMap::new())),
+            max_topics: Arc::new(std::sync::atomic::AtomicUsize::new(
+                crate::models::default_mqtt_max_tracked_topics(),
+            )),
             recent_messages: Arc::new(RwLock::new(VecDeque::with_capacity(MAX_RECENT_MESSAGES))),
             event_tx: broadcast::channel(EVENT_CHANNEL_CAPACITY).0,
         }
+    }
+
+    /// Set how many topics are kept (at least 1).
+    pub fn set_max_topics(&self, max: usize) {
+        self.max_topics
+            .store(max.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Subscribe to a broadcast of every message that flows through the broker.
@@ -111,6 +143,10 @@ impl TopicTracker {
 
         {
             let mut topics = self.topics.write().await;
+            let max = self.max_topics.load(std::sync::atomic::Ordering::Relaxed);
+            if topics.len() >= max && !topics.contains_key(&topic) {
+                evict_oldest(&mut topics, max);
+            }
             let entry = topics.entry(topic.clone()).or_insert_with(|| TopicInfo {
                 topic: topic.clone(),
                 last_payload: Vec::new(),
@@ -274,6 +310,9 @@ pub async fn start_broker(state: MqttBrokerState, config: MqttBrokerConfig) -> R
         let mut cfg = state.config.write().await;
         *cfg = Some(config.clone());
     }
+    state
+        .topic_tracker
+        .set_max_topics(config.max_tracked_topics);
 
     let broker_config = config::build_rumqttd_config(&config);
     let port = config.port;
@@ -414,6 +453,70 @@ mod topic_tracker_tests {
         assert_eq!(ev.topic, "sensors/01/temp");
         assert_eq!(ev.payload, b"24.5");
         assert!(!ev.retain);
+    }
+
+    #[tokio::test]
+    async fn the_topic_map_is_capped_by_forgetting_the_oldest() {
+        let tracker = TopicTracker::new();
+        tracker.set_max_topics(3);
+        for (i, topic) in ["a", "b", "c"].iter().enumerate() {
+            tracker
+                .record_message((*topic).into(), vec![i as u8], false)
+                .await;
+            // Distinct last_update seconds so "oldest" is unambiguous.
+            tracker
+                .topics
+                .write()
+                .await
+                .get_mut(*topic)
+                .unwrap()
+                .last_update = i as i64;
+        }
+        // An existing topic never evicts anything.
+        tracker
+            .record_message("a".into(), b"x".to_vec(), false)
+            .await;
+        assert_eq!(tracker.get_topics().await.len(), 3);
+        // "a" was just updated, so "b" is now the oldest.
+        tracker
+            .record_message("d".into(), b"y".to_vec(), false)
+            .await;
+        let mut names: Vec<String> = tracker
+            .get_topics()
+            .await
+            .into_iter()
+            .map(|t| t.topic)
+            .collect();
+        names.sort();
+        assert_eq!(names, ["a", "c", "d"]);
+    }
+
+    #[tokio::test]
+    async fn eviction_runs_in_batches() {
+        let tracker = TopicTracker::new();
+        tracker.set_max_topics(100);
+        for i in 0..100 {
+            tracker.record_message(format!("t{i}"), vec![], false).await;
+            tracker
+                .topics
+                .write()
+                .await
+                .get_mut(&format!("t{i}"))
+                .unwrap()
+                .last_update = i;
+        }
+        // The 101st topic drops the ten oldest at once.
+        tracker.record_message("new".into(), vec![], false).await;
+        let topics = tracker.topics.read().await;
+        assert_eq!(topics.len(), 91);
+        assert!((0..10).all(|i| !topics.contains_key(&format!("t{i}"))));
+        assert!(topics.contains_key("t10") && topics.contains_key("new"));
+        drop(topics);
+        // The next nine new topics fit without another pass.
+        for i in 0..9 {
+            tracker.record_message(format!("n{i}"), vec![], false).await;
+        }
+        assert_eq!(tracker.topics.read().await.len(), 100);
     }
 
     #[tokio::test]

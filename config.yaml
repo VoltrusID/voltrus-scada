@@ -170,6 +170,7 @@ devices:
 #   enabled: true
 #   port: 1883
 #   max_connections: 100
+#   max_tracked_topics: 10000         # topics whose last value the broker page keeps
 #   auth:
 #     mode: "none"                    # none | config
 #     users: []                       # when mode = "config":

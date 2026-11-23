@@ -7,6 +7,7 @@ mod browse;
 mod discovery;
 mod helpers;
 mod poller;
+pub mod rpm;
 mod write;
 
 #[allow(unused_imports)]

@@ -258,12 +258,17 @@ impl DeviceState {
 fn encode_context_tag(tag_num: u8, data: &[u8]) -> Vec<u8> {
     let mut buf = Vec::new();
     if data.len() <= 4 {
-        buf.push(0x80 | (tag_num << 4) | (data.len() as u8));
+        buf.push((tag_num << 4) | 0x08 | (data.len() as u8));
         buf.extend_from_slice(data);
     } else {
-        buf.push(0x80 | (tag_num << 4) | 0x05);
-        buf.push((data.len() >> 8) as u8);
-        buf.push((data.len() & 0xFF) as u8);
+        buf.push((tag_num << 4) | 0x08 | 0x05);
+        if data.len() < 254 {
+            buf.push(data.len() as u8);
+        } else {
+            buf.push(254);
+            buf.push((data.len() >> 8) as u8);
+            buf.push((data.len() & 0xFF) as u8);
+        }
         buf.extend_from_slice(data);
     }
     buf
@@ -365,7 +370,7 @@ fn read_property(
             PROP_MODEL_NAME => Some(encode_character_string(&state.model_name)),
             PROP_FIRMWARE_REV => Some(encode_character_string(&state.firmware)),
             PROP_OBJECT_LIST => {
-                let mut list = vec![0x0E]; // opening tag
+                let mut list = Vec::new();
                 let dev_id: u32 = (OBJ_TYPE_DEVICE as u32) << 22 | state.device_instance;
                 list.push(0xC4);
                 list.extend_from_slice(&dev_id.to_be_bytes());
@@ -373,7 +378,6 @@ fn read_property(
                     list.push(0xC4);
                     list.extend_from_slice(&obj.object_identifier().to_be_bytes());
                 }
-                list.push(0x0F); // closing tag
                 Some(list)
             }
             _ => None,
@@ -401,7 +405,8 @@ fn read_property(
         }
         PROP_OBJECT_NAME => Some(encode_character_string(&obj.name)),
         PROP_DESCRIPTION => Some(encode_character_string(&obj.description)),
-        PROP_STATUS_FLAGS => Some(encode_unsigned(0)),
+        // BIT STRING of 4 bits, all clear
+        PROP_STATUS_FLAGS => Some(vec![0x82, 0x04, 0x00]),
         _ => None,
     }
 }
@@ -455,7 +460,8 @@ fn parse_object_identifier(data: &[u8]) -> Option<(u16, u32)> {
         return None;
     }
     let tag = data[0];
-    if (tag & 0x0F) != 0x04 {
+    // Length 4: application (0xC4) or context tag 0 (0x0C)
+    if (tag & 0x07) != 0x04 {
         return None;
     }
     let id = u32::from_be_bytes([data[1], data[2], data[3], data[4]]);
@@ -467,7 +473,8 @@ fn parse_unsigned(data: &[u8]) -> Option<(u32, usize)> {
         return None;
     }
     let tag = data[0];
-    let len = (tag & 0x0F) as usize;
+    // Low three bits are the length; bit 3 is the context-class flag.
+    let len = (tag & 0x07) as usize;
     match len {
         1 => Some((*data.get(1)? as u32, 2)),
         2 => Some((((*data.get(1)? as u32) << 8) | *data.get(2)? as u32, 3)),
@@ -597,7 +604,9 @@ fn handle_read_prop(
 
     match value {
         Some(v) => {
-            apdu.extend_from_slice(&encode_context_tag(3, &v));
+            apdu.push(0x3E);
+            apdu.extend_from_slice(&v);
+            apdu.push(0x3F);
         }
         None => {
             let err = vec![0x50, invoke_id, SVC_READ_PROPERTY, 0x00, 0x20];
@@ -613,6 +622,25 @@ fn handle_read_prop(
     let _ = socket.send_to(&encode_bvlc(&npdu), src);
 }
 
+/// Read a context-tagged unsigned (1-4 bytes) with the given tag number.
+fn parse_context_unsigned(data: &[u8], tag_num: u8) -> Option<(u32, usize)> {
+    let tag = *data.first()?;
+    let len = (tag & 0x07) as usize;
+    if tag >> 4 != tag_num || tag & 0x08 == 0 || !(1..=4).contains(&len) {
+        return None;
+    }
+    let bytes = data.get(1..1 + len)?;
+    Some((
+        bytes.iter().fold(0u32, |a, b| (a << 8) | *b as u32),
+        1 + len,
+    ))
+}
+
+/// Answer ReadPropertyMultiple with a standard ReadPropertyMultiple-ACK
+/// (ASHRAE 135 clause 15.7): per object the identifier (context 0), then
+/// opening tag 1, per property its identifier (context 2) followed by the
+/// value in opening/closing tag 4 or an error in opening/closing tag 5, and
+/// closing tag 1.
 fn handle_rpm(
     socket: &UdpSocket,
     state: &Arc<Mutex<DeviceState>>,
@@ -620,49 +648,70 @@ fn handle_rpm(
     data: &[u8],
     src: std::net::SocketAddr,
 ) {
+    let apdu = {
+        let s = state.lock().unwrap();
+        build_rpm_ack(&s, invoke_id, data)
+    };
+    let mut npdu = encode_npdu();
+    npdu.extend_from_slice(&apdu);
+    let _ = socket.send_to(&encode_bvlc(&npdu), src);
+}
+
+fn build_rpm_ack(s: &DeviceState, invoke_id: u8, data: &[u8]) -> Vec<u8> {
     let mut pos = 0;
     let mut apdu = vec![APDU_COMPLEX_ACK, invoke_id, SVC_READ_PROPERTY_MULTIPLE];
-
-    let s = state.lock().unwrap();
 
     while pos + 5 < data.len() {
         let Some((obj_type, instance)) = parse_object_identifier(&data[pos..]) else {
             break;
         };
-        let obj_id_bytes = data[pos..pos + 5].to_vec();
+        let obj_id = ((obj_type as u32) << 22) | instance;
         pos += 5;
-
-        // Skip opening tag for property list
-        if pos < data.len() && data[pos] == 0x0E {
-            pos += 1;
+        // Opening tag 1: list of property references
+        if data.get(pos) != Some(&0x1E) {
+            break;
         }
+        pos += 1;
 
-        apdu.extend_from_slice(&obj_id_bytes);
-        apdu.push(0x0E); // opening tag for results
+        apdu.push(0x0C);
+        apdu.extend_from_slice(&obj_id.to_be_bytes());
+        apdu.push(0x1E);
 
-        while pos < data.len() {
-            if data[pos] == 0x0F {
-                pos += 1;
-                break;
-            }
-            let Some((pid, consumed)) = parse_unsigned(&data[pos..]) else {
-                break;
+        while pos < data.len() && data[pos] != 0x1F {
+            let Some((pid, consumed)) = parse_context_unsigned(&data[pos..], 0) else {
+                return apdu;
             };
             pos += consumed;
+            let mut array_index = None;
+            if let Some((idx, consumed)) = parse_context_unsigned(&data[pos..], 1) {
+                array_index = Some(idx);
+                pos += consumed;
+            }
 
-            let value =
-                read_property(&s, obj_type, instance, pid).unwrap_or_else(|| encode_unsigned(0));
-            apdu.extend_from_slice(&encode_unsigned(pid));
-            apdu.extend_from_slice(&encode_context_tag(4, &value));
+            apdu.extend_from_slice(&encode_context_tag(2, &encode_unsigned(pid)[1..]));
+            if let Some(idx) = array_index {
+                apdu.extend_from_slice(&encode_context_tag(3, &encode_unsigned(idx)[1..]));
+            }
+            let known_object =
+                obj_type == OBJ_TYPE_DEVICE || s.find_object(obj_type, instance).is_some();
+            match read_property(s, obj_type, instance, pid) {
+                Some(value) if array_index.is_none() => {
+                    apdu.push(0x4E);
+                    apdu.extend_from_slice(&value);
+                    apdu.push(0x4F);
+                }
+                _ => {
+                    // error class object(1)/unknown-object(31) or
+                    // property(2)/unknown-property(32)
+                    let (class, code) = if known_object { (2, 32) } else { (1, 31) };
+                    apdu.extend_from_slice(&[0x5E, 0x91, class, 0x91, code, 0x5F]);
+                }
+            }
         }
-
-        apdu.push(0x0F); // closing tag for results
+        pos += 1; // closing tag 1
+        apdu.push(0x1F);
     }
-    drop(s);
-
-    let mut npdu = encode_npdu();
-    npdu.extend_from_slice(&apdu);
-    let _ = socket.send_to(&encode_bvlc(&npdu), src);
+    apdu
 }
 
 fn handle_write_prop(
@@ -792,5 +841,52 @@ fn main() -> anyhow::Result<()> {
             Ok((n, src)) => handle_message(&socket, &state, &buf, n, src),
             Err(_) => continue,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bacnet_rs::object::{ObjectIdentifier, ObjectType, PropertyIdentifier};
+    use bacnet_rs::service::{
+        PropertyReference, ReadAccessSpecification, ReadPropertyMultipleRequest,
+    };
+    use voltrus::bacnet::rpm::{RpmValue, decode_rpm_ack};
+
+    #[test]
+    fn rpm_ack_is_standard_and_decodes() {
+        let state = DeviceState::new(1234);
+        let req = ReadPropertyMultipleRequest::new(vec![
+            ReadAccessSpecification::new(
+                ObjectIdentifier::new(ObjectType::AnalogInput, 1),
+                vec![
+                    PropertyReference::new(PropertyIdentifier::PresentValue),
+                    PropertyReference::new(PropertyIdentifier::ObjectName),
+                ],
+            ),
+            ReadAccessSpecification::new(
+                ObjectIdentifier::new(ObjectType::AnalogInput, 999),
+                vec![PropertyReference::new(PropertyIdentifier::PresentValue)],
+            ),
+        ]);
+        let mut data = Vec::new();
+        req.encode(&mut data).unwrap();
+        let apdu = build_rpm_ack(&state, 7, &data);
+        assert_eq!(
+            &apdu[..3],
+            &[APDU_COMPLEX_ACK, 7, SVC_READ_PROPERTY_MULTIPLE]
+        );
+        let objs = decode_rpm_ack(&apdu[3..]).unwrap();
+        assert_eq!(objs.len(), 2);
+        assert_eq!((objs[0].object_type, objs[0].instance), (0, 1));
+        let RpmValue::Number(v) = objs[0].properties[0].value else {
+            panic!("present value should be numeric");
+        };
+        assert!((v - 22.5).abs() < 1e-6);
+        assert_eq!(objs[0].properties[1].value, RpmValue::Unsupported);
+        assert_eq!(
+            objs[1].properties[0].value,
+            RpmValue::Error { class: 1, code: 31 }
+        );
     }
 }

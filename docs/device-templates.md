@@ -54,14 +54,14 @@ does not know.
   "verified": true,
   "verified_notes": "Firmware 2.1.4, checked against the front panel at a 400 V site, Jan 2026",
   "quirks": [
-    "Float32 values are low word first: use endianness 'swapped'",
+    "Float32 values are low word first: use endianness 'little'",
     "The manual lists 1-based register numbers; offsets here are 0-based"
   ],
   "license": "CC-BY-4.0",
   "port": 502,
   "unit_id": 1,
   "interval_ms": 1000,
-  "endianness": "swapped",
+  "endianness": "little",
   "registers": [
     { "name": "Voltage_L1N", "offset": 0, "register_type": "float32", "register_area": "holding", "scale": 1.0, "unit": "V", "description": "L1-N voltage" },
     { "name": "Current_L1", "offset": 2, "register_type": "float32", "register_area": "holding", "scale": 1.0, "unit": "A" },
@@ -90,8 +90,26 @@ does not know.
 ### Modbus templates
 
 Device defaults (all optional; defaults in brackets): `port` (502), `unit_id` (1),
-`interval_ms` (1000), `endianness` (`big`, `little` or `swapped`; `big`).
+`interval_ms` (1000), `endianness` (`big`, `little`, `swapped`, `little_dword` or
+`swapped_dword`; `big`).
 At least one entry in `registers`.
+
+`endianness` is the order of the registers of a 32- or 64-bit value. With
+the bytes of the value written most significant first as `ABCD` (32-bit) or
+`ABCDEFGH` (64-bit):
+
+| `endianness` | 32-bit registers | 64-bit registers |
+|---|---|---|
+| `big` | `AB CD` | `AB CD EF GH` |
+| `little` | `CD AB` (low word first) | `GH EF CD AB` |
+| `swapped` | `DC BA` (low word first, bytes swapped) | `HG FE DC BA` |
+| `little_dword` | `CD AB` (as `little`) | `CD AB GH EF` (high dword first, each dword as `little`) |
+| `swapped_dword` | `DC BA` (as `swapped`) | `DC BA HG FE` (high dword first, each dword as `swapped`) |
+
+Up to v0.51 `little` and `swapped` read and wrote 64-bit values the way
+`little_dword` and `swapped_dword` do now. A device whose `float64` values
+were right with `little` or `swapped` on an older version should be switched
+to the `_dword` name of its order (docs/upgrade-notes.md).
 
 | Register field | Required | Notes |
 |---|:-:|---|

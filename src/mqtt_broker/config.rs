@@ -64,6 +64,7 @@ mod tests {
                 mode: "none".to_string(),
                 users: vec![],
             },
+            max_tracked_topics: 10_000,
         };
         let _rumqttd = build_rumqttd_config(&config);
     }

@@ -166,6 +166,47 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Mark every command left in `sent` as failed. A command is `sent` only
+    /// while the queue is delivering it, so one found at startup was cut off
+    /// by a restart: whether the device took the write is unknown, and
+    /// sending it again could apply a setpoint twice or late. Returns the
+    /// number of commands marked.
+    pub async fn fail_interrupted_commands(&self) -> Result<usize> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().context("Begin tx failed")?;
+            let now = crate::timeutil::now_secs();
+            let reason = "Interrupted by restart: delivery not confirmed";
+            let ids: Vec<String> = {
+                let mut stmt = tx
+                    .prepare("SELECT id FROM commands WHERE status = 'sent'")
+                    .context("Prepare interrupted commands failed")?;
+                stmt.query_map([], |row| row.get(0))
+                    .context("Query interrupted commands failed")?
+                    .collect::<Result<_, _>>()
+                    .context("Row mapping failed")?
+            };
+            for id in &ids {
+                tx.execute(
+                    "UPDATE commands SET status = 'failed', resolved_at = ?, error_message = ? WHERE id = ?",
+                    rusqlite::params![now, reason, id],
+                )
+                .context("Update interrupted command failed")?;
+                tx.execute(
+                    "INSERT INTO command_audit_log (command_id, old_status, new_status, changed_by, reason, created_at)
+                     VALUES (?, 'sent', 'failed', 'system', ?, ?)",
+                    rusqlite::params![id, reason, now],
+                )
+                .context("Insert command audit log failed")?;
+            }
+            tx.commit().context("Commit failed")?;
+            Ok(ids.len())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     /// Record how the read-back of an acknowledged write ended. `ts` is when
     /// the deciding value was read (ISO 8601), `None` on a timeout.
     pub async fn update_command_readback(

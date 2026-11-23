@@ -5,8 +5,15 @@
 //! range `a-b`, a step `*/n`, `a-b/n` or `a/n`, or a comma list of those.
 //! Months and weekdays also take three-letter names (`jan`, `mon`); weekday 0
 //! and 7 are Sunday. When both day fields are restricted a day matches either
-//! (classic cron). `@hourly`, `@daily`/`@midnight`, `@weekly`, `@monthly` and
+//! (classic cron); as in Vixie cron a field that starts with `*` (`*/2`)
+//! counts as unrestricted, so `0 0 */2 * mon` runs on odd days that are
+//! Mondays. `@hourly`, `@daily`/`@midnight`, `@weekly`, `@monthly` and
 //! `@yearly`/`@annually` are shorthands.
+//!
+//! Daylight saving time (see `Cron::due`) follows Vixie cron: a job with a
+//! fixed minute and hour runs once when the clock goes back and repeats an
+//! hour, and runs at the change when the clock goes forward over its time.
+//! A job with `*` in the minute or hour field just follows the wall clock.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cron {
@@ -17,6 +24,8 @@ pub struct Cron {
     weekdays: u8,
     days_any: bool,
     weekdays_any: bool,
+    /// Neither minute nor hour starts with `*`: Vixie cron's "fixed-time" job.
+    fixed_time: bool,
 }
 
 /// The local wall-clock fields a cron expression is matched against.
@@ -72,8 +81,9 @@ impl Cron {
             days: days as u32,
             months: months as u16,
             weekdays: weekdays as u8,
-            days_any: fields[2] == "*",
-            weekdays_any: fields[4] == "*",
+            days_any: fields[2].starts_with('*'),
+            weekdays_any: fields[4].starts_with('*'),
+            fixed_time: !fields[0].starts_with('*') && !fields[1].starts_with('*'),
         })
     }
 
@@ -87,12 +97,61 @@ impl Cron {
         }
         let day = bit(self.days as u64, t.day);
         let weekday = bit(self.weekdays as u64, t.weekday);
-        match (self.days_any, self.weekdays_any) {
-            (true, true) => true,
-            (false, true) => day,
-            (true, false) => weekday,
-            (false, false) => day || weekday,
+        // Vixie cron: with either day field starred both must match (a
+        // plain `*` matches every day anyway); with both restricted, either.
+        if self.days_any || self.weekdays_any {
+            day && weekday
+        } else {
+            day || weekday
         }
+    }
+}
+
+/// Clock changes further than this are not daylight saving time (a clock
+/// set by hand, a zone change) and are not caught up or deduplicated.
+const MAX_DST_SHIFT_SECS: i64 = 3 * 3600;
+
+impl Cron {
+    /// Whether the schedule fires in the UTC minute containing `unix_secs`,
+    /// in the server's local zone.
+    pub fn due(&self, unix_secs: i64) -> bool {
+        self.due_with(unix_secs, local_offset_secs)
+    }
+
+    /// `due` with the zone given as a function from a UTC instant to its
+    /// offset in seconds.
+    pub fn due_with(&self, unix_secs: i64, offset_at: impl Fn(i64) -> i64) -> bool {
+        let minute = unix_secs.div_euclid(60) * 60;
+        let offset = offset_at(minute);
+        if self.matches(fields_at(minute, offset)) {
+            if !self.fixed_time {
+                return true;
+            }
+            // Clock went back: this wall-clock minute already happened under
+            // the earlier, larger offset; a fixed-time job ran then.
+            let before = offset_at(minute - MAX_DST_SHIFT_SECS);
+            if before > offset {
+                let first = minute + offset - before;
+                if first < minute && offset_at(first) == before {
+                    return false;
+                }
+            }
+            return true;
+        }
+        // Clock went forward at the start of this minute: a fixed-time job
+        // whose time fell in the skipped wall-clock minutes runs now.
+        let previous = offset_at(minute - 60);
+        let jump = offset - previous;
+        if self.fixed_time && jump > 0 && jump <= MAX_DST_SHIFT_SECS {
+            let mut skipped = minute - 60 + previous + 60;
+            while skipped < minute + offset {
+                if self.matches(fields_at(skipped, 0)) {
+                    return true;
+                }
+                skipped += 60;
+            }
+        }
+        false
     }
 }
 
@@ -288,5 +347,82 @@ mod tests {
         assert_eq!(fields_at(ts, 7 * 3600), t(30, 7, 1, 1, 1));
         // At -01:00 it is still Sunday 31 December.
         assert_eq!(fields_at(ts, -3600), t(30, 23, 31, 12, 0));
+    }
+
+    #[test]
+    fn a_starred_step_in_a_day_field_counts_as_unrestricted() {
+        // Vixie: `*/2` in day of month is "*", so both day fields must match.
+        let c = Cron::parse("0 0 */2 * mon").unwrap();
+        assert!(c.matches(t(0, 0, 3, 6, 1)), "odd day and a monday");
+        assert!(!c.matches(t(0, 0, 4, 6, 1)), "a monday on an even day");
+        assert!(
+            !c.matches(t(0, 0, 3, 6, 2)),
+            "an odd day that is not monday"
+        );
+        // Both restricted without a star: either matches.
+        let c = Cron::parse("0 0 1-31/2 * mon").unwrap();
+        assert!(c.matches(t(0, 0, 4, 6, 1)));
+    }
+
+    // A zone at +01:00 that moves to +02:00 at SPRING (01:00 UTC, 02:00 local
+    // becomes 03:00) and back to +01:00 at FALL (01:00 UTC, 03:00 local
+    // becomes 02:00), like central Europe. 2024-03-31 and 2024-10-27.
+    const SPRING: i64 = 1_711_846_800;
+    const FALL: i64 = 1_729_990_800;
+    fn europe(ts: i64) -> i64 {
+        if (SPRING..FALL).contains(&ts) {
+            7200
+        } else {
+            3600
+        }
+    }
+
+    fn fires(c: &Cron, from: i64, to: i64) -> Vec<i64> {
+        (from / 60..to / 60)
+            .map(|m| m * 60)
+            .filter(|ts| c.due_with(*ts, europe))
+            .collect()
+    }
+
+    #[test]
+    fn a_fixed_time_job_runs_once_when_the_clock_goes_back() {
+        // 02:30 local happens at 00:30 UTC (+02:00) and again at 01:30 UTC.
+        let c = Cron::parse("30 2 * * *").unwrap();
+        let runs = fires(&c, FALL - 3 * 3600, FALL + 3 * 3600);
+        assert_eq!(runs, vec![FALL - 1800]);
+    }
+
+    #[test]
+    fn a_wildcard_job_follows_the_wall_clock_when_it_goes_back() {
+        let c = Cron::parse("30 * * * *").unwrap();
+        let runs = fires(&c, FALL - 3 * 3600, FALL + 3 * 3600);
+        // Every hour, including both 02:30s.
+        assert_eq!(runs.len(), 6);
+    }
+
+    #[test]
+    fn a_fixed_time_job_in_the_skipped_hour_runs_at_the_change() {
+        // 02:30 local does not exist on the spring day: it runs at 03:00.
+        let c = Cron::parse("30 2 * * *").unwrap();
+        let runs = fires(&c, SPRING - 3 * 3600, SPRING + 3 * 3600);
+        assert_eq!(runs, vec![SPRING]);
+        // A job at 03:00 runs once, at 03:00, not twice.
+        let c = Cron::parse("0 3 * * *").unwrap();
+        assert_eq!(
+            fires(&c, SPRING - 3 * 3600, SPRING + 3 * 3600),
+            vec![SPRING]
+        );
+        // An hourly job runs every real hour (local 02:30 just does not
+        // exist), and is not run a second time at the change.
+        let c = Cron::parse("30 * * * *").unwrap();
+        assert_eq!(fires(&c, SPRING - 3 * 3600, SPRING + 3 * 3600).len(), 6);
+    }
+
+    #[test]
+    fn without_a_clock_change_due_is_matches() {
+        let c = Cron::parse("15 10 * * *").unwrap();
+        let ts = 1_704_104_100; // 2024-01-01 10:15 UTC
+        assert!(c.due_with(ts + 59, |_| 0));
+        assert!(!c.due_with(ts + 60, |_| 0));
     }
 }

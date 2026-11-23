@@ -38,11 +38,7 @@ impl ModbusDevice {
             port: self.port,
             unit_id: self.unit_id,
             interval_ms: self.interval_ms,
-            endianness: match self.endianness.as_str() {
-                "little" => Endianness::Little,
-                "swapped" => Endianness::Swapped,
-                _ => Endianness::Big,
-            },
+            endianness: Endianness::from_name(&self.endianness),
             registers: registers
                 .iter()
                 .map(|r| RegisterConfig {
