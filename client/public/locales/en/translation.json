@@ -386,7 +386,8 @@
     "ended": "Your session has ended. Please sign in again.",
     "idleMinutes_one": "You were signed out after {{count}} minute of inactivity.",
     "idleMinutes_other": "You were signed out after {{count}} minutes of inactivity.",
-    "idle": "You were signed out after a period of inactivity."
+    "idle": "You were signed out after a period of inactivity.",
+    "renewFailed": "Could not reach the server to renew the session"
   },
   "footer": {
     "live": "LIVE",

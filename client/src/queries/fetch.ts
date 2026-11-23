@@ -1,3 +1,4 @@
+import i18n from 'i18next'
 import { completeSignature } from '../signature/logic'
 import { canPromptForSignature, requestSignature } from '../signature/prompt'
 import {
@@ -5,8 +6,11 @@ import {
   sessionEndReason, type SessionEndReason,
 } from '../session'
 
+/** `refused`: the server said the session is over. `failed`: no usable answer (offline, 5xx). */
+type RefreshOutcome = 'ok' | 'refused' | 'failed'
+
 // Global in-flight refresh promise to prevent multiple simultaneous refresh attempts
-let refreshing: Promise<boolean> | null = null
+let refreshing: Promise<RefreshOutcome> | null = null
 
 type SessionEndedListener = (reason: SessionEndReason) => void
 const sessionEndedListeners = new Set<SessionEndedListener>()
@@ -43,7 +47,7 @@ export function onSessionEnded(fn: SessionEndedListener): () => void {
   return () => { sessionEndedListeners.delete(fn) }
 }
 
-async function doRefresh(): Promise<boolean> {
+async function doRefresh(): Promise<RefreshOutcome> {
   if (refreshing) {
     return refreshing
   }
@@ -56,10 +60,11 @@ async function doRefresh(): Promise<boolean> {
       if (refreshRefused(r.status)) {
         const reason = sessionEndReason(await r.json().catch(() => null)) ?? 'session_ended'
         sessionEndedListeners.forEach(fn => fn(reason))
+        return 'refused'
       }
-      return r.ok
+      return r.ok ? 'ok' : 'failed'
     } catch {
-      return false
+      return 'failed'
     } finally {
       refreshing = null
     }
@@ -73,13 +78,14 @@ export async function fetchWithRefresh(
 ): Promise<Response> {
   const r = await fetch(url, { credentials: 'include', ...init })
   if (r.status === 401) {
-    const ok = await doRefresh()
-    if (ok) {
+    const outcome = await doRefresh()
+    if (outcome === 'ok') {
       return checkPasswordChange(await fetch(url, { credentials: 'include', ...init }))
     }
-    // Don't hard-redirect — throw so React Query handles it gracefully.
-    // The App component's auth gate will show the login screen.
-    throw new SessionExpiredError()
+    // Refused: the session is over and the login screen says so; nothing else should.
+    if (outcome === 'refused') throw new SessionExpiredError()
+    // The server could not be asked: the session may still be good, so report it like any failure.
+    throw new Error(i18n.t('session.renewFailed', { defaultValue: 'Could not reach the server to renew the session' }))
   }
   return checkPasswordChange(r)
 }

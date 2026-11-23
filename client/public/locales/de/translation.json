@@ -386,7 +386,8 @@
     "ended": "Ihre Sitzung wurde beendet. Bitte melden Sie sich erneut an.",
     "idleMinutes_one": "Sie wurden nach {{count}} Minute Inaktivität abgemeldet.",
     "idleMinutes_other": "Sie wurden nach {{count}} Minuten Inaktivität abgemeldet.",
-    "idle": "Sie wurden nach längerer Inaktivität abgemeldet."
+    "idle": "Sie wurden nach längerer Inaktivität abgemeldet.",
+    "renewFailed": "Der Server war nicht erreichbar, um die Sitzung zu verlängern"
   },
   "footer": {
     "live": "LIVE",

@@ -33,13 +33,25 @@ describe('a session the server no longer accepts', () => {
     expect(heard).toHaveBeenCalledWith('session_idle')
   })
 
-  it('does not end on a refresh the server could not answer', async () => {
+  it('does not end on a refresh the server could not answer, and reports that as an error', async () => {
     vi.stubGlobal('fetch', respond(url => url.endsWith('/refresh') ? [503, {}] : [401, {}]))
     const heard = vi.fn()
     const stop = onSessionEnded(heard)
-    await fetchJson('/api/v1/screens').catch(() => {})
+    const err = await fetchJson('/api/v1/screens').catch(e => e)
     stop()
     expect(heard).not.toHaveBeenCalled()
+    expect(isSessionExpiredError(err)).toBe(false)
+    expect(err.message).toBe('Could not reach the server to renew the session')
+  })
+
+  it('a refresh that never reached the server is an ordinary error too', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/refresh')) throw new TypeError('Failed to fetch')
+      return new Response('{}', { status: 401 })
+    }))
+    const err = await fetchJson('/api/v1/screens').catch(e => e)
+    expect(isSessionExpiredError(err)).toBe(false)
+    expect(err.message).toBe('Could not reach the server to renew the session')
   })
 })
 

@@ -385,7 +385,8 @@
     "expired": "Sesi Anda telah mencapai batas waktu maksimum. Silakan masuk lagi.",
     "ended": "Sesi Anda telah berakhir. Silakan masuk lagi.",
     "idleMinutes_other": "Anda dikeluarkan setelah {{count}} menit tidak ada aktivitas.",
-    "idle": "Anda dikeluarkan karena tidak ada aktivitas selama beberapa waktu."
+    "idle": "Anda dikeluarkan karena tidak ada aktivitas selama beberapa waktu.",
+    "renewFailed": "Tidak dapat menghubungi server untuk memperpanjang sesi"
   },
   "footer": {
     "live": "LANGSUNG",
