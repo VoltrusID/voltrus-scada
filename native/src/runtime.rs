@@ -2743,26 +2743,76 @@ mod tests {
 
     #[test]
     fn a_reconnect_after_a_drop_loads_the_tags_and_alarms_again() {
+        // A server that reports each request's first line and never
+        // answers: the fetch is seen as it starts. (Waiting for a fetch to
+        // fail against a closed port instead depends on the system: Linux
+        // refuses at once, Windows retries the connection for about two
+        // seconds.)
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let url = format!("http://{}", listener.local_addr().expect("address"));
+        let (report, requests) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut open = Vec::new();
+            for connection in listener.incoming() {
+                let Ok(mut connection) = connection else {
+                    return;
+                };
+                let mut head = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !head.ends_with(b"\r\n") {
+                    match connection.read(&mut byte) {
+                        Ok(1) => head.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                if report
+                    .send(String::from_utf8_lossy(&head).trim().to_owned())
+                    .is_err()
+                {
+                    return;
+                }
+                open.push(connection);
+            }
+        });
+        let tag_fetches = |wait: Duration| {
+            let until = Instant::now() + wait;
+            let mut count = 0;
+            while let Some(left) = until.checked_duration_since(Instant::now()) {
+                match requests.recv_timeout(left) {
+                    Ok(line) if line.starts_with("GET /api/v1/data-sources ") => count += 1,
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+            count
+        };
+
         let mut h = Harness::new();
-        let id = h.sign_in();
+        let id = h.sign_in_at(&url);
+        h.run_for(Duration::from_millis(300));
+        assert_eq!(tag_fetches(Duration::from_millis(500)), 1, "the first load");
         let generation = h.session().generation;
         let (sender, _queue) = mpsc::channel(4);
         h.socket(Socket::Open(generation, sender));
-        h.run_for(Duration::from_millis(50));
-        while h.inputs.try_recv().is_ok() {}
+        h.run_for(Duration::from_millis(100));
+        assert_eq!(
+            tag_fetches(Duration::from_millis(300)),
+            0,
+            "a first open loads nothing more"
+        );
         h.feed(Input::Rest(id, Rest::Alarms(Ok((Vec::new(), false)))));
+        assert!(!h.session().alarms.running);
         h.socket(Socket::Closed(generation, "gone".into()));
         h.feed(Input::Retry(generation));
         h.feed(Input::Rest(id, Rest::Renewed(Ok(tokens("fresh", "r2")))));
         let current = h.session().generation;
         let (sender, _queue) = mpsc::channel(4);
         h.socket(Socket::Open(current, sender));
-        h.run_for(Duration::from_millis(200));
-        let reloaded: Vec<Input> = std::iter::from_fn(|| h.inputs.try_recv().ok()).collect();
-        assert!(
-            reloaded
-                .iter()
-                .any(|input| matches!(input, Input::Rest(_, Rest::Tags(_)))),
+        h.run_for(Duration::from_millis(300));
+        assert_eq!(
+            tag_fetches(Duration::from_secs(2)),
+            1,
             "the tag list is fetched again"
         );
         assert!(h.session().alarms.running, "and the alarms");
