@@ -1,7 +1,21 @@
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import React, { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ScadaLayoutState } from './engine/widgetState'
 import WidgetShell from './widgets/WidgetShell'
 import type { SensorConfig, SensorData } from '../types'
+import { useTrackedCurrentValues } from '../store/dashboardStore'
+
+type ShellProps = React.ComponentProps<typeof WidgetShell>
+
+/**
+ * One widget fed from the live store. Each widget subscribes on its own and
+ * re-renders only when a tag it shows changes, so a live update repaints the
+ * affected symbols instead of the whole screen.
+ */
+const LiveWidgetShell = memo(function LiveWidgetShell(props: Omit<ShellProps, 'data' | 'currentValues'>) {
+  const values = useTrackedCurrentValues()
+  const { sensorId } = props.instance
+  return <WidgetShell {...props} data={sensorId != null ? values[String(sensorId)] : undefined} currentValues={values} />
+})
 
 /** Screens are authored on a fixed stage and scaled to the viewport, so they look the same on every monitor. */
 export const STAGE_W = 1920
@@ -20,7 +34,8 @@ export const DND_TAG = 'application/x-voltrus-tag'
 interface Props {
   layout: ScadaLayoutState
   sensors: SensorConfig[]
-  currentValues: Record<string, SensorData>
+  /** Fixed values (previews). Omitted: each widget follows the live store. */
+  currentValues?: Record<string, SensorData>
   editMode: boolean
   selectedId: string | null
   zoom: 'fit' | number
@@ -111,28 +126,26 @@ export const ScadaCanvas: React.FC<Props> = ({
             }}
           >
             {children}
-            {layout.widgets.map(w => (
-              <WidgetShell
-                key={w.id}
-                instance={w}
-                sensor={w.sensorId != null ? sensorMap.get(w.sensorId) : undefined}
-                data={w.sensorId != null ? currentValues[String(w.sensorId)] : undefined}
-                sensors={sensors}
-                currentValues={currentValues}
-                editMode={editMode}
-                selected={selectedId === w.id}
-                scale={scale}
-                locked={locked}
-                onSelect={onSelectWidget}
-                onMove={onMoveWidget}
-                onResize={onResizeWidget}
-                onWriteValue={
-                  onWriteValue && w.sensorId != null
-                    ? (value: number) => onWriteValue(w.id, w.sensorId!, value)
-                    : undefined
-                }
-              />
-            ))}
+            {layout.widgets.map(w => {
+              const shared = {
+                instance: w,
+                sensor: w.sensorId != null ? sensorMap.get(w.sensorId) : undefined,
+                sensors,
+                editMode,
+                selected: selectedId === w.id,
+                scale,
+                locked,
+                onSelect: onSelectWidget,
+                onMove: onMoveWidget,
+                onResize: onResizeWidget,
+                onWriteValue: onWriteValue && w.sensorId != null
+                  ? (value: number) => onWriteValue(w.id, w.sensorId!, value)
+                  : undefined,
+              }
+              return currentValues
+                ? <WidgetShell key={w.id} {...shared} data={w.sensorId != null ? currentValues[String(w.sensorId)] : undefined} currentValues={currentValues} />
+                : <LiveWidgetShell key={w.id} {...shared} />
+            })}
           </div>
         </div>
       </div>

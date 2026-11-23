@@ -154,6 +154,93 @@ export function useSensorCurrentValue(sensorId: number | string): SensorData | u
   return useDashboardSelector(s => s.currentValues[k])
 }
 
+interface Tracking {
+  /** Keys the component has read; only changes to these re-render it. */
+  keys: Set<string>
+  /** It enumerated the record (Object.keys, JSON...): every change counts. */
+  all: boolean
+  /** The values the current snapshot was taken from. */
+  base: Record<string, SensorData> | null
+  proxy: Record<string, SensorData> | null
+}
+
+function trackingProxy(t: Tracking, live: () => Record<string, SensorData>): Record<string, SensorData> {
+  // The target is a stand-in: reads always go to the latest values, so a key
+  // read for the first time is never stale.
+  return new Proxy({} as Record<string, SensorData>, {
+    get(_, k) {
+      if (typeof k !== 'string') return undefined
+      t.keys.add(k)
+      return live()[k]
+    },
+    has(_, k) {
+      if (typeof k === 'string') t.keys.add(k)
+      return k in live()
+    },
+    ownKeys() {
+      t.all = true
+      return Reflect.ownKeys(live())
+    },
+    getOwnPropertyDescriptor(_, k) {
+      if (typeof k !== 'string') return undefined
+      t.keys.add(k)
+      const values = live()
+      if (!(k in values)) return undefined
+      return { value: values[k], writable: false, enumerable: true, configurable: true }
+    },
+    set() { return false },
+    deleteProperty() { return false },
+  })
+}
+
+/**
+ * All live values, for components that look values up by id (widgets, SCADA
+ * symbols, the twin). Unlike selecting `s.currentValues`, the component
+ * re-renders only when a value it has read changes, not on every update of
+ * any tag. The record is read-only, and a new object whenever it re-renders,
+ * so it works as a memo or effect dependency.
+ */
+export function useTrackedCurrentValues(): Record<string, SensorData> {
+  const store = useStore()
+  const ref = useRef<Tracking>({ keys: new Set(), all: false, base: null, proxy: null })
+  const getSnapshot = useCallback(() => {
+    const t = ref.current
+    const values = store.getState().currentValues
+    if (t.proxy && t.base) {
+      if (values === t.base) return t.proxy
+      if (!t.all) {
+        let changed = false
+        for (const k of t.keys) {
+          if (values[k] !== t.base[k]) { changed = true; break }
+        }
+        if (!changed) return t.proxy
+      }
+    }
+    t.base = values
+    t.proxy = trackingProxy(t, () => store.getState().currentValues)
+    return t.proxy
+  }, [store])
+  return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot)
+}
+
+/** Live points of several tags; re-renders only when one of theirs changes. */
+export function useSensorDataPointsMany(sensorIds: readonly (number | string)[]): Record<string, DataPoint[]> {
+  const store = useStore()
+  const keys = sensorIds.map(String).join(',')
+  const cache = useRef<{ keys: string; picked: Record<string, DataPoint[]> } | null>(null)
+  const getSnapshot = useCallback(() => {
+    const map = store.getState().dataMap
+    const ids = keys ? keys.split(',') : []
+    const prev = cache.current
+    if (prev && prev.keys === keys && ids.every(k => prev.picked[k] === (map[k] ?? EMPTY_DATA))) return prev.picked
+    const picked: Record<string, DataPoint[]> = {}
+    for (const k of ids) picked[k] = map[k] ?? EMPTY_DATA
+    cache.current = { keys, picked }
+    return picked
+  }, [store, keys])
+  return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot)
+}
+
 export function useHistoryDataPoints(sensorId: number | string): DataPoint[] | undefined {
   const k = String(sensorId)
   return useDashboardSelector(s => s.historyMap?.[k])

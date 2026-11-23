@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import type { DataPoint, SensorConfig, SensorData } from '../../types'
 import type { WidgetInstance } from '../widgets/types'
-import { useChartData } from '../../store/dashboardStore'
+import { useChartData, useTrackedCurrentValues } from '../../store/dashboardStore'
 import { resolveSymbol } from './resolve'
 import { symbolLiveState, symbolWritable, stateText, stateColor } from './SymbolView'
 
@@ -10,7 +10,8 @@ export const FACEPLATE_WIDTH = 320
 interface Props {
   widget: WidgetInstance
   sensors: SensorConfig[]
-  currentValues: Record<string, SensorData>
+  /** Fixed values; omitted, the faceplate follows the live store. */
+  currentValues?: Record<string, SensorData>
   /** Resolves true once the write was accepted. */
   onCommand: (sensorId: number, value: number) => Promise<boolean>
   onOpenDetail: (sensorId: number) => void
@@ -40,7 +41,9 @@ function lowLimits(sensor: SensorConfig): { lw: number | null; lc: number | null
 const limit = (v: number | undefined, s: SensorConfig) => (v != null && v !== 0 && v > s.min_val && v <= s.max_val ? v : null)
 
 /** ISA-101 faceplate: identity, state, PV against its alarm limits, 30-min trend, related tags, and armed operator commands. */
-export const Faceplate: React.FC<Props> = ({ widget, sensors, currentValues, onCommand, onOpenDetail, onClose }) => {
+export const Faceplate: React.FC<Props> = ({ widget, sensors, currentValues: fixedValues, onCommand, onOpenDetail, onClose }) => {
+  const liveValues = useTrackedCurrentValues()
+  const currentValues = fixedValues ?? liveValues
   const r = resolveSymbol(widget)
   const config = r?.config ?? widget.config ?? {}
   const sensor = widget.sensorId != null ? sensors.find(s => s.id === widget.sensorId) : undefined

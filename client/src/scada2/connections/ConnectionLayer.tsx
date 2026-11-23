@@ -1,13 +1,15 @@
 import React from 'react'
 import type { WidgetInstance, ConnectionInstance } from '../widgets/types'
 import type { SensorData } from '../../types'
+import { useTrackedCurrentValues } from '../../store/dashboardStore'
 import { portPoint, resolveSymbol } from '../hmi/resolve'
 import type { PortSide } from '../hmi/symbols'
 
 interface Props {
   widgets: WidgetInstance[]
   connections: ConnectionInstance[]
-  currentValues: Record<string, SensorData>
+  /** Fixed values; omitted, the layer follows the live store (re-rendering only for tags that drive a flow). */
+  currentValues?: Record<string, SensorData>
   editMode: boolean
   selectedId: string | null
   onSelect?: (id: string) => void
@@ -153,7 +155,9 @@ export const CONNECTION_TYPES: { value: ConnectionInstance['connectionType']; la
   { value: 'data', label: 'Signal / data' },
 ]
 
-export const ConnectionLayer: React.FC<Props> = ({ widgets, connections, currentValues, editMode, selectedId, onSelect, pending }) => {
+export const ConnectionLayer: React.FC<Props> = ({ widgets, connections, currentValues: fixedValues, editMode, selectedId, onSelect, pending }) => {
+  const liveValues = useTrackedCurrentValues()
+  const currentValues = fixedValues ?? liveValues
   const byId = new Map(widgets.map(w => [w.id, w]))
 
   return (

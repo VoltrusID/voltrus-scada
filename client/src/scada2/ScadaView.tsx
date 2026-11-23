@@ -12,7 +12,6 @@ import { SymbolThumb } from './hmi/SymbolView'
 import { Faceplate } from './hmi/Faceplate'
 import { AlarmBanner } from './AlarmBanner'
 import type { SensorConfig, SensorData, ScadaEquipmentItem, ScadaConnectionItem } from '../types'
-import { useDashboardSelector } from '../store/dashboardStore'
 import { wsWriteTagResult } from '../api/websocket'
 import { writeTag } from '../api/commands'
 import { toast } from '../components/Toast'
@@ -110,7 +109,6 @@ export const ScadaView: React.FC<Props> = ({
   sensors, activeScreen, scadaEquipment, scadaConnections, loaded,
   onSave, onSensorClick, isAdmin, toolbarSlotSetter,
 }) => {
-  const currentValues = useDashboardSelector(s => s.currentValues) as Record<string, SensorData>
   const { canOperate } = useRole()
   const [history, dispatch] = useReducer(historyReducer, emptyHistory)
   const layout = history.present
@@ -453,7 +451,6 @@ export const ScadaView: React.FC<Props> = ({
           <ScadaCanvas
             layout={layout}
             sensors={sensors}
-            currentValues={currentValues}
             editMode={editMode}
             selectedId={editMode ? (selection?.kind === 'widget' ? selection.id : connectFrom) : faceplateWidget?.id ?? null}
             zoom={editMode ? zoom : 'fit'}
@@ -475,7 +472,6 @@ export const ScadaView: React.FC<Props> = ({
             <ConnectionLayer
               widgets={layout.widgets}
               connections={layout.connections}
-              currentValues={currentValues}
               editMode={editMode}
               selectedId={selection?.kind === 'connection' ? selection.id : null}
               onSelect={tool === 'select' ? id => setSelection({ kind: 'connection', id }) : undefined}
@@ -487,7 +483,6 @@ export const ScadaView: React.FC<Props> = ({
               key={faceplateWidget.id}
               widget={faceplateWidget}
               sensors={sensors}
-              currentValues={currentValues}
               onCommand={sendCommand}
               onOpenDetail={onSensorClick}
               onClose={() => setFaceplateId(null)}
