@@ -99,8 +99,8 @@ export async function fetchSigned(url: string, init?: RequestInit): Promise<Resp
   })
 }
 
-export async function fetchJson<T>(url: string): Promise<T> {
-  const r = await fetchWithRefresh(url)
+export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const r = await fetchWithRefresh(url, init)
   if (!r.ok) throw new Error(`fetch ${url} failed: ${r.status}`)
   return r.json()
 }

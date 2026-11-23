@@ -60,6 +60,12 @@ const MqttBrokerPanel = lazy(() => import('./MqttBrokerPanel').then(m => ({ defa
 const EdrCompatPanel = lazy(() => import('./EdrCompatPanel').then(m => ({ default: m.EdrCompatPanel })))
 const ScriptEditor = lazy(() => import('./components/ScriptEditor').then(m => ({ default: m.ScriptEditor })))
 
+// Stable fallbacks while a query has no data: a fresh `[]` per render would
+// re-run every effect and memo that depends on it.
+const EMPTY_SENSORS: SensorConfig[] = []
+const EMPTY_LIST: never[] = []
+const EMPTY_SHORTCUTS: Record<string, string> = {}
+
 export function AppInner() {
   const queryClient = useQueryClient()
   const { t, ready: i18nReady } = useTranslation()
@@ -164,21 +170,21 @@ export function AppInner() {
   // ── URL sync is owned by @tanstack/react-router (see router.tsx) ──
 
   // ── Query hooks ──────────────────────────────────────────────────
-  const { data: sensors = [] } = useSensors(sessionReady)
-  const { data: screenSensors = [] } = useScreenSensors(activeScreen, sessionReady)
-  const { data: screens = [] } = useScreens(sessionReady)
+  const { data: sensors = EMPTY_SENSORS } = useSensors(sessionReady)
+  const { data: screenSensors = EMPTY_SENSORS } = useScreenSensors(activeScreen, sessionReady)
+  const { data: screens = EMPTY_LIST } = useScreens(sessionReady)
   const { data: serverLayouts } = useLayouts(activeScreen, sessionReady)
   const screenLayouts = localLayouts ?? (serverLayouts ?? { lg: [], md: [], sm: [], xs: [] })
   const { data: twinLayoutsData } = useTwinLayouts(activeScreen, sessionReady)
   const twinLayouts = twinLayoutsData?.items ?? []
   const twinCamera = twinLayoutsData?.camera
-  const { data: twinConnections = [] } = useTwinConnections(activeScreen, sessionReady)
-  const { data: scadaEquipment = [], isFetched: scadaEquipmentFetched } = useScadaEquipment(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
-  const { data: scadaConnections = [], isFetched: scadaConnectionsFetched } = useScadaConnections(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
-  const { data: serverCanvasLayouts = [] } = useCanvasLayouts(activeScreen, sessionReady)
+  const { data: twinConnections = EMPTY_LIST } = useTwinConnections(activeScreen, sessionReady)
+  const { data: scadaEquipment = EMPTY_LIST, isFetched: scadaEquipmentFetched } = useScadaEquipment(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
+  const { data: scadaConnections = EMPTY_LIST, isFetched: scadaConnectionsFetched } = useScadaConnections(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
+  const { data: serverCanvasLayouts = EMPTY_LIST } = useCanvasLayouts(activeScreen, sessionReady)
   const canvasLayouts = localCanvasLayouts ?? serverCanvasLayouts
-  const { data: shortcuts = {} } = useShortcuts(sessionReady)
-  const { data: navShortcuts = {} } = useNavShortcuts(sessionReady)
+  const { data: shortcuts = EMPTY_SHORTCUTS } = useShortcuts(sessionReady)
+  const { data: navShortcuts = EMPTY_SHORTCUTS } = useNavShortcuts(sessionReady)
   const licenseInfo = useLicenseStatus()
   const branding = useEditionBranding(licenseInfo) ?? DEFAULT_BRANDING
   // Tab title and favicon follow the brand (Voltrus defaults when none is set).
@@ -205,7 +211,7 @@ export function AppInner() {
 
   // ── Dashboard data hook (now store-backed) ───────────────────────
   const detailSensor = selectedSensor != null ? sensors.find(x => x.id === selectedSensor) : undefined
-  const { systemInfo } = useDashboardData(sessionReady, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo, detailSensor)
+  const { systemInfo, historyError, retryHistory } = useDashboardData(sessionReady, mode, activeScreen, sensors, screenSensors, historyRange, historyDetail, dashSettings.historyAutoAgg, turbo, detailSensor)
   const storeSystemInfo = useDashboardSystemInfo()
   const storeActions = useDashboardStoreActions()
   const effectiveSystemInfo = systemInfo ?? storeSystemInfo
@@ -581,6 +587,13 @@ export function AppInner() {
         display: 'flex', flexDirection: 'column', position: 'relative',
       }} className="main-content">
         <ErrorBoundary resetKey={routerLocation.href}>
+        {mode === 'history' && historyError && (
+          <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '8px 0', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--warn)', color: 'var(--fg)', fontSize: 13 }}>
+            <span style={{ color: 'var(--warn)', fontWeight: 600 }}>History could not be loaded.</span>
+            <span style={{ color: 'var(--muted)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{historyError}</span>
+            <button onClick={retryHistory} style={{ padding: '4px 10px', borderRadius: 6, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 12 }}>Retry</button>
+          </div>
+        )}
         {editMode && viewMode === 'cards' && (
           <LayoutBreakpointSelector layoutBreakpoint={layoutBreakpoint} onChange={setLayoutBreakpoint} />
         )}
