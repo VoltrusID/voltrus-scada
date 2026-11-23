@@ -309,22 +309,26 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
                                     .is_in_cooldown(&source.key, severity)
                                     .await
                                     .unwrap_or(false);
-                                let mut may_fire = !has_unresolved && !in_cooldown;
                                 // ISA-18.2 on delay: the raised condition must persist
                                 // for on_delay seconds before the alarm fires. While
-                                // suppressed by an existing alarm or cooldown, drop any
-                                // pending so a fresh delay starts after it resolves.
-                                if on_delay > 0 {
-                                    if may_fire {
-                                        let state =
-                                            alarm_delays.entry(source.key.clone()).or_default();
-                                        may_fire = crate::alarm_delay::update_delay(
-                                            state, true, on_delay, 0, now,
-                                        ) == crate::alarm_delay::DelayTransition::Fire;
-                                    } else if let Some(state) = alarm_delays.get_mut(&source.key) {
-                                        state.pending_since = None;
-                                    }
-                                }
+                                // suppressed by an existing alarm or cooldown, a fresh
+                                // delay starts after it resolves. The condition being
+                                // back also restarts any off delay.
+                                let may_fire = match alarm_delays.get_mut(&source.key) {
+                                    Some(state) => crate::alarm_delay::raised(
+                                        state,
+                                        !has_unresolved && !in_cooldown,
+                                        on_delay,
+                                        now,
+                                    ),
+                                    None if on_delay > 0 => crate::alarm_delay::raised(
+                                        alarm_delays.entry(source.key.clone()).or_default(),
+                                        !has_unresolved && !in_cooldown,
+                                        on_delay,
+                                        now,
+                                    ),
+                                    None => !has_unresolved && !in_cooldown,
+                                };
                                 if may_fire {
                                     let msg = if alarm_type == "low" {
                                         format!(
