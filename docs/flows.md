@@ -168,7 +168,7 @@ objects, such as switch and threshold rules: the fields of one item).
 | `write_out` | output | out, error | yes | Writes to tag `data_source_id` through the command queue and its write policy. Value: `value_expr`, or the first number in the payload. Refusals go to `error`. |
 | `alarm_out` | output | out | yes | Raises an alarm (`severity`, `source_key`, `message`). |
 | `notify` | output | out, error | yes | Sends `message` (and `subject`) through `channel`: `settings` (every notification setting of `source_key`: email, webhook, chat), `email` or `webhook` (to the comma-separated `to`). Failures go to `error`. |
-| `http_out` | output | out, error | yes | POSTs the payload as JSON to `url` (`headers`, `timeout_ms` default 5000, `retry_count`). No redirects; the address rules of `outbound_http` (README, Network behaviour) apply. Header values and the URL password read as `********` to roles that may not configure. |
+| `http_out` | output | out, error | yes | POSTs the payload as JSON to `url` (`headers`, `timeout_ms` default 5000, `retry_count`). No redirects; the address rules of `outbound_http` (README, Network behaviour) apply. Header values and the URL password read as `********` to roles that may not configure; saved back masked, they keep the stored values only while the URL keeps its scheme, host and port. |
 | `data_source_out` | output | out | yes | Publishes numeric `value_field` as metric `source_key` of device `flow_<flow id>`. |
 | `debug` | advanced | out | no | Records the message (or payload path `field`) in the run trace; passes it on unchanged. |
 

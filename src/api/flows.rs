@@ -161,6 +161,9 @@ pub async fn create_flow(
     }
     let (trigger, graph, trigger_text) =
         check_definition(&req.trigger_config, &req.nodes).map_err(invalid)?;
+    // A copy of a flow read masked carries no secrets to keep.
+    crate::security::redact::restore_flow_graph(&mut graph.to_value(), None)
+        .map_err(AppError::bad_request)?;
     if state.storage.get_flow(&id).await?.is_some() {
         return Err(reject(
             StatusCode::CONFLICT,
@@ -227,12 +230,13 @@ pub async fn update_flow(
     // An editor that read the flow masked sends the mask back: keep the
     // stored header values and URL credentials of those http_out nodes.
     let mut doc = graph.to_value();
-    let (trigger, graph, trigger_text) =
-        if crate::security::redact::restore_flow_graph(&mut doc, Some(&stored.nodes)) {
-            check_definition(&req.trigger_config, &doc).map_err(invalid)?
-        } else {
-            (trigger, graph, trigger_text)
-        };
+    let restored = crate::security::redact::restore_flow_graph(&mut doc, Some(&stored.nodes))
+        .map_err(AppError::bad_request)?;
+    let (trigger, graph, trigger_text) = if restored {
+        check_definition(&req.trigger_config, &doc).map_err(invalid)?
+    } else {
+        (trigger, graph, trigger_text)
+    };
     state
         .storage
         .update_flow(

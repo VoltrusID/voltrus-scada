@@ -310,7 +310,10 @@ setup); changing it without entering a key again removes the stored key.
 
 Readers who may not configure (viewers, operators, read-only API keys) see
 header values and URL passwords of outbound webhooks and flow `http_out` nodes
-as `********`; an editor that saves the masked value back keeps the stored one.
+as `********`; an editor that saves the masked value back keeps the stored one,
+as long as the node still posts to the same scheme, host and port (otherwise
+the secrets must be entered again). Errors stored for flow runs and webhook
+tests name URLs without their password.
 
 ## Development
 

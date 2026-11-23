@@ -118,50 +118,88 @@ pub fn mask_flow_nodes(nodes: &str) -> String {
     doc.to_string()
 }
 
+/// Scheme, host and port of a URL (`None` when it does not parse).
+fn origin(url: &str) -> Option<String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .map(|u| u.origin().ascii_serialization())
+}
+
+fn holds_mask(node: &Value) -> bool {
+    let header_masked = node
+        .get("headers")
+        .and_then(Value::as_object)
+        .is_some_and(|h| h.values().any(|v| v.as_str() == Some(SECRET_MASK)));
+    let url_masked = node
+        .get("url")
+        .and_then(Value::as_str)
+        .and_then(|u| reqwest::Url::parse(u).ok())
+        .is_some_and(|u| u.password() == Some(SECRET_MASK) || u.username() == SECRET_MASK);
+    header_masked || url_masked
+}
+
 /// `submitted` (a v2 graph document) with the masked secrets of each
 /// `http_out` node put back from the node of the same id in `stored` (the
 /// flow's stored nodes as JSON text). Returns whether anything was restored.
-pub fn restore_flow_graph(submitted: &mut Value, stored: Option<&str>) -> bool {
-    let Some(stored) = stored.and_then(|s| serde_json::from_str::<Value>(s).ok()) else {
-        return false;
-    };
+///
+/// Masked header values are restored only while the node still posts to
+/// the same origin (scheme, host, port) as the stored node, so an edit
+/// cannot send the stored secrets to another host. A mask left over (a
+/// changed origin, a new node or header) is an error asking for the secrets
+/// to be entered again.
+pub fn restore_flow_graph(submitted: &mut Value, stored: Option<&str>) -> Result<bool, String> {
+    let stored = stored.and_then(|s| serde_json::from_str::<Value>(s).ok());
     let stored_nodes: Vec<&Value> = match &stored {
-        Value::Array(list) => list.iter().collect(),
-        Value::Object(map) => map
+        Some(Value::Array(list)) => list.iter().collect(),
+        Some(Value::Object(map)) => map
             .get("nodes")
             .and_then(Value::as_array)
             .map(|l| l.iter().collect())
             .unwrap_or_default(),
-        _ => return false,
+        _ => Vec::new(),
     };
     let Some(list) = submitted.get_mut("nodes").and_then(Value::as_array_mut) else {
-        return false;
+        return Ok(false);
     };
     let mut changed = false;
     for node in list.iter_mut().filter(|n| is_http_out(n)) {
-        let id = node.get("id").and_then(Value::as_str).unwrap_or_default();
-        let Some(old) = stored_nodes
+        let id = node
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let old = stored_nodes
             .iter()
-            .find(|n| is_http_out(n) && n.get("id").and_then(Value::as_str) == Some(id))
-        else {
-            continue;
-        };
-        if let Some(headers) = node.get("headers") {
-            let restored = restore_headers(headers, old.get("headers"));
-            if &restored != headers {
-                node["headers"] = restored;
-                changed = true;
+            .find(|n| is_http_out(n) && n.get("id").and_then(Value::as_str) == Some(id.as_str()));
+        if let Some(old) = old {
+            let old_url = old.get("url").and_then(Value::as_str);
+            if let Some(url) = node.get("url").and_then(Value::as_str) {
+                let restored = restore_url(url, old_url);
+                if restored != url {
+                    node["url"] = Value::String(restored);
+                    changed = true;
+                }
+            }
+            let same_origin = match (node.get("url").and_then(Value::as_str), old_url) {
+                (Some(new), Some(old)) => origin(new).is_some() && origin(new) == origin(old),
+                _ => false,
+            };
+            if same_origin && let Some(headers) = node.get("headers") {
+                let restored = restore_headers(headers, old.get("headers"));
+                if &restored != headers {
+                    node["headers"] = restored;
+                    changed = true;
+                }
             }
         }
-        if let Some(url) = node.get("url").and_then(Value::as_str) {
-            let restored = restore_url(url, old.get("url").and_then(Value::as_str));
-            if restored != url {
-                node["url"] = Value::String(restored);
-                changed = true;
-            }
+        if holds_mask(node) {
+            return Err(format!(
+                "node '{id}': its URL changed or a value is new, so the masked secrets \
+                 ({SECRET_MASK}) cannot be kept; enter the secrets again"
+            ));
         }
     }
-    changed
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -213,8 +251,24 @@ mod tests {
         assert!(!masked.contains("Bearer abc"));
         assert!(!masked.contains(":pw@"));
         let mut submitted: Value = serde_json::from_str(&masked).unwrap();
-        assert!(restore_flow_graph(&mut submitted, Some(&stored)));
+        assert_eq!(restore_flow_graph(&mut submitted, Some(&stored)), Ok(true));
         let original: Value = serde_json::from_str(&stored).unwrap();
         assert_eq!(submitted, original);
+
+        // Another host does not get the stored header values.
+        let mut moved: Value = serde_json::from_str(&masked).unwrap();
+        moved["nodes"][0]["url"] = json!("https://elsewhere.invalid/");
+        let err = restore_flow_graph(&mut moved, Some(&stored)).unwrap_err();
+        assert!(err.contains("enter the secrets again"), "{err}");
+        // The same origin, another path, keeps them.
+        let mut same: Value = serde_json::from_str(&masked).unwrap();
+        same["nodes"][0]["url"] = json!("https://hooks.invalid/other");
+        assert_eq!(restore_flow_graph(&mut same, Some(&stored)), Ok(true));
+        assert_eq!(same["nodes"][0]["headers"]["Authorization"], "Bearer abc");
+        // A mask on a node that has no stored one.
+        let mut fresh = json!({"version": 2, "nodes": [
+            {"type": "http_out", "id": "new", "url": "https://hooks.invalid/", "headers": {"X": SECRET_MASK}}
+        ], "edges": []});
+        assert!(restore_flow_graph(&mut fresh, Some(&stored)).is_err());
     }
 }
