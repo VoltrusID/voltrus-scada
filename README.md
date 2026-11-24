@@ -159,6 +159,14 @@ licence key; a lapsed or missing key never limits Core.
 | Support | community | standard | priority SLA |
 
 Integrator and Enterprise are sold as a lifetime licence or monthly, per site. A per-site key can also carry an annual support contract; a lapsed contract never limits Core or anything already licensed.
+
+Services, for any edition including Core: remote commissioning at $490 per
+site (Modbus TCP or OPC UA, up to 2 devices, 300 tags and 50 alarms, one
+dashboard), Site Support at $390 per site per year (first reply within 2
+business days, 2 hours of remote troubleshooting), or both with an Integrator
+lifetime licence as Site Starter for $990. Send the scope to
+[support@voltrus.id](mailto:support@voltrus.id?subject=Voltrus%20SCADA%20services)
+and we invoice it. On-site work in Indonesia is quoted per job.
 Current prices: <https://voltrus.id/voltrus-scada>. Official Voltrus binaries
 are Core plus the add-on. Details of the split and how it is built:
 [docs/open-core.md](docs/open-core.md).
