@@ -10,7 +10,11 @@ use serde_json::{Value, json};
 use super::{AppError, AppState, AuthUser, Rejected};
 use crate::faceplate::Faceplate;
 
-fn parse(body: Value) -> Result<Faceplate, AppError> {
+fn parse(mut body: Value) -> Result<Faceplate, AppError> {
+    // What `GET /faceplates/{id}` adds, so a read-modify-write passes.
+    if let Some(obj) = body.as_object_mut() {
+        obj.remove("used_by");
+    }
     let f: Faceplate = serde_json::from_value(body)
         .map_err(|e| AppError::bad_request(format!("Not a faceplate: {e}")))?;
     let problems = f.problems();

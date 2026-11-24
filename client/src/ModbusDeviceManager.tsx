@@ -21,10 +21,11 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
   const deleteMut = useDeleteModbusDevice()
   const restartMut = useRestartModbusPoller()
   const qc = useQueryClient()
-  const unlink = async (id: string) => {
-    if (!confirm(`Unlink ${id} from its template? It keeps its registers as its own copy and no longer follows template changes.`)) return
+  const unlink = async (id: string): Promise<boolean> => {
+    if (!confirm(`Unlink ${id} from its template? It keeps its registers as its own copy and no longer follows template changes.`)) return false
     try {
       await fetchOk(`/api/v1/modbus-devices/${encodeURIComponent(id)}/template`, { method: 'DELETE' })
+      return true
     } finally {
       qc.invalidateQueries({ queryKey: queryKeys.modbusDevices })
     }
@@ -206,7 +207,7 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
 
   const modals = (<>
     {showForm && <ModbusDeviceForm dupDevice={dupDevice} onSave={handleCreate} onClose={() => { setShowForm(false); setDupDevice(undefined) }} />}
-    {editDevice && <ModbusDeviceForm device={editDevice} onSave={handleUpdate} onClose={() => setEditDevice(undefined)} />}
+    {editDevice && <ModbusDeviceForm device={editDevice} onSave={handleUpdate} onUnlink={unlink} onClose={() => setEditDevice(undefined)} />}
     {simDevice && (() => {
       const state = simStates[simDevice.id] ?? { simulation_mode: false, sim_profile_id: null, sim_config: null }
       return (

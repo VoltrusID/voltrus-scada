@@ -148,3 +148,9 @@ test('the template save preview lists each linked device and its register change
     { id: 'pump-b', name: '', changes: { added: [], removed: [], changed: [] } },
   ]), ['Pump A: +power, -old, ~current', 'pump-b: no change'])
 })
+
+test('the save preview names the tags on removed registers', () => {
+  assert.deepEqual(linkedChangeLines([
+    { id: 'p', name: 'P', changes: { added: ['amps'], removed: ['current'], changed: [], affected_data_sources: ['p.current'] } },
+  ]), ['P: +amps, -current', 'P: these tags stop updating: p.current'])
+})

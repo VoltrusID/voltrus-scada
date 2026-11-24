@@ -2,16 +2,16 @@
 use bacnet_rs::object::{ObjectType, PropertyIdentifier};
 
 pub(super) fn object_type_from_str(s: &str) -> Option<ObjectType> {
-    match s.to_lowercase().as_str() {
-        "analoginput" | "ai" => Some(ObjectType::AnalogInput),
-        "analogoutput" | "ao" => Some(ObjectType::AnalogOutput),
-        "analogvalue" | "av" => Some(ObjectType::AnalogValue),
-        "binaryinput" | "bi" => Some(ObjectType::BinaryInput),
-        "binaryoutput" | "bo" => Some(ObjectType::BinaryOutput),
-        "binaryvalue" | "bv" => Some(ObjectType::BinaryValue),
-        "multistateinput" | "mi" => Some(ObjectType::MultiStateInput),
-        "multistateoutput" | "mo" => Some(ObjectType::MultiStateOutput),
-        "multistatevalue" | "mv" => Some(ObjectType::MultiStateValue),
+    match crate::device_templates::bacnet_object_type(s)? {
+        "analogInput" => Some(ObjectType::AnalogInput),
+        "analogOutput" => Some(ObjectType::AnalogOutput),
+        "analogValue" => Some(ObjectType::AnalogValue),
+        "binaryInput" => Some(ObjectType::BinaryInput),
+        "binaryOutput" => Some(ObjectType::BinaryOutput),
+        "binaryValue" => Some(ObjectType::BinaryValue),
+        "multiStateInput" => Some(ObjectType::MultiStateInput),
+        "multiStateOutput" => Some(ObjectType::MultiStateOutput),
+        "multiStateValue" => Some(ObjectType::MultiStateValue),
         _ => None,
     }
 }

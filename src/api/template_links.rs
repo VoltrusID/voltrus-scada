@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::api::{AppError, AppState, AuthUser, Rejected};
-use crate::device_templates::link::{self, RegisterDiff, TemplateLink};
+use crate::device_templates::link::{self, RegisterDiff, RegisterRow, TemplateLink};
 use crate::device_templates::{DeviceTemplate, Protocol, TemplateRegister, builtin, resolve};
 use crate::models::ModbusRegisterInput;
 
@@ -89,18 +89,42 @@ pub struct LinkedDevice {
     pub changes: RegisterDiff,
 }
 
+/// What applying `regs` changes on a device, with the data sources that
+/// would stop updating.
+async fn changes_on(
+    state: &AppState,
+    device_id: &str,
+    regs: &[TemplateRegister],
+) -> Result<RegisterDiff, AppError> {
+    let current = state.storage.modbus_register_rows(device_id).await?;
+    let mut changes = link::diff(&current, regs);
+    if !changes.removed.is_empty() {
+        changes.affected_data_sources = state
+            .storage
+            .list_data_sources(None)
+            .await?
+            .into_iter()
+            .filter(|ds| {
+                ds.device_id == device_id
+                    && changes
+                        .removed
+                        .iter()
+                        .any(|r| r == crate::api::data::metric_name(&ds.key, &ds.device_id))
+            })
+            .map(|ds| ds.key)
+            .collect();
+    }
+    Ok(changes)
+}
+
 async fn linked_devices(
     state: &AppState,
     t: &DeviceTemplate,
 ) -> Result<Vec<LinkedDevice>, AppError> {
     let mut out = Vec::new();
     for (id, name) in state.storage.modbus_devices_linked_to(&link_of(t)).await? {
-        let current = state.storage.modbus_register_rows(&id).await?;
-        out.push(LinkedDevice {
-            id,
-            name,
-            changes: link::diff(&current, &t.registers),
-        });
+        let changes = changes_on(state, &id, &t.registers).await?;
+        out.push(LinkedDevice { id, name, changes });
     }
     Ok(out)
 }
@@ -250,8 +274,7 @@ pub async fn link_device(
         return Err(AppError::bad_request("only Modbus templates can be linked"));
     }
     let link = link_of(&t);
-    let current = state.storage.modbus_register_rows(&device_id).await?;
-    let changes = link::diff(&current, &t.registers);
+    let changes = changes_on(&state, &device_id, &t.registers).await?;
     state
         .storage
         .set_modbus_template_link(&device_id, Some(&link))
@@ -305,11 +328,53 @@ pub async fn unlink_device(
 /// Refuse a register edit on a linked device: it follows its template.
 pub async fn refuse_register_edit(state: &AppState, device_id: &str) -> Result<(), AppError> {
     if let Some(link) = state.storage.modbus_template_link(device_id).await? {
-        return Err(conflict(format!(
-            "Modbus device '{device_id}' follows template {link}; change the template, or unlink the device (DELETE /api/v1/modbus-devices/{device_id}/template) to edit its registers"
-        )));
+        return Err(linked_conflict(device_id, &link));
     }
     Ok(())
+}
+
+fn linked_conflict(device_id: &str, link: &TemplateLink) -> AppError {
+    conflict(format!(
+        "Modbus device '{device_id}' follows template {link}; change the template, or unlink the device (DELETE /api/v1/modbus-devices/{device_id}/template) to edit its registers"
+    ))
+}
+
+/// A register list sent for a device: whether to write it. An unlinked device
+/// takes any list. A linked device follows its template, so a list equal to
+/// its current registers (an editor sending the whole device back) is
+/// accepted and not written, and any other list is refused.
+pub async fn registers_to_write(
+    state: &AppState,
+    device_id: &str,
+    registers: &[ModbusRegisterInput],
+) -> Result<bool, AppError> {
+    let Some(link) = state.storage.modbus_template_link(device_id).await? else {
+        return Ok(true);
+    };
+    let current = state.storage.modbus_register_rows(device_id).await?;
+    if same_registers(&current, registers) {
+        return Ok(false);
+    }
+    Err(linked_conflict(device_id, &link))
+}
+
+/// The same registers by name, offset on the wire, type, area and scale; the
+/// order does not matter.
+fn same_registers(current: &[RegisterRow], sent: &[ModbusRegisterInput]) -> bool {
+    current.len() == sent.len()
+        && sent.iter().all(|r| {
+            let Ok((address, zero_based)) = r.resolve_address() else {
+                return false;
+            };
+            let row = RegisterRow {
+                name: r.name.clone(),
+                offset: crate::models::protocol_address(address, zero_based),
+                register_type: r.register_type.clone(),
+                register_area: r.register_area.clone(),
+                scale: r.scale,
+            };
+            current.contains(&row)
+        })
 }
 
 /// Refuse deleting a template that devices follow.

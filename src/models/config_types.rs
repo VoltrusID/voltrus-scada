@@ -669,15 +669,21 @@ impl RegisterConfig {
     /// The 0-based address sent on the wire. A zero-based register is used as is; otherwise a Modbus
     /// 5-digit reference (e.g. 40001) is converted and anything below 30001 is already 0-based.
     pub fn protocol_address(&self) -> u16 {
-        if self.zero_based {
-            self.address
-        } else if self.address >= 40001 {
-            self.address - 40001
-        } else if self.address >= 30001 {
-            self.address - 30001
-        } else {
-            self.address
-        }
+        protocol_address(self.address, self.zero_based)
+    }
+}
+
+/// The 0-based wire address of a stored register address (see
+/// `RegisterConfig::protocol_address`).
+pub fn protocol_address(address: u16, zero_based: bool) -> u16 {
+    if zero_based {
+        address
+    } else if address >= 40001 {
+        address - 40001
+    } else if address >= 30001 {
+        address - 30001
+    } else {
+        address
     }
 }
 

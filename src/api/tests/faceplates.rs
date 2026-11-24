@@ -110,3 +110,44 @@ async fn faceplates_are_defined_once_and_opened_by_many_symbols() {
     let (status, _) = req("DELETE", "/api/v1/faceplates/pump_std".into(), None).await;
     assert_eq!(status, StatusCode::OK);
 }
+
+#[tokio::test]
+async fn a_faceplate_from_get_can_be_put_back() {
+    let state = seeded_admin_app_state().await;
+    let app = create_router(state);
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+    let (status, _) = send_request(
+        &app,
+        "POST",
+        "/api/v1/faceplates",
+        None,
+        Some(&cookie),
+        Some(pump()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, mut got) = send_request(
+        &app,
+        "GET",
+        "/api/v1/faceplates/pump_std",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(got.get("used_by").is_some(), "{got}");
+    got["name"] = json!("Pump");
+    let (status, body) = send_request(
+        &app,
+        "PUT",
+        "/api/v1/faceplates/pump_std",
+        None,
+        Some(&cookie),
+        Some(got),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["name"], "Pump");
+    assert!(body.get("used_by").is_none());
+}

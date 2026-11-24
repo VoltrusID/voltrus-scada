@@ -319,6 +319,9 @@ function Library({ protocol, onNotice }: { protocol: TemplateProtocol; onNotice:
               {linkedChangeLines(pending.devices).map(l => <li key={l}>{l}</li>)}
             </ul>
           )}
+          {pending.devices.length > 0 && (
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>Only the registers follow the template; each device keeps its own endianness, port, unit id and interval.</div>
+          )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button onClick={applyUpdate} disabled={update.isPending} style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)' }}>{update.isPending ? 'Saving...' : 'Save template'}</button>
             <button onClick={() => setPending(null)} style={{ ...btnStyle, color: 'var(--muted)' }}>Cancel</button>

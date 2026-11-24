@@ -56,6 +56,9 @@ pub struct Field {
     pub lean: bool,
     /// Allowed values of a text field; empty means any text.
     pub one_of: &'static [&'static str],
+    /// Older spellings of a text field's values, read as the canonical value
+    /// (`Some`) before `one_of` is checked.
+    pub canon: Option<fn(&str) -> Option<&'static str>>,
 }
 
 impl Field {
@@ -67,6 +70,7 @@ impl Field {
             req: Req::Required,
             lean: false,
             one_of: &[],
+            canon: None,
         }
     }
     pub const fn o(name: &'static str, ty: Ty) -> Self {
@@ -77,6 +81,7 @@ impl Field {
             req: Req::Optional,
             lean: false,
             one_of: &[],
+            canon: None,
         }
     }
     pub const fn d(name: &'static str, ty: Ty, dv: Dv) -> Self {
@@ -87,6 +92,7 @@ impl Field {
             req: Req::Default(dv),
             lean: false,
             one_of: &[],
+            canon: None,
         }
     }
     pub const fn col(mut self, col: &'static str) -> Self {
@@ -100,6 +106,11 @@ impl Field {
     /// Restrict a text field to a fixed list of values.
     pub const fn one_of(mut self, values: &'static [&'static str]) -> Self {
         self.one_of = values;
+        self
+    }
+    /// Accept older spellings of the values (see [`Field::canon`]).
+    pub const fn canon(mut self, canon: fn(&str) -> Option<&'static str>) -> Self {
+        self.canon = Some(canon);
         self
     }
     /// Field with no column of its own (nested data, references, input-only).
@@ -201,6 +212,11 @@ pub const REGISTER_AREAS: &[&str] = &crate::device_templates::MODBUS_AREAS;
 pub const ENDIANNESS: &[&str] = &crate::models::Endianness::NAMES;
 pub const CONNECTION_TYPES: &[&str] = &["power", "data", "flow"];
 
+/// An empty endianness (what older REST clients stored) is the default.
+fn empty_endianness(s: &str) -> Option<&'static str> {
+    s.is_empty().then_some("big")
+}
+
 const MODBUS_REGISTER: &[Field] = &[
     Field::r("name", Text),
     Field::r("address", Int),
@@ -218,7 +234,9 @@ const MODBUS_DEVICE: &[Field] = &[
     Field::d("port", Int, I(502)),
     Field::d("unit_id", Int, I(1)),
     Field::d("interval_ms", Int, I(1000)),
-    Field::d("endianness", Text, S("big")).one_of(ENDIANNESS),
+    Field::d("endianness", Text, S("big"))
+        .one_of(ENDIANNESS)
+        .canon(empty_endianness),
     Field::d("enabled", Bool, B(true)),
     // A linked device follows this device template (all three or none); its
     // registers are still listed, so the project works without the template.
@@ -395,7 +413,9 @@ static DNP3: Plain = Plain {
 };
 
 const BACNET_OBJECT: &[Field] = &[
-    Field::r("object_type", Text).one_of(&crate::device_templates::BACNET_TYPES),
+    Field::r("object_type", Text)
+        .one_of(&crate::device_templates::BACNET_TYPES)
+        .canon(crate::device_templates::bacnet_object_type),
     Field::r("object_instance", Int),
     Field::d("property", Text, S("presentValue")),
     Field::r("name", Text),

@@ -123,7 +123,7 @@ export const SensorCard = React.memo(function SensorCard({
             background: stateTint, color: stateColor }}>{st}</div>
         </div>
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 28, fontWeight: 700, lineHeight: 1.2 }}>
-          <button type="button" onClick={e => { e.stopPropagation(); openTrend(s.id) }} title={qLabel ? `${qLabel}. Open the trend` : 'Open the trend'} aria-label={`Trend of ${s.name}`} style={valueButton(valueColor)}>{formattedValue}</button>{qualityMark}
+          <button type="button" onClick={e => { e.stopPropagation(); openTrend(s.id) }} onKeyDown={e => e.stopPropagation()} title={qLabel ? `${qLabel}. Open the trend` : 'Open the trend'} aria-label={`Trend of ${s.name}`} style={valueButton(valueColor)}>{formattedValue}</button>{qualityMark}
           <span style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 400, marginLeft: 4 }}>{s.unit}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 10, color: 'var(--muted)' }}>
@@ -211,7 +211,7 @@ export const SensorCard = React.memo(function SensorCard({
       )}
       {!hideStatus && (
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 24, fontWeight: 700, padding: '0 14px', lineHeight: 1.3 }}>
-          <button type="button" onClick={e => { e.stopPropagation(); openTrend(s.id) }} title={qLabel ? `${qLabel}. Open the trend` : 'Open the trend'} aria-label={`Trend of ${s.name}`} style={valueButton(valueColor)}>{formattedValue}</button>{qualityMark}
+          <button type="button" onClick={e => { e.stopPropagation(); openTrend(s.id) }} onKeyDown={e => e.stopPropagation()} title={qLabel ? `${qLabel}. Open the trend` : 'Open the trend'} aria-label={`Trend of ${s.name}`} style={valueButton(valueColor)}>{formattedValue}</button>{qualityMark}
           <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 500, marginLeft: 4 }}>{s.unit}</span>
         </div>
       )}

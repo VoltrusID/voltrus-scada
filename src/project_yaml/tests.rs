@@ -1332,3 +1332,199 @@ async fn flow_graphs_and_tag_change_triggers_round_trip_by_name() {
     assert_eq!(nodes["edges"][1]["port"], 1);
     crate::flow_engine::graph::FlowGraph::parse(&nodes.to_string()).unwrap();
 }
+
+// ── Values stored before the checks; linked devices on import ──
+
+/// Rows an older server stored (empty endianness, an unknown register type,
+/// a BACnet abbreviation) are canonicalised at startup, so the export imports.
+#[tokio::test]
+async fn values_older_servers_stored_survive_the_round_trip() {
+    let dir = temp_dir("old-values");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("voltrus.db");
+    let path = path.to_str().unwrap();
+    {
+        let s = Storage::new(path).unwrap();
+        s.with_conn(|c| {
+            c.execute_batch(
+                "INSERT INTO modbus_devices (id,name,ip,endianness,created_at,updated_at) VALUES ('m','M','10.0.0.1','',1,1);
+                 INSERT INTO modbus_registers (device_id,name,address,register_type,register_area,scale,sort_order) VALUES ('m','v',0,'FLOAT','holding',1.0,0);
+                 INSERT INTO bacnet_devices (id,name,ip,created_at) VALUES (1,'AHU','10.0.0.2',1);
+                 INSERT INTO bacnet_objects (device_id,object_type,object_instance,name,created_at) VALUES (1,'AI',1,'temp',1);",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+    let s = Storage::new(path).unwrap();
+    let doc = doc_of(&export_text(&s).await);
+    let issues = validate_doc(&doc, None, false);
+    assert!(
+        issues.iter().all(|i| i.severity != Severity::Error),
+        "{issues:?}"
+    );
+    let plan = plan_import(&s, &doc, Mode::Replace).await.unwrap();
+    assert_eq!(plan.changes.len(), 0, "{:?}", plan.changes);
+    let b = fresh();
+    apply_import(&b, &doc, Mode::Merge).await.unwrap();
+    assert_eq!(
+        scalar_text(&b, "SELECT endianness FROM modbus_devices").await,
+        "big"
+    );
+    assert_eq!(
+        scalar_text(&b, "SELECT register_type FROM modbus_registers").await,
+        "float32"
+    );
+    assert_eq!(
+        scalar_text(&b, "SELECT object_type FROM bacnet_objects").await,
+        "analogInput"
+    );
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bacnet_abbreviations_and_an_empty_endianness_import() {
+    let doc = doc_of(
+        r#"
+format: voltrus-project/1
+modbus_devices:
+- {id: m, name: M, ip: 10.0.0.1, endianness: ''}
+bacnet_devices:
+- name: AHU
+  ip: 10.0.0.2
+  objects:
+  - {object_type: AI, object_instance: 1, name: temp}
+  - {object_type: binaryvalue, object_instance: 2, name: run}
+"#,
+    );
+    assert_eq!(
+        norm::get_str(&doc.entities("modbus_devices")[0], "endianness"),
+        "big"
+    );
+    let objects = doc.entities("bacnet_devices")[0]["objects"]
+        .as_sequence()
+        .unwrap()
+        .clone();
+    let types: Vec<String> = objects
+        .iter()
+        .map(|o| norm::get_str(o.as_mapping().unwrap(), "object_type"))
+        .collect();
+    assert_eq!(types, ["analogInput", "binaryValue"]);
+    assert!(parse_project_yaml(
+        "format: voltrus-project/1\nbacnet_devices:\n- {name: A, ip: 1.1.1.1, objects: [{object_type: XY, object_instance: 1, name: t}]}\n"
+    )
+    .is_err());
+}
+
+const LINKED: &str = r#"
+format: voltrus-project/1
+device_templates:
+- template_id: acme-lnk
+  version: 1.0.0
+  source: local
+  manufacturer: Acme
+  model: M1
+  protocol: modbus
+  registers:
+  - {name: v, offset: 0}
+  - {name: i, offset: 2, scale: 0.1}
+modbus_devices:
+- id: a
+  name: A
+  ip: 10.0.0.1
+  template_id: acme-lnk
+  template_version: 1.0.0
+  template_source: local
+  registers:
+  - {name: v, address: 0, zero_based: true}
+  - {name: i, address: 2, scale: 0.1, sort_order: 1, zero_based: true}
+- id: b
+  name: B
+  ip: 10.0.0.2
+  template_id: acme-lnk
+  template_version: 1.0.0
+  template_source: local
+  registers:
+  - {name: v, address: 0, zero_based: true}
+  - {name: i, address: 2, scale: 0.1, sort_order: 1, zero_based: true}
+"#;
+
+async fn register_rows(s: &Storage, device: &str) -> String {
+    scalar_text(
+        s,
+        &format!("SELECT group_concat(name || '@' || address || 'x' || scale, ',') FROM (SELECT * FROM modbus_registers WHERE device_id = '{device}' ORDER BY sort_order)"),
+    )
+    .await
+}
+
+/// A merge import leaves linked devices on their template: other registers in
+/// the file are replaced by the template's, a changed template carries the
+/// devices the file leaves out, and a file without the link fields keeps it.
+#[tokio::test]
+async fn linked_devices_stay_on_their_template_through_an_import() {
+    let s = fresh();
+    apply_import(&s, &doc_of(LINKED), Mode::Merge)
+        .await
+        .unwrap();
+    assert_eq!(register_rows(&s, "a").await, "v@0x1.0,i@2x0.1");
+
+    // The file edits a linked device's registers: the template wins.
+    let edited = LINKED.replacen(
+        "- {name: v, address: 0, zero_based: true}",
+        "- {name: v, address: 9, zero_based: true}",
+        1,
+    );
+    let plan = apply_import(&s, &doc_of(&edited), Mode::Merge)
+        .await
+        .unwrap();
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("modbus_devices[a]") && w.contains("acme-lnk")),
+        "{:?}",
+        plan.warnings
+    );
+    assert_eq!(register_rows(&s, "a").await, "v@0x1.0,i@2x0.1");
+
+    // A file from before links: the device keeps its link.
+    let old = "format: voltrus-project/1\nmodbus_devices:\n- {id: a, name: A2, ip: 10.0.0.1, registers: [{name: v, address: 0, zero_based: true}, {name: i, address: 2, scale: 0.1, sort_order: 1, zero_based: true}]}\n";
+    let plan = apply_import(&s, &doc_of(old), Mode::Merge).await.unwrap();
+    assert_eq!(plan.changes.len(), 1, "{:?}", plan.changes);
+    assert_eq!(plan.changes[0].fields, ["name"]);
+    assert_eq!(
+        scalar_text(&s, "SELECT template_id FROM modbus_devices WHERE id = 'a'").await,
+        "acme-lnk"
+    );
+
+    // The file changes only the template: both linked devices follow, and the
+    // plan lists them so their pollers restart.
+    let template_only = "format: voltrus-project/1\ndevice_templates:\n- {template_id: acme-lnk, version: 1.0.0, source: local, manufacturer: Acme, model: M1, protocol: modbus, registers: [{name: v, offset: 0}, {name: p, offset: 4}]}\n";
+    let plan = plan_import(&s, &doc_of(template_only), Mode::Merge)
+        .await
+        .unwrap();
+    let devices: Vec<&str> = plan
+        .changes
+        .iter()
+        .filter(|c| c.section == "modbus_devices")
+        .map(|c| c.key.as_str())
+        .collect();
+    assert_eq!(devices, ["a", "b"]);
+    apply_import(&s, &doc_of(template_only), Mode::Merge)
+        .await
+        .unwrap();
+    for d in ["a", "b"] {
+        assert_eq!(register_rows(&s, d).await, "v@0x1.0,p@4x1.0", "{d}");
+    }
+    // And the export imports back without changes.
+    let doc = doc_of(&export_text(&s).await);
+    assert_eq!(
+        plan_import(&s, &doc, Mode::Replace)
+            .await
+            .unwrap()
+            .changes
+            .len(),
+        0
+    );
+}

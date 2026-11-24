@@ -143,7 +143,8 @@ impl Storage {
         let id = id.to_string();
         let name = name.to_string();
         let ip = ip.to_string();
-        let endianness = endianness.to_string();
+        // Stored as the poller reads it: "" (an older client's default) is "big".
+        let endianness = crate::models::Endianness::from_name(endianness).name();
         let registers: Vec<(String, u16, bool, String, String, f64)> = registers
             .iter()
             .map(|r| {
@@ -152,7 +153,7 @@ impl Storage {
                     r.name.clone(),
                     address,
                     zero_based,
-                    r.register_type.clone(),
+                    crate::device_templates::modbus_register_type(&r.register_type).to_string(),
                     r.register_area.clone(),
                     r.scale,
                 ))
@@ -213,6 +214,7 @@ impl Storage {
             }
             if let Some(v) = endianness {
                 sets.push("endianness = ?");
+                let v = crate::models::Endianness::from_name(v).name();
                 p.push(rusqlite::types::Value::from(v.to_string()));
             }
             if let Some(v) = port {
@@ -306,7 +308,7 @@ impl Storage {
                     r.name.clone(),
                     address,
                     zero_based,
-                    r.register_type.clone(),
+                    crate::device_templates::modbus_register_type(&r.register_type).to_string(),
                     r.register_area.clone(),
                     r.scale,
                 ))

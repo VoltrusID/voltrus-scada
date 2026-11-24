@@ -761,7 +761,11 @@ impl NodeConfig {
                 };
                 let username = format!("flow:{flow_id}");
                 crate::api::commands::enqueue_checked_write(
-                    &storage, &cache, &username, submission,
+                    &storage,
+                    &cache,
+                    &username,
+                    crate::edition::ActionOrigin::Flow,
+                    submission,
                 )
                 .await
                 .map_err(|e| format!("WriteOut refused: {}", e.message()))?;

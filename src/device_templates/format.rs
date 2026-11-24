@@ -33,6 +33,34 @@ pub const BACNET_TYPES: [&str; 9] = [
     "multiStateValue",
 ];
 
+/// The canonical BACnet object type for a name or abbreviation the poller
+/// reads ("analogInput", "analoginput", "AI"), any case.
+pub fn bacnet_object_type(name: &str) -> Option<&'static str> {
+    let canonical = match name.to_ascii_lowercase().as_str() {
+        "analoginput" | "ai" => "analogInput",
+        "analogoutput" | "ao" => "analogOutput",
+        "analogvalue" | "av" => "analogValue",
+        "binaryinput" | "bi" => "binaryInput",
+        "binaryoutput" | "bo" => "binaryOutput",
+        "binaryvalue" | "bv" => "binaryValue",
+        "multistateinput" | "mi" => "multiStateInput",
+        "multistateoutput" | "mo" => "multiStateOutput",
+        "multistatevalue" | "mv" => "multiStateValue",
+        _ => return None,
+    };
+    Some(canonical)
+}
+
+/// The register type the Modbus poller reads for a stored value: an unknown
+/// one is read as `float32`.
+pub fn modbus_register_type(name: &str) -> &'static str {
+    MODBUS_TYPES
+        .iter()
+        .find(|t| **t == name)
+        .copied()
+        .unwrap_or("float32")
+}
+
 pub const DEFAULT_MODBUS_PORT: u16 = 502;
 pub const DEFAULT_BACNET_PORT: u16 = 47808;
 pub const DEFAULT_INTERVAL_MS: u64 = 1000;

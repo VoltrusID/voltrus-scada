@@ -60,10 +60,11 @@ pub fn check(body: &Value, shape: &Shape) -> Result<(), AppError> {
     }
 }
 
-/// Every item of the list field `list` of `body` (absent is fine).
+/// Every item of the list field `list` of `body` (absent or null is fine).
 pub fn check_items(body: &Value, list: &str, shape: &Shape) -> Result<(), AppError> {
-    let Some(items) = body.get(list) else {
-        return Ok(());
+    let items = match body.get(list) {
+        None | Some(Value::Null) => return Ok(()),
+        Some(items) => items,
     };
     let Some(items) = items.as_array() else {
         return Err(AppError::bad_request(format!("{list}: expected a list")));
@@ -108,10 +109,11 @@ pub const DATA_SOURCE: Shape = Shape {
     enums: &[],
 };
 
-/// A screen as `POST` and `PUT /api/v1/screens` take it.
+/// A screen as `POST` and `PUT /api/v1/screens` take it. `GET` names the
+/// kind `type` (older clients sent `device_type`); both are ignored.
 pub const SCREEN: Shape = Shape {
     what: "screen",
-    fields: &["id", "name", "sort_order", "device_type"],
+    fields: &["id", "name", "sort_order", "type", "device_type"],
     enums: &[],
 };
 

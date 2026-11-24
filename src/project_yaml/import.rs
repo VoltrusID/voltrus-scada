@@ -93,13 +93,17 @@ fn run(
         return Err(InvalidProject(issues).into());
     }
 
+    let mut warnings: Vec<String> = issues.iter().map(|i| i.to_string()).collect();
+    // Linked Modbus devices follow their templates (see linked.rs).
+    let doc = &super::linked::follow_templates(doc, &snap, mode, &mut warnings);
+
     let mut plan = ImportPlan {
         mode,
         dry_run: !write,
         totals: Counts::default(),
         sections: BTreeMap::new(),
         changes: Vec::new(),
-        warnings: issues.iter().map(|i| i.to_string()).collect(),
+        warnings,
     };
     let mut work: Vec<Work> = Vec::new();
     let mut secret_errors: Vec<Issue> = Vec::new();

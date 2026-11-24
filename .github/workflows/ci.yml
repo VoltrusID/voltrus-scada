@@ -127,7 +127,12 @@ jobs:
             if curl -fsS http://127.0.0.1:3000/api/v1/health; then echo; break; fi
             sleep 2
           done
-          curl -fsS http://127.0.0.1:3000/api/v1/health
+          if ! curl -fsS http://127.0.0.1:3000/api/v1/health; then
+            echo "::error::the container did not answer /api/v1/health"
+            docker ps -a --filter name=voltrus
+            docker logs voltrus
+            exit 1
+          fi
           docker image ls voltrus-scada:ci
           docker logs voltrus
 

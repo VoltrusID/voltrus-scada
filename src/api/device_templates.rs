@@ -565,8 +565,17 @@ async fn instantiate_modbus(
         Json(body),
     )
     .await?;
-    if req.linked {
-        super::template_links::link_new_device(state, &id, t).await?;
+    if req.linked
+        && let Err(e) = super::template_links::link_new_device(state, &id, t).await
+    {
+        // No unlinked copy left behind when the link fails.
+        let _ = super::modbus_devices::delete_modbus_device(
+            State(state.clone()),
+            Extension(auth.clone()),
+            Path(id.clone()),
+        )
+        .await;
+        return Err(e);
     }
     Ok(
         json!({"ok": true, "protocol": "modbus", "id": id, "name": name, "item_count": t.registers.len(), "linked": req.linked}),

@@ -106,6 +106,42 @@ async fn screen_routes_reject_unknown_fields() {
     assert!(error_of(&body).contains("unknown field 'title'"), "{body}");
 }
 
+#[tokio::test]
+async fn a_screen_from_get_can_be_put_back() {
+    let (app, cookie) = admin_app().await;
+    let (status, created) = send_request(
+        &app,
+        "POST",
+        "/api/v1/screens",
+        None,
+        Some(&cookie),
+        Some(json!({"name": "Pumps"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_str().unwrap().to_string();
+    let (_, list) = send_request(&app, "GET", "/api/v1/screens", None, Some(&cookie), None).await;
+    let mut row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .unwrap()
+        .clone();
+    assert!(row.get("type").is_some(), "{row}");
+    row["name"] = json!("Pumps 2");
+    let (status, body) = send_request(
+        &app,
+        "PUT",
+        &format!("/api/v1/screens/{id}"),
+        None,
+        Some(&cookie),
+        Some(row),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
 #[cfg(feature = "modbus")]
 #[tokio::test]
 async fn modbus_routes_reject_unknown_register_types() {

@@ -26,6 +26,12 @@ does not push the image anywhere.
 
 * `/data` is a volume: the SQLite database (`/data/voltrus.db`), the history
   archive and `config.yaml`.
+* The server runs as uid 10001, so `/data` must be writable by that user. A named
+  volume (`-v voltrus-data:/data`) is set up for it automatically. A bind mount of
+  a host directory is not: a directory created by root (or by `docker run -v`
+  itself) makes the first start fail because nothing can be written there.
+  Give it to the container's user first, `sudo chown -R 10001:10001 /srv/voltrus`,
+  then `-v /srv/voltrus:/data`.
 * On first start the entrypoint copies the image's `/etc/voltrus/config.yaml`
   (port 3000, database in `/data`) to `/data/config.yaml` and appends a random
   `auth_secret`, so sign-in sessions survive restarts. Edit `/data/config.yaml` to

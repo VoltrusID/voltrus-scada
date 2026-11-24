@@ -54,9 +54,14 @@ pub struct RegisterDiff {
     pub removed: Vec<String>,
     /// Same name, different offset, type, area or scale.
     pub changed: Vec<String>,
+    /// Keys of the data sources (tags) on `removed` registers: they stop
+    /// updating once the template is applied. A renamed register shows up as
+    /// removed and added, so its tags are listed here too.
+    pub affected_data_sources: Vec<String>,
 }
 
 impl RegisterDiff {
+    /// No register changes (`affected_data_sources` follows from `removed`).
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
     }

@@ -120,7 +120,12 @@ fn coerce(f: &Field, v: &Value, path: &str, errs: &mut Vec<String>) -> Option<Va
                     return None;
                 }
             };
-            let s = display(&t);
+            let mut s = display(&t);
+            let mut t = t;
+            if let Some(c) = f.canon.and_then(|canon| canon(&s)) {
+                s = c.to_string();
+                t = text(s.clone());
+            }
             if !f.one_of.is_empty() && !f.one_of.contains(&s.as_str()) {
                 errs.push(format!(
                     "{}: '{s}' is not one of {}",

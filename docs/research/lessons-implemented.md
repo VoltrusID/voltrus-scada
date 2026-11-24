@@ -145,8 +145,9 @@ raised in one clock hour of the range) and `chattering` (5 or more).
 30 minutes of history and the last day of alarms: 0 s for a digital tag, 10 s when
 chattering, 5 s when the noise (standard deviation of successive differences / √2)
 exceeds a third of the alarm deadband, otherwise 2 s; plus a 3-sigma deadband. The
-tag editor shows it with **Use** buttons and pre-fills the delay of a tag that has
-alarm limits and a delay of 0 (saved only on save); the analytics tab marks
+tag editor shows it with **Use** buttons and never changes the form by itself
+(after review: an earlier version pre-filled the delay, which a save for any other
+reason then stored); the analytics tab marks
 `CHATTER n/h` with a hint. Docs: `docs/alarms.md`.
 
 **Commit.** e47a391.

@@ -4,13 +4,18 @@ use anyhow::{Context, Result};
 use crate::models::{Command, CommandAuditEntry, CommandQuery, CommandSource};
 
 /// The columns [`command_from_row`] reads, with the name of the API key or
-/// flow that created the command (for [`CommandSource`]).
+/// flow that created the command (for [`CommandSource`]). The lookups compare
+/// the primary key with the id cut out of `created_by`, so each is one index
+/// probe instead of a scan of the table.
 const COMMAND_COLUMNS: &str = "id, data_source_id, device_id, protocol, value, status, policy,
     scheduled_at, retry_count, max_retries, error_message, created_at,
     sent_at, acked_at, resolved_at, created_by, device_ref,
     readback_status, readback_value, readback_attempts, readback_ts, origin,
-    (SELECT k.name FROM api_keys k WHERE 'api_key:' || k.id = commands.created_by),
-    (SELECT f.name FROM flows f WHERE 'flow:' || f.id = commands.created_by)";
+    (SELECT k.name FROM api_keys k WHERE substr(commands.created_by, 1, 8) = 'api_key:'
+        AND k.id = CAST(substr(commands.created_by, 9) AS INTEGER)
+        AND 'api_key:' || k.id = commands.created_by),
+    (SELECT f.name FROM flows f WHERE substr(commands.created_by, 1, 5) = 'flow:'
+        AND f.id = substr(commands.created_by, 6))";
 
 fn command_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Command> {
     let created_by: String = row.get(15)?;

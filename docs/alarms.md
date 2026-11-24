@@ -47,9 +47,9 @@ divided by √2, so a slow ramp does not count as noise. With noise measured,
 `deadband` is three times the noise, rounded up to the tag's decimals.
 
 The tag editor shows the suggestion under the delay fields with **Use** buttons
-for the delay and the deadband. When the tag has an alarm limit and its on-delay
-is still 0, the field is pre-filled with the suggestion and the note says so; it
-is stored only when you save. The server never changes a delay on its own.
+for the delay and the deadband. Neither is filled in for you: opening the editor
+and saving the tag keeps its stored delay until you press **Use**. The server
+never changes a delay on its own.
 
 ## Limits
 

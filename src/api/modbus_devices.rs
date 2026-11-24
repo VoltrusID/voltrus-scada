@@ -196,19 +196,23 @@ pub async fn update_modbus_device(
         )?,
     }
 
-    if body.get("registers").is_some() {
-        super::template_links::refuse_register_edit(&state, &id).await?;
-    }
+    // `registers` absent or null leaves them alone; a linked device accepts
+    // only its current registers (an editor sending the whole device back).
+    let registers = match body.get("registers") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(_) => {
+            Some(ModbusRegisterInput::parse_all(&body).map_err(|e| AppError(anyhow::anyhow!(e)))?)
+        }
+    };
+    let write_registers = match &registers {
+        Some(regs) => super::template_links::registers_to_write(&state, &id, regs).await?,
+        None => false,
+    };
     state.storage.update_modbus_device(&id, &body).await?;
-
-    // If registers array is present, replace registers too
-    if body.get("registers").and_then(|v| v.as_array()).is_some() {
-        let registers =
-            ModbusRegisterInput::parse_all(&body).map_err(|e| AppError(anyhow::anyhow!(e)))?;
-
+    if let (true, Some(registers)) = (write_registers, &registers) {
         state
             .storage
-            .replace_modbus_registers(&id, &registers)
+            .replace_modbus_registers(&id, registers)
             .await?;
     }
 
@@ -282,9 +286,11 @@ pub async fn replace_registers(
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     super::strict::check_items(&body, "registers", &super::strict::MODBUS_REGISTER)?;
-    super::template_links::refuse_register_edit(&state, &id).await?;
     let registers =
         ModbusRegisterInput::parse_all(&body).map_err(|e| AppError(anyhow::anyhow!(e)))?;
+    if !super::template_links::registers_to_write(&state, &id, &registers).await? {
+        return Ok(Json(json!({"ok": true})));
+    }
 
     state
         .storage

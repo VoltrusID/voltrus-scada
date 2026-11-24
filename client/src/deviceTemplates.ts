@@ -230,18 +230,29 @@ export interface InstantiateForm {
 export interface LinkedDevice {
   id: string
   name: string
-  changes: { added: string[]; removed: string[]; changed: string[] }
+  changes: {
+    added: string[]; removed: string[]; changed: string[]
+    /** Keys of the tags on removed (or renamed) registers, which stop updating (servers from v0.53). */
+    affected_data_sources?: string[]
+  }
 }
 
-/** One line per linked device for the save preview, e.g. "pump-a: +power, ~current". */
+/**
+ * One line per linked device for the save preview, e.g. "pump-a: +power, ~current",
+ * and a warning line for the tags the save leaves without a register.
+ */
 export function linkedChangeLines(devices: LinkedDevice[]): string[] {
-  return devices.map(d => {
+  return devices.flatMap(d => {
+    const label = d.name || d.id
     const parts = [
       ...d.changes.added.map(n => `+${n}`),
       ...d.changes.removed.map(n => `-${n}`),
       ...d.changes.changed.map(n => `~${n}`),
     ]
-    return `${d.name || d.id}: ${parts.length ? parts.join(', ') : 'no change'}`
+    const lines = [`${label}: ${parts.length ? parts.join(', ') : 'no change'}`]
+    const tags = d.changes.affected_data_sources ?? []
+    if (tags.length) lines.push(`${label}: these tags stop updating: ${tags.join(', ')}`)
+    return lines
   })
 }
 

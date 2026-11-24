@@ -1,4 +1,4 @@
-// When the tag editor pre-fills the server's suggested alarm on-delay.
+// When the tag editor offers the server's suggested alarm on-delay.
 
 import { highLimits } from './quality.ts'
 
@@ -18,11 +18,10 @@ export function hasAlarmLimits(tag: TagLimits): boolean {
 }
 
 /**
- * The on-delay to pre-fill, or null to leave the field alone: only a tag with
- * alarm limits and no delay yet gets the suggestion, and only a non-zero one.
+ * Whether to offer the suggested on-delay as a "Use N s" action. The editor
+ * never writes the suggestion into the form by itself: only this explicit
+ * action does, so opening and saving a tag keeps its stored delay.
  */
-export function prefillOnDelay(tag: TagLimits, suggestion: { on_delay_secs: number }): number | null {
-  if ((tag.on_delay_secs ?? 0) > 0) return null
-  if (!hasAlarmLimits(tag)) return null
-  return suggestion.on_delay_secs > 0 ? suggestion.on_delay_secs : null
+export function offerOnDelay(form: { on_delay_secs: number }, suggestion: { on_delay_secs: number }): boolean {
+  return suggestion.on_delay_secs > 0 && (form.on_delay_secs ?? 0) !== suggestion.on_delay_secs
 }

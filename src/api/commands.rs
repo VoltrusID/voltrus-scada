@@ -217,28 +217,24 @@ pub async fn submit_tag_write(
 /// The command, its reason and the previous value still go into the command
 /// audit log.
 ///
-/// A flow (`username` `flow:<id>`) cannot sign: when the edition wants a
-/// signature for the write (asked with origin [`ActionOrigin::Flow`]), it is
-/// refused. A recipe load asks for its signature before it queues any write.
+/// `origin` is who queues it, recorded on the command. A flow
+/// ([`ActionOrigin::Flow`]) cannot sign: when the edition wants a signature for
+/// the write, it is refused. A recipe load asks for its signature before it
+/// queues any write.
 ///
 /// [`ActionOrigin::Flow`]: crate::edition::ActionOrigin::Flow
 pub async fn enqueue_checked_write(
     storage: &crate::storage::Storage,
     cache: &crate::cache::DeviceCache,
     username: &str,
+    origin: crate::edition::ActionOrigin,
     req: TagWriteSubmission,
 ) -> Result<Command, WriteError> {
     let checked = check_write(storage, cache, &req).await?;
-    if username.starts_with("flow:") {
+    if origin == crate::edition::ActionOrigin::Flow {
         let ext = crate::edition::installed();
         unattended_write_allowed(ext.as_ref(), username, &req, &checked).await?;
     }
-    // Only flows (`flow:<id>`) and recipe loads queue writes through here.
-    let origin = if username.starts_with("flow:") {
-        crate::edition::ActionOrigin::Flow
-    } else {
-        crate::edition::ActionOrigin::Recipe
-    };
     insert_write(storage, username, origin, req, checked).await
 }
 

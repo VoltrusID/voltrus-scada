@@ -20,17 +20,23 @@ interface RegisterRow {
 interface Props {
   device?: ModbusDevice & { registers?: ModbusRegister[] }
   dupDevice?: ModbusDevice & { registers?: ModbusRegister[] }
-  onSave: (data: { id: string; name: string; ip: string; port: number; unit_id: number; interval_ms: number; endianness: string; registers: RegisterRow[] }) => void
+  /** `registers` is left out for a device linked to a template: they follow the template. */
+  onSave: (data: { id: string; name: string; ip: string; port: number; unit_id: number; interval_ms: number; endianness: string; registers?: RegisterRow[] }) => void
   onClose: () => void
+  /** Unlink the edited device from its template; true when it was unlinked. */
+  onUnlink?: (id: string) => Promise<boolean>
 }
 
 const REG_TYPES = ['float32', 'int32', 'uint16', 'int16']
 const REG_AREAS = ['holding', 'input', 'coil', 'discrete']
 
-export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) {
+export function ModbusDeviceForm({ device, dupDevice, onSave, onClose, onUnlink }: Props) {
   const { t } = useTranslation()
   const source = device ?? dupDevice
   const isEdit = !!device
+  // A linked device's registers follow its template: read-only here until unlinked.
+  const [template, setTemplate] = useState(device?.template ?? null)
+  const linked = !!template
   const [id, setId] = useState(dupDevice ? '' : (source?.id ?? ''))
   const [name, setName] = useState(source?.name ?? '')
   const [ip, setIp] = useState(source?.ip ?? '')
@@ -66,7 +72,8 @@ export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) 
 
   const handleSave = () => {
     if (!id || !ip) return
-    onSave({ id, name: name || id, ip, port, unit_id: unitId, interval_ms: intervalMs, endianness, registers })
+    const fields = { id, name: name || id, ip, port, unit_id: unitId, interval_ms: intervalMs, endianness }
+    onSave(linked ? fields : { ...fields, registers })
   }
 
   const handleScan = () => {
@@ -142,11 +149,17 @@ export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) 
           <div style={{ marginTop: 8, borderTop: '1px solid var(--border)', paddingTop: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
               <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--fg)' }}>Registers</span>
-              <div style={{ display: 'flex', gap: 4 }}>
+              {!linked && <div style={{ display: 'flex', gap: 4 }}>
                 <button onClick={() => { setShowScanDialog(true); setScanResults([]); setScanError('') }} style={{ padding: '3px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid var(--cyan)', background: 'var(--card)', color: 'var(--cyan)' }}>Scan</button>
                 <button onClick={addRegister} style={{ padding: '3px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer', border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--cyan)' }}>+ Add</button>
-              </div>
+              </div>}
             </div>
+            {template && (
+              <div role="note" style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+                <span>The registers follow template {template.template_id} {template.version}; change the template, or unlink the device to edit them here.</span>
+                {onUnlink && <button type="button" onClick={() => onUnlink(device!.id).then(ok => { if (ok) setTemplate(null) }, () => { /* still linked */ })} style={{ padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Unlink</button>}
+              </div>
+            )}
             {registers.length === 0 && <div style={{ color: 'var(--muted)', fontSize: 12, padding: 8 }}>No registers configured.</div>}
             {/* Header row */}
             {registers.length > 0 && (
@@ -155,15 +168,15 @@ export function ModbusDeviceForm({ device, dupDevice, onSave, onClose }: Props) 
               </div>
             )}
             {registers.map((reg, i) => (
-              <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 70px 34px 80px 70px 60px 28px', gap: 4, marginBottom: 4, alignItems: 'end' }}>
+              <fieldset key={i} disabled={linked} style={{ display: 'grid', gridTemplateColumns: '1fr 70px 34px 80px 70px 60px 28px', gap: 4, marginBottom: 4, alignItems: 'end', border: 'none', padding: 0, margin: '0 0 4px', minWidth: 0 }}>
                 <input value={reg.name} onChange={e => updateRegister(i, 'name', e.target.value)} placeholder="voltage" style={{ ...monoInputStyle, fontSize: 12 }} />
                 <input type="number" value={reg.address} onChange={e => updateRegister(i, 'address', parseInt(e.target.value) || 0)} placeholder="40001" style={{ ...monoInputStyle, fontSize: 12 }} />
                 <input type="checkbox" checked={reg.zero_based} onChange={e => updateRegister(i, 'zero_based', e.target.checked)} title="Address is a 0-based offset (0-65535), not a 5-digit reference" aria-label="Zero-based address" style={{ justifySelf: 'center', marginBottom: 8 }} />
                 <select value={reg.register_type} onChange={e => updateRegister(i, 'register_type', e.target.value)} style={{ ...inputStyle, fontSize: 11 }}>{REG_TYPES.map(t => <option key={t} value={t}>{t}</option>)}</select>
                 <select value={reg.register_area} onChange={e => updateRegister(i, 'register_area', e.target.value)} style={{ ...inputStyle, fontSize: 11 }}>{REG_AREAS.map(a => <option key={a} value={a}>{a}</option>)}</select>
                 <input type="number" step="0.01" value={reg.scale} onChange={e => updateRegister(i, 'scale', parseFloat(e.target.value) || 1)} style={{ ...monoInputStyle, fontSize: 12 }} />
-                <button onClick={() => removeRegister(i)} style={{ background: 'none', border: 'none', color: 'var(--crit)', cursor: 'pointer', fontSize: 14 }}>&times;</button>
-              </div>
+                {linked ? <span /> : <button onClick={() => removeRegister(i)} aria-label={`Remove register ${reg.name}`} style={{ background: 'none', border: 'none', color: 'var(--crit)', cursor: 'pointer', fontSize: 14 }}>&times;</button>}
+              </fieldset>
             ))}
           </div>
         </div>

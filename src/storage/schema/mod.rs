@@ -1,3 +1,4 @@
+mod canonical_values;
 mod device_refs;
 mod migrations;
 mod tables;
@@ -10,5 +11,6 @@ pub fn init_schema(conn: &Connection) -> Result<()> {
     migrations::run_migrations(conn);
     migrations::add_login_failures(conn).context("Failed to add the login_failures table")?;
     device_refs::repair_device_refs(conn);
+    canonical_values::repair_canonical_values(conn);
     Ok(())
 }

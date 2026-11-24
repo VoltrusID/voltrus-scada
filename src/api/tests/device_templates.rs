@@ -1269,3 +1269,144 @@ async fn linked_devices_follow_their_template_until_unlinked() {
         "{issues:?}"
     );
 }
+
+/// A linked device edited the way the web form does it (the whole device sent
+/// back, registers included): IP and name change; changed registers are still
+/// refused, and `registers: null` leaves them alone.
+#[cfg(feature = "modbus")]
+#[tokio::test]
+async fn linked_device_updates_with_its_own_registers() {
+    let (app, cookie, _) = admin_app().await;
+    let (status, _) = call(
+        &app,
+        &cookie,
+        "POST",
+        BASE,
+        Some(modbus_template("acme-edit", "1.0.0")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, made) = call(
+        &app,
+        &cookie,
+        "POST",
+        &format!("{BASE}/acme-edit/instantiate"),
+        Some(json!({"name": "m", "id": "m", "ip": "127.0.0.1", "port": 1, "linked": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+
+    let (_, got) = call(&app, &cookie, "GET", "/api/v1/modbus-devices/m", None).await;
+    let mut device = got["device"].clone();
+    device["registers"] = got["registers"].clone();
+    device["ip"] = json!("10.0.0.9");
+    device["name"] = json!("Meter M");
+    let (status, body) = call(
+        &app,
+        &cookie,
+        "PUT",
+        "/api/v1/modbus-devices/m",
+        Some(device.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, after) = call(&app, &cookie, "GET", "/api/v1/modbus-devices/m", None).await;
+    assert_eq!(after["device"]["ip"], "10.0.0.9");
+    assert_eq!(after["device"]["name"], "Meter M");
+    assert_eq!(after["template"]["template_id"], "acme-edit");
+    assert_eq!(register_names(&after), ["voltage", "current"]);
+
+    // The same list in another order is the same registers.
+    let mut reordered = device.clone();
+    reordered["registers"].as_array_mut().unwrap().reverse();
+    let (status, body) = call(
+        &app,
+        &cookie,
+        "PUT",
+        "/api/v1/modbus-devices/m",
+        Some(reordered),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let mut changed = device.clone();
+    changed["registers"][1]["scale"] = json!(5.0);
+    let (status, body) = call(
+        &app,
+        &cookie,
+        "PUT",
+        "/api/v1/modbus-devices/m",
+        Some(changed),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (_, after) = call(&app, &cookie, "GET", "/api/v1/modbus-devices/m", None).await;
+    assert_eq!(after["registers"][1]["scale"], 0.01);
+
+    let (status, body) = call(
+        &app,
+        &cookie,
+        "PUT",
+        "/api/v1/modbus-devices/m",
+        Some(json!({"interval_ms": 2000, "registers": null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, after) = call(&app, &cookie, "GET", "/api/v1/modbus-devices/m", None).await;
+    assert_eq!(after["device"]["interval_ms"], 2000);
+    assert_eq!(register_names(&after), ["voltage", "current"]);
+}
+
+/// The save preview of a template names the tags that stop updating on each
+/// linked device: those on registers the new map drops or renames.
+#[cfg(feature = "modbus")]
+#[tokio::test]
+async fn template_dry_run_names_the_tags_it_breaks() {
+    let (app, cookie, _) = admin_app().await;
+    let (status, _) = call(
+        &app,
+        &cookie,
+        "POST",
+        BASE,
+        Some(modbus_template("acme-tags", "1.0.0")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, made) = call(
+        &app,
+        &cookie,
+        "POST",
+        &format!("{BASE}/acme-tags/instantiate"),
+        Some(json!({"name": "p", "id": "p", "ip": "127.0.0.1", "port": 1, "linked": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    for (key, device) in [("p.current", "p"), ("voltage", "p"), ("current", "other")] {
+        let (status, body) = call(
+            &app,
+            &cookie,
+            "POST",
+            "/api/v1/data-sources",
+            Some(json!({"key": key, "name": key, "source_type": "modbus", "device_id": device})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+
+    // `current` renamed to `amps`: the tag on it stops updating.
+    let mut edited = modbus_template("acme-tags", "1.0.0");
+    edited["registers"][1]["name"] = json!("amps");
+    let (status, preview) = call(
+        &app,
+        &cookie,
+        "PUT",
+        &format!("{BASE}/acme-tags?dry_run=true"),
+        Some(edited),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    let changes = &preview["linked_devices"][0]["changes"];
+    assert_eq!(changes["removed"], json!(["current"]));
+    assert_eq!(changes["added"], json!(["amps"]));
+    assert_eq!(changes["affected_data_sources"], json!(["p.current"]));
+}

@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
+use rusqlite::OptionalExtension;
 
 use super::Storage;
 use crate::device_templates::DeviceTemplate;
@@ -15,7 +16,27 @@ impl Storage {
         &self,
         device_id: &str,
     ) -> anyhow::Result<Option<TemplateLink>> {
-        Ok(self.modbus_template_links().await?.remove(device_id))
+        let conn = self.conn.clone();
+        let id = device_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.query_row(
+                "SELECT template_id, template_version, template_source FROM modbus_devices
+                 WHERE id = ?1 AND template_id IS NOT NULL",
+                rusqlite::params![id],
+                |r| {
+                    Ok(TemplateLink {
+                        template_id: r.get(0)?,
+                        version: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                        source: r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                    })
+                },
+            )
+            .optional()
+            .context("Query template link failed")
+        })
+        .await
+        .context("Task join failed")?
     }
 
     /// Every linked Modbus device and its template.
@@ -99,20 +120,24 @@ impl Storage {
         .context("Task join failed")?
     }
 
-    /// The registers of a Modbus device, as a template would set them.
+    /// The registers of a Modbus device, as a template would set them
+    /// (`offset` is the 0-based wire address, whatever the stored form).
     pub async fn modbus_register_rows(&self, device_id: &str) -> anyhow::Result<Vec<RegisterRow>> {
         let conn = self.conn.clone();
         let id = device_id.to_string();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT name, address, register_type, register_area, scale FROM modbus_registers
-                 WHERE device_id = ?1 ORDER BY sort_order, id",
+                "SELECT name, address, register_type, register_area, scale, zero_based
+                 FROM modbus_registers WHERE device_id = ?1 ORDER BY sort_order, id",
             )?;
             let rows = stmt.query_map(rusqlite::params![id], |r| {
                 Ok(RegisterRow {
                     name: r.get(0)?,
-                    offset: r.get(1)?,
+                    offset: crate::models::protocol_address(
+                        r.get(1)?,
+                        r.get::<_, Option<bool>>(5)?.unwrap_or(false),
+                    ),
                     register_type: r.get(2)?,
                     register_area: r.get(3)?,
                     scale: r.get(4)?,
