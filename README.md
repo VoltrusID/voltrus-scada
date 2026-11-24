@@ -21,9 +21,37 @@ Built by [JoyoDigitama](https://joyodigitama.com).
 [Compare with Ignition, AVEVA and FUXA](https://voltrus.id/compare/) ·
 [Help with a site deployment](mailto:support@voltrus.id?subject=Voltrus%20SCADA%20site)
 
-Core is free for commercial use, with no device, tag or retention limits.
-Integrator and Enterprise licences are sold per site, lifetime or monthly
-([prices](https://voltrus.id/voltrus-scada/#pricing)).
+**Live demo:** <https://demo.voltrus.id>, a simulated water treatment plant
+running Core. Sign in as `guest` / `voltrus-demo` (read-only).
+
+[![The process overview of the demo water treatment plant: P&ID-style diagram with live values, trends, gauges and an alarm banner](docs/images/plant-overview.webp)](https://demo.voltrus.id)
+
+**What is free and what is paid.** Core (this repository) is free, also for
+commercial use, with every protocol and no device, tag or retention limits.
+Two optional licences are sold per site: **Integrator** ($249 lifetime or
+$19 a month: white-label, PDF reports, Telegram and WhatsApp alarms,
+multi-site hub) and **Enterprise** ($999 lifetime or $79 a month: adds SSO,
+21 CFR Part 11 mode, hot standby). Current prices are on
+[voltrus.id](https://voltrus.id/voltrus-scada/#pricing); the split is in
+[Core vs Enterprise](#core-vs-enterprise).
+
+### Try it in two minutes
+
+Linux x86_64 (use `aarch64` on a Raspberry Pi; Windows and macOS builds are
+on the [releases page](https://github.com/VoltrusID/voltrus-scada/releases/latest)):
+
+```bash
+V=v0.52.0
+curl -L https://github.com/VoltrusID/voltrus-scada/releases/download/$V/voltrus-core-$V-linux-x86_64.tar.gz | tar xz
+cd voltrus-core-$V-linux-x86_64 && cp config.yaml.example config.yaml
+./modbus-sim &          # a simulated Schneider PM5560 power meter on port 5020
+./voltrus config.yaml   # open http://localhost:3000
+```
+
+Sign in as `admin` with the password in `./initial-admin-password`, then add
+a Modbus device at `127.0.0.1`, port 5020, with the built-in PM5560 template.
+The full [Quick start](#quick-start) covers Windows, services and building
+from source.
 
 ## Core features
 
