@@ -146,7 +146,7 @@ client is inside the executable. On Linux x86_64 (use the file name of the
 latest release, and `aarch64` on a Pi):
 
 ```bash
-V=v0.51.0
+V=v0.52.0
 curl -LO https://github.com/VoltrusID/voltrus-scada/releases/download/$V/voltrus-core-$V-linux-x86_64.tar.gz
 tar xzf voltrus-core-$V-linux-x86_64.tar.gz && cd voltrus-core-$V-linux-x86_64
 cp config.yaml.example config.yaml   # set auth_secret and your devices

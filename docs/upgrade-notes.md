@@ -4,7 +4,7 @@ Changes in behaviour that can need action when upgrading. The repository has
 no changelog file: release notes are generated from pull requests, so this
 page is where such changes are written down. Newest release first.
 
-## Next release (after v0.51.0)
+## v0.52.0
 
 ### Sign-in lockout is per address, not per account
 
