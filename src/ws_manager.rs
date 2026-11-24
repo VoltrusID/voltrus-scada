@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -40,6 +41,10 @@ pub struct WsManager {
     /// Every alarm message also goes here, for server-side listeners (flows
     /// with an alarm trigger).
     alarm_events: tokio::sync::broadcast::Sender<ServerMessage>,
+    /// Bumped when a connection opens or changes what it subscribes to: the
+    /// live broadcaster sends only changed tags, so it sends every tag once
+    /// after this moves (see `api::stream`).
+    generation: AtomicU64,
 }
 
 /// Whether a command status is final: nothing follows it.
@@ -61,6 +66,7 @@ impl WsManager {
             connections: DashMap::new(),
             origins: DashMap::new(),
             alarm_events: tokio::sync::broadcast::channel(256).0,
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -95,7 +101,13 @@ impl WsManager {
                 tx,
             },
         );
+        self.generation.fetch_add(1, Ordering::Relaxed);
         rx
+    }
+
+    /// Changes whenever a connection opens or (re)subscribes; see `generation`.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     /// Remove a connection. Returns `true` if the connection existed.
@@ -109,6 +121,7 @@ impl WsManager {
         if let Some(mut conn) = self.connections.get_mut(conn_id) {
             conn.subscribed_tags.extend(tag_ids.iter().cloned());
         }
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Unsubscribe a connection from specific tag keys.
@@ -126,6 +139,7 @@ impl WsManager {
         if let Some(mut conn) = self.connections.get_mut(conn_id) {
             conn.subscribe_all = enabled;
         }
+        self.generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Check whether a connection has a given permission string.
