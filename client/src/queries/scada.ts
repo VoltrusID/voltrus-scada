@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import type { ScadaEquipmentItem, ScadaConnectionItem } from '../types'
+import type { FaceplateDef } from '../scada2/hmi/faceplateMap'
 import { queryKeys } from './keys'
 import { fetchJson, fetchOk } from './fetch'
 
@@ -49,5 +50,29 @@ export function useSaveScadaConnections() {
       })
     },
     onSuccess: (_, { screenId }) => qc.invalidateQueries({ queryKey: queryKeys.scadaConnections(screenId) }),
+  })
+}
+
+/** Faceplate definitions (one per equipment kind, opened from many symbols). */
+export function useFaceplates(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.faceplates,
+    queryFn: () => fetchJson<FaceplateDef[]>('/api/v1/faceplates'),
+    enabled,
+  })
+}
+
+export function useCreateFaceplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (def: FaceplateDef) => {
+      await fetchOk('/api/v1/faceplates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(def),
+      })
+      return def
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.faceplates }),
   })
 }

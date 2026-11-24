@@ -23,6 +23,7 @@ mod edr_compat;
 #[cfg(feature = "ethernet-ip")]
 mod enip_devices;
 mod excel_import;
+mod faceplates;
 mod firmware_catalog;
 pub(crate) mod flows;
 mod generators;
@@ -846,6 +847,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/history", get(data::get_history))
         .route("/api/v1/export/csv", get(data::export_csv))
         .route("/api/v1/screens", get(screens::list_screens))
+        .route("/api/v1/faceplates", get(faceplates::list_faceplates))
+        .route("/api/v1/faceplates/{id}", get(faceplates::get_faceplate))
         .route(
             "/api/v1/screens/{id}/data-sources",
             get(screens::list_screen_sensors),
@@ -1128,6 +1131,11 @@ pub fn create_router(state: AppState) -> Router {
             put(naming_convention::update_naming_convention),
         )
         .route("/api/v1/screens", post(screens::create_screen))
+        .route("/api/v1/faceplates", post(faceplates::create_faceplate))
+        .route(
+            "/api/v1/faceplates/{id}",
+            put(faceplates::update_faceplate).delete(faceplates::delete_faceplate),
+        )
         .route(
             "/api/v1/screens/{id}",
             put(screens::update_screen).delete(screens::delete_screen),

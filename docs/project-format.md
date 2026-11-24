@@ -49,6 +49,7 @@ next server restart.
 | `device_templates` | device template (Modbus registers or BACnet objects) of source `local` or `catalog:<url>` | `template_id` + `version` + `source` |
 | `sim_profiles` | simulation profile | `name` |
 | `scripts` | script | `name` |
+| `faceplates` | faceplate definition with `roles` ([screens.md](screens.md#tag-swap-faceplates)) | `id` |
 | `tags` | data source: limits, alarm thresholds, ISA-18.2 delays, write policy, `source_config` | `ref` = `device/key` |
 | `screens` | screen: simulation settings, tag membership, grid layouts (all breakpoints), canvas, 3D twin layout and camera, 2D SCADA mimic (equipment, connections) | `id` |
 | `flows` | flow: trigger and nodes | `id` |
@@ -143,6 +144,33 @@ local and catalog templates; use merge for partial files.
 Derived columns are recomputed on import the way the API does when saving: a
 script's syntax error, and a custom metric's `tag_refs` and validation error.
 Creation and update timestamps are not exported; imported rows get the import time.
+
+### Faceplates
+
+```yaml
+faceplates:
+- id: pump
+  name: Pump
+  kind: pump
+  roles:
+  - {role: run, label: Running, kind: state, required: true}
+  - {role: fault, kind: fault}
+  - {role: cmd, label: Start / stop, kind: command}
+screens:
+- id: pumps
+  name: Pumps
+  scada:
+    equipment:
+    - equipment_id: p301a
+      equipment_type: symbol
+      sensors: [plc_1/p301a_run]
+      config: {symbol: pump, faceplate: pump, faceplateMap: {run: plc_1/p301a_run, fault: plc_1/p301a_fault, cmd: plc_1/p301a_cmd}}
+```
+
+`kind` is `pump`, `motor`, `valve` or `analog`; a role's `kind` is `state`,
+`fault`, `analog`, `command` or `setpoint`. Validation reports a symbol that names
+a faceplate the project does not define (or, in merge mode, the database does not
+hold) and a `faceplateMap` entry that names an unknown tag.
 
 ## Natural keys and references
 

@@ -78,7 +78,10 @@ INSERT INTO twin_layouts (screen_id,equipment_id,equipment_type,position_x,posit
 INSERT INTO twin_connections (screen_id,from_id,to_id) VALUES ('plts_1','inv1','inv2');
 INSERT INTO scada_equipment (screen_id,equipment_id,equipment_type,equipment_name,x,y,width,height,rotation,sensor_bindings,config) VALUES
   ('plts_1','w1','gauge','Voltage gauge',10,20,100,60,0,'[1,2]','{"z":1,"label":"V"}'),
-  ('plts_1','w2','tank','',0,0,100,60,45,'[]','{}');
+  ('plts_1','w2','tank','',0,0,100,60,45,'[]','{"faceplate":"pump_std","faceplateMap":{"run":1,"fault":2}}');
+INSERT INTO faceplates (id,name,kind,description,created_at,updated_at) VALUES ('pump_std','Pump','pump','',100,100);
+INSERT INTO faceplate_roles (faceplate_id,role,label,kind,required,sort_order) VALUES
+  ('pump_std','run','Running','state',1,0),('pump_std','fault','','fault',0,1),('pump_std','cmd','Start / stop','command',0,2);
 INSERT INTO scada_connections (screen_id,connection_id,from_equipment,to_equipment,waypoints,connection_type) VALUES ('plts_1','c1','w1','w2','[{"x":1,"y":2}]','power');
 INSERT INTO settings (key,value) VALUES ('twin_camera:plts_1','{"x":8,"y":6,"z":4}'),('alarm_cooldown_secs','300'),
   ('naming_template','{site}.{area}.{tag}'),('naming_regex','^[a-z]+$'),('oee_threshold_plts_1','{"metric":"power","running_above":1.5}'),
@@ -218,6 +221,8 @@ const CONFIG_TABLES: &[&str] = &[
     "twin_connections",
     "scada_equipment",
     "scada_connections",
+    "faceplates",
+    "faceplate_roles",
     "flows",
     "recipes",
     "notification_settings",
@@ -416,6 +421,16 @@ async fn import_recreates_everything_with_cross_references_intact() {
     )
     .await;
     assert_eq!(bindings, format!("[{voltage_id},{current_id}]"));
+    // A faceplate mapping follows the tags to their new ids.
+    let config = scalar_text(
+        &b,
+        "SELECT config FROM scada_equipment WHERE equipment_id='w2'",
+    )
+    .await;
+    let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+    assert_eq!(config["faceplate"], "pump_std");
+    assert_eq!(config["faceplateMap"]["run"], voltage_id);
+    assert_eq!(config["faceplateMap"]["fault"], current_id);
     assert_eq!(
         scalar_i64(
             &b,

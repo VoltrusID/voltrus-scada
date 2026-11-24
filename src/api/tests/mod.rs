@@ -14,6 +14,7 @@ mod cookie_secure;
 mod csv_import;
 mod data_sources;
 mod device_templates;
+mod faceplates;
 mod flows;
 mod go_live;
 mod helpers;

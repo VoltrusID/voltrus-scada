@@ -10,6 +10,9 @@ import { loadLayoutFromAPI } from './engine/layout'
 import { SYMBOL_MAP, SYMBOLS } from './hmi/symbols'
 import { SymbolThumb } from './hmi/SymbolView'
 import { Faceplate } from './hmi/Faceplate'
+import { MappedFaceplate } from './hmi/MappedFaceplate'
+import { faceplateOf } from './hmi/faceplateMap'
+import { useFaceplates } from '../queries/scada'
 import { AlarmBanner } from './AlarmBanner'
 import type { SensorConfig, SensorData, ScadaEquipmentItem, ScadaConnectionItem } from '../types'
 import { wsWriteTagResult } from '../api/websocket'
@@ -70,6 +73,9 @@ const FACEPLATE_TYPES = new Set<ScadaWidgetType>([
   'led_display', 'trend', 'progress_bar', 'on_off',
 ])
 
+/** Clicking the widget at runtime opens a faceplate: its own definition, or the built-in one for its tag. */
+const opensFaceplate = (w: WidgetInstance) => faceplateOf(w.config) != null || (w.sensorId != null && FACEPLATE_TYPES.has(w.type))
+
 function toAPI(layout: ScadaLayoutState, sensors: SensorConfig[]) {
   const equipment: ScadaEquipmentItem[] = layout.widgets.map((w, i) => ({
     equipment_id: w.id,
@@ -110,6 +116,7 @@ export const ScadaView: React.FC<Props> = ({
   onSave, onSensorClick, isAdmin, toolbarSlotSetter,
 }) => {
   const { canOperate } = useRole()
+  const { data: faceplateDefs = [] } = useFaceplates()
   const [history, dispatch] = useReducer(historyReducer, emptyHistory)
   const layout = history.present
   const dirty = history.present !== history.saved
@@ -435,6 +442,9 @@ export const ScadaView: React.FC<Props> = ({
   // The inspector column is always reserved in edit mode: opening it on select would rescale the stage under the pointer.
   const rightOpen = editMode
   const faceplateWidget = !editMode && faceplateId ? layout.widgets.find(w => w.id === faceplateId) : undefined
+  const fpRef = faceplateWidget ? faceplateOf(faceplateWidget.config) : null
+  const fpDef = fpRef ? faceplateDefs.find(d => d.id === fpRef.id) : undefined
+  const mapped = fpRef && fpDef ? { def: fpDef, map: fpRef.map } : null
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -460,13 +470,13 @@ export const ScadaView: React.FC<Props> = ({
             onScaleChange={setScale}
             onSelectWidget={editMode ? handleSelectWidget : (id => {
               const w = layout.widgets.find(x => x.id === id)
-              if (w && w.sensorId != null && FACEPLATE_TYPES.has(w.type)) setFaceplateId(cur => (cur === id ? null : id))
+              if (w && opensFaceplate(w)) setFaceplateId(cur => (cur === id ? null : id))
             })}
             onMoveWidget={(id, x, y) => dispatch({ type: 'MOVE_WIDGET', id, x, y })}
             onResizeWidget={(id, x, y, width, height) => dispatch({ type: 'RESIZE_WIDGET', id, x, y, width, height })}
             onDrop={handleDrop}
             onWriteValue={canOperate ? handleWriteValue : undefined}
-            isActivatable={w => w.sensorId != null && FACEPLATE_TYPES.has(w.type)}
+            isActivatable={opensFaceplate}
             onClickEmpty={() => { setSelection(null); setConnectFrom(null); setFaceplateId(null) }}
             onPointerMove={editMode && connectFrom ? (x, y) => setPointer({ x, y }) : undefined}
           >
@@ -479,7 +489,20 @@ export const ScadaView: React.FC<Props> = ({
               pending={connectFrom && pointer ? { fromId: connectFrom, ...pointer } : null}
             />
           </ScadaCanvas>
-          {faceplateWidget && (
+          {faceplateWidget && mapped && (
+            <MappedFaceplate
+              key={faceplateWidget.id}
+              def={mapped.def}
+              map={mapped.map}
+              title={faceplateWidget.config?.label || sensors.find(s => s.id === faceplateWidget.sensorId)?.name || mapped.def.name}
+              sensors={sensors}
+              onCommand={sendCommand}
+              onOpenDetail={onSensorClick}
+              onClose={() => setFaceplateId(null)}
+              canOperate={canOperate}
+            />
+          )}
+          {faceplateWidget && !mapped && faceplateWidget.sensorId != null && (
             <Faceplate
               key={faceplateWidget.id}
               widget={faceplateWidget}

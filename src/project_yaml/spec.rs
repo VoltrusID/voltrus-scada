@@ -806,6 +806,44 @@ static ASSETS: Plain = Plain {
     hook: None,
 };
 
+// ── Faceplates ──
+
+pub const FACEPLATE_KINDS: &[&str] = &["pump", "motor", "valve", "analog"];
+pub const FACEPLATE_ROLE_KINDS: &[&str] = &["state", "fault", "analog", "command", "setpoint"];
+
+const FACEPLATE_ROLE: &[Field] = &[
+    Field::r("role", Text),
+    Field::d("label", Text, S("")).lean(),
+    Field::r("kind", Text).one_of(FACEPLATE_ROLE_KINDS),
+    Field::d("required", Bool, B(false)).lean(),
+    Field::d("sort_order", Int, I(0)).lean(),
+];
+
+const FACEPLATE: &[Field] = &[
+    Field::r("id", Text),
+    Field::r("name", Text),
+    Field::d("kind", Text, S("analog")).one_of(FACEPLATE_KINDS),
+    Field::d("description", Text, S("")).lean(),
+    Field::d("roles", List(FACEPLATE_ROLE), Arr).virt(),
+];
+
+static FACEPLATES: Plain = Plain {
+    table: "faceplates",
+    pk: Pk::Text,
+    stamp: Stamp::Secs,
+    created: Some("created_at"),
+    updated: Some("updated_at"),
+    children: &[Child {
+        yaml: "roles",
+        table: "faceplate_roles",
+        fk: "faceplate_id",
+        order: "sort_order, id",
+        key: &["role"],
+        created: false,
+    }],
+    hook: None,
+};
+
 // ── Tags ──
 
 pub const TAG_ALARM: &[Field] = &[
@@ -1053,6 +1091,16 @@ pub static SECTIONS: &[Section] = &[
         key: &["name"],
         unique: true,
         kind: Kind::Plain(&SCRIPTS),
+    },
+    Section {
+        name: "faceplates",
+        label: "faceplate",
+        path: "faceplates",
+        layout: Layout::File,
+        fields: FACEPLATE,
+        key: &["id"],
+        unique: true,
+        kind: Kind::Plain(&FACEPLATES),
     },
     Section {
         name: "tags",

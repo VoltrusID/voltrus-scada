@@ -7,6 +7,8 @@ import { SYMBOL_MAP } from './hmi/symbols'
 import { resolveSymbol } from './hmi/resolve'
 import { CONNECTION_TYPES } from './connections/ConnectionLayer'
 import { getScreenWidget, isAddonWidgetType } from '../edition/widgets'
+import { useCreateFaceplate, useFaceplates } from '../queries/scada'
+import { FACEPLATE_PRESETS, faceplateOf, missingRoles, withRole } from './hmi/faceplateMap'
 
 export const INSPECTOR_WIDTH = 288
 
@@ -80,6 +82,8 @@ export const WidgetInspector: React.FC<WidgetProps> = ({ widget, sensors, onUpda
           )}
           {def && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>{bindingHint(def.binding)}</div>}
         </Section>}
+
+        {!addon && <FaceplateSection widget={widget} sensors={sensors} onUpdate={onUpdate} onUpdateConfig={onUpdateConfig} />}
 
         <Section title="Position & size">
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
@@ -308,5 +312,59 @@ function Field({ field, value, sensors, onChange }: { field: ConfigFieldDef; val
       <span style={{ display: 'block', fontSize: 11, color: 'var(--text-dim)', marginBottom: 3 }}>{field.label}</span>
       {control}
     </label>
+  )
+}
+
+/** Pick a faceplate definition for this symbol and map each of its roles to a tag. */
+function FaceplateSection({ widget, sensors, onUpdate, onUpdateConfig }: {
+  widget: WidgetInstance
+  sensors: SensorConfig[]
+  onUpdate: WidgetProps['onUpdate']
+  onUpdateConfig: WidgetProps['onUpdateConfig']
+}) {
+  const { data: defs = [] } = useFaceplates()
+  const create = useCreateFaceplate()
+  const current = faceplateOf(widget.config)
+  const def = current ? defs.find(d => d.id === current.id) : undefined
+  const missing = def && current ? missingRoles(def, current.map) : []
+  const presets = FACEPLATE_PRESETS.filter(p => !defs.some(d => d.id === p.id))
+  return (
+    <Section title="Faceplate">
+      <select aria-label="Faceplate" value={current?.id ?? ''} style={input}
+        onChange={e => onUpdateConfig({ faceplate: e.target.value || undefined, faceplateMap: e.target.value ? (current?.map ?? {}) : undefined }, `${widget.id}:faceplate`)}>
+        <option value="">— Built-in faceplate for the bound tag —</option>
+        {defs.map(d => <option key={d.id} value={d.id}>{d.name} ({d.id})</option>)}
+      </select>
+      {current && !def && <div style={{ fontSize: 11, color: 'var(--warn)', marginTop: 6 }}>Faceplate '{current.id}' does not exist.</div>}
+      {def && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+          {def.roles.map(r => (
+            <label key={r.role} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ fontSize: 10, color: 'var(--muted)' }}>{r.label || r.role} <span style={{ fontFamily: 'var(--font-mono)' }}>({r.role}, {r.kind}{r.required ? ', required' : ''})</span></span>
+              <TagSelect sensors={sensors} value={current?.map[r.role] ?? null}
+                onChange={id => {
+                  onUpdateConfig(withRole(widget.config ?? {}, r.role, id), `${widget.id}:fp:${r.role}`)
+                  // An unbound symbol draws the state (or value) role it was just given.
+                  if (id != null && widget.sensorId == null && (r.kind === 'state' || r.kind === 'analog')) onUpdate({ sensorId: id, sensorIds: [id] })
+                }} />
+            </label>
+          ))}
+          {missing.length > 0 && <div style={{ fontSize: 11, color: 'var(--warn)' }}>Map the required roles: {missing.join(', ')}</div>}
+        </div>
+      )}
+      {presets.length > 0 && (
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8 }}>
+          Save a starting definition, used by every symbol you map to it:
+          <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap' }}>
+            {presets.map(p => (
+              <button key={p.id} type="button" disabled={create.isPending} onClick={() => create.mutate(p)}
+                style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer' }}>
+                + {p.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </Section>
   )
 }

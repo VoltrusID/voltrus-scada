@@ -40,3 +40,58 @@ reaches 4.5:1 contrast on the background and on cards (`tests/contrast.test.ts`)
 
 Limits: add-on widgets drawn by an edition (not the core widgets) decide their own
 look; the 3D twin does not use the map.
+
+## Tag-swap faceplates
+
+A faceplate is the popup an operator opens by clicking equipment on a 2D SCADA
+screen. Without further setup a symbol opens the built-in faceplate for its one
+bound tag (state, value against its limits, trend, start/stop). A **faceplate
+definition** describes the popup for an equipment kind once, with named roles; each
+symbol only stores which of its tags fills which role. Three pumps are one
+definition and three short mappings.
+
+A definition (`GET`/`POST /api/v1/faceplates`, `GET`/`PUT`/`DELETE /api/v1/faceplates/{id}`):
+
+```json
+{"id": "pump", "name": "Pump", "kind": "pump",
+ "roles": [
+   {"role": "run",   "label": "Running",      "kind": "state",   "required": true},
+   {"role": "fault", "label": "Fault",        "kind": "fault"},
+   {"role": "cmd",   "label": "Start / stop", "kind": "command"},
+   {"role": "speed", "label": "Speed",        "kind": "analog"}]}
+```
+
+| Field | Values |
+|---|---|
+| `id` | 1-64 lowercase letters, digits, `_`, `-` |
+| `kind` | `pump`, `motor`, `valve` (OPEN/CLOSE instead of START/STOP), `analog` |
+| `roles[].kind` | `state` (on/off feedback), `fault` (on = tripped, blinks), `analog` (value in the state colours; click for the trend), `command` (writes 1 or 0 after an arm-and-confirm step), `setpoint` (the operator types a value) |
+| `roles[].required` | the editor warns while an instance leaves it unmapped |
+
+Unknown fields and values outside these lists are refused with `400` naming the
+field. A definition that symbols still use cannot be deleted (`409` lists them);
+`GET /api/v1/faceplates/{id}` returns them as `used_by`. Changing a definition
+(new role, other label) changes the popup of every symbol that uses it.
+
+An instance is a symbol whose config carries the definition id and a role map of
+tag ids:
+
+```json
+{"symbol": "pump", "faceplate": "pump", "faceplateMap": {"run": 41, "fault": 42, "cmd": 43}}
+```
+
+**In the editor:** select a symbol, then in the inspector's *Faceplate* section
+pick a definition and a tag for each role. If none exists yet, *+ Pump*, *+ Valve*
+and *+ Analog measurement* save a starting definition. An unbound symbol takes
+the first state or analog tag mapped as the tag it draws. **At runtime** clicking
+the symbol opens the definition with that symbol's tags. Commands and setpoints go
+through the command queue and write policy like every other write, and need the
+operate permission.
+
+**In a project file** definitions are the `faceplates` section, and a symbol's
+`config.faceplateMap` names tags by `ref` (`device/key`), like its `sensors`
+([project-format.md](project-format.md)).
+
+Limits: one definition has no graphics of its own (the symbol draws the equipment);
+roles are single tags (no arrays or nested equipment); MCP has no faceplate tools
+yet (an agent writes definitions and mappings through a project import).

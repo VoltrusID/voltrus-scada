@@ -44,6 +44,7 @@ pub mod edr_compat;
 #[cfg(feature = "ethernet-ip")]
 pub mod ethernet_ip;
 pub mod expression;
+pub mod faceplate;
 pub mod flow_engine;
 pub mod hardware_cert;
 pub mod health;

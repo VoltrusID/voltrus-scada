@@ -775,6 +775,88 @@
       ],
       "type": "object"
     },
+    "faceplates": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "pump",
+            "motor",
+            "valve",
+            "analog",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "roles": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "state",
+                  "fault",
+                  "analog",
+                  "command",
+                  "setpoint"
+                ],
+                "type": "string"
+              },
+              "label": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "required": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "role": {
+                "type": "string"
+              },
+              "sort_order": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "role",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "type": "object"
+    },
     "flows": {
       "additionalProperties": false,
       "properties": {
@@ -2041,6 +2123,12 @@
     "equipment_templates": {
       "items": {
         "$ref": "#/$defs/equipment_templates"
+      },
+      "type": "array"
+    },
+    "faceplates": {
+      "items": {
+        "$ref": "#/$defs/faceplates"
       },
       "type": "array"
     },

@@ -17,6 +17,7 @@ mod downsampling;
 mod egress;
 #[cfg(feature = "ethernet-ip")]
 mod enip_storage;
+mod faceplates;
 mod flows;
 mod historian;
 mod hub;

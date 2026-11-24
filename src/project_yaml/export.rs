@@ -593,7 +593,27 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
                 }
                 m.insert(text("sensors"), Value::Sequence(refs));
             }
-            if let Some(v) = cell_to_yaml(r.get_ref(10)?, Json, "config", &mut ctx.warnings) {
+            if let Some(mut v) = cell_to_yaml(r.get_ref(10)?, Json, "config", &mut ctx.warnings) {
+                // A faceplate mapping names tags by ref, like `sensors`.
+                if let Some(Value::Mapping(map)) =
+                    v.as_mapping_mut().and_then(|c| c.get_mut(FACEPLATE_MAP))
+                {
+                    let symbol = m.get("equipment_id").map(display).unwrap_or_default();
+                    let mut out = Mapping::new();
+                    for (role, id) in std::mem::take(map) {
+                        match id.as_i64().and_then(|id| ctx.tag_ref_by_id.get(&id)) {
+                            Some(reference) => {
+                                out.insert(role, text(reference.clone()));
+                            }
+                            None => ctx.warnings.push(format!(
+                                "faceplate role '{}' of SCADA widget '{symbol}' on screen '{screen}' is mapped to a missing tag ({}); left out",
+                                display(&role),
+                                display(&id)
+                            )),
+                        }
+                    }
+                    *map = out;
+                }
                 m.insert(text("config"), v);
             }
             scada_eq.entry(screen).or_default().push(m);
@@ -780,6 +800,9 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
 }
 
 // ── Settings singleton ──
+
+/// Key of a SCADA symbol's faceplate mapping (role -> tag) in its `config`.
+pub const FACEPLATE_MAP: &str = "faceplateMap";
 
 pub const SETTING_KEYS: &[&str] = &["alarm_cooldown_secs", "naming_template", "naming_regex"];
 pub const OEE_PREFIX: &str = "oee_threshold_";

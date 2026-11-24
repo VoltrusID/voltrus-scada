@@ -899,9 +899,27 @@ fn write_screen(
             args.push(yaml_to_sql(field(spec::SCADA_EQUIPMENT, n), item.get(n))?);
         }
         args.push(Sql::Text(serde_json::to_string(&bindings)?));
+        let mut config = item.get("config").cloned();
+        if let Some(Value::Mapping(map)) = config
+            .as_mut()
+            .and_then(Value::as_mapping_mut)
+            .and_then(|c| c.get_mut(export::FACEPLATE_MAP))
+        {
+            for (role, reference) in map.iter_mut() {
+                let id = tag_id(
+                    ctx,
+                    &norm::display(reference),
+                    &format!(
+                        "faceplate role '{}' of a SCADA widget of screen '{id}'",
+                        norm::display(role)
+                    ),
+                )?;
+                *reference = Value::Number(id.into());
+            }
+        }
         args.push(yaml_to_sql(
             field(spec::SCADA_EQUIPMENT, "config"),
-            item.get("config"),
+            config.as_ref(),
         )?);
         tx.execute(
             "INSERT INTO scada_equipment (screen_id, equipment_id, equipment_type, equipment_name, x, y, width, height, rotation, sensor_bindings, config) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
