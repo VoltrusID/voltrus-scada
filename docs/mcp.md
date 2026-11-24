@@ -122,12 +122,12 @@ saying so.
 | `create_flow` | write | Create a flow (trigger plus a node pipeline or a v2 graph of nodes and edges); validated first, disabled by default. See [flows.md](flows.md). |
 | `test_flow` | write | Dry-run a flow definition on a sample payload: per-node trace, nothing written or sent. |
 | `start_flow` / `stop_flow` | operate | Enable or disable a flow. |
-| `write_tag` | operate | Queue a setpoint write through the tag's write policy. |
+| `write_tag` | operate | Queue a setpoint write through the tag's write policy. The command records `origin: mcp`, so the command panel shows it as sent through MCP. |
 | `get_command_status` | read | Outcome of a queued write. |
 | `confirm_action` | write | Carry out a call another tool proposed, given its confirmation token. |
 | `list_device_templates` | read | Search the device template library (`q`, `manufacturer`, `protocol`, `source`). |
 | `get_device_template` | read | One template in full: defaults, registers or objects, quirks. |
-| `instantiate_device_template` | write | Create a device from a template (name, ip, optional overrides) and start polling it. BACnet needs an admin login, as on the BACnet routes. |
+| `instantiate_device_template` | write | Create a device from a template (name, ip, optional overrides) and start polling it; `linked: true` makes a Modbus device follow the template ([device-templates.md](device-templates.md#linked-devices)). BACnet needs an admin login, as on the BACnet routes. |
 | `save_device_as_template` | write | Save an existing device and its registers or objects as a local template. |
 | `list_template_catalog` | read | List the public template catalog the server is configured to use. Takes no URL. |
 | `import_catalog_template` | **admin** | Download a catalog template, check its sha256 and store it. Takes no URL. |
