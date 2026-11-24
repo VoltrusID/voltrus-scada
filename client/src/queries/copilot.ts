@@ -67,7 +67,7 @@ export function useRejectProposal() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id: number) =>
-      fetchOk(`//api/v1/ai/proposals/${id}/reject`, { method: 'POST' }),
+      fetchOk(`/api/v1/ai/proposals/${id}/reject`, { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['aiProposals'] }),
   })
 }
@@ -108,7 +108,7 @@ export function useGenerateDashboardLayout() {
 export function useGenerateAlarmThresholds() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { device_type: string; tags: { source_key: string; name: string; unit?: string; min_val?: number; max_val?: number }[] }) =>
+    mutationFn: (body: { device_type: string; tags: { id?: number; source_key: string; name: string; unit?: string; min_val?: number; max_val?: number }[] }) =>
       fetchOk('/api/v1/ai/generate/alarm-thresholds', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       }).then(r => r.json() as Promise<AiProposal>),

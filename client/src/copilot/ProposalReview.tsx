@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useApproveProposal, useRejectProposal, useApplyProposal } from '../queries/copilot'
 import type { AiProposal } from '../types'
+import { parseEditedConfig } from './proposalChecks'
 
 const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   pending: { bg: 'rgba(245,158,11,.15)', fg: '#f59e0b' },
@@ -19,17 +20,23 @@ export function ProposalReview({ proposal, onBack }: { proposal: AiProposal; onB
   const reject = useRejectProposal()
   const apply = useApplyProposal()
   const [editJson, setEditJson] = useState('')
+  const [editError, setEditError] = useState<string | null>(null)
 
   const isPending = proposal.status === 'pending'
   const isApproved = proposal.status === 'approved'
   const config = proposal.applied_config || proposal.proposed_config
   const sc = STATUS_COLORS[proposal.status] || STATUS_COLORS.pending
+  const actionError = editError ?? (approve.error || apply.error || reject.error)?.message ?? null
 
   const handleApprove = () => {
-    const body: { id: number; applied_config?: any } = { id: proposal.id }
-    if (editJson.trim()) {
-      try { body.applied_config = JSON.parse(editJson) } catch { /* use original */ }
+    const edited = parseEditedConfig(editJson)
+    if (!edited.ok) {
+      setEditError(edited.error)
+      return
     }
+    setEditError(null)
+    const body: { id: number; applied_config?: unknown } = { id: proposal.id }
+    if (edited.config !== undefined) body.applied_config = edited.config
     approve.mutate(body, { onSuccess: onBack })
   }
 
@@ -70,9 +77,13 @@ export function ProposalReview({ proposal, onBack }: { proposal: AiProposal; onB
       {isPending && (
         <div>
           <label style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Edit config (optional)</label>
-          <textarea value={editJson} onChange={e => setEditJson(e.target.value)} placeholder="Paste modified JSON here..."
+          <textarea value={editJson} onChange={e => { setEditJson(e.target.value); setEditError(null) }} placeholder="Paste modified JSON here..."
             rows={6} style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12, fontFamily: 'monospace', boxSizing: 'border-box', resize: 'vertical' }} />
         </div>
+      )}
+
+      {actionError && (
+        <div role="alert" style={{ padding: 8, borderRadius: 6, background: 'rgba(239,68,68,.1)', color: '#ef4444', fontSize: 13 }}>{actionError}</div>
       )}
 
       {/* Action buttons */}

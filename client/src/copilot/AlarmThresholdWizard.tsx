@@ -11,23 +11,24 @@ export function AlarmThresholdWizard({ onProposal }: { onProposal: () => void })
   const gen = useGenerateAlarmThresholds()
   const { data: sensors } = useSensors(true)
   const [deviceType, setDeviceType] = useState('')
-  const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set())
+  // Selected by id: tags of different devices can share a key.
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [loading, setLoading] = useState(false)
 
-  const toggle = (key: string) => {
-    setSelectedKeys(prev => {
+  const toggle = (id: number) => {
+    setSelectedIds(prev => {
       const next = new Set(prev)
-      next.has(key) ? next.delete(key) : next.add(key)
+      next.has(id) ? next.delete(id) : next.add(id)
       return next
     })
   }
 
   const handleGenerate = async () => {
-    if (!deviceType || selectedKeys.size === 0) return
+    if (!deviceType || selectedIds.size === 0) return
     setLoading(true)
     const tags = (sensors || [])
-      .filter(s => selectedKeys.has(s.key))
-      .map(s => ({ source_key: s.key, name: s.name, unit: s.unit || undefined, min_val: s.min_val || undefined, max_val: s.max_val || undefined }))
+      .filter(s => selectedIds.has(s.id))
+      .map(s => ({ id: s.id, source_key: s.key, name: s.name, unit: s.unit || undefined, min_val: s.min_val || undefined, max_val: s.max_val || undefined }))
     try {
       await gen.mutateAsync({ device_type: deviceType, tags })
       onProposal()
@@ -49,20 +50,20 @@ export function AlarmThresholdWizard({ onProposal }: { onProposal: () => void })
       </div>
 
       <div>
-        <label style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Select Tags ({selectedKeys.size} selected)</label>
+        <label style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Select Tags ({selectedIds.size} selected)</label>
         <div style={{ maxHeight: 200, overflow: 'auto', border: '1px solid var(--border)', borderRadius: 6 }}>
           {(sensors || []).map(s => (
-            <label key={s.key} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', cursor: 'pointer', fontSize: 13 }}>
-              <input type="checkbox" checked={selectedKeys.has(s.key)} onChange={() => toggle(s.key)} />
+            <label key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px', cursor: 'pointer', fontSize: 13 }}>
+              <input type="checkbox" checked={selectedIds.has(s.id)} onChange={() => toggle(s.id)} />
               <span>{s.name}</span>
-              <span style={{ color: 'var(--muted)', fontSize: 11 }}>[{s.key}]</span>
+              <span style={{ color: 'var(--muted)', fontSize: 11 }}>[{s.device_id} · {s.key}]</span>
             </label>
           ))}
         </div>
       </div>
 
-      <button onClick={handleGenerate} disabled={!deviceType || selectedKeys.size === 0 || loading}
-        style={{ padding: '10px', borderRadius: 6, border: 'none', background: 'var(--primary)', color: '#fff', fontWeight: 600, cursor: 'pointer', opacity: (!deviceType || selectedKeys.size === 0) ? 0.5 : 1 }}>
+      <button onClick={handleGenerate} disabled={!deviceType || selectedIds.size === 0 || loading}
+        style={{ padding: '10px', borderRadius: 6, border: 'none', background: 'var(--primary)', color: '#fff', fontWeight: 600, cursor: 'pointer', opacity: (!deviceType || selectedIds.size === 0) ? 0.5 : 1 }}>
         {loading ? 'Generating...' : 'Generate Thresholds'}
       </button>
     </div>
