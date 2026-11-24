@@ -30,15 +30,25 @@ Integrator and Enterprise licences are sold per site, lifetime or monthly
 * **Protocols:** Modbus TCP, OPC UA, Siemens S7, EtherNet/IP (CIP), DNP3,
   BACnet/IP, and an embedded MQTT broker. SNMP network scan for asset discovery.
   Device templates for Modbus and BACnet: built-in, saved from your own
-  devices, or imported from a public catalog.
-  Each protocol is a Cargo feature, all on by default. The drivers are not
-  equally mature; see [Project status](#project-status).
+  devices, or imported from a public catalog; a Modbus device can stay
+  [linked](docs/device-templates.md#linked-devices) to its template, so a
+  register-map fix reaches every device made from it.
+  Each protocol is a Cargo feature, all on by default, and every driver is
+  compiled into the release binary: nothing is downloaded or installed at run
+  time (see [Drivers ship in the binary](#drivers-ship-in-the-binary)). The
+  drivers are not equally mature; see [Project status](#project-status).
 * **Dashboards:** responsive grid, free-form canvas, 3D digital twin and a 2D
-  SCADA diagram editor, with per-screen layouts.
+  SCADA diagram editor, with per-screen layouts. Every bound value shows its
+  alarm state and data quality in one consistent style with no per-widget
+  setting; clicking a live value opens a multi-pen trend with one autoscaled
+  axis per pen; equipment symbols open reusable faceplates defined once and
+  mapped to each symbol's own tags ([docs/screens.md](docs/screens.md)).
 * **Alarms:** warning and critical thresholds (zero and negative limits too),
   priorities, shelving, deadband, on and off delay, acknowledgement, alarm
-  analytics, email, webhook and push notifications. Alarms are evaluated only
-  on values of good quality.
+  analytics with a chatter count per tag, a suggested on-delay and deadband
+  from each tag's recent noise ([docs/alarms.md](docs/alarms.md)), email,
+  webhook and push notifications. Alarms are evaluated only on values of good
+  quality.
 * **Historian:** a sample of every tag each persistence interval
   (`persist_interval_secs`, default 5 s) packed into compressed blocks
   (delta-of-delta timestamps, XOR floats, run-length digitals), per-tag
@@ -61,7 +71,10 @@ Integrator and Enterprise licences are sold per site, lifetime or monthly
   nodes and recipes. Every live value carries a quality (good, uncertain,
   stale, bad) and a millisecond timestamp. API keys go in the `X-API-Key`
   header; `?api_key=` is accepted only on `/metrics` (Prometheus) and
-  `/api/v1/stream`.
+  `/api/v1/stream`. Create and update routes refuse unknown fields and
+  invalid enumerated values with an error naming the field. Every queued
+  command records who sent it (user, API key, flow, recipe or MCP), shown in
+  the command and alarm views.
 * **AI agents (MCP):** a Model Context Protocol server built into the server at
   `/mcp`, so Claude and other MCP clients can read values, manage devices and
   tags, and acknowledge alarms with an API key. Writes and deletions need a
@@ -76,7 +89,9 @@ Integrator and Enterprise licences are sold per site, lifetime or monthly
   Admins set it up in the copilot's Settings tab.
 * **Operations:** OEE and downtime, shift handover, asset inventory with NIS2
   export, config snapshots, backup and restore, whole-configuration YAML
-  projects (`voltrus project export|import|validate`).
+  projects (`voltrus project export|import|validate`) with a published JSON
+  Schema ([docs/project-schema.json](docs/project-schema.json)). An official
+  container image recipe ([docs/docker.md](docs/docker.md)).
 * **Security:** local accounts with Argon2 and four roles: `admin`
   (everything), `demo` (operate and configure), `operator` (operate the plant:
   write tags within their write policy, acknowledge and shelve alarms, load
@@ -107,7 +122,11 @@ level, and this table says where each one stands so you can plan around it.
 | Device start-up | Every enabled device starts polling at boot |
 | Command queue | Retries with backoff; a write not delivered within 30 minutes expires instead of landing late; acknowledged writes are verified by read-back (confirmed, mismatch or timeout) |
 | Data quality | Every value is good, uncertain, stale or bad (with a reason) and has a millisecond timestamp; bad and stale values stay out of the historian |
-| Alarms | Thresholds (zero and negative too), deadband, on/off delay, acknowledgement and shelving, evaluated on good values only. Not the full ISA-18.2 state model yet |
+| Alarms | Thresholds (zero and negative too), deadband, on/off delay, acknowledgement and shelving, evaluated on good values only; chatter count and on-delay suggestion. Not the full ISA-18.2 state model yet; no state (digital) alarms yet |
+| Device templates | Copied or (Modbus) linked: saving a template rewrites the registers of linked devices after a preview. BACnet devices are always copies |
+| Faceplates | Definitions with state, fault, analog, command and setpoint roles, mapped per symbol. No graphics of their own and no MCP tools yet |
+| Project format | Unknown fields and enumerated values outside their list are refused while parsing; JSON Schema generated from the parser's field lists |
+| Docker image | Dockerfile and a CI build; no published image in a registry yet |
 | Native console ([`native/`](native/README-native.md)) | Experimental, macOS first |
 
 Help with any of these is welcome; see [Contributing](#contributing).
@@ -161,6 +180,19 @@ runs: choose **More info**, then **Run anyway**. The Linux
 archive also has `modbus-sim`, a simulated power meter on port 5020, and a
 `voltrus.service` unit for systemd. Sign-in and the first admin password are
 described below under "Open http://localhost:3000".
+
+### Run with Docker
+
+```bash
+docker build -t voltrus-scada .
+docker run -d --name voltrus -p 3000:3000 -v voltrus-data:/data voltrus-scada
+```
+
+The image is Alpine with the static binary (web UI and every driver inside),
+runs as an unprivileged user and keeps its database and `config.yaml` in the
+`/data` volume. Size and idle memory are measured in
+[docs/docker.md](docs/docker.md), which also covers devices on the plant network.
+No image is published to a registry yet.
 
 ### Build from source
 
@@ -233,6 +265,20 @@ To build with fewer protocols:
 ```bash
 cargo build --release --no-default-features --features "modbus,opcua,mqtt-broker"
 ```
+
+### Drivers ship in the binary
+
+Modbus TCP, OPC UA, Siemens S7, EtherNet/IP, DNP3, BACnet/IP and the MQTT
+broker are Cargo features that are all on by default, and the release
+workflow builds with the defaults, so the release binary (and the container
+image) carries every driver. Nothing is installed or downloaded when a device
+is added, a container is recreated or the machine has no internet. A unit test
+(`drivers_in_the_binary`) fails if a protocol leaves the default features or the
+release build starts passing feature flags. Building with
+`--no-default-features --features modbus` makes a smaller binary with only the
+drivers you list; the routes of the others are then left out. What the server does fetch over the network, and only when you use
+it: device templates from a catalog URL (register maps as JSON, not code), the
+AI provider you configure, and your notification and webhook targets.
 
 ### Configuration
 
