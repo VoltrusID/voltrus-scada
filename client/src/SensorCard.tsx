@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react'
+import React, { useMemo, useState, useEffect, useRef } from 'react'
 import { SensorConfig, SOURCE_CATEGORY } from './types'
 import { Chart } from './Chart'
 import { stColor } from './styles'
@@ -6,6 +6,7 @@ import { parseConfig } from './styles'
 import { useSensorCurrentValue, useChartValues } from './store/dashboardStore'
 import { useRemoveSensorFromScreen } from './queries'
 import { qualityFamily, qualityLabel, qualityMarker } from './quality'
+import { useInView } from './hooks/useInView'
 
 const useIsSmallScreen = () => {
   const [small, setSmall] = useState(window.innerWidth <= 480)
@@ -37,8 +38,12 @@ export const SensorCard = React.memo(function SensorCard({
   shortcut, loadSensorsForScreen, setEditingId,
   showDragHandle, selected, mode, onClick,
 }: Props) {
-  const cv = useSensorCurrentValue(s.id)
-  const chartData = useChartValues(s.id, mode === 'history' ? 'history' : 'live')
+  // Off-screen cards hold their last reading instead of re-rendering on every
+  // update; scrolling one into view catches it up.
+  const rootRef = useRef<HTMLDivElement>(null)
+  const offScreen = !useInView(rootRef)
+  const cv = useSensorCurrentValue(s.id, offScreen)
+  const chartData = useChartValues(s.id, mode === 'history' ? 'history' : 'live', offScreen)
   const isSmall = useIsSmallScreen()
   const removeSensorMut = useRemoveSensorFromScreen()
 
@@ -78,6 +83,7 @@ export const SensorCard = React.memo(function SensorCard({
   if (isCompact) {
     return (
       <div
+        ref={rootRef}
         role="button"
         tabIndex={0}
         aria-label={cardAriaLabel}
@@ -127,6 +133,7 @@ export const SensorCard = React.memo(function SensorCard({
 
   return (
     <div
+      ref={rootRef}
       role="button"
       tabIndex={0}
       aria-label={cardAriaLabel}
