@@ -511,7 +511,7 @@ async fn ensure_station_user(
     storage
         .set_must_change_password(STATION_USER, false)
         .await?;
-    storage.reset_failed_attempts(STATION_USER).await?;
+    storage.clear_login_failures(STATION_USER).await?;
     Ok((password, password_changed))
 }
 
