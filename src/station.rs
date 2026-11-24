@@ -173,6 +173,8 @@ pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
     }
     allow_users_to_read(&credential_path)?;
 
+    let admin_password_file = crate::storage::initial_admin_password_path(path_str(&db_path)?)
+        .unwrap_or_else(|| dir.join(crate::storage::INITIAL_ADMIN_PASSWORD_FILE));
     Ok(Initialized {
         dir,
         url: credential.url,
@@ -180,8 +182,7 @@ pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
         config_created,
         password_changed,
         admin_created,
-        admin_password_file: crate::storage::initial_admin_password_path(path_str(&db_path)?)
-            .unwrap_or_else(|| dir.join(crate::storage::INITIAL_ADMIN_PASSWORD_FILE)),
+        admin_password_file,
         config_path,
     })
 }
