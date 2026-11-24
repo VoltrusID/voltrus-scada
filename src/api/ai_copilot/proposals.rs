@@ -77,6 +77,24 @@ pub async fn approve_proposal(
     Path(id): Path<i64>,
     Json(body): Json<ReviewProposalBody>,
 ) -> Result<impl IntoResponse, AppError> {
+    let proposal = state
+        .storage
+        .get_ai_proposal(id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Proposal not found"))?;
+    if proposal.status != "pending" {
+        return Err(AppError::bad_request(format!(
+            "Only a pending proposal can be approved; this one is {}",
+            proposal.status
+        )));
+    }
+    // An edited configuration must be valid: approving the original instead
+    // would apply something the reviewer did not mean.
+    if let Some(edited) = &body.applied_config {
+        crate::ai_copilot::parser::check_proposal_config(&proposal.proposal_type, edited).map_err(
+            |e| AppError::bad_request(format!("The edited configuration is not valid: {e}")),
+        )?;
+    }
     let applied_config = body.applied_config.map(|v| v.to_string());
     state
         .storage
@@ -139,41 +157,32 @@ pub async fn apply_proposal(
         .applied_config
         .as_ref()
         .unwrap_or(&proposal.proposed_config);
+    crate::ai_copilot::parser::check_proposal_config(&proposal.proposal_type, config_to_apply)
+        .map_err(AppError::bad_request)?;
 
-    // Apply config based on proposal type
-    match proposal.proposal_type.as_str() {
+    // Each apply goes through the REST handlers and is all or nothing.
+    let target = &proposal.target_entity_id;
+    let result = match proposal.proposal_type.as_str() {
         "register_map" => {
-            super::helpers::apply_register_map(&state, config_to_apply, &proposal.target_entity_id)
-                .await?
+            super::helpers::apply_register_map(&state, config_to_apply, target).await?
         }
         "alarm_thresholds" => {
             super::helpers::apply_alarm_thresholds(&state, config_to_apply).await?
         }
         "tag_rename" => super::helpers::apply_tag_rename(&state, config_to_apply).await?,
         "dashboard_layout" => {
-            super::helpers::apply_dashboard_layout(
-                &state,
-                config_to_apply,
-                &proposal.target_entity_id,
-            )
-            .await?
+            super::helpers::apply_dashboard_layout(&state, config_to_apply, target).await?
         }
-        "flow_rule" => super::helpers::apply_flow_rule(&state, config_to_apply).await?,
+        "flow_rule" => super::helpers::apply_flow_rule(&state, &auth, config_to_apply).await?,
         "equipment_template" => {
-            super::helpers::apply_equipment_template(
-                &state,
-                config_to_apply,
-                &proposal.target_entity_id,
-            )
-            .await?
+            super::helpers::apply_equipment_template(&state, config_to_apply, target).await?
         }
-        _ => {
-            return Err(AppError(anyhow::anyhow!(
-                "Unknown proposal type: {}",
-                proposal.proposal_type
+        other => {
+            return Err(AppError::bad_request(format!(
+                "Unknown proposal type: {other}"
             )));
         }
-    }
+    };
 
     state
         .storage
@@ -190,10 +199,11 @@ pub async fn apply_proposal(
                 "proposal_type": proposal.proposal_type,
                 "source": "ai-assist",
                 "title": proposal.title,
+                "result": result,
             })
             .to_string(),
         ),
     });
 
-    Ok(Json(json!({"ok": true})))
+    Ok(Json(json!({"ok": true, "result": result})))
 }

@@ -304,6 +304,9 @@ pub struct AlarmThresholdRequest {
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::ToSchema)]
 pub struct AlarmThresholdTag {
+    /// The tag's id; needed when several tags share `source_key` (one per device).
+    #[serde(default)]
+    pub id: Option<i64>,
     pub source_key: String,
     pub name: String,
     pub unit: Option<String>,

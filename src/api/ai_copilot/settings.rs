@@ -208,6 +208,12 @@ pub async fn test_ai_settings(
             "model": resp.model,
             "provider": resp.provider,
         }))),
+        // A reply cut at the tiny test limit still proves the key and model work.
+        Err(crate::ai_copilot::error::AiError::Truncated { .. }) => Ok(Json(json!({
+            "ok": true,
+            "model": settings.default_model,
+            "provider": provider.provider_name(),
+        }))),
         Err(e) => Ok(Json(json!({
             "ok": false,
             "error": e.to_string(),

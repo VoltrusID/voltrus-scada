@@ -235,6 +235,9 @@ struct OpenAiResponse {
 #[derive(Deserialize)]
 struct OpenAiChoice {
     message: OpenAiMessage,
+    /// `length` when the reply hit `max_tokens`.
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -275,22 +278,31 @@ impl OpenAiProvider {
         let label = self.label();
         let status = resp.status();
         if status.is_client_error() || status.is_server_error() {
+            let retry_after = resp.headers().get(reqwest::header::RETRY_AFTER).cloned();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AiError::ProviderError(format!(
-                "{label} API error ({status}): {text}"
-            )));
+            return Err(AiError::from_provider_status(
+                label,
+                status,
+                retry_after.as_ref(),
+                &text,
+            ));
         }
 
         let data: OpenAiResponse = resp.json().await.map_err(|e| {
             AiError::MalformedResponse(format!("Failed to parse {label} response: {e}"))
         })?;
 
-        let content = data
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|c| c.message.content)
-            .unwrap_or_default();
+        let choice = data.choices.into_iter().next();
+        if choice
+            .as_ref()
+            .and_then(|c| c.finish_reason.as_deref())
+            .is_some_and(|r| r == "length")
+        {
+            return Err(AiError::Truncated {
+                max_tokens: request.max_tokens,
+            });
+        }
+        let content = choice.and_then(|c| c.message.content).unwrap_or_default();
         let usage = data.usage.unwrap_or_default();
 
         Ok(AiResponse {
@@ -330,17 +342,40 @@ struct AnthropicResponse {
     content: Vec<AnthropicContent>,
     model: String,
     usage: AnthropicUsage,
+    /// `max_tokens` when the reply hit the output limit.
+    #[serde(default)]
+    stop_reason: Option<String>,
 }
 
+/// A content block; only `text` blocks carry the answer (others, such as
+/// `thinking`, have no `text`).
 #[derive(Deserialize)]
 struct AnthropicContent {
-    text: String,
+    #[serde(default, rename = "type")]
+    kind: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct AnthropicUsage {
     input_tokens: u32,
     output_tokens: u32,
+}
+
+/// The answer text of a Messages API reply: its text blocks joined, or
+/// [`AiError::Truncated`] when it stopped at the output limit.
+fn anthropic_text(data: &AnthropicResponse, max_tokens: Option<u32>) -> Result<String, AiError> {
+    if data.stop_reason.as_deref() == Some("max_tokens") {
+        return Err(AiError::Truncated { max_tokens });
+    }
+    Ok(data
+        .content
+        .iter()
+        .filter(|c| c.kind.as_deref().is_none_or(|k| k == "text"))
+        .filter_map(|c| c.text.as_deref())
+        .collect::<Vec<_>>()
+        .join(""))
 }
 
 impl AnthropicProvider {
@@ -367,22 +402,21 @@ impl AnthropicProvider {
 
         let status = resp.status();
         if status.is_client_error() || status.is_server_error() {
+            let retry_after = resp.headers().get(reqwest::header::RETRY_AFTER).cloned();
             let text = resp.text().await.unwrap_or_default();
-            return Err(AiError::ProviderError(format!(
-                "Anthropic API error ({status}): {text}"
-            )));
+            return Err(AiError::from_provider_status(
+                "Anthropic",
+                status,
+                retry_after.as_ref(),
+                &text,
+            ));
         }
 
         let data: AnthropicResponse = resp.json().await.map_err(|e| {
             AiError::MalformedResponse(format!("Failed to parse Anthropic response: {e}"))
         })?;
 
-        let content = data
-            .content
-            .into_iter()
-            .next()
-            .map(|c| c.text)
-            .unwrap_or_default();
+        let content = anthropic_text(&data, request.max_tokens)?;
 
         Ok(AiResponse {
             content,
@@ -581,6 +615,115 @@ mod tests {
         assert_eq!(seen[0].0, None);
         assert_eq!(seen[0].1["model"], "llama3.2");
         assert_eq!(seen[0].1["max_tokens"], 1);
+    }
+
+    /// A server that answers every chat completion with `status`, `headers` and `body`.
+    async fn canned_server(
+        status: u16,
+        headers: &'static [(&'static str, &'static str)],
+        body: serde_json::Value,
+    ) -> String {
+        let app = axum::Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(move || {
+                let body = body.clone();
+                async move {
+                    let mut resp = axum::response::IntoResponse::into_response((
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        Json(body),
+                    ));
+                    for (k, v) in headers {
+                        resp.headers_mut().insert(*k, v.parse().unwrap());
+                    }
+                    resp
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn openai_reply_cut_at_max_tokens_is_truncated() {
+        let cut = serde_json::json!({
+            "choices": [{"message": {"content": "[{\"name\": \"v"}, "finish_reason": "length"}]
+        });
+        let base = canned_server(200, &[], cut).await;
+        let provider = resolve_provider(&compatible(Some(&base), Some("m"), ""));
+        let err = provider.complete(ping()).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AiError::Truncated {
+                    max_tokens: Some(1)
+                }
+            ),
+            "{err:?}"
+        );
+
+        let whole = serde_json::json!({
+            "choices": [{"message": {"content": "[]"}, "finish_reason": "stop"}]
+        });
+        let base = canned_server(200, &[], whole).await;
+        let provider = resolve_provider(&compatible(Some(&base), Some("m"), ""));
+        assert_eq!(provider.complete(ping()).await.unwrap().content, "[]");
+    }
+
+    #[tokio::test]
+    async fn provider_401_and_429_map_to_bad_key_and_rate_limit() {
+        let denied = serde_json::json!({"error": {"message": "Incorrect API key provided"}});
+        let base = canned_server(401, &[], denied).await;
+        let provider = resolve_provider(&compatible(Some(&base), Some("m"), "sk-x"));
+        let err = provider.complete(ping()).await.unwrap_err();
+        assert!(matches!(err, AiError::InvalidApiKey(_)), "{err:?}");
+
+        let limited = serde_json::json!({"error": {"message": "Rate limit reached"}});
+        let base = canned_server(429, &[("retry-after", "7")], limited).await;
+        let provider = resolve_provider(&compatible(Some(&base), Some("m"), "sk-x"));
+        let err = provider.complete(ping()).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AiError::RateLimited {
+                    retry_after_secs: Some(7)
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn anthropic_reply_joins_text_blocks_and_detects_max_tokens() {
+        let data: AnthropicResponse = serde_json::from_value(serde_json::json!({
+            "model": "claude",
+            "usage": {"input_tokens": 1, "output_tokens": 2},
+            "stop_reason": "end_turn",
+            "content": [
+                {"type": "thinking", "thinking": "..."},
+                {"type": "text", "text": "[1,"},
+                {"type": "text", "text": "2]"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(anthropic_text(&data, Some(10)).unwrap(), "[1,2]");
+
+        let cut: AnthropicResponse = serde_json::from_value(serde_json::json!({
+            "model": "claude",
+            "usage": {"input_tokens": 1, "output_tokens": 2},
+            "stop_reason": "max_tokens",
+            "content": [{"type": "text", "text": "[1,"}]
+        }))
+        .unwrap();
+        assert!(matches!(
+            anthropic_text(&cut, Some(4096)),
+            Err(AiError::Truncated {
+                max_tokens: Some(4096)
+            })
+        ));
     }
 
     #[tokio::test]
