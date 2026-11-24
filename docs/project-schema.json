@@ -1,0 +1,2137 @@
+{
+  "$defs": {
+    "assets": {
+      "additionalProperties": false,
+      "properties": {
+        "asset_type": {
+          "type": "string"
+        },
+        "criticality": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "firmware_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "ip_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_maintenance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mac_address": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "serial_number": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tags": {},
+        "vendor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "asset_type"
+      ],
+      "type": "object"
+    },
+    "bacnet_devices": {
+      "additionalProperties": false,
+      "properties": {
+        "cov_enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "cov_lifetime": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "device_instance": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "interval_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ip": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "objects": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "cov_increment": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "object_instance": {
+                "type": "integer"
+              },
+              "object_type": {
+                "enum": [
+                  "analogInput",
+                  "analogOutput",
+                  "analogValue",
+                  "binaryInput",
+                  "binaryOutput",
+                  "binaryValue",
+                  "multiStateInput",
+                  "multiStateOutput",
+                  "multiStateValue"
+                ],
+                "type": "string"
+              },
+              "property": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "object_type",
+              "object_instance",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "ip"
+      ],
+      "type": "object"
+    },
+    "cameras": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "retention_hours": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "snapshot_on_alarm": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "type": "object"
+    },
+    "custom_metrics": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "formula": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "formula"
+      ],
+      "type": "object"
+    },
+    "device_templates": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {},
+        "cov_enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "cov_lifetime": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "endianness": {
+          "enum": [
+            "big",
+            "little",
+            "swapped",
+            "little_dword",
+            "swapped_dword",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "interval_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "license": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "manufacturer": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "objects": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "cov_increment": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "object_instance": {
+                "type": "integer"
+              },
+              "object_type": {
+                "type": "string"
+              },
+              "property": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "writable": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "object_type",
+              "object_instance",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "protocol": {
+          "enum": [
+            "modbus",
+            "bacnet"
+          ],
+          "type": "string"
+        },
+        "quirks": {},
+        "registers": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "description": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "offset": {
+                "type": "integer"
+              },
+              "register_area": {
+                "enum": [
+                  "holding",
+                  "input",
+                  "coil",
+                  "discrete",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "register_type": {
+                "enum": [
+                  "int16",
+                  "uint16",
+                  "int32",
+                  "float32",
+                  "float64",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scale": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "writable": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "offset"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "template_id": {
+          "type": "string"
+        },
+        "unit_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "verified": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "verified_notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "template_id",
+        "version",
+        "source",
+        "manufacturer",
+        "model",
+        "protocol"
+      ],
+      "type": "object"
+    },
+    "dnp3_devices": {
+      "additionalProperties": false,
+      "properties": {
+        "enable_unsolicited": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "event_scan_interval_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "integrity_poll_interval_secs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ip": {
+          "type": "string"
+        },
+        "master_address": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "outstation_address": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "points": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "data_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "deadband": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "group_num": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "point_index": {
+                "type": "integer"
+              },
+              "scale": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "variation": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "group_num",
+              "variation",
+              "point_index",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "ip"
+      ],
+      "type": "object"
+    },
+    "egress_jobs": {
+      "additionalProperties": false,
+      "properties": {
+        "compression": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "destination": {
+          "type": "string"
+        },
+        "device_ids": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "format": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "schedule": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "time_range": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "destination"
+      ],
+      "type": "object"
+    },
+    "enip_devices": {
+      "additionalProperties": false,
+      "properties": {
+        "assembly_instance": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "interval_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "slot": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tags": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "assembly_length": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "assembly_offset": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "data_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "tag_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tag_name",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "type": "object"
+    },
+    "equipment_templates": {
+      "additionalProperties": false,
+      "properties": {
+        "alarm_template": {},
+        "dashboard_template": {},
+        "equipment_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flow_template": {},
+        "industry": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "tag_template": {}
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "flows": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "nodes": {},
+        "trigger": {}
+      },
+      "required": [
+        "id",
+        "name",
+        "trigger",
+        "nodes"
+      ],
+      "type": "object"
+    },
+    "hub_sites": {
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url",
+        "api_key"
+      ],
+      "type": "object"
+    },
+    "modbus_devices": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "endianness": {
+          "enum": [
+            "big",
+            "little",
+            "swapped",
+            "little_dword",
+            "swapped_dword",
+            null
+          ],
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "interval_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "ip": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "port": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "registers": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "address": {
+                "type": "integer"
+              },
+              "name": {
+                "type": "string"
+              },
+              "register_area": {
+                "enum": [
+                  "holding",
+                  "input",
+                  "coil",
+                  "discrete",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "register_type": {
+                "enum": [
+                  "int16",
+                  "uint16",
+                  "int32",
+                  "float32",
+                  "float64",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "scale": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "sort_order": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "zero_based": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "address"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "unit_id": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "ip"
+      ],
+      "type": "object"
+    },
+    "notifications": {
+      "additionalProperties": false,
+      "properties": {
+        "channel_type": {
+          "type": "string"
+        },
+        "config": {},
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "source_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_key",
+        "channel_type"
+      ],
+      "type": "object"
+    },
+    "opcua_devices": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "interval_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "nodes": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "data_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "node_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "node_id",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "password": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "security_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "security_policy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "username": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "type": "object"
+    },
+    "recipes": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "values": {},
+        "version": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "device_id",
+        "values"
+      ],
+      "type": "object"
+    },
+    "reports": {
+      "additionalProperties": false,
+      "properties": {
+        "device_ids": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "email_recipients": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "schedule": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "schedule",
+        "email_recipients"
+      ],
+      "type": "object"
+    },
+    "s7_devices": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "interval_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "rack": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "slot": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tags": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "data_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "name": {
+                "type": "string"
+              },
+              "tag_address": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "tag_address",
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "type": "object"
+    },
+    "screens": {
+      "additionalProperties": false,
+      "properties": {
+        "canvas": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "height": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "tag": {
+                "type": "string"
+              },
+              "width": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "x": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "y": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "tag"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "layouts": {},
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scada": {
+          "additionalProperties": false,
+          "properties": {
+            "connections": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "connection_id": {
+                    "type": "string"
+                  },
+                  "connection_type": {
+                    "enum": [
+                      "power",
+                      "data",
+                      "flow",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "from_equipment": {
+                    "type": "string"
+                  },
+                  "to_equipment": {
+                    "type": "string"
+                  },
+                  "waypoints": {}
+                },
+                "required": [
+                  "connection_id",
+                  "from_equipment",
+                  "to_equipment"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "equipment": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "config": {},
+                  "equipment_id": {
+                    "type": "string"
+                  },
+                  "equipment_name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "equipment_type": {
+                    "type": "string"
+                  },
+                  "height": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "rotation": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "sensors": {},
+                  "width": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "x": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "y": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "equipment_id",
+                  "equipment_type"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "sim_config": {},
+        "sim_profile": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "simulation_mode": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "sort_order": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "tags": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "ref": {
+                "type": "string"
+              },
+              "sort_order": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "ref"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "twin": {
+          "additionalProperties": false,
+          "properties": {
+            "camera": {},
+            "connections": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "from_id": {
+                    "type": "string"
+                  },
+                  "to_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "from_id",
+                  "to_id"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "layouts": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "equipment_id": {
+                    "type": "string"
+                  },
+                  "equipment_name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "equipment_type": {
+                    "type": "string"
+                  },
+                  "position_x": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "position_z": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "rotation_y": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "equipment_id",
+                  "equipment_type"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "scripts": {
+      "additionalProperties": false,
+      "properties": {
+        "cpu_limit_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "memory_limit_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "settings": {
+      "additionalProperties": false,
+      "properties": {
+        "alarm_cooldown_secs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "compliance": {},
+        "naming_convention": {
+          "additionalProperties": false,
+          "properties": {
+            "regex": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "template": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "oee_thresholds": {},
+        "security_thresholds": {
+          "additionalProperties": false,
+          "properties": {
+            "failed_login_threshold": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "failed_login_window_secs": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "rate_limit_threshold": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "rate_limit_window_secs": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "suspicious_401_threshold": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "suspicious_401_window_secs": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "shifts": {
+      "additionalProperties": false,
+      "properties": {
+        "days_mask": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "duration_hours": {
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "start_hour": {
+          "type": "integer"
+        },
+        "start_minute": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "start_hour",
+        "start_minute",
+        "duration_hours"
+      ],
+      "type": "object"
+    },
+    "sim_profiles": {
+      "additionalProperties": false,
+      "properties": {
+        "config": {},
+        "data_type": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "data_type"
+      ],
+      "type": "object"
+    },
+    "tags": {
+      "additionalProperties": false,
+      "properties": {
+        "alarm": {
+          "additionalProperties": false,
+          "properties": {
+            "crit": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "deadband": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "low_crit": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "low_warn": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "off_delay_secs": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "on_delay_secs": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "warn": {
+              "type": [
+                "number",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "base": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "chart_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "color": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "decimals": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "device": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "equipment_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id_hint": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "max": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "min": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sim_value": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sort_order": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source_config": {},
+        "source_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "write": {
+          "additionalProperties": false,
+          "properties": {
+            "deadband": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "max": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "max_rate": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "min": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "requires_reason": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "writable": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "name"
+      ],
+      "type": "object"
+    },
+    "voltrus_plc_devices": {
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "interval_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "data_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "variable_name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "variable_name"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "transport": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "type": "object"
+    },
+    "webhooks": {
+      "additionalProperties": false,
+      "properties": {
+        "device_filter": {},
+        "enabled": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "events": {},
+        "headers": {},
+        "name": {
+          "type": "string"
+        },
+        "retry_count": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "timeout_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "url"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://voltrus.id/schema/voltrus-project-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Single-file form of a Voltrus project. In the directory form each file holds one entity of a section (or the section's list); the entity schemas are under $defs. See docs/project-format.md.",
+  "properties": {
+    "assets": {
+      "items": {
+        "$ref": "#/$defs/assets"
+      },
+      "type": "array"
+    },
+    "bacnet_devices": {
+      "items": {
+        "$ref": "#/$defs/bacnet_devices"
+      },
+      "type": "array"
+    },
+    "cameras": {
+      "items": {
+        "$ref": "#/$defs/cameras"
+      },
+      "type": "array"
+    },
+    "custom_metrics": {
+      "items": {
+        "$ref": "#/$defs/custom_metrics"
+      },
+      "type": "array"
+    },
+    "device_templates": {
+      "items": {
+        "$ref": "#/$defs/device_templates"
+      },
+      "type": "array"
+    },
+    "dnp3_devices": {
+      "items": {
+        "$ref": "#/$defs/dnp3_devices"
+      },
+      "type": "array"
+    },
+    "egress_jobs": {
+      "items": {
+        "$ref": "#/$defs/egress_jobs"
+      },
+      "type": "array"
+    },
+    "enip_devices": {
+      "items": {
+        "$ref": "#/$defs/enip_devices"
+      },
+      "type": "array"
+    },
+    "equipment_templates": {
+      "items": {
+        "$ref": "#/$defs/equipment_templates"
+      },
+      "type": "array"
+    },
+    "flows": {
+      "items": {
+        "$ref": "#/$defs/flows"
+      },
+      "type": "array"
+    },
+    "format": {
+      "const": "voltrus-project/1"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "hub_sites": {
+      "items": {
+        "$ref": "#/$defs/hub_sites"
+      },
+      "type": "array"
+    },
+    "modbus_devices": {
+      "items": {
+        "$ref": "#/$defs/modbus_devices"
+      },
+      "type": "array"
+    },
+    "notifications": {
+      "items": {
+        "$ref": "#/$defs/notifications"
+      },
+      "type": "array"
+    },
+    "opcua_devices": {
+      "items": {
+        "$ref": "#/$defs/opcua_devices"
+      },
+      "type": "array"
+    },
+    "recipes": {
+      "items": {
+        "$ref": "#/$defs/recipes"
+      },
+      "type": "array"
+    },
+    "reports": {
+      "items": {
+        "$ref": "#/$defs/reports"
+      },
+      "type": "array"
+    },
+    "s7_devices": {
+      "items": {
+        "$ref": "#/$defs/s7_devices"
+      },
+      "type": "array"
+    },
+    "screens": {
+      "items": {
+        "$ref": "#/$defs/screens"
+      },
+      "type": "array"
+    },
+    "scripts": {
+      "items": {
+        "$ref": "#/$defs/scripts"
+      },
+      "type": "array"
+    },
+    "server_version": {
+      "type": "string"
+    },
+    "settings": {
+      "$ref": "#/$defs/settings"
+    },
+    "shifts": {
+      "items": {
+        "$ref": "#/$defs/shifts"
+      },
+      "type": "array"
+    },
+    "sim_profiles": {
+      "items": {
+        "$ref": "#/$defs/sim_profiles"
+      },
+      "type": "array"
+    },
+    "tags": {
+      "items": {
+        "$ref": "#/$defs/tags"
+      },
+      "type": "array"
+    },
+    "voltrus_plc_devices": {
+      "items": {
+        "$ref": "#/$defs/voltrus_plc_devices"
+      },
+      "type": "array"
+    },
+    "webhooks": {
+      "items": {
+        "$ref": "#/$defs/webhooks"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "format"
+  ],
+  "title": "Voltrus project (voltrus-project/1)",
+  "type": "object"
+}

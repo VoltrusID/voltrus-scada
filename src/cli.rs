@@ -35,6 +35,7 @@ USAGE:
     voltrus project import <PATH> [--mode merge|replace] [--dry-run]
                                             Import a YAML project (one transaction)
     voltrus project validate <PATH>    Check a YAML project without touching a database
+    voltrus project schema [OUT.json]  Print (or write) the JSON Schema of the project format
     voltrus config export|import|validate [PATH]
                                             Older spelling of the project commands
     voltrus discover --range <CIDR>    Scan subnet for Modbus TCP devices
@@ -612,7 +613,8 @@ async fn handle_project(args: &[String], legacy_config: bool) -> bool {
         eprintln!(
             "Usage: {0} {cmd} export <PATH> [--config <PATH>]\n       \
              {0} {cmd} import <PATH> [--mode merge|replace] [--dry-run] [--config <PATH>]\n       \
-             {0} {cmd} validate <PATH>\n\n\
+             {0} {cmd} validate <PATH>\n       \
+             {0} {cmd} schema [OUT.json]\n\n\
              PATH is a directory (one file per entity) or a single .yaml file.\n\
              Secrets are written as ${{ENV_NAME}} references and resolved from the\n\
              environment on import. See docs/project-format.md.",
@@ -621,6 +623,23 @@ async fn handle_project(args: &[String], legacy_config: bool) -> bool {
         std::process::exit(code);
     };
     let sub = args.get(2).map(String::as_str).unwrap_or("");
+    if sub == "schema" {
+        let text = crate::project_yaml::schema::project_schema_text();
+        match args.get(3) {
+            Some(out) => {
+                if let Err(e) = std::fs::write(out, text) {
+                    eprintln!("Error: writing {out}: {e}");
+                    std::process::exit(1);
+                }
+                println!(
+                    "Wrote the JSON Schema of {} to {out}",
+                    crate::project_yaml::FORMAT
+                );
+            }
+            None => print!("{text}"),
+        }
+        std::process::exit(0);
+    }
     if !matches!(sub, "export" | "import" | "validate") {
         usage(1);
     }

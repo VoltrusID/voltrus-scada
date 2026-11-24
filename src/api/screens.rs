@@ -33,6 +33,7 @@ pub async fn create_screen(
     Extension(auth): Extension<AuthUser>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::strict::check(&body, &super::strict::SCREEN)?;
     let name = body["name"].as_str().unwrap_or("New Screen").to_string();
 
     // Generate slug id from name
@@ -94,6 +95,7 @@ pub async fn update_screen(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::strict::check(&body, &super::strict::SCREEN)?;
     let name = body["name"].as_str();
     let sort_order = body["sort_order"].as_i64();
 

@@ -39,6 +39,7 @@ pub async fn create_data_source(
     State(state): State<AppState>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Response<Body>, AppError> {
+    super::strict::check(&body, &super::strict::DATA_SOURCE)?;
     let key = body["key"].as_str().unwrap_or("data_source").to_string();
     let name = body["name"].as_str().unwrap_or("DataSource").to_string();
     let unit = body["unit"].as_str().unwrap_or("").to_string();
@@ -114,6 +115,7 @@ pub async fn update_data_source(
     Path(id): Path<i64>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<Response<Body>, AppError> {
+    super::strict::check(&body, &super::strict::DATA_SOURCE)?;
     if let Some(name) = body.get("name").and_then(|v| v.as_str())
         && let Err(msg) = validate_tag_name(&state, name).await
     {

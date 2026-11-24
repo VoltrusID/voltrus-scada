@@ -63,6 +63,7 @@ mod smtp_settings;
 mod snmp_scan;
 mod sse;
 pub(crate) mod stream;
+pub(crate) mod strict;
 mod system;
 mod system_docs;
 mod system_sampler;

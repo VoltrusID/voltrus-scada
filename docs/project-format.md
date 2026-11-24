@@ -213,6 +213,55 @@ be resolved are warnings (a tag may legitimately use a device name such as
 `default`). `voltrus project validate` checks a project on its own, without a
 database.
 
+Enumerated fields are checked against their list while the file is parsed, and
+the error names the field and the allowed values, for example
+`modbus_devices[0]: registers[2].register_type: 'uint32' is not one of int16, uint16, int32, float32, float64`.
+Up to v0.52 such a value was stored and read as the default (`float32`) by the
+poller. The checked fields are:
+
+| Field | Allowed values |
+|---|---|
+| `modbus_devices[].endianness`, `device_templates[].endianness` | `big`, `little`, `swapped`, `little_dword`, `swapped_dword` |
+| `register_type` (Modbus devices and templates) | `int16`, `uint16`, `int32`, `float32`, `float64` |
+| `register_area` (Modbus devices and templates) | `holding`, `input`, `coil`, `discrete` |
+| `device_templates[].protocol` | `modbus`, `bacnet` |
+| `device_templates[].objects[].object_type` | the nine BACnet object types of [device-templates.md](device-templates.md) |
+| `screens[].scada.connections[].connection_type` | `power`, `data`, `flow` |
+
+`chart_type` and `source_type` of tags stay open text: older versions and the
+setup wizard store chart types that the web client draws as a sparkline, and
+protocol modules add their own source types.
+
+### JSON Schema
+
+[`docs/project-schema.json`](project-schema.json) is a JSON Schema (draft
+2020-12) of the single-file form, generated from the same field lists the parser
+uses; every entity has its schema under `$defs.<section>`. Editors such as VS
+Code validate and complete a project with it:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/VoltrusID/voltrus-scada/main/docs/project-schema.json
+format: voltrus-project/1
+```
+
+`voltrus project schema` prints it, `voltrus project schema OUT.json` writes it.
+A unit test fails when the committed file differs from what the server
+generates. The schema checks shape only (names, types, required fields, allowed
+values); references between entities and duplicate keys are checked by
+`voltrus project validate`.
+
+### The REST routes
+
+The create and update routes that take free-form JSON answer `400` with
+`{"error": "..."}` naming the field when a body has a field the resource does
+not have, or an enumerated value outside its list, instead of ignoring it:
+`POST`/`PUT /api/v1/data-sources`, `POST`/`PUT /api/v1/screens`,
+`POST`/`PUT /api/v1/modbus-devices` and `PUT /api/v1/modbus-devices/{id}/registers`
+(registers are checked one by one: `register 2: register_type "uint32" is not
+one of ...`). The fields `GET` returns are accepted, so a read-modify-write round
+trip works; read-only ones (`id`, `created_at`) are ignored. The MCP tools go
+through these routes and also refuse unknown arguments themselves.
+
 ## Secrets
 
 A project never contains a secret. On export, every secret-bearing string is

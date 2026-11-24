@@ -110,15 +110,27 @@ pub fn default_of(f: &Field) -> Option<Value> {
 fn coerce(f: &Field, v: &Value, path: &str, errs: &mut Vec<String>) -> Option<Value> {
     let at = || format!("{path}{}{}", if path.is_empty() { "" } else { "." }, f.name);
     match f.ty {
-        Ty::Text => match v {
-            Value::String(_) => Some(v.clone()),
-            Value::Number(n) => Some(text(n.to_string())),
-            Value::Bool(b) => Some(text(b.to_string())),
-            _ => {
-                errs.push(format!("{}: expected text", at()));
-                None
+        Ty::Text => {
+            let t = match v {
+                Value::String(_) => v.clone(),
+                Value::Number(n) => text(n.to_string()),
+                Value::Bool(b) => text(b.to_string()),
+                _ => {
+                    errs.push(format!("{}: expected text", at()));
+                    return None;
+                }
+            };
+            let s = display(&t);
+            if !f.one_of.is_empty() && !f.one_of.contains(&s.as_str()) {
+                errs.push(format!(
+                    "{}: '{s}' is not one of {}",
+                    at(),
+                    f.one_of.join(", ")
+                ));
+                return None;
             }
-        },
+            Some(t)
+        }
         Ty::Int => match v {
             Value::Number(n) if n.is_i64() => Some(v.clone()),
             Value::Number(n) if n.is_u64() => match i64::try_from(n.as_u64().unwrap_or(0)) {

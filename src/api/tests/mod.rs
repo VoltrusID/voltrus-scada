@@ -41,6 +41,7 @@ mod shared_accounts;
 mod shift_report;
 mod shortcuts;
 mod status_codes;
+mod strict_bodies;
 mod system;
 mod tag_tree;
 mod ui_preferences;

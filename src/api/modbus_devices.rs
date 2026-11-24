@@ -95,6 +95,7 @@ pub async fn create_modbus_device(
     Extension(auth): Extension<AuthUser>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::strict::check_modbus_device(&body)?;
     let id = body["id"].as_str().unwrap_or("").to_string();
     let name = body["name"].as_str().unwrap_or("").to_string();
     let ip = body["ip"].as_str().unwrap_or("").to_string();
@@ -182,6 +183,7 @@ pub async fn update_modbus_device(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::strict::check_modbus_device(&body)?;
     match body.get("interval_ms") {
         None | Some(serde_json::Value::Null) => {}
         Some(v) => super::check_poll_interval(
@@ -272,6 +274,7 @@ pub async fn replace_registers(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::strict::check_items(&body, "registers", &super::strict::MODBUS_REGISTER)?;
     let registers =
         ModbusRegisterInput::parse_all(&body).map_err(|e| AppError(anyhow::anyhow!(e)))?;
 

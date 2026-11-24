@@ -54,6 +54,8 @@ pub struct Field {
     pub req: Req,
     /// Omit from output when equal to the default.
     pub lean: bool,
+    /// Allowed values of a text field; empty means any text.
+    pub one_of: &'static [&'static str],
 }
 
 impl Field {
@@ -64,6 +66,7 @@ impl Field {
             ty,
             req: Req::Required,
             lean: false,
+            one_of: &[],
         }
     }
     pub const fn o(name: &'static str, ty: Ty) -> Self {
@@ -73,6 +76,7 @@ impl Field {
             ty,
             req: Req::Optional,
             lean: false,
+            one_of: &[],
         }
     }
     pub const fn d(name: &'static str, ty: Ty, dv: Dv) -> Self {
@@ -82,6 +86,7 @@ impl Field {
             ty,
             req: Req::Default(dv),
             lean: false,
+            one_of: &[],
         }
     }
     pub const fn col(mut self, col: &'static str) -> Self {
@@ -90,6 +95,11 @@ impl Field {
     }
     pub const fn lean(mut self) -> Self {
         self.lean = true;
+        self
+    }
+    /// Restrict a text field to a fixed list of values.
+    pub const fn one_of(mut self, values: &'static [&'static str]) -> Self {
+        self.one_of = values;
         self
     }
     /// Field with no column of its own (nested data, references, input-only).
@@ -184,11 +194,18 @@ use Ty::*;
 
 // ── Device protocols ──
 
+/// Allowed values of the enumerated text fields, shared with the REST checks
+/// in `api::strict` and the JSON Schema.
+pub const REGISTER_TYPES: &[&str] = &crate::device_templates::MODBUS_TYPES;
+pub const REGISTER_AREAS: &[&str] = &crate::device_templates::MODBUS_AREAS;
+pub const ENDIANNESS: &[&str] = &crate::models::Endianness::NAMES;
+pub const CONNECTION_TYPES: &[&str] = &["power", "data", "flow"];
+
 const MODBUS_REGISTER: &[Field] = &[
     Field::r("name", Text),
     Field::r("address", Int),
-    Field::d("register_type", Text, S("float32")),
-    Field::d("register_area", Text, S("holding")),
+    Field::d("register_type", Text, S("float32")).one_of(REGISTER_TYPES),
+    Field::d("register_area", Text, S("holding")).one_of(REGISTER_AREAS),
     Field::d("scale", Real, R(1.0)),
     Field::d("sort_order", Int, I(0)).lean(),
     Field::d("zero_based", Bool, B(false)).lean(),
@@ -201,7 +218,7 @@ const MODBUS_DEVICE: &[Field] = &[
     Field::d("port", Int, I(502)),
     Field::d("unit_id", Int, I(1)),
     Field::d("interval_ms", Int, I(1000)),
-    Field::d("endianness", Text, S("big")),
+    Field::d("endianness", Text, S("big")).one_of(ENDIANNESS),
     Field::d("enabled", Bool, B(true)),
     Field::d("registers", List(MODBUS_REGISTER), Arr)
         .virt()
@@ -373,7 +390,7 @@ static DNP3: Plain = Plain {
 };
 
 const BACNET_OBJECT: &[Field] = &[
-    Field::r("object_type", Text),
+    Field::r("object_type", Text).one_of(&crate::device_templates::BACNET_TYPES),
     Field::r("object_instance", Int),
     Field::d("property", Text, S("presentValue")),
     Field::r("name", Text),
@@ -637,8 +654,8 @@ static HUB_SITES: Plain = Plain {
 const TEMPLATE_REGISTER: &[Field] = &[
     Field::r("name", Text),
     Field::r("offset", Int),
-    Field::d("register_type", Text, S("float32")),
-    Field::d("register_area", Text, S("holding")),
+    Field::d("register_type", Text, S("float32")).one_of(REGISTER_TYPES),
+    Field::d("register_area", Text, S("holding")).one_of(REGISTER_AREAS),
     Field::d("scale", Real, R(1.0)),
     Field::d("unit", Text, S("")).lean(),
     Field::d("description", Text, S("")).lean(),
@@ -665,7 +682,7 @@ const DEVICE_TEMPLATE: &[Field] = &[
     Field::r("source", Text),
     Field::r("manufacturer", Text),
     Field::r("model", Text),
-    Field::r("protocol", Text),
+    Field::r("protocol", Text).one_of(&["modbus", "bacnet"]),
     Field::d("description", Text, S("")).virt().lean(),
     Field::d("verified", Bool, B(false)).lean(),
     Field::d("verified_notes", Text, S("")).virt().lean(),
@@ -674,7 +691,7 @@ const DEVICE_TEMPLATE: &[Field] = &[
     Field::o("port", Int).virt(),
     Field::o("interval_ms", Int).virt(),
     Field::o("unit_id", Int).virt(),
-    Field::o("endianness", Text).virt(),
+    Field::o("endianness", Text).virt().one_of(ENDIANNESS),
     Field::d("registers", List(TEMPLATE_REGISTER), Arr)
         .virt()
         .lean(),
@@ -881,7 +898,7 @@ pub const SCADA_CONNECTION: &[Field] = &[
     Field::r("connection_id", Text),
     Field::r("from_equipment", Text),
     Field::r("to_equipment", Text),
-    Field::d("connection_type", Text, S("power")),
+    Field::d("connection_type", Text, S("power")).one_of(CONNECTION_TYPES),
     Field::d("waypoints", Json, Arr).lean(),
 ];
 

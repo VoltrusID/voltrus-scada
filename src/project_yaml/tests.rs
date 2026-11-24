@@ -1217,13 +1217,6 @@ async fn invalid_device_templates_are_reported_with_their_key() {
             "must be 'local' or 'catalog:<url>'",
         ),
         (
-            MINIMAL_TEMPLATE.replace(
-                "{name: v, offset: 0}",
-                "{name: v, offset: 0, register_type: float16}",
-            ),
-            "register_type 'float16'",
-        ),
-        (
             MINIMAL_TEMPLATE.replace("version: 1.0.0", "version: one"),
             "semantic version",
         ),
@@ -1236,6 +1229,18 @@ async fn invalid_device_templates_are_reported_with_their_key() {
             "`body` is how the server stores a template",
         ),
     ];
+    // An enumerated field is checked while parsing, before the template rules.
+    let err = parse_project_yaml(&MINIMAL_TEMPLATE.replace(
+        "{name: v, offset: 0}",
+        "{name: v, offset: 0, register_type: float16}",
+    ))
+    .unwrap_err();
+    let issues: Vec<String> = invalid(&err).0.iter().map(|i| i.to_string()).collect();
+    assert!(
+        issues.iter().any(|m| m.contains("device_templates[0]")
+            && m.contains("registers[0].register_type: 'float16' is not one of int16")),
+        "{issues:?}"
+    );
     for (text, expected) in cases {
         let doc = doc_of(&text);
         let err = plan_import(&s, &doc, Mode::Merge).await.unwrap_err();
