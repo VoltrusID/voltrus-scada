@@ -28,7 +28,21 @@ fn expression_of(cfg: &serde_json::Value) -> Option<&str> {
 /// Whether tags of this `source_type` are read from a device by a poller,
 /// as opposed to simulated or pushed through the API.
 pub fn is_device_source_type(source_type: &str) -> bool {
-    matches!(source_type, "modbus" | "s7" | "opcua" | "enip")
+    matches!(
+        source_type,
+        "modbus" | "s7" | "opcua" | "enip" | "ethernet_ip"
+    )
+}
+
+/// The cache prefix of a protocol whose poller fills the cache under
+/// `<prefix>_<device id>`.
+fn protocol_prefix(source_type: &str) -> Option<&'static str> {
+    match source_type {
+        "s7" => Some("s7"),
+        "opcua" => Some("opcua"),
+        "enip" | "ethernet_ip" => Some("enip"),
+        _ => None,
+    }
 }
 
 /// Where a device tag's value lives in the cache: the cache's device id and
@@ -36,40 +50,46 @@ pub fn is_device_source_type(source_type: &str) -> bool {
 ///
 /// Modbus tags name the cache device directly and key their metric as
 /// `<device>.<metric>` (or just `<metric>`). The S7, OPC UA and EtherNet/IP
-/// managers create their tags with the numeric device id and the key
-/// `[s7_]<device name>:<tag name>`, while their pollers fill the cache under
-/// `<protocol>_<id>` with the tag name as the metric.
-pub fn cache_location(ds: &DataSource) -> Option<(String, &str)> {
-    match ds.source_type.as_str() {
-        "modbus" => Some((
+/// pollers fill the cache under `<protocol>_<id>` with the tag's name as the
+/// metric. Their data sources carry the numeric device id; the tag name is
+/// `source_config.tag` (written when the tag is created, backfilled at start),
+/// else what follows the first `:` of the key `[s7_]<device name>:<tag name>`,
+/// else the whole key (a tag made through the generic API).
+pub fn cache_location(ds: &DataSource) -> Option<(String, String)> {
+    if ds.source_type == "modbus" {
+        return Some((
             ds.device_id.clone(),
-            crate::api::data::metric_name(&ds.key, &ds.device_id),
-        )),
-        p @ ("s7" | "opcua" | "enip") => {
-            let (_, metric) = ds.key.split_once(':')?;
-            let prefix = format!("{p}_");
-            let device = if ds.device_id.starts_with(&prefix) {
-                ds.device_id.clone()
-            } else {
-                format!("{prefix}{}", ds.device_id)
-            };
-            Some((device, metric))
-        }
-        _ => None,
+            crate::api::data::metric_name(&ds.key, &ds.device_id).to_string(),
+        ));
     }
+    let prefix = format!("{}_", protocol_prefix(&ds.source_type)?);
+    let device = if ds.device_id.starts_with(&prefix) {
+        ds.device_id.clone()
+    } else {
+        format!("{prefix}{}", ds.device_id)
+    };
+    let metric = source_config(ds)
+        .get("tag")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| match ds.key.split_once(':') {
+            Some((_, name)) => name.to_string(),
+            None => ds.key.clone(),
+        });
+    Some((device, metric))
 }
 
 /// The cache device id and metric a tag is read under: [`cache_location`]
 /// for a device tag, otherwise the tag's own device id and key, as every
 /// other tag kind has always been looked up.
 pub fn cache_ref(ds: &DataSource) -> (String, String) {
-    match cache_location(ds) {
-        Some((device, metric)) => (device, metric.to_string()),
-        None => (
+    cache_location(ds).unwrap_or_else(|| {
+        (
             ds.device_id.clone(),
             crate::api::data::metric_name(&ds.key, &ds.device_id).to_string(),
-        ),
-    }
+        )
+    })
 }
 
 /// The value of a device tag (see [`is_device_source_type`]) from the
@@ -79,6 +99,7 @@ pub fn cache_ref(ds: &DataSource) -> (String, String) {
 pub fn resolve(ds: &DataSource, snapshots: &[DeviceSnapshot]) -> Option<TagValue> {
     let (device, metric) = cache_location(ds)?;
     let snap = snapshots.iter().find(|s| s.device_id == device)?;
+    let metric = metric.as_str();
     if snap.status != DeviceStatus::Online {
         return Some(TagValue {
             value: f64::NAN,
@@ -375,7 +396,7 @@ mod tests {
             let tag = protocol_tag(source_type, key, "3", 0.0);
             assert_eq!(
                 cache_location(&tag),
-                Some((cache_device.to_string(), "Temp")),
+                Some((cache_device.to_string(), "Temp".to_string())),
                 "{source_type}"
             );
             let value = resolve(&tag, &[poller_snap(cache_device, &[("Temp", 42.0)], true)]);
@@ -416,5 +437,40 @@ mod tests {
         assert_eq!(cache_location(&tag), None);
         assert!(!is_device_source_type("random_walk"));
         assert_eq!(cache_ref(&tag), ("plc".to_string(), "x".to_string()));
+    }
+
+    #[test]
+    fn the_recorded_tag_name_wins_over_the_key() {
+        // A device named after its address: the key has two ':'.
+        let mut tag = protocol_tag("s7", "s7_10.0.0.5:102:temp", "3", 0.0);
+        assert_eq!(
+            cache_location(&tag),
+            Some(("s7_3".to_string(), "102:temp".to_string()))
+        );
+        tag.source_config = serde_json::json!({"tag": "temp"}).to_string();
+        assert_eq!(
+            cache_location(&tag),
+            Some(("s7_3".to_string(), "temp".to_string()))
+        );
+    }
+
+    #[test]
+    fn a_protocol_tag_without_a_colon_uses_its_key_on_its_protocol_device() {
+        let tag = protocol_tag("s7", "temp", "3", 0.0);
+        assert_eq!(
+            cache_location(&tag),
+            Some(("s7_3".to_string(), "temp".to_string()))
+        );
+        assert_eq!(cache_ref(&tag), ("s7_3".to_string(), "temp".to_string()));
+    }
+
+    #[test]
+    fn ethernet_ip_is_the_enip_poller() {
+        let tag = protocol_tag("ethernet_ip", "Line1:Count", "4", 0.0);
+        assert!(is_device_source_type("ethernet_ip"));
+        assert_eq!(
+            cache_location(&tag),
+            Some(("enip_4".to_string(), "Count".to_string()))
+        );
     }
 }

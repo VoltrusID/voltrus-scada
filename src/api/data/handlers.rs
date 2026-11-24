@@ -99,7 +99,7 @@ pub async fn get_history(
         if expression_of(ds).is_some() {
             *entry = None;
         } else if let Some(set) = entry {
-            set.insert(metric.to_string());
+            set.insert(metric);
         }
     }
     let mut device_data: std::collections::HashMap<String, Series> =
@@ -149,14 +149,14 @@ pub async fn get_history(
             let (points, band) = if let Some(expr_str) = expression_of(data_source) {
                 history::expression_points(&expr_str, series, plan.mode)
             } else {
-                match series.get(metric) {
+                match series.get(metric.as_str()) {
                     Some(buckets) => history::tag_points(buckets, plan.mode),
                     None => (Vec::new(), None),
                 }
             };
             // Sampling leaves samples out when a bucket held more than one.
             let downsampled = plan.mode == history::Mode::Sampling
-                && match series.get(metric) {
+                && match series.get(metric.as_str()) {
                     Some(buckets) => buckets.iter().any(|b| b.count > 1),
                     None => false,
                 };
