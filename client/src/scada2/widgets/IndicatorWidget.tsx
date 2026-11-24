@@ -1,6 +1,7 @@
 import React from 'react'
 import { registerWidget, WIDGET_MANIFESTS } from './registry'
 import type { WidgetProps } from './types'
+import { valueStyle as styleOfValue } from '../../valueStyle'
 
 const IndicatorWidget: React.FC<WidgetProps> = (props) => {
   const { instance, sensor, data } = props
@@ -12,23 +13,14 @@ const IndicatorWidget: React.FC<WidgetProps> = (props) => {
   const decimals = sensor?.decimals ?? 1
   const value = data?.value
   const unit = sensor?.unit ?? ''
-  const status = data?.status ?? ''
+  const vs = styleOfValue(data)
 
   const hasValue = value !== undefined && value !== null
 
   const displayValue = hasValue ? value.toFixed(decimals) : '--'
 
-  const statusColor = status === 'crit'
-    ? 'var(--crit)'
-    : status === 'warn'
-      ? 'var(--warn)'
-      : 'var(--ok)'
-
-  const statusLabel = status === 'crit'
-    ? 'CRIT'
-    : status === 'warn'
-      ? 'WARN'
-      : 'OK'
+  const statusColor = vs.color ?? 'var(--ok)'
+  const statusLabel = vs.state === 'normal' ? 'OK' : vs.label
 
   const containerStyle: React.CSSProperties = {
     display: 'flex',

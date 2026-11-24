@@ -1,6 +1,7 @@
 import React from 'react'
 import { registerWidget, WIDGET_MANIFESTS } from './registry'
 import type { WidgetProps } from './types'
+import { valueStyle } from '../../valueStyle'
 
 const DataTableWidget: React.FC<WidgetProps> = ({ instance, sensors, currentValues }) => {
   const config = instance.config ?? {}
@@ -34,10 +35,7 @@ const DataTableWidget: React.FC<WidgetProps> = ({ instance, sensors, currentValu
   const cellPad = compact ? '3px 6px' : '5px 8px'
   const fontSize = compact ? 11 : 12
 
-  const statusDot = (status: string) => {
-    const c = status === 'crit' ? 'var(--crit)' : status === 'warn' ? 'var(--warn)' : 'var(--ok)'
-    return { width: 6, height: 6, borderRadius: '50%', background: c, flexShrink: 0 }
-  }
+  const statusDot = (c: string) => ({ width: 6, height: 6, borderRadius: '50%', background: c, flexShrink: 0 })
 
   return (
     <div style={{
@@ -59,15 +57,15 @@ const DataTableWidget: React.FC<WidgetProps> = ({ instance, sensors, currentValu
           {rows.map(({ sensor, data }) => {
             if (!sensor) return null
             const value = data?.value
-            const status = data?.status ?? ''
+            const vs = valueStyle(data)
             const decimals = sensor.decimals ?? 1
-            const statusColor = status === 'crit' ? 'var(--crit)' : status === 'warn' ? 'var(--warn)' : 'var(--fg)'
+            const statusColor = vs.color ?? 'var(--fg)'
 
             return (
               <tr key={sensor.id}>
                 {showStatus && (
                   <td style={{ padding: cellPad, borderBottom: '1px solid var(--border)' }}>
-                    <div style={statusDot(status)} />
+                    <div style={statusDot(vs.color ?? 'var(--ok)')} title={vs.title || undefined} />
                   </td>
                 )}
                 <td style={{
@@ -82,6 +80,7 @@ const DataTableWidget: React.FC<WidgetProps> = ({ instance, sensors, currentValu
                   textAlign: 'right', color: statusColor, fontWeight: 500,
                   whiteSpace: 'nowrap',
                 }}>
+                  {vs.marker && <span aria-label={vs.label} style={{ marginRight: 3 }}>{vs.marker}</span>}
                   {value !== undefined ? value.toFixed(decimals) : '--'}
                   {sensor.unit ? <span style={{ color: 'var(--muted)', marginLeft: 3, fontSize: fontSize - 1 }}>{sensor.unit}</span> : null}
                 </td>

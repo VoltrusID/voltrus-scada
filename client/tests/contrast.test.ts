@@ -64,3 +64,14 @@ test('text on accent and status fills (--on-accent) reaches 4.5:1 in both themes
     }
   }
 })
+
+test('value state colours (valueStyle.ts) read at 4.5:1 on background and cards', () => {
+  for (const [name, t] of [['dark', dark], ['light', light]] as const) {
+    for (const fg of ['--crit', '--warn', '--hmi-stale', '--text-muted']) {
+      for (const bg of ['--bg', '--card']) {
+        const r = contrast(t[fg], t[bg])
+        assert.ok(r >= 4.5, `${name} ${fg} ${t[fg]} on ${bg} ${t[bg]}: ${r.toFixed(2)}`)
+      }
+    }
+  }
+})
