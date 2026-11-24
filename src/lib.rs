@@ -11,6 +11,7 @@
 #![allow(clippy::should_implement_trait)]
 
 pub mod ai_copilot;
+pub mod alarm_chatter;
 pub mod alarm_delay;
 pub mod alarm_eval;
 pub mod analytics;

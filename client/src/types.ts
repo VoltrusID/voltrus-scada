@@ -155,6 +155,23 @@ export interface AlarmAnalyticsEntry {
   trigger_count: number
   avg_time_to_ack_secs: number
   last_triggered_at: number
+  /** Most alarms raised in one clock hour in the range (servers from v0.53). */
+  max_per_hour?: number
+  /** max_per_hour reached the chatter threshold (5 per hour). */
+  chattering?: boolean
+}
+
+/** `GET /api/v1/data-sources/{id}/alarm-suggestion`. */
+export interface AlarmSuggestion {
+  on_delay_secs: number
+  deadband?: number
+  reason: string
+  analog: boolean
+  noise?: number
+  samples: number
+  alarms_last_hour: number
+  max_alarms_per_hour: number
+  chattering: boolean
 }
 
 export interface ModbusDevice {

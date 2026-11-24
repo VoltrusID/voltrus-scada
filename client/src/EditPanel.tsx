@@ -5,9 +5,29 @@ import { inputStyle, monoInputStyle, labelStyle, labelTextStyle, tabStyle, parse
 import { SourceConfigFields } from './SourceConfigFields';
 import { HistoryDeadbandFields } from './components/HistoryDeadbandFields';
 import { highLimits } from './quality';
+import { fetchJson } from './queries/fetch';
+import type { AlarmSuggestion } from './types';
+import { prefillOnDelay } from './alarmSuggestion';
 
 export function EditPanel({ sensor, activeScreen, onSave, onDelete, onClose, shortcuts }: { sensor: SensorConfig; activeScreen: string; onSave: (s: SensorConfig, shortcut?: string | null) => void; onDelete: (id: number) => void; onClose: () => void; shortcuts: Record<number, string> }) {
   const [form, setForm] = useState(sensor);
+  const [suggestion, setSuggestion] = useState<AlarmSuggestion | null>(null);
+  const [prefilled, setPrefilled] = useState(false);
+  // A starting on-delay from the tag's recent noise and alarm rate; pre-filled
+  // only when alarm limits are set and the delay is still 0.
+  useEffect(() => {
+    let cancelled = false;
+    fetchJson<AlarmSuggestion>(`/api/v1/data-sources/${sensor.id}/alarm-suggestion`).then(sg => {
+      if (cancelled) return;
+      setSuggestion(sg);
+      const next = prefillOnDelay(sensor, sg);
+      if (next != null) {
+        setForm(f => (f.on_delay_secs ? f : { ...f, on_delay_secs: next }));
+        setPrefilled(true);
+      }
+    }).catch(() => { /* older server or no access: no suggestion */ });
+    return () => { cancelled = true; };
+  }, [sensor]);
   const [tab, setTab] = useState<'general' | 'source'>('general');
   const [histErrors, setHistErrors] = useState<string[]>([]);
   const [srcConfig, setSrcConfig] = useState<Record<string, any>>(() => {
@@ -94,6 +114,34 @@ export function EditPanel({ sensor, activeScreen, onSave, onDelete, onClose, sho
                   <label style={labelStyle}><span style={labelTextStyle}>on delay (s)</span><input type="number" min="0" step="1" value={form.on_delay_secs ?? 0} onChange={e => setForm({ ...form, on_delay_secs: parseFloat(e.target.value) || 0 })} placeholder="0" style={monoInputStyle} /></label>
                   <label style={labelStyle}><span style={labelTextStyle}>off delay (s)</span><input type="number" min="0" step="1" value={form.off_delay_secs ?? 0} onChange={e => setForm({ ...form, off_delay_secs: parseFloat(e.target.value) || 0 })} placeholder="0" style={monoInputStyle} /></label>
                 </div>
+                {suggestion && (
+                  <div role="note" style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.45 }}>
+                    {suggestion.chattering && (
+                      <div style={{ color: 'var(--warn)', fontWeight: 600 }}>
+                        Chattering: raised {suggestion.max_alarms_per_hour} times in one hour in the last day ({suggestion.alarms_last_hour} in the last hour).
+                      </div>
+                    )}
+                    {!suggestion.chattering && suggestion.max_alarms_per_hour > 0 && (
+                      <div>Raised up to {suggestion.max_alarms_per_hour} times per hour in the last day ({suggestion.alarms_last_hour} in the last hour).</div>
+                    )}
+                    <div>
+                      Suggested on delay: <strong style={{ color: 'var(--fg)' }}>{suggestion.on_delay_secs} s</strong>
+                      {suggestion.deadband != null && <> and alarm deadband <strong style={{ color: 'var(--fg)' }}>{suggestion.deadband}</strong></>}. {suggestion.reason}
+                      {prefilled && form.on_delay_secs === suggestion.on_delay_secs && <> Pre-filled; saved only when you save.</>}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+                      {form.on_delay_secs !== suggestion.on_delay_secs && (
+                        <button type="button" onClick={() => setForm({ ...form, on_delay_secs: suggestion.on_delay_secs })} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer' }}>Use {suggestion.on_delay_secs} s</button>
+                      )}
+                      {suggestion.deadband != null && srcConfig.deadband !== suggestion.deadband && (
+                        <button type="button" onClick={() => setSrcConfig(c => ({ ...c, deadband: suggestion.deadband }))} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer' }}>Use deadband {suggestion.deadband}</button>
+                      )}
+                      {prefilled && form.on_delay_secs !== 0 && (
+                        <button type="button" onClick={() => setForm({ ...form, on_delay_secs: 0 })} style={{ fontSize: 11, padding: '2px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer' }}>No delay</button>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             <label style={labelStyle}><span style={labelTextStyle}>color</span><input type="color" value={form.color} onChange={e => setForm({ ...form, color: e.target.value })} style={{ height: 32, padding: 2, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 6 }} /></label>

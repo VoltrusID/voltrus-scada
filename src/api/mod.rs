@@ -858,6 +858,10 @@ pub fn create_router(state: AppState) -> Router {
             get(layouts::get_scada_connections),
         )
         .route("/api/v1/data-sources", get(data_sources::list_data_sources))
+        .route(
+            "/api/v1/data-sources/{id}/alarm-suggestion",
+            get(data_sources::alarm_suggestion),
+        )
         .route("/api/v1/tags/tree", get(tag_tree::get_tag_tree))
         .route("/api/v1/shortcuts", get(shortcuts::get_shortcuts))
         .route("/api/v1/nav-shortcuts", get(shortcuts::get_nav_shortcuts))

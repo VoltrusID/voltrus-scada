@@ -167,3 +167,54 @@ pub async fn reorder_data_sources(
     state.storage.reorder_data_sources(&order).await?;
     Ok(Json(json!({"ok": true})))
 }
+
+/// GET /api/v1/data-sources/{id}/alarm-suggestion — a starting on-delay (and
+/// alarm deadband) for the tag from its noise over the last 30 minutes and
+/// how often its alarm was raised per hour over the last day. Nothing is changed.
+#[utoipa::path(
+    get,
+    path = "/api/v1/data-sources/{id}/alarm-suggestion",
+    params(("id" = i64, Path, description = "Data source ID")),
+    responses(
+        (status = 200, body = crate::alarm_chatter::AlarmSuggestion),
+        (status = 404),
+    ),
+    tag = "Data Sources",
+    security(("api_key" = []), ("cookie_auth" = []))
+)]
+pub async fn alarm_suggestion(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Result<Response<Body>, AppError> {
+    let Some(ds) = state.storage.get_data_source_by_id(id).await? else {
+        return Err(AppError::not_found(format!("data source {id} not found")));
+    };
+    let now = crate::timeutil::now_secs();
+    let (device, metric) = crate::alarm_eval::cache_ref(&ds);
+    let values: Vec<f64> = state
+        .storage
+        .query_history(&device, &metric, now - 1800, now)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.value)
+        .collect();
+    let times = state
+        .storage
+        .alarm_trigger_times(&ds.key, now - 86_400)
+        .await?;
+    let deadband = serde_json::from_str::<serde_json::Value>(&ds.source_config)
+        .ok()
+        .and_then(|c| c["deadband"].as_f64())
+        .unwrap_or(0.0);
+    let suggestion = crate::alarm_chatter::suggest(&crate::alarm_chatter::TagFacts {
+        min_val: ds.min_val,
+        max_val: ds.max_val,
+        decimals: ds.decimals,
+        deadband,
+        values: &values,
+        alarms_last_hour: times.iter().filter(|t| **t >= now - 3600).count() as i64,
+        max_alarms_per_hour: crate::alarm_chatter::max_per_hour(&times),
+    });
+    Ok(Json(suggestion).into_response())
+}

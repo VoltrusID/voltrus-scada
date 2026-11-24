@@ -319,9 +319,20 @@ function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
               }} />
             </div>
           </div>
+          {entry.chattering && (
+            <span title={`Raised up to ${entry.max_per_hour} times in one hour. Raise the tag's on delay or alarm deadband (the tag editor suggests values).`} style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: '.05em', padding: '1px 5px', borderRadius: 3,
+              color: 'var(--warn)', border: '1px solid var(--warn)', whiteSpace: 'nowrap',
+            }}>CHATTER {entry.max_per_hour}/h</span>
+          )}
           <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--cyan)', minWidth: 28, textAlign: 'right' }}>{entry.trigger_count}</span>
         </div>
       ))}
+      {top10.some(e => e.chattering) && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+          CHATTER: the alarm was raised 5 or more times in one hour. Open the tag and raise its on delay or alarm deadband; the editor suggests values from the tag's recent noise.
+        </div>
+      )}
     </div>
   )
 }

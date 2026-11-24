@@ -82,6 +82,13 @@ pub struct AlarmAnalyticsEntry {
     pub trigger_count: i64,
     pub avg_time_to_ack_secs: f64,
     pub last_triggered_at: i64,
+    /// Most alarms of this tag raised in one clock hour within the range.
+    #[serde(default)]
+    pub max_per_hour: i64,
+    /// `max_per_hour` reached `alarm_chatter::CHATTER_PER_HOUR`: a delay or a
+    /// wider deadband is likely missing.
+    #[serde(default)]
+    pub chattering: bool,
 }
 
 /// Append-only journal row for one alarm lifecycle event (ISA-18.2):

@@ -162,6 +162,7 @@ use utoipa::{Modify, OpenApi};
         crate::api::data_sources::update_data_source,
         crate::api::data_sources::delete_data_source,
         crate::api::data_sources::reorder_data_sources,
+        crate::api::data_sources::alarm_suggestion,
         // Tag tree
         crate::api::tag_tree::get_tag_tree,
         crate::api::tag_tree::update_tag_path,

@@ -151,3 +151,98 @@ async fn an_unknown_alarm_pushes_nothing() {
     assert_eq!(status, StatusCode::OK);
     assert!(updates(&mut rx).is_empty());
 }
+
+/// A tag whose alarm was raised six times in an hour is reported as chattering
+/// in alarm analytics, and the tag editor's suggestion asks for a longer
+/// on-delay.
+#[tokio::test]
+async fn chattering_alarms_are_counted_and_get_a_longer_on_delay() {
+    let state = seeded_admin_app_state().await;
+    let storage = state.storage.clone();
+    let app = create_router(state);
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+
+    let (status, created) = send_request(
+        &app,
+        "POST",
+        "/api/v1/data-sources",
+        None,
+        Some(&cookie),
+        Some(serde_json::json!({"key": "turbidity", "name": "Turbidity", "min_val": 0, "max_val": 50, "warn_val": 18})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let id = created["id"].as_i64().unwrap();
+
+    // No history and no alarms: the analog default.
+    let (status, s) = send_request(
+        &app,
+        "GET",
+        &format!("/api/v1/data-sources/{id}/alarm-suggestion"),
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{s}");
+    assert_eq!(
+        s["on_delay_secs"],
+        crate::alarm_chatter::DEFAULT_ANALOG_ON_DELAY_SECS
+    );
+    assert_eq!(s["chattering"], false);
+
+    for _ in 0..6 {
+        storage
+            .create_alarm("turbidity", "warning", 18.2, 18.0, "high", 0.5)
+            .await
+            .unwrap();
+    }
+
+    let (_, s) = send_request(
+        &app,
+        "GET",
+        &format!("/api/v1/data-sources/{id}/alarm-suggestion"),
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(s["alarms_last_hour"], 6, "{s}");
+    assert_eq!(s["max_alarms_per_hour"], 6);
+    assert_eq!(s["chattering"], true);
+    assert_eq!(
+        s["on_delay_secs"],
+        crate::alarm_chatter::CHATTERING_ON_DELAY_SECS
+    );
+
+    let (status, list) = send_request(
+        &app,
+        "GET",
+        "/api/v1/alarms/analytics",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["source_key"] == "turbidity")
+        .unwrap();
+    assert_eq!(row["trigger_count"], 6);
+    assert_eq!(row["max_per_hour"], 6);
+    assert_eq!(row["chattering"], true);
+
+    let (status, _) = send_request(
+        &app,
+        "GET",
+        "/api/v1/data-sources/99999/alarm-suggestion",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
