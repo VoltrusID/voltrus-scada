@@ -1,0 +1,8 @@
+# Configuration of the Voltrus container (docs/docker.md). On first start the
+# entrypoint copies this file to /data/config.yaml with a random auth_secret;
+# edit that copy (it lives in the /data volume) to change settings. Devices,
+# tags and screens are configured in the web UI, over the API or with a
+# project file, and stored in /data/voltrus.db.
+server_port: 3000
+db_path: "/data/voltrus.db"
+persist_interval_secs: 5
