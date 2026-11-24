@@ -2,10 +2,16 @@ import React, { useMemo, useState, useEffect, useRef } from 'react'
 import { SensorConfig, SOURCE_CATEGORY } from './types'
 import { Chart } from './Chart'
 import { valueStyle, framesWidget } from './valueStyle'
+import { openTrend } from './trend/TrendPopup'
 import { parseConfig } from './styles'
 import { useSensorCurrentValue, useChartValues } from './store/dashboardStore'
 import { useRemoveSensorFromScreen } from './queries'
 import { useInView } from './hooks/useInView'
+
+/** The live value is a button: it opens the trend popup for the tag. */
+const valueButton = (color: string | undefined): React.CSSProperties => ({
+  color, font: 'inherit', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left',
+})
 
 const useIsSmallScreen = () => {
   const [small, setSmall] = useState(window.innerWidth <= 480)
@@ -117,7 +123,7 @@ export const SensorCard = React.memo(function SensorCard({
             background: stateTint, color: stateColor }}>{st}</div>
         </div>
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 28, fontWeight: 700, lineHeight: 1.2 }}>
-          <span title={qLabel || undefined} style={{ color: valueColor }}>{formattedValue}</span>{qualityMark}
+          <button type="button" onClick={e => { e.stopPropagation(); openTrend(s.id) }} title={qLabel ? `${qLabel}. Open the trend` : 'Open the trend'} aria-label={`Trend of ${s.name}`} style={valueButton(valueColor)}>{formattedValue}</button>{qualityMark}
           <span style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 400, marginLeft: 4 }}>{s.unit}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 10, color: 'var(--muted)' }}>
@@ -205,7 +211,7 @@ export const SensorCard = React.memo(function SensorCard({
       )}
       {!hideStatus && (
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 24, fontWeight: 700, padding: '0 14px', lineHeight: 1.3 }}>
-          <span title={qLabel || undefined} style={{ color: valueColor }}>{formattedValue}</span>{qualityMark}
+          <button type="button" onClick={e => { e.stopPropagation(); openTrend(s.id) }} title={qLabel ? `${qLabel}. Open the trend` : 'Open the trend'} aria-label={`Trend of ${s.name}`} style={valueButton(valueColor)}>{formattedValue}</button>{qualityMark}
           <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 500, marginLeft: 4 }}>{s.unit}</span>
         </div>
       )}

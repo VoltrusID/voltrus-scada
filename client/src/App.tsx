@@ -9,6 +9,7 @@ import { ConfirmDialog, PromptDialog } from './ScreenDialog'
 import { useAlarmAudio } from './useAlarmAudio'
 import { AppHeader } from './components/AppHeader'
 import { ToastContainer } from './components/Toast'
+import { TrendPopup } from './trend/TrendPopup'
 import { ViewToolbar } from './components/ViewToolbar'
 import { LayoutBreakpointSelector } from './components/LayoutBreakpointSelector'
 import { Footer } from './components/Footer'
@@ -726,6 +727,7 @@ export function AppInner() {
 
       <Footer activeAlarmCount={activeAlarms.count} alarmsUnavailable={alarmsUnavailable} viewMode={viewMode} activeScreen={activeScreen} screens={screens} />
       <ToastContainer />
+      <TrendPopup sensors={sensors} />
       <SignatureDialog username={authUser} />
       {/* router outlet (child route components render null; AppInner owns all chrome) */}
       <span style={{ display: 'none' }}><Outlet /></span>

@@ -106,7 +106,7 @@ export default function WidgetShell({
         {...(!editMode && activatable ? {
           role: 'button',
           tabIndex: 0,
-          'aria-label': `${sensor?.name ?? instance.type}: open faceplate`,
+          'aria-label': `${sensor?.name ?? instance.type}: open faceplate or trend`,
           'aria-pressed': selected,
           onKeyDown: (e: React.KeyboardEvent) => {
             if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return

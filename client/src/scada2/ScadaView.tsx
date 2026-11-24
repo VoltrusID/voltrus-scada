@@ -13,6 +13,7 @@ import { Faceplate } from './hmi/Faceplate'
 import { MappedFaceplate } from './hmi/MappedFaceplate'
 import { faceplateOf } from './hmi/faceplateMap'
 import { useFaceplates } from '../queries/scada'
+import { openTrend } from '../trend/TrendPopup'
 import { AlarmBanner } from './AlarmBanner'
 import type { SensorConfig, SensorData, ScadaEquipmentItem, ScadaConnectionItem } from '../types'
 import { wsWriteTagResult } from '../api/websocket'
@@ -72,6 +73,9 @@ const FACEPLATE_TYPES = new Set<ScadaWidgetType>([
   ...EQUIPMENT_TYPES, 'gauge', 'indicator', 'bar', 'status_light', 'big_number', 'meter', 'semicircle_gauge', 'donut',
   'led_display', 'trend', 'progress_bar', 'on_off',
 ])
+
+// Operator controls keep their own clicks; other bound widgets open the trend popup.
+const CONTROL_TYPES = new Set<ScadaWidgetType>(['slider', 'number_input', 'toggle', 'push_button', 'pid_faceplate', 'annunciator', 'data_table', 'area', 'label', 'pipe'])
 
 /** Clicking the widget at runtime opens a faceplate: its own definition, or the built-in one for its tag. */
 const opensFaceplate = (w: WidgetInstance) => faceplateOf(w.config) != null || (w.sensorId != null && FACEPLATE_TYPES.has(w.type))
@@ -471,12 +475,13 @@ export const ScadaView: React.FC<Props> = ({
             onSelectWidget={editMode ? handleSelectWidget : (id => {
               const w = layout.widgets.find(x => x.id === id)
               if (w && opensFaceplate(w)) setFaceplateId(cur => (cur === id ? null : id))
+              else if (w && w.sensorId != null && !CONTROL_TYPES.has(w.type)) openTrend(w.sensorId)
             })}
             onMoveWidget={(id, x, y) => dispatch({ type: 'MOVE_WIDGET', id, x, y })}
             onResizeWidget={(id, x, y, width, height) => dispatch({ type: 'RESIZE_WIDGET', id, x, y, width, height })}
             onDrop={handleDrop}
             onWriteValue={canOperate ? handleWriteValue : undefined}
-            isActivatable={opensFaceplate}
+            isActivatable={w => opensFaceplate(w) || (w.sensorId != null && !CONTROL_TYPES.has(w.type))}
             onClickEmpty={() => { setSelection(null); setConnectFrom(null); setFaceplateId(null) }}
             onPointerMove={editMode && connectFrom ? (x, y) => setPointer({ x, y }) : undefined}
           >
@@ -497,7 +502,7 @@ export const ScadaView: React.FC<Props> = ({
               title={faceplateWidget.config?.label || sensors.find(s => s.id === faceplateWidget.sensorId)?.name || mapped.def.name}
               sensors={sensors}
               onCommand={sendCommand}
-              onOpenDetail={onSensorClick}
+              onOpenDetail={openTrend}
               onClose={() => setFaceplateId(null)}
               canOperate={canOperate}
             />

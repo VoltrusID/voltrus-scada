@@ -41,6 +41,31 @@ reaches 4.5:1 contrast on the background and on cards (`tests/contrast.test.ts`)
 Limits: add-on widgets drawn by an edition (not the core widgets) decide their own
 look; the 3D twin does not use the map.
 
+## Trend popup
+
+Clicking a live value opens a trend of that tag in a popup:
+
+* on a dashboard card, the value itself (the rest of the card still opens the
+  tag's detail page);
+* on a 2D SCADA screen at runtime, any bound widget that has no faceplate and is
+  not an operator control (sliders, toggles, number inputs and push buttons keep
+  their own clicks), and every analog value inside a faceplate;
+* in the tag list (Data Manager › Tags), the **trend** button of a row.
+
+The popup shows 15 minutes, 1, 8 or 24 hours of history
+(`GET /api/v1/history?sensor=<keys>&keyed_by=id`, refreshed every 10 s). **+ Add
+pen** adds any other tag, up to six; clicking another value while the popup is open
+also adds it. Each pen has its own y axis, drawn in the pen's colour at the left,
+autoscaled to that pen's data with an 8 % margin, so a 0-5 bar pressure and a
+1000-2000 m³/h flow are both readable on one chart. A flat line is centred, and a
+digital pen (only 0 and 1) is drawn on a fixed 0-1 axis. The legend shows each
+pen's last value and axis range and removes a pen with ×. Esc or a click outside
+closes the popup.
+
+Limits: the popup does not zoom or pan and shows the history resolution the
+server returns for the range; the full detail chart (zoom, min/max band, export)
+stays on the tag's detail page.
+
 ## Tag-swap faceplates
 
 A faceplate is the popup an operator opens by clicking equipment on a 2D SCADA

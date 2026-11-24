@@ -1,3 +1,4 @@
+import { openTrend } from './trend/TrendPopup'
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { SensorConfig, SOURCE_TYPES, CHART_TYPES, SOURCE_CATEGORY } from './types';
 import { inputStyle, monoInputStyle, btnStyle, parseConfig, normalizeKeyEvent, displayShortcut } from './styles';
@@ -319,6 +320,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
         </td>
         <td style={{ ...tdStyle, whiteSpace: 'nowrap' }} onMouseDown={e => e.stopPropagation()}>
           <div style={{ display: 'flex', gap: 3 }}>
+            <button onClick={() => openTrend(s.id)} aria-label={`Trend ${s.name}`} style={{ padding: '2px 6px', borderRadius: 3, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 10 }}>trend</button>
             <button onClick={() => onDuplicate(s)} aria-label={`Duplicate ${s.name}`} style={{ padding: '2px 6px', borderRadius: 3, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 10 }}>dup</button>
             <button onClick={() => { if (confirm(`Delete ${s.name}?`)) onDelete(s.id); }} aria-label={`Delete ${s.name}`} style={{ padding: '2px 6px', borderRadius: 3, border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)', cursor: 'pointer', fontSize: 10 }}>del</button>
           </div>
