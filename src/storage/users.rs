@@ -1,5 +1,6 @@
 use super::Storage;
 use anyhow::{Context, Result};
+use rusqlite::OptionalExtension;
 
 use crate::models::User;
 
@@ -17,7 +18,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(failed_attempts, 0), locked_until, COALESCE(disabled, 0) FROM users WHERE username = ?1")
+                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(disabled, 0) FROM users WHERE username = ?1")
                 .context("Prepare failed")?;
             let mut rows = stmt
                 .query_map(rusqlite::params![username], |row| {
@@ -28,9 +29,7 @@ impl Storage {
                         salt: row.get(3)?,
                         role: row.get(4)?,
                         must_change_password: row.get(5)?,
-                        failed_attempts: row.get(6)?,
-                        locked_until: row.get(7)?,
-                        disabled: row.get(8)?,
+                        disabled: row.get(6)?,
                     })
                 })
                 .context("Query failed")?;
@@ -59,7 +58,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             conn.execute(
-                "INSERT INTO users (username, password_hash, salt, role, failed_attempts, locked_until) VALUES (?1, ?2, ?3, ?4, 0, NULL)",
+                "INSERT INTO users (username, password_hash, salt, role) VALUES (?1, ?2, ?3, ?4)",
                 rusqlite::params![username, password_hash, salt, role],
             )
             .context("Insert user failed")?;
@@ -74,7 +73,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(failed_attempts, 0), locked_until, COALESCE(disabled, 0) FROM users WHERE username != ?1 ORDER BY id")
+                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(disabled, 0) FROM users WHERE username != ?1 ORDER BY id")
                 .context("Prepare failed")?;
             let rows = stmt
                 .query_map(rusqlite::params![DELETED_USER], |row| {
@@ -85,9 +84,7 @@ impl Storage {
                         salt: row.get(3)?,
                         role: row.get(4)?,
                         must_change_password: row.get(5)?,
-                        failed_attempts: row.get(6)?,
-                        locked_until: row.get(7)?,
-                        disabled: row.get(8)?,
+                        disabled: row.get(6)?,
                     })
                 })
                 .context("Query failed")?;
@@ -103,7 +100,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(failed_attempts, 0), locked_until, COALESCE(disabled, 0) FROM users WHERE id = ?1")
+                .prepare("SELECT id, username, password_hash, salt, COALESCE(role, 'user'), COALESCE(must_change_password, 0), COALESCE(disabled, 0) FROM users WHERE id = ?1")
                 .context("Prepare failed")?;
             let result = stmt
                 .query_row(rusqlite::params![id], |row| {
@@ -114,9 +111,7 @@ impl Storage {
                         salt: row.get(3)?,
                         role: row.get(4)?,
                         must_change_password: row.get(5)?,
-                        failed_attempts: row.get(6)?,
-                        locked_until: row.get(7)?,
-                        disabled: row.get(8)?,
+                        disabled: row.get(6)?,
                     })
                 })
                 .ok();
@@ -158,67 +153,32 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Set a new password (the user's own change, an admin's reset or the
+    /// CLI's): it also clears every failed sign-in count and lock of the
+    /// account, which is how an admin unlocks one.
     pub async fn update_user_password(&self, id: i64, password_hash: &str) -> Result<()> {
         let conn = self.conn.clone();
         let password_hash = password_hash.to_string();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "UPDATE users SET password_hash = ?1, must_change_password = 0, failed_attempts = 0, locked_until = NULL WHERE id = ?2",
+            let mut conn = conn.lock().unwrap();
+            let tx = conn.transaction().context("Begin update password failed")?;
+            tx.execute(
+                "UPDATE users SET password_hash = ?1, must_change_password = 0 WHERE id = ?2",
                 rusqlite::params![password_hash, id],
             )
             .context("Update user password failed")?;
-            Ok(())
-        })
-        .await
-        .context("Task join failed")?
-    }
-
-    pub async fn increment_failed_attempts(&self, username: &str) -> Result<()> {
-        let conn = self.conn.clone();
-        let username = username.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "UPDATE users SET failed_attempts = COALESCE(failed_attempts, 0) + 1 WHERE username = ?1",
-                rusqlite::params![username],
-            )
-            .context("Increment failed attempts failed")?;
-            Ok(())
-        })
-        .await
-        .context("Task join failed")?
-    }
-
-    /// Lock the account until `locked_until` and start the failure count
-    /// over, so that once the lock ends it takes another full run of wrong
-    /// passwords to lock it again (not a single one).
-    pub async fn lock_account(&self, username: &str, locked_until: i64) -> Result<()> {
-        let conn = self.conn.clone();
-        let username = username.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "UPDATE users SET locked_until = ?1, failed_attempts = 0 WHERE username = ?2",
-                rusqlite::params![locked_until, username],
-            )
-            .context("Lock account failed")?;
-            Ok(())
-        })
-        .await
-        .context("Task join failed")?
-    }
-
-    pub async fn reset_failed_attempts(&self, username: &str) -> Result<()> {
-        let conn = self.conn.clone();
-        let username = username.to_string();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            conn.execute(
-                "UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE username = ?1",
-                rusqlite::params![username],
-            )
-            .context("Reset failed attempts failed")?;
+            let username: Option<String> = tx
+                .query_row(
+                    "SELECT username FROM users WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .context("Find user failed")?;
+            if let Some(username) = username {
+                super::login_failures::clear_login_failures_sync(&tx, &username)?;
+            }
+            tx.commit().context("Commit update password failed")?;
             Ok(())
         })
         .await
@@ -493,6 +453,17 @@ impl Storage {
                     rusqlite::params![tombstone, id],
                 )
                 .context("Re-attribute handovers failed")?;
+            }
+            let username: Option<String> = tx
+                .query_row(
+                    "SELECT username FROM users WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .context("Find user failed")?;
+            if let Some(username) = username {
+                super::login_failures::clear_login_failures_sync(&tx, &username)?;
             }
             tx.execute("DELETE FROM users WHERE id = ?1", rusqlite::params![id])
                 .context("Delete user failed")?;

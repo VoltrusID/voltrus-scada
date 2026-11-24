@@ -8,6 +8,7 @@ use rusqlite::Connection;
 pub fn init_schema(conn: &Connection) -> Result<()> {
     tables::create_tables(conn).context("Failed to create tables")?;
     migrations::run_migrations(conn);
+    migrations::add_login_failures(conn).context("Failed to add the login_failures table")?;
     device_refs::repair_device_refs(conn);
     Ok(())
 }

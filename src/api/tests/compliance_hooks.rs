@@ -298,7 +298,7 @@ async fn a_write_the_edition_wants_signed_is_answered_428_then_runs_once_signed(
 }
 
 #[tokio::test]
-async fn wrong_signature_passwords_count_towards_the_lockout() {
+async fn wrong_signature_passwords_lock_signing_and_end_sessions() {
     let f = fixture(TestEdition::default()).await;
     let tag = writable_tag(&f.state).await;
     add_user(&f.state.storage, "olivia", "olivia-pass-123", "operator").await;
@@ -331,7 +331,7 @@ async fn wrong_signature_passwords_count_towards_the_lockout() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], "account_locked");
 
-    // Locked: even the right password is refused, and sign-in too.
+    // Locked: even the right password is refused.
     let (status, body) = send_request(
         &f.app,
         "POST",
@@ -343,16 +343,20 @@ async fn wrong_signature_passwords_count_towards_the_lockout() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(body["code"], "account_locked");
-    let (status, _) = send_request(
+    // Signing in again works (sign-in is counted per address, apart from
+    // signatures), but signing stays locked.
+    let olivia = cookie(&f.app, "olivia", "olivia-pass-123").await;
+    let (status, body) = send_request(
         &f.app,
         "POST",
-        "/api/v1/auth/login",
+        &uri,
         None,
-        None,
-        Some(json!({"username": "olivia", "password": "olivia-pass-123"})),
+        Some(&olivia),
+        Some(json!({"value": 30.0, "signature": signature("olivia-pass-123")})),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "the account is locked");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "account_locked");
     assert!(f.edition.records.lock().unwrap().is_empty());
 }
 
@@ -371,14 +375,11 @@ async fn a_right_signature_password_resets_the_failed_count() {
         Some(json!({"value": 30.0, "signature": signature("wrong")})),
     )
     .await;
-    let user = f
-        .state
-        .storage
-        .get_user_by_username("admin")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(user.failed_attempts, 1);
+    let source = crate::storage::SESSION_SOURCE;
+    assert_eq!(
+        f.state.storage.login_failure_count("admin", source).await,
+        1
+    );
     let (status, _) = send_request(
         &f.app,
         "POST",
@@ -389,14 +390,10 @@ async fn a_right_signature_password_resets_the_failed_count() {
     )
     .await;
     assert_eq!(status, StatusCode::ACCEPTED);
-    let user = f
-        .state
-        .storage
-        .get_user_by_username("admin")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(user.failed_attempts, 0);
+    assert_eq!(
+        f.state.storage.login_failure_count("admin", source).await,
+        0
+    );
 }
 
 #[tokio::test]

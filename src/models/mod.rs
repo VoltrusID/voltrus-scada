@@ -98,10 +98,6 @@ pub struct User {
     /// its sessions stop working at once.
     #[serde(default)]
     pub disabled: bool,
-    #[serde(skip_serializing)]
-    pub failed_attempts: i64,
-    #[serde(skip_serializing)]
-    pub locked_until: Option<i64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ToSchema)]

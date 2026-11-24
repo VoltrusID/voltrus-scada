@@ -165,16 +165,20 @@ fn record_signature<'a>(&'a self, record: &'a SignatureRecord) -> BoxFuture<'a, 
    Argon2 hash:
    * no local password (SSO/bearer identity without a users row, or empty
      hash) or a disabled account: **403** `signature_not_possible`;
-   * account locked (`locked_until` in the future): **403**
+   * signing locked for the account (see below): **403**
      `{"code": "account_locked"}`;
-   * wrong password: `failed_attempts += 1` (the counter sign-in uses), a
-     `signature_failed` security event, and **403**
+   * wrong password: one failure on the account's in-session counter (the
+     `login_failures` row `(username, "session")`, shared with the current
+     password check of change-password and kept apart from sign-in, which
+     counts per client address; it also counts towards the account-wide
+     limit), a `signature_failed` security event, and **403**
      `{"code": "signature_invalid", "signature_required": {...}}` so the
-     client prompts again. The 10th consecutive failure (sign-in and signing
-     together, `api::signature::MAX_FAILED_ATTEMPTS`) locks the account for
-     15 minutes (`LOCKOUT_SECS`), revokes all its refresh tokens and answers
-     `account_locked`. Shared demo accounts count no failures, as at sign-in;
-   * right password: `failed_attempts` is reset.
+     client prompts again. The 10th failure within 15 minutes
+     (`api::signature::MAX_FAILED_ATTEMPTS`) locks these checks for 15
+     minutes (`LOCKOUT_SECS`), revokes all the user's refresh tokens and
+     answers `account_locked`; signing in again stays possible. Shared demo
+     accounts count no failures, as at sign-in;
+   * right password: the in-session counter is reset.
 7. Core calls `record_signature` with the verified record. `Err` answers
    **500** `{"code": "signature_not_recorded"}` and the action does not run:
    a signed action never happens unrecorded. `Ok(Some(id))` is your record id.

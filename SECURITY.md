@@ -41,6 +41,13 @@ anyway if we ship a vulnerable version).
 * Change the generated admin password on first sign-in, and restrict who can
   reach the server port. Industrial networks should not be exposed to the
   internet.
+* Wrong passwords lock an account only for the address they come from (10
+  within 15 minutes); an address that fails across many accounts is locked
+  out of sign-in, and an account attacked from many addresses makes new
+  addresses wait while the user's usual ones keep working. Failures from
+  the server's own machine (loopback) don't count against the address. Set
+  `trusted_proxy` to match your reverse proxy so these limits see the real
+  client address (docs/upgrade-notes.md has the numbers).
 * To run a public demo, give the shared login the `viewer` role, list it in
   `shared_accounts` (its password and preferences can't be changed and wrong
   passwords never lock it; the per-address login limit still applies) and put

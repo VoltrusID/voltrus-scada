@@ -21,6 +21,7 @@ mod flows;
 mod historian;
 mod hub;
 mod license_storage;
+mod login_failures;
 #[cfg(feature = "modbus")]
 mod modbus_storage;
 mod notifications;
@@ -48,6 +49,11 @@ mod settings_shortcuts;
 #[cfg(test)]
 mod tests;
 mod users;
+pub use login_failures::{
+    ACCOUNT_BACKOFF_SECS, ACCOUNT_MAX_FAILURES, FAILURE_WINDOW_SECS, FailureOutcome,
+    KNOWN_SOURCE_SECS, LoginAttempt, LoginBlock, PAIR_LOCK_SECS, PAIR_MAX_FAILURES, SESSION_SOURCE,
+    SOURCE_LOCK_SECS, SOURCE_MAX_FAILURES,
+};
 pub use settings_audit::AuditChainReport;
 pub use settings_seed::{
     INITIAL_ADMIN_PASSWORD_FILE, initial_admin_password_path, remove_initial_admin_password,
