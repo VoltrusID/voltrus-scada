@@ -43,14 +43,10 @@ pub async fn login(
         ));
     let source_ip = Some(client_ip.clone());
     let user_agent = extract_user_agent(&headers);
-    // A shared account's per-username limit is kept per address, or one
-    // visitor typing wrong passwords would shut everyone else out of it.
     let listed_shared = state.public_demo.is_listed(&body.username);
-    let rate_key_user = if listed_shared {
-        format!("login:{}@{}", body.username, client_ip)
-    } else {
-        format!("login:{}", body.username)
-    };
+    // The in-memory per-username limit is kept per address, or one address
+    // typing wrong passwords would shut everyone else out of the account.
+    let rate_key_user = format!("login:{}@{}", body.username, client_ip);
 
     // Check username-based rate limit
     if !state.login_rate_limiter.is_allowed(&rate_key_user) {
@@ -66,84 +62,102 @@ pub async fn login(
 
     // Perform login logic
     let user = state.storage.get_user_by_username(&body.username).await?;
-    let (response_status, response_json, new_jar) = match user {
-        Some(user) => {
-            let shared = state.public_demo.is_shared(&user.username, &user.role);
-            if listed_shared && !shared {
-                tracing::warn!(
-                    "shared_accounts lists '{}', but it is an admin account: not treated as shared",
-                    user.username
-                );
-            }
-            // Check account lockout (a shared account is never locked)
-            let now_secs = crate::timeutil::now_secs();
-            if let Some(locked_until) = user.locked_until.filter(|_| !shared) {
-                if locked_until > now_secs {
-                    let _ = state
-                        .storage
-                        .insert_security_event(&crate::models::CreateSecurityEvent {
-                            event_type: "login_locked".into(),
-                            severity: "warning".into(),
-                            source_ip: source_ip.clone(),
-                            user_agent: user_agent.clone(),
-                            username: Some(body.username.clone()),
-                            details: Some("Attempted login on locked account".into()),
-                        })
-                        .await;
-                    (
-                        StatusCode::FORBIDDEN,
-                        json!({"error": "Account locked. Please try again later."}),
-                        jar,
-                    )
-                } else {
-                    check_password_and_login(
-                        state,
-                        body,
-                        user,
-                        jar,
-                        &rate_key_user,
-                        now_secs,
-                        source_ip.clone(),
-                        user_agent.clone(),
-                        secure,
-                        shared,
-                    )
-                    .await
-                }
-            } else {
+    let shared = user
+        .as_ref()
+        .is_some_and(|u| state.public_demo.is_shared(&u.username, &u.role));
+    if listed_shared && !shared && user.is_some() {
+        tracing::warn!(
+            "shared_accounts lists '{}', but it is an admin account: not treated as shared",
+            body.username
+        );
+    }
+    // Failures are counted per (account, address), per address and per
+    // account (storage/login_failures.rs). A shared account counts none:
+    // anyone could lock it for everyone. Unknown usernames count for the
+    // address only.
+    let counted_user = user
+        .as_ref()
+        .filter(|_| !shared)
+        .map(|u| u.username.clone());
+    let now_secs = crate::timeutil::now_secs();
+    let block = if shared {
+        None
+    } else {
+        state
+            .storage
+            .login_block(counted_user.as_deref(), &client_ip, now_secs)
+            .await?
+    };
+    let (response_status, response_json, new_jar) = if let Some(block) = block {
+        let (status, error, details) = match block {
+            crate::storage::LoginBlock::Pair { .. } => (
+                StatusCode::FORBIDDEN,
+                "Account locked. Please try again later.",
+                "Attempted login on an account locked for this address",
+            ),
+            crate::storage::LoginBlock::Source { .. } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many login attempts. Please try again later.",
+                "Attempted login from an address locked after too many failures",
+            ),
+            crate::storage::LoginBlock::Account { .. } => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many login attempts. Please try again later.",
+                "Attempted login from a new address while the account is backing off",
+            ),
+        };
+        let _ = state
+            .storage
+            .insert_security_event(&crate::models::CreateSecurityEvent {
+                event_type: "login_locked".into(),
+                severity: "warning".into(),
+                source_ip: source_ip.clone(),
+                user_agent: user_agent.clone(),
+                username: Some(body.username.clone()),
+                details: Some(details.into()),
+            })
+            .await;
+        (status, json!({"error": error}), jar)
+    } else {
+        match user {
+            Some(user) => {
                 check_password_and_login(
                     state,
                     body,
                     user,
                     jar,
                     &rate_key_user,
+                    &client_ip,
                     now_secs,
-                    source_ip.clone(),
                     user_agent.clone(),
                     secure,
                     shared,
                 )
                 .await
             }
-        }
-        None => {
-            state.login_rate_limiter.record_attempt(&rate_key_user);
-            let _ = state
-                .storage
-                .insert_security_event(&crate::models::CreateSecurityEvent {
-                    event_type: "login_failed".into(),
-                    severity: "warning".into(),
-                    source_ip: source_ip.clone(),
-                    user_agent: user_agent.clone(),
-                    username: Some(body.username.clone()),
-                    details: Some("Unknown username".into()),
-                })
-                .await;
-            (
-                StatusCode::UNAUTHORIZED,
-                json!({"error": "Invalid credentials"}),
-                jar,
-            )
+            None => {
+                state.login_rate_limiter.record_attempt(&rate_key_user);
+                let _ = state
+                    .storage
+                    .record_login_failure(None, &client_ip, true, now_secs)
+                    .await;
+                let _ = state
+                    .storage
+                    .insert_security_event(&crate::models::CreateSecurityEvent {
+                        event_type: "login_failed".into(),
+                        severity: "warning".into(),
+                        source_ip: source_ip.clone(),
+                        user_agent: user_agent.clone(),
+                        username: Some(body.username.clone()),
+                        details: Some("Unknown username".into()),
+                    })
+                    .await;
+                (
+                    StatusCode::UNAUTHORIZED,
+                    json!({"error": "Invalid credentials"}),
+                    jar,
+                )
+            }
         }
     };
 
@@ -162,29 +176,38 @@ async fn check_password_and_login(
     user: User,
     jar: CookieJar,
     rate_key_user: &str,
+    client_ip: &str,
     now_secs: i64,
-    source_ip: Option<String>,
     user_agent: Option<String>,
     secure: bool,
     shared: bool,
 ) -> (StatusCode, serde_json::Value, CookieJar) {
+    let source_ip = Some(client_ip.to_string());
     if !verify_password(&body.password, &user.password_hash) {
         state.login_rate_limiter.record_attempt(rate_key_user);
         // A shared account counts no failures: anyone could lock it for everyone.
-        if !shared {
-            let _ = state
+        let outcome = if shared {
+            crate::storage::FailureOutcome::default()
+        } else {
+            state
                 .storage
-                .increment_failed_attempts(&body.username)
-                .await;
-        }
-
-        // Lock account after 10 failed attempts
-        if !shared && user.failed_attempts + 1 >= 10 {
-            let lock_until = now_secs + 900; // 15 minutes
-            let _ = state.storage.lock_account(&body.username, lock_until).await;
+                .record_login_failure(Some(&user.username), client_ip, true, now_secs)
+                .await
+                .unwrap_or_default()
+        };
+        if outcome.pair_locked {
             tracing::warn!(
-                "Account locked for user {} due to too many failed attempts",
-                body.username
+                "Sign-in to {} from {client_ip} locked after too many wrong passwords",
+                user.username
+            );
+        }
+        if outcome.source_locked {
+            tracing::warn!("Sign-in from {client_ip} locked after too many wrong passwords");
+        }
+        if outcome.account_backoff {
+            tracing::warn!(
+                "Account {} is backing off sign-ins from new addresses after too many wrong passwords",
+                user.username
             );
         }
 
@@ -199,7 +222,10 @@ async fn check_password_and_login(
                 details: Some(if shared {
                     "Invalid password (shared account)".to_string()
                 } else {
-                    format!("Invalid password (attempt {})", user.failed_attempts + 1)
+                    format!(
+                        "Invalid password (attempt {} from this address)",
+                        outcome.pair_failures
+                    )
                 }),
             })
             .await;
@@ -231,7 +257,12 @@ async fn check_password_and_login(
     }
 
     // Successful login — reset failed attempts, then open the session.
-    let _ = state.storage.reset_failed_attempts(&body.username).await;
+    if !shared {
+        let _ = state
+            .storage
+            .record_login_success(&user.username, client_ip, now_secs)
+            .await;
+    }
     state.login_rate_limiter.cleanup();
     // An expired password (add-on password policy) is answered like a
     // password the admin asked to change.

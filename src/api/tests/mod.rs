@@ -20,6 +20,7 @@ mod helpers;
 mod history;
 mod import_nodered;
 mod license_status;
+mod login_lockout;
 mod login_rate_limit;
 #[cfg(feature = "mcp")]
 mod mcp;

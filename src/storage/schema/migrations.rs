@@ -541,6 +541,42 @@ pub(super) fn run_migrations(conn: &Connection) {
     // flow's webhook token (the token itself is shown once and not stored).
     let _ = conn.execute_batch("ALTER TABLE flow_runs ADD COLUMN trace TEXT");
     let _ = conn.execute_batch("ALTER TABLE flows ADD COLUMN webhook_token_hash TEXT");
+
+    // Migration: failed sign-ins counted per (account, client address) instead
+    // of per account (storage/login_failures.rs), so wrong passwords from one
+    // address no longer lock the account for everyone. The run that creates
+    // the table also lifts locks of the old account-wide kind; the users
+    // columns failed_attempts and locked_until stay but are no longer used.
+    if let Err(e) = add_login_failures(conn) {
+        tracing::error!("Failed to add the login_failures table: {e}");
+    }
+}
+
+fn add_login_failures(conn: &Connection) -> rusqlite::Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'login_failures'",
+        [],
+        |r| r.get(0),
+    )?;
+    if exists > 0 {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE login_failures (
+            username TEXT NOT NULL,
+            source TEXT NOT NULL,
+            failures INTEGER NOT NULL DEFAULT 0,
+            window_start INTEGER NOT NULL DEFAULT 0,
+            locked_until INTEGER,
+            last_failed_at INTEGER,
+            last_success_at INTEGER,
+            PRIMARY KEY (username, source)
+        );
+        UPDATE users SET failed_attempts = 0, locked_until = NULL
+            WHERE failed_attempts != 0 OR locked_until IS NOT NULL;",
+    )?;
+    tx.commit()
 }
 
 /// Any second-based timestamp before the year 5138 is below this; a rollup
@@ -1084,6 +1120,56 @@ mod tests {
     INSERT INTO alarms (id, source_key, severity, value, threshold, message, triggered_at, resolved_at, acknowledged_at, acknowledged_by, cooldown_until)
         VALUES (3, 'tank', 'critical', 91.5, 90, 'Tank high', 1000, 1500, 1100, 'ann', 1200),
                (9, 'pump', 'warning', 12, 10, 'Pump high', 2000, NULL, NULL, NULL, NULL);";
+
+    /// A database from before per-address lockout (schema of v0.51 main):
+    /// the upgrade adds login_failures and lifts old account-wide locks once;
+    /// later starts leave both alone.
+    #[test]
+    fn an_old_database_gets_login_failures_and_loses_account_locks_once() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "DROP TABLE login_failures;
+             INSERT INTO users (username, password_hash, salt, role, failed_attempts, locked_until)
+                 VALUES ('ops', 'h', '', 'operator', 7, 99999999999),
+                        ('eve', 'h', '', 'viewer', 3, NULL);",
+        )
+        .unwrap();
+
+        super::super::init_schema(&conn).unwrap();
+        let stale: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM users WHERE failed_attempts != 0 OR locked_until IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stale, 0, "old account-wide locks are lifted");
+        conn.execute(
+            "INSERT INTO login_failures (username, source, failures, window_start, locked_until)
+             VALUES ('ops', '10.0.0.1', 10, 1, 99999999999)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE users SET failed_attempts = 2 WHERE username = 'eve'",
+            [],
+        )
+        .unwrap();
+
+        let before = schema_snapshot(&conn);
+        super::super::init_schema(&conn).unwrap();
+        assert_eq!(schema_snapshot(&conn), before);
+        let (rows, eve): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM login_failures),
+                        (SELECT failed_attempts FROM users WHERE username = 'eve')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((rows, eve), (1, 2), "a later start changes nothing");
+    }
 
     #[test]
     fn running_migrations_twice_is_a_no_op_and_keeps_foreign_keys_on() {

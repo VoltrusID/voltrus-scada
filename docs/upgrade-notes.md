@@ -6,6 +6,42 @@ page is where such changes are written down. Newest release first.
 
 ## Next release (after v0.51.0)
 
+### Sign-in lockout is per address, not per account
+
+Ten wrong passwords for an account used to lock the account for everyone for
+15 minutes, so anyone who could reach the sign-in page could keep a user
+(an admin, the operators of a plant) locked out by sending a few wrong
+passwords every 15 minutes. Failed sign-ins are now counted in a new table,
+`login_failures`, against the client address the server resolves (the
+`trusted_proxy` rules: a proxy header is read only from the proxy's own
+address):
+
+* 10 wrong passwords for one account from one address within 15 minutes
+  lock that account **for that address** for 15 minutes (403, as before).
+  The user still signs in from any other address.
+* 30 wrong passwords (or unknown usernames) from one address across all
+  accounts within 15 minutes lock that address out of sign-in for 15 minutes
+  (429), against password spraying.
+* 50 wrong passwords for one account from all addresses within 15 minutes
+  make sign-ins to it from addresses the user has not signed in from in the
+  last 30 days wait a minute (429), renewed by every further failure in
+  those 15 minutes. Addresses the user did sign in from are not slowed down.
+  The trade-off: during a sustained attack from many addresses, the user
+  cannot sign in from a new device until the attack stops or an admin
+  resets the password.
+* A successful sign-in clears its address's count. Changing the password,
+  or an admin resetting it (Users, or `voltrus --reset-admin-password` for admin),
+  clears every count and lock of the account.
+* The in-memory limit of 5 tries a minute is now per account and address,
+  no longer per account.
+* Wrong electronic-signature passwords are counted for the account apart
+  from sign-in: 10 lock signing for 15 minutes and end the user's sessions,
+  but no longer lock sign-in.
+
+The upgrade creates the table and lifts any lock of the old kind. The
+`failed_attempts` and `locked_until` columns of `users` are left in place
+but no longer used.
+
 ### OEE: devices with several metrics need a state metric
 
 The OEE monitor used to decide whether a machine runs from whichever metric

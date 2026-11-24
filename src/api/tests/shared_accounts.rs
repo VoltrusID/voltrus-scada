@@ -83,16 +83,6 @@ async fn change_password(app: &Router, cookie: &str, old: &str) -> (StatusCode, 
     .await
 }
 
-async fn failed_attempts(state: &AppState, username: &str) -> i64 {
-    state
-        .storage
-        .get_user_by_username(username)
-        .await
-        .unwrap()
-        .unwrap()
-        .failed_attempts
-}
-
 #[tokio::test]
 async fn shared_account_cannot_change_its_password() {
     let app = create_router(demo_state(&["guest"], None).await);
@@ -153,40 +143,6 @@ async fn shared_account_cannot_change_its_preferences() {
 }
 
 #[tokio::test]
-async fn wrong_passwords_never_lock_a_shared_account() {
-    let state = demo_state(&["guest"], None).await;
-    let app = create_router(state.clone());
-
-    // Twelve wrong passwords from different addresses: more than the lockout
-    // threshold, without tripping the per-address limits.
-    for i in 0..12 {
-        let (status, body, _) = login(&app, "guest", "wrong", &format!("10.1.0.{i}")).await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED, "attempt {i}: {body}");
-    }
-    assert_eq!(failed_attempts(&state, "guest").await, 0);
-
-    // Counts left over from before the account was listed, or a lock, don't
-    // keep anyone out either.
-    for _ in 0..9 {
-        state
-            .storage
-            .increment_failed_attempts("guest")
-            .await
-            .unwrap();
-    }
-    let (status, _, _) = login(&app, "guest", "wrong", "10.2.0.1").await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    state
-        .storage
-        .lock_account("guest", crate::timeutil::now_secs() + 900)
-        .await
-        .unwrap();
-    let (status, body, _) = login(&app, "guest", GUEST_PW, "10.2.0.2").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["shared"], true);
-}
-
-#[tokio::test]
 async fn one_address_guessing_a_shared_account_does_not_block_others() {
     let app = create_router(demo_state(&["guest"], None).await);
     let mut limited = false;
@@ -196,56 +152,6 @@ async fn one_address_guessing_a_shared_account_does_not_block_others() {
     }
     assert!(limited, "the guessing address is rate limited");
     let (status, body, _) = login(&app, "guest", GUEST_PW, "10.3.0.2").await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-}
-
-#[tokio::test]
-async fn a_normal_account_still_locks_after_ten_failures() {
-    let state = demo_state(&["guest"], None).await;
-    let app = create_router(state.clone());
-    // The per-username limit allows five tries a minute, so put the account at
-    // nine failures directly and let the tenth come in over HTTP.
-    for _ in 0..9 {
-        state
-            .storage
-            .increment_failed_attempts("ops")
-            .await
-            .unwrap();
-    }
-    let (status, _, _) = login(&app, "ops", "wrong", "10.4.0.1").await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    // Locking starts the count over.
-    assert_eq!(failed_attempts(&state, "ops").await, 0);
-    let (status, body, _) = login(&app, "ops", GUEST_PW, "10.4.0.2").await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"], "Account locked. Please try again later.");
-}
-
-/// Once a lock has run out, one wrong password does not lock the account
-/// again: it takes another ten.
-#[tokio::test]
-async fn an_expired_lock_needs_ten_new_failures_to_lock_again() {
-    let state = demo_state(&[], None).await;
-    let app = create_router(state.clone());
-    for _ in 0..9 {
-        state
-            .storage
-            .increment_failed_attempts("ops")
-            .await
-            .unwrap();
-    }
-    let (status, _, _) = login(&app, "ops", "wrong", "10.5.0.1").await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    // The lock runs out.
-    state
-        .storage
-        .lock_account("ops", crate::timeutil::now_secs() - 1)
-        .await
-        .unwrap();
-    let (status, _, _) = login(&app, "ops", "wrong", "10.5.0.2").await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-    assert_eq!(failed_attempts(&state, "ops").await, 1);
-    let (status, body, _) = login(&app, "ops", GUEST_PW, "10.5.0.3").await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 

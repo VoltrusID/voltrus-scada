@@ -50,10 +50,11 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for MaybeSigned {
     }
 }
 
-/// Wrong passwords (sign-in and signing together) before the account locks.
-pub const MAX_FAILED_ATTEMPTS: i64 = 10;
-/// How long a locked account stays locked.
-pub const LOCKOUT_SECS: i64 = 900;
+/// Wrong signature passwords before signing locks and the user's sessions end
+/// (counted apart from sign-in, see storage/login_failures.rs).
+pub const MAX_FAILED_ATTEMPTS: i64 = crate::storage::PAIR_MAX_FAILURES;
+/// How long signing stays locked.
+pub const LOCKOUT_SECS: i64 = crate::storage::PAIR_LOCK_SECS;
 
 /// Why an action that needs a signature was not signed.
 #[derive(Debug)]
@@ -317,9 +318,11 @@ pub async fn authorize_requirement(
     Ok(Some(signed))
 }
 
-/// Check the signer's own password. Wrong passwords count towards the same
-/// lockout as sign-in (a shared demo account is never locked), and locking
-/// the account ends its sessions.
+/// Check the signer's own password. Wrong passwords are counted for the
+/// account under [`crate::storage::SIGNATURE_SOURCE`] (and towards its
+/// account-wide count) rather than an address, since only a signed-in session
+/// can sign; a shared demo account counts none. Locking signing ends all the
+/// user's sessions, so a stolen session cannot keep guessing.
 async fn verify_signer(
     state: &AppState,
     username: &str,
@@ -345,27 +348,39 @@ async fn verify_signer(
     }
     let shared = state.public_demo.is_shared(&user.username, &user.role);
     let now = crate::timeutil::now_secs();
-    if !shared && user.locked_until.is_some_and(|t| t > now) {
+    let source = crate::storage::SIGNATURE_SOURCE;
+    if !shared
+        && state
+            .storage
+            .login_pair_locked_until(username, source, now)
+            .await
+            .map_err(SignatureError::Internal)?
+            .is_some()
+    {
         return Err(SignatureError::Locked);
     }
     if super::auth::verify_password(password, &user.password_hash) {
-        if user.failed_attempts > 0 {
-            let _ = state.storage.reset_failed_attempts(username).await;
+        if !shared {
+            let _ = state
+                .storage
+                .record_login_success(username, source, now)
+                .await;
         }
         return Ok(());
     }
 
-    let attempts = user.failed_attempts + 1;
+    let mut attempts = 1;
     let mut locked = false;
     if !shared {
-        let _ = state.storage.increment_failed_attempts(username).await;
-        if attempts >= MAX_FAILED_ATTEMPTS {
-            let _ = state
-                .storage
-                .lock_account(username, now + LOCKOUT_SECS)
-                .await;
+        let outcome = state
+            .storage
+            .record_login_failure(Some(username), source, false, now)
+            .await
+            .map_err(SignatureError::Internal)?;
+        attempts = outcome.pair_failures;
+        if outcome.pair_locked {
             let _ = state.storage.revoke_all_user_refresh_tokens(username).await;
-            tracing::warn!("Account {username} locked after too many wrong signature passwords");
+            tracing::warn!("Signing as {username} locked after too many wrong signature passwords");
             locked = true;
         }
     }
