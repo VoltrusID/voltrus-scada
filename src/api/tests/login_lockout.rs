@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::storage::{
-    ACCOUNT_MAX_FAILURES, PAIR_MAX_FAILURES, SIGNATURE_SOURCE, SOURCE_MAX_FAILURES,
+    ACCOUNT_MAX_FAILURES, PAIR_MAX_FAILURES, SESSION_SOURCE, SOURCE_MAX_FAILURES,
 };
 use axum::body::Body;
 use axum::extract::ConnectInfo;
@@ -260,24 +260,24 @@ async fn an_expired_lock_needs_a_full_run_of_failures_to_lock_again() {
 }
 
 #[tokio::test]
-async fn signature_failures_do_not_lock_sign_in() {
+async fn in_session_password_failures_do_not_lock_sign_in() {
     let state = state_with_ops().await;
     let app = create_router(state.clone());
     let now = crate::timeutil::now_secs();
     for _ in 0..PAIR_MAX_FAILURES {
         state
             .storage
-            .record_login_failure(Some("ops"), SIGNATURE_SOURCE, false, now)
+            .record_login_failure(Some("ops"), SESSION_SOURCE, false, now)
             .await
             .unwrap();
     }
     assert!(
         state
             .storage
-            .login_pair_locked_until("ops", SIGNATURE_SOURCE, now)
+            .begin_login_attempt(Some("ops"), SESSION_SOURCE, false, now)
             .await
             .unwrap()
-            .is_some()
+            .is_err()
     );
     let (status, body, _) = login(&app, "ops", OPS_PW, "10.20.0.12").await;
     assert_eq!(status, StatusCode::OK, "{body}");
@@ -306,4 +306,123 @@ async fn loopback_failures_do_not_count_towards_the_address_lock() {
         state.storage.login_failure_count("ops", "127.0.0.1").await,
         1
     );
+}
+
+#[tokio::test]
+async fn a_neighbour_behind_the_same_address_cannot_lock_the_user_out() {
+    let state = state_with_ops().await;
+    let app = create_router(state.clone());
+    let nat = "198.51.100.200";
+    // The operator signs in from the plant's NAT address.
+    let (status, body, _) = login(&app, "ops", OPS_PW, nat).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // Someone else behind it sprays made-up usernames until it locks.
+    fail(&state, None, nat, SOURCE_MAX_FAILURES).await;
+    let (status, _, _) = login(&app, "admin", "admin", nat).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    // The operator's own sign-in from there still works.
+    let (status, body, _) = login(&app, "ops", OPS_PW, nat).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn attempts_in_flight_count_before_their_password_is_checked() {
+    let state = state_with_ops().await;
+    let ip = "203.0.113.88";
+    let now = crate::timeutil::now_secs();
+    fail(&state, Some("ops"), ip, PAIR_MAX_FAILURES - 1).await;
+    // The tenth attempt is let through; while its password is being checked
+    // an eleventh, sent at the same time, is already refused.
+    let tenth = state
+        .storage
+        .begin_login_attempt(Some("ops"), ip, true, now)
+        .await
+        .unwrap()
+        .unwrap();
+    let eleventh = state
+        .storage
+        .begin_login_attempt(Some("ops"), ip, true, now)
+        .await
+        .unwrap();
+    assert!(
+        matches!(eleventh, Err(crate::storage::LoginBlock::Pair { .. })),
+        "{eleventh:?}"
+    );
+    let outcome = state.storage.fail_login_attempt(tenth).await.unwrap();
+    assert!(outcome.pair_locked);
+
+    // A right password takes its attempt back from the address count.
+    let other = "203.0.113.89";
+    let attempt = state
+        .storage
+        .begin_login_attempt(Some("ops"), other, true, now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.storage.login_failure_count("", other).await, 1);
+    state.storage.succeed_login_attempt(attempt).await.unwrap();
+    assert_eq!(state.storage.login_failure_count("", other).await, 0);
+    assert_eq!(state.storage.login_failure_count("ops", other).await, 0);
+}
+
+#[tokio::test]
+async fn ipv6_addresses_count_per_64() {
+    let state = state_with_ops().await;
+    let app = create_router(state.clone());
+    fail(
+        &state,
+        Some("ops"),
+        &crate::security::throttle_key("2001:db8:1:2::1"),
+        PAIR_MAX_FAILURES,
+    )
+    .await;
+    // Another address of the same /64 is the same attacker.
+    let (status, body, _) = login(&app, "ops", OPS_PW, "2001:db8:1:2:aaaa::9").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // The next /64 is not.
+    let (status, body, _) = login(&app, "ops", OPS_PW, "2001:db8:1:3::1").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[test]
+fn throttle_keys() {
+    use crate::security::throttle_key;
+    assert_eq!(throttle_key("203.0.113.5"), "203.0.113.5");
+    assert_eq!(throttle_key("2001:db8:1:2:3:4:5:6"), "2001:db8:1:2::/64");
+    assert_eq!(throttle_key("::1"), "::1");
+    assert_eq!(throttle_key("unknown"), "unknown");
+}
+
+#[tokio::test]
+async fn guessing_the_current_password_in_a_session_locks_it() {
+    let state = state_with_ops().await;
+    let app = create_router(state.clone());
+    let (_, _, ops) = login(&app, "ops", OPS_PW, "10.20.0.13").await;
+    let ops = ops.unwrap();
+    for i in 1..=PAIR_MAX_FAILURES {
+        let (status, body) = send_request(
+            &app,
+            "POST",
+            "/api/v1/auth/change-password",
+            None,
+            Some(&ops),
+            Some(json!({"old_password": "guess", "new_password": "a-new-password-3"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "guess {i}: {body}");
+    }
+    let (status, body) = send_request(
+        &app,
+        "POST",
+        "/api/v1/auth/change-password",
+        None,
+        Some(&ops),
+        Some(json!({"old_password": OPS_PW, "new_password": "a-new-password-3"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "Too many wrong passwords. Try again later.");
+    // Signing in is still possible.
+    let (status, body, _) = login(&app, "ops", OPS_PW, "10.20.0.13").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 }

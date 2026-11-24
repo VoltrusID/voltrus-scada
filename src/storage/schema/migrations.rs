@@ -541,18 +541,15 @@ pub(super) fn run_migrations(conn: &Connection) {
     // flow's webhook token (the token itself is shown once and not stored).
     let _ = conn.execute_batch("ALTER TABLE flow_runs ADD COLUMN trace TEXT");
     let _ = conn.execute_batch("ALTER TABLE flows ADD COLUMN webhook_token_hash TEXT");
-
-    // Migration: failed sign-ins counted per (account, client address) instead
-    // of per account (storage/login_failures.rs), so wrong passwords from one
-    // address no longer lock the account for everyone. The run that creates
-    // the table also lifts locks of the old account-wide kind; the users
-    // columns failed_attempts and locked_until stay but are no longer used.
-    if let Err(e) = add_login_failures(conn) {
-        tracing::error!("Failed to add the login_failures table: {e}");
-    }
 }
 
-fn add_login_failures(conn: &Connection) -> rusqlite::Result<()> {
+/// Migration: failed sign-ins counted per (account, client address) instead
+/// of per account (storage/login_failures.rs), so wrong passwords from one
+/// address no longer lock the account for everyone. The run that creates the
+/// table also lifts locks of the old account-wide kind; the users columns
+/// failed_attempts and locked_until stay but are no longer used. Sign-in
+/// needs the table, so unlike the migrations above a failure stops startup.
+pub(super) fn add_login_failures(conn: &Connection) -> rusqlite::Result<()> {
     let exists: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'login_failures'",
         [],

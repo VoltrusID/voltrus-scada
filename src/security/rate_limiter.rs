@@ -156,7 +156,13 @@ pub async fn login_ip_rate_limit_middleware(
     next: Next,
 ) -> Response {
     let ip = client_ip(&req);
-    if !state.login_rate_limiter.is_ip_allowed(&ip) {
+    let key = throttle_key(&ip);
+    // This machine is not limited: the native console and a local reverse
+    // proxy connect from it, and a proxy that passes no client address on
+    // would make everyone share one budget. (Each account still locks for
+    // it after too many wrong passwords.)
+    let limited = !is_loopback(&ip);
+    if limited && !state.login_rate_limiter.is_ip_allowed(&key) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             axum::Json(json!({"error": "Too many login attempts. Please try again later."})),
@@ -168,10 +174,30 @@ pub async fn login_ip_rate_limit_middleware(
     if matches!(
         resp.status(),
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
-    ) {
-        state.login_rate_limiter.record_ip_attempt(&ip);
+    ) && limited
+    {
+        state.login_rate_limiter.record_ip_attempt(&key);
     }
     resp
+}
+
+/// Whether `ip` (as [`client_ip`] gives it) is this machine.
+pub fn is_loopback(ip: &str) -> bool {
+    ip.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// The key sign-in failures from `ip` are counted under: the address, but
+/// for IPv6 its /64 network, since anyone who has one address of a /64
+/// usually has all of them.
+pub fn throttle_key(ip: &str) -> String {
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(v6)) if !v6.is_loopback() && v6.to_ipv4_mapped().is_none() => {
+            let net = u128::from(v6) & (u128::MAX << 64);
+            format!("{}/64", std::net::Ipv6Addr::from(net))
+        }
+        _ => ip.to_string(),
+    }
 }
 
 /// The header a reverse proxy or tunnel in front of the server writes the

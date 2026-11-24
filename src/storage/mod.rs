@@ -51,7 +51,7 @@ mod tests;
 mod users;
 pub use login_failures::{
     ACCOUNT_BACKOFF_SECS, ACCOUNT_MAX_FAILURES, FAILURE_WINDOW_SECS, FailureOutcome,
-    KNOWN_SOURCE_SECS, LoginBlock, PAIR_LOCK_SECS, PAIR_MAX_FAILURES, SIGNATURE_SOURCE,
+    KNOWN_SOURCE_SECS, LoginAttempt, LoginBlock, PAIR_LOCK_SECS, PAIR_MAX_FAILURES, SESSION_SOURCE,
     SOURCE_LOCK_SECS, SOURCE_MAX_FAILURES,
 };
 pub use settings_audit::AuditChainReport;

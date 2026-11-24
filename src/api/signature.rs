@@ -50,8 +50,9 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for MaybeSigned {
     }
 }
 
-/// Wrong signature passwords before signing locks and the user's sessions end
-/// (counted apart from sign-in, see storage/login_failures.rs).
+/// Wrong passwords typed inside a session (signatures, changing the
+/// password) before they lock and the user's sessions end (counted apart
+/// from sign-in, see storage/login_failures.rs).
 pub const MAX_FAILED_ATTEMPTS: i64 = crate::storage::PAIR_MAX_FAILURES;
 /// How long signing stays locked.
 pub const LOCKOUT_SECS: i64 = crate::storage::PAIR_LOCK_SECS;
@@ -318,11 +319,7 @@ pub async fn authorize_requirement(
     Ok(Some(signed))
 }
 
-/// Check the signer's own password. Wrong passwords are counted for the
-/// account under [`crate::storage::SIGNATURE_SOURCE`] (and towards its
-/// account-wide count) rather than an address, since only a signed-in session
-/// can sign; a shared demo account counts none. Locking signing ends all the
-/// user's sessions, so a stolen session cannot keep guessing.
+/// Check the signer's own password ([`check_session_password`]).
 async fn verify_signer(
     state: &AppState,
     username: &str,
@@ -347,43 +344,15 @@ async fn verify_signer(
         ));
     }
     let shared = state.public_demo.is_shared(&user.username, &user.role);
-    let now = crate::timeutil::now_secs();
-    let source = crate::storage::SIGNATURE_SOURCE;
-    if !shared
-        && state
-            .storage
-            .login_pair_locked_until(username, source, now)
+    let (attempts, locked) =
+        match check_session_password(state, &user.username, password, &user.password_hash, shared)
             .await
             .map_err(SignatureError::Internal)?
-            .is_some()
-    {
-        return Err(SignatureError::Locked);
-    }
-    if super::auth::verify_password(password, &user.password_hash) {
-        if !shared {
-            let _ = state
-                .storage
-                .record_login_success(username, source, now)
-                .await;
-        }
-        return Ok(());
-    }
-
-    let mut attempts = 1;
-    let mut locked = false;
-    if !shared {
-        let outcome = state
-            .storage
-            .record_login_failure(Some(username), source, false, now)
-            .await
-            .map_err(SignatureError::Internal)?;
-        attempts = outcome.pair_failures;
-        if outcome.pair_locked {
-            let _ = state.storage.revoke_all_user_refresh_tokens(username).await;
-            tracing::warn!("Signing as {username} locked after too many wrong signature passwords");
-            locked = true;
-        }
-    }
+        {
+            SessionPassword::Right => return Ok(()),
+            SessionPassword::Locked => return Err(SignatureError::Locked),
+            SessionPassword::Wrong { attempts, locked } => (attempts, locked),
+        };
     let _ = state
         .storage
         .insert_security_event(&crate::models::CreateSecurityEvent {
@@ -403,5 +372,66 @@ async fn verify_signer(
     Err(SignatureError::Invalid {
         action,
         requirement: requirement.clone(),
+    })
+}
+
+/// What [`check_session_password`] found.
+pub(crate) enum SessionPassword {
+    Right,
+    /// Wrong; `attempts` in the window, `locked` when this one locked it.
+    Wrong {
+        attempts: i64,
+        locked: bool,
+    },
+    /// Locked after too many wrong passwords; the password was not checked.
+    Locked,
+}
+
+/// Check a password typed inside a signed-in session (an electronic
+/// signature, the current password when changing it). Wrong ones are counted
+/// for the account under [`crate::storage::SESSION_SOURCE`] (and towards its
+/// account-wide count) rather than an address; a shared demo account counts
+/// none. The lock ends all the user's sessions, so a stolen session cannot
+/// keep guessing; signing in again stays possible.
+pub(crate) async fn check_session_password(
+    state: &AppState,
+    username: &str,
+    password: &str,
+    password_hash: &str,
+    shared: bool,
+) -> anyhow::Result<SessionPassword> {
+    let now = crate::timeutil::now_secs();
+    let attempt = if shared {
+        None
+    } else {
+        match state
+            .storage
+            .begin_login_attempt(Some(username), crate::storage::SESSION_SOURCE, false, now)
+            .await?
+        {
+            Ok(attempt) => Some(attempt),
+            Err(_) => return Ok(SessionPassword::Locked),
+        }
+    };
+    if super::auth::verify_password(password, password_hash) {
+        if let Some(attempt) = attempt {
+            state.storage.succeed_login_attempt(attempt).await?;
+        }
+        return Ok(SessionPassword::Right);
+    }
+    let Some(attempt) = attempt else {
+        return Ok(SessionPassword::Wrong {
+            attempts: 1,
+            locked: false,
+        });
+    };
+    let outcome = state.storage.fail_login_attempt(attempt).await?;
+    if outcome.pair_locked {
+        let _ = state.storage.revoke_all_user_refresh_tokens(username).await;
+        tracing::warn!("Password checks for {username} locked after too many wrong passwords");
+    }
+    Ok(SessionPassword::Wrong {
+        attempts: outcome.pair_failures,
+        locked: outcome.pair_locked,
     })
 }

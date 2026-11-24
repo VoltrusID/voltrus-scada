@@ -44,7 +44,8 @@ anyway if we ship a vulnerable version).
 * Wrong passwords lock an account only for the address they come from (10
   within 15 minutes); an address that fails across many accounts is locked
   out of sign-in, and an account attacked from many addresses makes new
-  addresses wait while the user's usual ones keep working. Set
+  addresses wait while the user's usual ones keep working. Failures from
+  the server's own machine (loopback) don't count against the address. Set
   `trusted_proxy` to match your reverse proxy so these limits see the real
   client address (docs/upgrade-notes.md has the numbers).
 * To run a public demo, give the shared login the `viewer` role, list it in

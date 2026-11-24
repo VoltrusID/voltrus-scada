@@ -375,7 +375,7 @@ async fn a_right_signature_password_resets_the_failed_count() {
         Some(json!({"value": 30.0, "signature": signature("wrong")})),
     )
     .await;
-    let source = crate::storage::SIGNATURE_SOURCE;
+    let source = crate::storage::SESSION_SOURCE;
     assert_eq!(
         f.state.storage.login_failure_count("admin", source).await,
         1
