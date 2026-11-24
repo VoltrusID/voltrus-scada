@@ -117,8 +117,25 @@ device_templates:
   - {name: energy, offset: 2, register_type: int32, register_area: input, scale: 0.1, writable: true}
 ```
 
-Devices created from a template do not remember it: the device carries its own
+A device copied from a template does not remember it: the device carries its own
 registers (`modbus_devices`), so a project stays complete without the template.
+A [linked](device-templates.md#linked-devices) Modbus device also names its template
+with `template_id`, `template_version` and `template_source` (all three or none)
+and still lists its registers. Validation reports a link to a template that is
+neither in the project, nor stored (merge), nor built in. An import writes the
+registers as listed; saving the template later rewrites them.
+
+```yaml
+modbus_devices:
+- id: p-301a
+  name: P-301A
+  ip: 10.0.3.11
+  template_id: acme-pump-vfd
+  template_version: 1.2.0
+  template_source: local
+  registers:
+  - {name: run, address: 0, register_type: uint16, register_area: coil}
+```
 In **replace** mode templates the project does not list are deleted like any other
 entity, so an old project without a `device_templates` section removes the stored
 local and catalog templates; use merge for partial files.

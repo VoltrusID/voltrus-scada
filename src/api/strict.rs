@@ -129,6 +129,7 @@ pub const MODBUS_DEVICE: Shape = Shape {
         "enabled",
         "registers",
         "template",
+        "register_count",
         "running",
         "created_at",
         "updated_at",

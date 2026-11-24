@@ -532,6 +532,10 @@ pub(super) fn run_migrations(conn: &Connection) {
     // Which front end queued a command (session, api_key, mcp, flow, recipe);
     // NULL on commands written before, which are classified by `created_by`.
     let _ = conn.execute_batch("ALTER TABLE commands ADD COLUMN origin TEXT");
+    // A Modbus device that follows a device template instead of a copy of it.
+    for col in ["template_id", "template_version", "template_source"] {
+        let _ = conn.execute_batch(&format!("ALTER TABLE modbus_devices ADD COLUMN {col} TEXT"));
+    }
 
     // Migration: session limits (idle and absolute timeout). A refresh token
     // carries when its session started and when the user was last active;

@@ -186,6 +186,8 @@ export interface ModbusDevice {
   created_at: number
   updated_at: number
   register_count: number
+  /** The device template the device follows (servers from v0.53); absent or null for a copy. */
+  template?: { template_id: string; version: string; source: string } | null
 }
 
 export interface ModbusRegister {

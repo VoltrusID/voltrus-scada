@@ -256,6 +256,8 @@ pub async fn delete_template(
             "'{id}' is a built-in template and cannot be deleted"
         )));
     }
+    #[cfg(feature = "modbus")]
+    super::template_links::refuse_delete_linked(&state, &t).await?;
     if !state
         .storage
         .delete_device_template(&t.template_id, &t.source, &t.version)
@@ -494,6 +496,10 @@ pub struct InstantiateRequest {
     /// Which version or source of the template, when the id alone is ambiguous.
     pub version: Option<String>,
     pub source: Option<String>,
+    /// Modbus only: the device follows the template (saving the template
+    /// rewrites its registers) instead of keeping a copy. Default false.
+    #[serde(default)]
+    pub linked: bool,
 }
 
 #[cfg(feature = "modbus")]
@@ -559,8 +565,11 @@ async fn instantiate_modbus(
         Json(body),
     )
     .await?;
+    if req.linked {
+        super::template_links::link_new_device(state, &id, t).await?;
+    }
     Ok(
-        json!({"ok": true, "protocol": "modbus", "id": id, "name": name, "item_count": t.registers.len()}),
+        json!({"ok": true, "protocol": "modbus", "id": id, "name": name, "item_count": t.registers.len(), "linked": req.linked}),
     )
 }
 
@@ -588,9 +597,9 @@ async fn instantiate_bacnet(
     if auth.role != "admin" {
         return Err(AppError::forbidden("Admin access required"));
     }
-    if req.unit_id.is_some() || req.endianness.is_some() || req.id.is_some() {
+    if req.unit_id.is_some() || req.endianness.is_some() || req.id.is_some() || req.linked {
         return Err(AppError::bad_request(
-            "id, unit_id and endianness apply to Modbus templates",
+            "id, unit_id, endianness and linked apply to Modbus templates",
         ));
     }
     let port = req

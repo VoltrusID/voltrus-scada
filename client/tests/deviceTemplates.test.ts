@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import {
-  DEFAULT_CATALOG_URL, filterCatalog, filterQuery, fromDeviceBody, instantiateBody, isValidTemplateId, isValidVersion,
+  DEFAULT_CATALOG_URL, filterCatalog, filterQuery, fromDeviceBody, instantiateBody, isValidTemplateId, isValidVersion, linkedChangeLines,
   matchesFilter, parseQuirks, refQuery, slugify, sourceLabel, templateKey,
 } from '../src/deviceTemplates.ts'
 import type { CatalogEntry, TemplateSummary } from '../src/deviceTemplates.ts'
@@ -134,3 +134,17 @@ test('instantiate body rejects values the server would', () => {
 })
 
 
+
+test('a linked device is asked for on Modbus templates only', () => {
+  const form = { name: 'P-301A', ip: '10.0.0.7', port: '', unitId: '', deviceInstance: '', intervalMs: '', linked: true }
+  assert.equal(instantiateBody(form, 'modbus').body?.linked, true)
+  assert.equal(instantiateBody({ ...form, linked: false }, 'modbus').body?.linked, undefined)
+  assert.equal(instantiateBody(form, 'bacnet').body?.linked, undefined)
+})
+
+test('the template save preview lists each linked device and its register changes', () => {
+  assert.deepEqual(linkedChangeLines([
+    { id: 'pump-a', name: 'Pump A', changes: { added: ['power'], removed: ['old'], changed: ['current'] } },
+    { id: 'pump-b', name: '', changes: { added: [], removed: [], changed: [] } },
+  ]), ['Pump A: +power, -old, ~current', 'pump-b: no change'])
+})

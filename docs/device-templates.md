@@ -26,13 +26,51 @@ Open **Data > Modbus** or **Data > BACnet** and press **Templates**.
     instance, interval) and creates the device with all its registers or
     objects.
   * **Export** downloads the template as a JSON file.
-  * **Del** removes a local or catalog template (devices already made from it are
-    not touched).
+  * **Del** removes a local or catalog template (devices copied from it are
+    not touched; a template that devices are linked to cannot be deleted until
+    they are unlinked).
+  * **Update** (local and catalog Modbus templates) takes a changed file of the
+    same template id and version, shows which linked devices would change and how
+    (`+` added, `-` removed, `~` changed registers), and saves it on confirmation.
   * **Import file** adds a template file you were given.
 * **Catalog** lists the public catalog and imports a template into your library
   (admins only).
 * **Tpl** on a device row saves that device as a template: manufacturer, model,
   version, a description, whether you verified it and how, and the quirks.
+
+## Linked devices
+
+By default a device made from a template gets a *copy* of the register map: later
+changes to the template do not reach it. A Modbus device can instead be **linked**:
+it records the template (`template_id`, `version`, `source`) and follows it.
+
+* **Create linked.** Tick *Link to the template* in the **Use** dialog, or send
+  `"linked": true` to `POST /api/v1/device-templates/{id}/instantiate` (MCP
+  `instantiate_device_template` takes the same argument).
+* **Link an existing device.** `PUT /api/v1/modbus-devices/{id}/template` with
+  `{"template_id", "version", "source"}`. Its registers are replaced by the
+  template's; the answer lists what changed.
+* **Change the template.** `PUT /api/v1/device-templates/{id}?version=&source=`
+  with the whole template (same `template_id`, `version` and `protocol`; built-in
+  templates cannot be changed). With `dry_run=true` nothing is saved and the answer
+  lists every linked device with the registers that would be added, removed or
+  changed. Without it, the template is saved and every linked device whose
+  registers differ gets the new map and a poller restart. Devices that hold a copy
+  are not touched.
+* **Unlink to customise.** `DELETE /api/v1/modbus-devices/{id}/template` (or
+  **Unlink** in the Modbus device list). The device keeps its current registers as
+  its own copy. While a device is linked, `PUT /api/v1/modbus-devices/{id}/registers`
+  and a device update that carries `registers` answer `409` and name the template.
+* **See the links.** `GET /api/v1/device-templates/{id}/linked-devices` lists the
+  linked devices and, per device, what differs from the template (empty when in
+  sync). `GET /api/v1/modbus-devices` and `GET /api/v1/modbus-devices/{id}` carry
+  `template` (or `null`).
+
+Connection settings (address, port, unit id, interval, word order) stay per device;
+only the register map follows the template. Linking is for Modbus templates; BACnet
+devices are always copies. In a project file a linked device carries
+`template_id`, `template_version` and `template_source` next to its registers
+([project-format.md](project-format.md)).
 
 ## File format
 

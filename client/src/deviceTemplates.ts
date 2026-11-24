@@ -222,6 +222,27 @@ export interface InstantiateForm {
   /** BACnet device instance. */
   deviceInstance: string
   intervalMs: string
+  /** Modbus: the device follows the template instead of keeping a copy. */
+  linked?: boolean
+}
+
+/** What saving a template changes on one linked device (`PUT .../device-templates/{id}`). */
+export interface LinkedDevice {
+  id: string
+  name: string
+  changes: { added: string[]; removed: string[]; changed: string[] }
+}
+
+/** One line per linked device for the save preview, e.g. "pump-a: +power, ~current". */
+export function linkedChangeLines(devices: LinkedDevice[]): string[] {
+  return devices.map(d => {
+    const parts = [
+      ...d.changes.added.map(n => `+${n}`),
+      ...d.changes.removed.map(n => `-${n}`),
+      ...d.changes.changed.map(n => `~${n}`),
+    ]
+    return `${d.name || d.id}: ${parts.length ? parts.join(', ') : 'no change'}`
+  })
 }
 
 const intIn = (s: string, min: number, max: number): number | null => {
@@ -266,5 +287,6 @@ export function instantiateBody(
     body.version = pick.version
     body.source = pick.source
   }
+  if (protocol === 'modbus' && f.linked) body.linked = true
   return errors.length > 0 ? { errors } : { errors, body }
 }

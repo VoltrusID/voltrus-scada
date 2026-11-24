@@ -220,6 +220,11 @@ const MODBUS_DEVICE: &[Field] = &[
     Field::d("interval_ms", Int, I(1000)),
     Field::d("endianness", Text, S("big")).one_of(ENDIANNESS),
     Field::d("enabled", Bool, B(true)),
+    // A linked device follows this device template (all three or none); its
+    // registers are still listed, so the project works without the template.
+    Field::o("template_id", Text),
+    Field::o("template_version", Text),
+    Field::o("template_source", Text),
     Field::d("registers", List(MODBUS_REGISTER), Arr)
         .virt()
         .lean(),

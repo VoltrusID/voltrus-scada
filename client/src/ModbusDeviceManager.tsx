@@ -1,5 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useModbusDevices, useModbusPollerStatus, useCreateModbusDevice, useUpdateModbusDevice, useDeleteModbusDevice, useRestartModbusPoller, fetchJson } from './queries'
+import { useQueryClient } from '@tanstack/react-query'
+import { fetchOk } from './queries/fetch'
+import { queryKeys } from './queries/keys'
 import { inputStyle, btnStyle } from './styles'
 import { ModbusDeviceForm } from './ModbusDeviceForm'
 import { SimControls } from './components/SimControls'
@@ -17,6 +20,15 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
   const updateMut = useUpdateModbusDevice()
   const deleteMut = useDeleteModbusDevice()
   const restartMut = useRestartModbusPoller()
+  const qc = useQueryClient()
+  const unlink = async (id: string) => {
+    if (!confirm(`Unlink ${id} from its template? It keeps its registers as its own copy and no longer follows template changes.`)) return
+    try {
+      await fetchOk(`/api/v1/modbus-devices/${encodeURIComponent(id)}/template`, { method: 'DELETE' })
+    } finally {
+      qc.invalidateQueries({ queryKey: queryKeys.modbusDevices })
+    }
+  }
 
   const [filter, setFilter] = useState('')
   const [showForm, setShowForm] = useState(false)
@@ -138,7 +150,15 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
                 <td style={tdStyle}>{d.unit_id}</td>
                 <td style={tdStyle}>{d.interval_ms}ms</td>
                 <td style={tdStyle}><span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: 'rgba(139,92,246,.1)', color: '#a78bfa' }}>{d.endianness}</span></td>
-                <td style={tdStyle}>{d.register_count}</td>
+                <td style={tdStyle}>
+                  {d.register_count}
+                  {d.template && (
+                    <div style={{ marginTop: 2, display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-muted)' }} title="The registers follow this device template; unlink to edit them here">
+                      <span>linked: {d.template.template_id} {d.template.version}</span>
+                      <button onClick={() => unlink(d.id)} aria-label={`Unlink ${d.name || d.id} from its template`} style={{ padding: '0 4px', borderRadius: 3, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 10 }}>Unlink</button>
+                    </div>
+                  )}
+                </td>
                 <td style={tdStyle}>
                   <span style={{ fontSize: 11, padding: '2px 6px', borderRadius: 4, background: statusMap[d.id] === 'online' ? 'rgba(34,197,94,.1)' : 'rgba(239,68,68,.1)', color: statusMap[d.id] === 'online' ? 'var(--cyan)' : 'var(--crit)' }}>
                     {d.enabled ? (statusMap[d.id] === 'online' ? 'online' : 'offline') : 'disabled'}

@@ -1049,3 +1049,223 @@ async fn catalog_rejects_unreachable_and_malformed_indexes() {
     .await;
     assert_eq!(status, StatusCode::BAD_GATEWAY);
 }
+
+fn register_names(device: &Value) -> Vec<String> {
+    device["registers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Linked devices follow their template: a preview names the affected devices
+/// and register changes, saving rewrites them, register edits are refused
+/// until the device is unlinked, and copied devices are left alone.
+#[cfg(feature = "modbus")]
+#[tokio::test]
+async fn linked_devices_follow_their_template_until_unlinked() {
+    let (app, cookie, storage) = admin_app().await;
+    let (status, _) = call(
+        &app,
+        &cookie,
+        "POST",
+        BASE,
+        Some(modbus_template("acme-lnk", "1.0.0")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for (id, linked) in [("pump-a", true), ("pump-b", true), ("pump-copy", false)] {
+        let (status, made) = call(
+            &app,
+            &cookie,
+            "POST",
+            &format!("{BASE}/acme-lnk/instantiate"),
+            Some(json!({"name": id, "id": id, "ip": "127.0.0.1", "port": 1, "linked": linked})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(made["linked"], linked);
+    }
+
+    let (status, linked) = call(
+        &app,
+        &cookie,
+        "GET",
+        &format!("{BASE}/acme-lnk/linked-devices"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    let ids: Vec<&str> = linked
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["pump-a", "pump-b"]);
+    assert!(linked[0]["changes"]["added"].as_array().unwrap().is_empty());
+    let (_, a) = call(&app, &cookie, "GET", "/api/v1/modbus-devices/pump-a", None).await;
+    assert_eq!(a["template"]["template_id"], "acme-lnk");
+    assert_eq!(a["template"]["source"], "local");
+
+    // Change the map: one register rescaled, one added.
+    let mut edited = modbus_template("acme-lnk", "1.0.0");
+    edited["registers"][1]["scale"] = json!(0.1);
+    edited["registers"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "power", "offset": 10, "register_type": "float32"}));
+
+    let (status, preview) = call(
+        &app,
+        &cookie,
+        "PUT",
+        &format!("{BASE}/acme-lnk?dry_run=true"),
+        Some(edited.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["linked_devices"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        preview["linked_devices"][0]["changes"]["added"],
+        json!(["power"])
+    );
+    assert_eq!(
+        preview["linked_devices"][0]["changes"]["changed"],
+        json!(["current"])
+    );
+    let (_, a) = call(&app, &cookie, "GET", "/api/v1/modbus-devices/pump-a", None).await;
+    assert_eq!(
+        register_names(&a),
+        ["voltage", "current"],
+        "a dry run changes nothing"
+    );
+
+    let (status, saved) = call(
+        &app,
+        &cookie,
+        "PUT",
+        &format!("{BASE}/acme-lnk"),
+        Some(edited),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    for id in ["pump-a", "pump-b"] {
+        let (_, d) = call(
+            &app,
+            &cookie,
+            "GET",
+            &format!("/api/v1/modbus-devices/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(register_names(&d), ["voltage", "current", "power"], "{id}");
+        assert_eq!(d["registers"][1]["scale"], 0.1);
+    }
+    let (_, copy) = call(
+        &app,
+        &cookie,
+        "GET",
+        "/api/v1/modbus-devices/pump-copy",
+        None,
+    )
+    .await;
+    assert_eq!(
+        register_names(&copy),
+        ["voltage", "current"],
+        "a copied device is not touched"
+    );
+    assert!(copy["template"].is_null());
+
+    // The id and version of a template cannot change through PUT.
+    let (status, _) = call(
+        &app,
+        &cookie,
+        "PUT",
+        &format!("{BASE}/acme-lnk"),
+        Some(modbus_template("acme-lnk", "2.0.0")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // A linked device's registers follow the template only.
+    let regs = json!({"registers": [{"name": "x", "offset": 0}]});
+    let (status, body) = call(
+        &app,
+        &cookie,
+        "PUT",
+        "/api/v1/modbus-devices/pump-a/registers",
+        Some(regs.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("unlink"), "{body}");
+    let (status, body) = call(&app, &cookie, "DELETE", &format!("{BASE}/acme-lnk"), None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"].as_str().unwrap().contains("pump-a, pump-b"),
+        "{body}"
+    );
+
+    // Unlink to customise: the device keeps its registers and can be edited.
+    let (status, _) = call(
+        &app,
+        &cookie,
+        "DELETE",
+        "/api/v1/modbus-devices/pump-a/template",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, a) = call(&app, &cookie, "GET", "/api/v1/modbus-devices/pump-a", None).await;
+    assert_eq!(register_names(&a), ["voltage", "current", "power"]);
+    let (status, _) = call(
+        &app,
+        &cookie,
+        "PUT",
+        "/api/v1/modbus-devices/pump-a/registers",
+        Some(regs),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Linking an existing copy takes the template's registers.
+    let (status, linked) = call(
+        &app,
+        &cookie,
+        "PUT",
+        "/api/v1/modbus-devices/pump-copy/template",
+        Some(json!({"template_id": "acme-lnk", "version": "1.0.0", "source": "local"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{linked}");
+    assert_eq!(linked["changes"]["added"], json!(["power"]));
+
+    // The project carries the link next to the registers.
+    let doc = crate::project_yaml::export_project_yaml(&storage)
+        .await
+        .unwrap();
+    let copy = doc
+        .entities("modbus_devices")
+        .iter()
+        .find(|d| d.get("id").and_then(|v| v.as_str()) == Some("pump-copy"))
+        .unwrap();
+    assert_eq!(
+        copy.get("template_id").and_then(|v| v.as_str()),
+        Some("acme-lnk")
+    );
+    assert_eq!(
+        copy.get("template_source").and_then(|v| v.as_str()),
+        Some("local")
+    );
+    let issues = crate::project_yaml::validate_doc(&doc, None, false);
+    assert!(
+        issues
+            .iter()
+            .all(|i| i.severity != crate::project_yaml::Severity::Error),
+        "{issues:?}"
+    );
+}

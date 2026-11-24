@@ -33,6 +33,7 @@ pub async fn list_modbus_devices(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, AppError> {
     let devices = state.storage.list_modbus_devices().await?;
+    let links = state.storage.modbus_template_links().await?;
     let mut result = Vec::new();
     for device in &devices {
         let registers = state.storage.list_modbus_registers(&device.id).await?;
@@ -48,6 +49,7 @@ pub async fn list_modbus_devices(
             "created_at": device.created_at,
             "updated_at": device.updated_at,
             "register_count": registers.len(),
+            "template": links.get(&device.id),
         }));
     }
     Ok(Json(result))
@@ -72,9 +74,11 @@ pub async fn get_modbus_device(
     let device = state.storage.get_modbus_device(&id).await?;
     let device = device.context("Device not found")?;
     let registers = state.storage.list_modbus_registers(&id).await?;
+    let template = state.storage.modbus_template_link(&id).await?;
     Ok(Json(json!({
         "device": device,
         "registers": registers,
+        "template": template,
     })))
 }
 
@@ -192,6 +196,9 @@ pub async fn update_modbus_device(
         )?,
     }
 
+    if body.get("registers").is_some() {
+        super::template_links::refuse_register_edit(&state, &id).await?;
+    }
     state.storage.update_modbus_device(&id, &body).await?;
 
     // If registers array is present, replace registers too
@@ -275,6 +282,7 @@ pub async fn replace_registers(
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     super::strict::check_items(&body, "registers", &super::strict::MODBUS_REGISTER)?;
+    super::template_links::refuse_register_edit(&state, &id).await?;
     let registers =
         ModbusRegisterInput::parse_all(&body).map_err(|e| AppError(anyhow::anyhow!(e)))?;
 

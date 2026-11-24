@@ -9,6 +9,7 @@
 pub mod builtin;
 pub mod catalog;
 pub mod format;
+pub mod link;
 
 use std::path::Path;
 

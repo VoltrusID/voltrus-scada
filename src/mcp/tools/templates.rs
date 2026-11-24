@@ -93,7 +93,8 @@ pub fn tools() -> Vec<Tool> {
                         "cov_lifetime": {"type": "integer", "minimum": 1, "description": "BACnet COV subscription lifetime in seconds. Default: the template's."},
                         "enabled": {"type": "boolean", "description": "BACnet only. Default true."},
                         "version": {"type": "string", "description": "Template version. Default: the newest."},
-                        "source": {"type": "string", "description": "Template source, when the id comes from several."}
+                        "source": {"type": "string", "description": "Template source, when the id comes from several."},
+                        "linked": {"type": "boolean", "description": "Modbus only: the device follows the template (saving the template rewrites its registers) instead of keeping a copy. Default false."}
                     },
                     "required": ["template_id", "name", "ip"],
                     "additionalProperties": false
@@ -239,6 +240,8 @@ fn instantiate(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
             enabled: Option<bool>,
             version: Option<String>,
             source: Option<String>,
+            #[serde(default)]
+            linked: bool,
         }
         let a: Args = parse_args(args)?;
         let req = InstantiateRequest {
@@ -255,6 +258,7 @@ fn instantiate(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
             enabled: a.enabled,
             version: a.version,
             source: a.source,
+            linked: a.linked,
         };
         from_handler(
             crate::api::device_templates::instantiate_template(

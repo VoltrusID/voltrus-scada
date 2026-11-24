@@ -3,12 +3,13 @@ import {
   useDeviceTemplates, useDeviceTemplate, useDeviceCatalog, useInstantiateDeviceTemplate, useSaveDeviceAsTemplate,
   useImportTemplateFile, useDeleteDeviceTemplate, useImportFromCatalog,
 } from '../queries'
+import { useUpdateDeviceTemplate } from '../queries/deviceTemplates'
 import { btnStyle, inputStyle, labelStyle, labelTextStyle, monoInputStyle, tabStyle } from '../styles'
 import { ImportFileButton, ImportNotice } from './FileDropZone'
 import {
-  DEFAULT_CATALOG_URL, filterCatalog, fromDeviceBody, instantiateBody, matchesFilter, refQuery, sourceLabel, templateKey,
+  DEFAULT_CATALOG_URL, filterCatalog, fromDeviceBody, instantiateBody, linkedChangeLines, matchesFilter, refQuery, sourceLabel, templateKey,
 } from '../deviceTemplates'
-import type { CatalogEntry, TemplateProtocol, TemplateSummary } from '../deviceTemplates'
+import type { CatalogEntry, LinkedDevice, TemplateProtocol, TemplateSummary } from '../deviceTemplates'
 
 const PROTOCOL_LABEL: Record<TemplateProtocol, string> = { modbus: 'Modbus', bacnet: 'BACnet' }
 
@@ -49,7 +50,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 function CreateFromTemplate({ template, onClose, onCreated }: { template: TemplateSummary; onClose: () => void; onCreated: (line: string) => void }) {
   const { data: detail } = useDeviceTemplate(template)
   const instantiate = useInstantiateDeviceTemplate()
-  const [form, setForm] = useState({ name: '', ip: '', port: '', unitId: '', deviceInstance: '', intervalMs: '' })
+  const [form, setForm] = useState({ name: '', ip: '', port: '', unitId: '', deviceInstance: '', intervalMs: '', linked: false })
   const [errors, setErrors] = useState<string[]>([])
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.value })
 
@@ -58,7 +59,7 @@ function CreateFromTemplate({ template, onClose, onCreated }: { template: Templa
     if (!built.body) { setErrors(built.errors); return }
     setErrors([])
     instantiate.mutate({ templateId: template.template_id, body: built.body }, {
-      onSuccess: r => { onCreated(`Created ${r.name} from ${template.manufacturer} ${template.model} with ${r.item_count} ${template.protocol === 'modbus' ? 'registers' : 'objects'}`); onClose() },
+      onSuccess: r => { onCreated(`Created ${r.name} from ${template.manufacturer} ${template.model} with ${r.item_count} ${template.protocol === 'modbus' ? 'registers' : 'objects'}${form.linked ? ', linked to the template' : ''}`); onClose() },
       onError: e => setErrors([message(e)]),
     })
   }
@@ -79,6 +80,15 @@ function CreateFromTemplate({ template, onClose, onCreated }: { template: Templa
         )}
         <label style={labelStyle}><span style={labelTextStyle}>Interval (ms)</span><input value={form.intervalMs} onChange={set('intervalMs')} inputMode="numeric" placeholder={String(detail?.interval_ms ?? 1000)} style={monoInputStyle} /></label>
       </div>
+      {template.protocol === 'modbus' && (
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12 }}>
+          <input type="checkbox" checked={form.linked} onChange={e => setForm({ ...form, linked: e.target.checked })} style={{ marginTop: 2 }} />
+          <span>
+            Link to the template: the device follows changes to this template's registers instead of keeping a copy.
+            Unlink it later to edit its registers on their own.{template.read_only && ' Built-in templates never change, so a link to one only records where the device came from.'}
+          </span>
+        </label>
+      )}
       {detail?.quirks && detail.quirks.length > 0 && (
         <div style={{ fontSize: 12, border: '1px solid var(--border)', borderRadius: 6, padding: '6px 10px' }}>
           <div style={{ color: 'var(--muted)', textTransform: 'uppercase', fontSize: 11, marginBottom: 2 }}>Quirks</div>
@@ -202,6 +212,31 @@ function Library({ protocol, onNotice }: { protocol: TemplateProtocol; onNotice:
   const [source, setSource] = useState('')
   const [open, setOpen] = useState<string | null>(null)
   const [use, setUse] = useState<TemplateSummary | null>(null)
+  const update = useUpdateDeviceTemplate()
+  const [pending, setPending] = useState<{ t: TemplateSummary; body: string; devices: LinkedDevice[] } | null>(null)
+
+  // Saving a changed template file: preview the linked devices first.
+  const previewUpdate = async (t: TemplateSummary, files: File[]) => {
+    const file = files[0]
+    if (!file) return
+    try {
+      const body = await file.text()
+      const r = await update.mutateAsync({ t, body, dryRun: true })
+      setPending({ t, body, devices: r.linked_devices })
+    } catch (e) {
+      onNotice([`${file.name}: ${message(e)}`])
+    }
+  }
+  const applyUpdate = async () => {
+    if (!pending) return
+    try {
+      const r = await update.mutateAsync({ t: pending.t, body: pending.body, dryRun: false })
+      onNotice([`Saved ${pending.t.template_id} ${pending.t.version}; ${r.linked_devices.length} linked device(s) updated`, ...linkedChangeLines(r.linked_devices)])
+    } catch (e) {
+      onNotice([message(e)])
+    }
+    setPending(null)
+  }
 
   const rows = all.filter(t => t.protocol === protocol && matchesFilter(t, { q, source }))
 
@@ -219,7 +254,7 @@ function Library({ protocol, onNotice }: { protocol: TemplateProtocol; onNotice:
   }
 
   const remove = (t: TemplateSummary) => {
-    if (!confirm(`Delete template ${t.template_id} ${t.version} (${sourceLabel(t.source)})? Devices made from it are not affected.`)) return
+    if (!confirm(`Delete template ${t.template_id} ${t.version} (${sourceLabel(t.source)})? Devices copied from it are not affected; devices linked to it must be unlinked first.`)) return
     del.mutate(t, { onSuccess: () => onNotice([`Deleted template ${t.template_id} ${t.version}`]), onError: e => onNotice([message(e)]) })
   }
 
@@ -260,6 +295,7 @@ function Library({ protocol, onNotice }: { protocol: TemplateProtocol; onNotice:
                         <div style={{ display: 'flex', gap: 4 }}>
                           <button onClick={() => setUse(t)} aria-label={`Create device from ${t.model}`} style={{ ...smallBtn, borderColor: 'var(--green)', color: 'var(--green)' }}>Use</button>
                           <a href={`/api/v1/device-templates/${encodeURIComponent(t.template_id)}/export${refQuery(t)}`} download aria-label={`Export ${t.model}`} style={smallBtn}>Export</a>
+                          {!t.read_only && t.protocol === 'modbus' && <ImportFileButton onFiles={files => previewUpdate(t, files)} label="Update" ariaLabel={`Update ${t.model} from a changed template file`} />}
                           {!t.read_only && <button onClick={() => remove(t)} aria-label={`Delete ${t.model}`} style={{ ...smallBtn, borderColor: 'var(--crit)', color: 'var(--crit)' }}>Del</button>}
                         </div>
                       </td>
@@ -271,6 +307,24 @@ function Library({ protocol, onNotice }: { protocol: TemplateProtocol; onNotice:
           )}
       </div>
       {use && <CreateFromTemplate template={use} onClose={() => setUse(null)} onCreated={line => onNotice([line])} />}
+      {pending && (
+        <Modal title={`Save ${pending.t.template_id} ${pending.t.version}`} onClose={() => setPending(null)}>
+          <div style={{ fontSize: 12 }}>
+            {pending.devices.length === 0
+              ? 'No device is linked to this template; only the template changes.'
+              : `${pending.devices.length} linked device(s) get the new register map (+ added, - removed, ~ changed):`}
+          </div>
+          {pending.devices.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, fontFamily: 'var(--font-mono)' }}>
+              {linkedChangeLines(pending.devices).map(l => <li key={l}>{l}</li>)}
+            </ul>
+          )}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={applyUpdate} disabled={update.isPending} style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)' }}>{update.isPending ? 'Saving...' : 'Save template'}</button>
+            <button onClick={() => setPending(null)} style={{ ...btnStyle, color: 'var(--muted)' }}>Cancel</button>
+          </div>
+        </Modal>
+      )}
     </>
   )
 }

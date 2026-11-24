@@ -69,6 +69,8 @@ mod system_docs;
 mod system_sampler;
 mod tag_tree;
 mod telemetry_delete;
+#[cfg(feature = "modbus")]
+pub(crate) mod template_links;
 pub(crate) mod ui;
 mod user_notifications;
 mod vertical_templates;
@@ -358,6 +360,10 @@ fn modbus_routes() -> Router<AppState> {
             "/api/v1/modbus-devices/{id}",
             get(modbus_devices::get_modbus_device),
         )
+        .route(
+            "/api/v1/device-templates/{id}/linked-devices",
+            get(template_links::list_linked_devices),
+        )
 }
 
 #[cfg(feature = "modbus")]
@@ -386,6 +392,14 @@ fn modbus_admin_routes() -> Router<AppState> {
         .route(
             "/api/v1/modbus-devices/{id}/restart",
             post(modbus_devices::restart_poller),
+        )
+        .route(
+            "/api/v1/modbus-devices/{id}/template",
+            put(template_links::link_device).delete(template_links::unlink_device),
+        )
+        .route(
+            "/api/v1/device-templates/{id}",
+            put(template_links::update_template),
         )
 }
 

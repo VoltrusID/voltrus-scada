@@ -938,6 +938,24 @@
             "null"
           ]
         },
+        "template_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "template_source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "template_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "unit_id": {
           "type": [
             "integer",
