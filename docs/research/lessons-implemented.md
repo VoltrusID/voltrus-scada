@@ -126,10 +126,12 @@ asked for on Modbus templates only", "the template save preview lists each linke
 device and its register changes").
 
 **Not done.** BACnet devices are always copies. Templates are edited by uploading a
-changed file (no register editor for templates in the UI). A project import writes
-the registers it lists and does not re-sync them from the template. Linking covers
-register maps only, not alarm limits or tags (that is WinCC item 6, equipment
-types).
+changed file (no register editor for templates in the UI). Linking covers register
+maps only, not alarm limits, tags, endianness, port, unit id or interval (that is
+WinCC item 6, equipment types). Fixed in review (see "Review fixes" below): editing
+a linked device's address in the web UI, project imports that left linked devices
+off their template or unlinked them, and the save preview not naming the tags a
+change breaks.
 
 ## 4. Alarm chatter: on-delay suggestion and chatter count
 
@@ -231,8 +233,10 @@ refused unknown arguments and go through these routes. Docs:
 setup wizard store values such as `led`; protocol modules add source types). OPC UA
 security names are not enumerated (stored spellings differ). Other untyped routes
 (SCADA layout save, the other protocols' device routes, flows) are not yet strict.
-A database holding an invalid value from before now fails to re-import until the
-value is fixed; the error says which.
+Values from before that the pollers read (an empty endianness, an unknown register
+type, BACnet abbreviations such as `AI`) are rewritten to their canonical form at
+startup and accepted on import (review fix); any other invalid value from before
+still fails to re-import until it is fixed, and the error says which.
 
 ## 7. API- and MCP-made screens stay editable (round trip)
 
@@ -341,3 +345,27 @@ from `created_by` (an old MCP write shows as its user or key). Alarm actions rec
 the user or key but not whether MCP was the front end; their badge is derived from
 the actor string in the client, so an API key shows as `API KEY #<id>` without its
 name.
+
+---
+
+## Review fixes
+
+Findings from the review of PR #29, fixed in ded6b84. Rust tests are in the
+`voltrus` library; client tests in `client/tests/`.
+
+| Finding | Fix | Tests |
+|---|---|---|
+| The tag editor wrote the suggested on-delay into the form on open, so any save stored it (item 4) | Only offered: **Use N s** changes the form, nothing else does (`offerOnDelay` in `client/src/alarmSuggestion.ts`) | `client/tests/flow/alarmSuggestionOffer.test.tsx` (open + save keeps 0; Use stores 5), `client/tests/alarmSuggestion.test.ts` |
+| The web editor could not change a linked Modbus device: it always sends `registers`, which answered 409 (item 3) | The server accepts the device's own registers back (compared by name, wire offset, type, area, scale; any order) and writes nothing; other registers still 409; `"registers": null` is absent. The form omits registers for a linked device, shows them read-only and offers **Unlink**. The native console sends registers only when copying a device, so it was not affected | `api::tests::device_templates::linked_device_updates_with_its_own_registers`, `client/tests/flow/linkedModbusForm.test.tsx` |
+| Values REST used to store (`endianness: ""`, unknown register types) and BACnet abbreviations failed the project import and validation (item 6) | Canonical on write; startup repair (`storage::schema::canonical_values`) rewrites stored endianness, register_type and BACnet object_type to what the pollers read; import reads `""` as `big` and BACnet aliases through the poller's alias table (`device_templates::bacnet_object_type`) | `storage::schema::canonical_values::tests::stored_values_become_what_the_pollers_read`, `project_yaml::tests::values_older_servers_stored_survive_the_round_trip`, `project_yaml::tests::bacnet_abbreviations_and_an_empty_endianness_import` |
+| A project import could leave linked devices on other registers than their template, and a file without `template_*` unlinked them (item 3) | `project_yaml::linked`: linked devices get the template's registers (warning), a template changed by the file carries the linked devices left out (merge), a merge without the link fields keeps the link; all appear in the plan, so their pollers restart. Documented in `docs/device-templates.md` "In a project", with the downgrade case | `project_yaml::tests::linked_devices_stay_on_their_template_through_an_import` |
+| A template save did not say which tags it breaks | `linked_devices[].changes.affected_data_sources`: tags on removed or renamed registers; shown in the save preview with a note that only registers follow the template | `api::tests::device_templates::template_dry_run_names_the_tags_it_breaks`, `client/tests/deviceTemplates.test.ts` |
+| A screen from `GET /screens` (`type`) was refused by `PUT` (item 6) | `type` allowed (ignored) | `api::tests::strict_bodies::a_screen_from_get_can_be_put_back` |
+| `GET /faceplates/{id}` adds `used_by`, which `PUT` refused | Ignored on input | `api::tests::faceplates::a_faceplate_from_get_can_be_put_back` |
+| Nits | `modbus_template_link` reads one row; instantiate deletes the device again when linking fails; command source lookups compare primary keys (`created_by` prefix and `CAST(substr(...))`, also for flows); `enqueue_checked_write` takes its origin from the caller; the tag card's value button stops keydown; `docs/docker.md` on a bind-mounted `/data` (uid 10001); CI prints `docker ps` and the container log when the health check fails | Existing suites (`cargo test --lib`, client tests) |
+
+**Not done.** BuildKit cache mounts (cargo registry, `target/`) are not exported to
+the GitHub Actions cache: the image layers already use `type=gha`, and exporting
+cache mounts needs an extra action (buildkit-cache-dance), left for later. The
+project JSON Schema still lists only the canonical BACnet object types and
+endianness values, so an editor flags `AI` that the import accepts.
