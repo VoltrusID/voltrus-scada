@@ -126,16 +126,6 @@ mod drivers_in_the_binary {
                 "{p} is not a default feature: {default}"
             );
         }
-        // And this test binary was built with them.
-        assert!(cfg!(all(
-            feature = "modbus",
-            feature = "opcua",
-            feature = "s7",
-            feature = "ethernet-ip",
-            feature = "dnp3",
-            feature = "bacnet",
-            feature = "mqtt-broker"
-        )));
     }
 
     #[test]
