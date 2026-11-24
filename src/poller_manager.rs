@@ -7,6 +7,7 @@ use tokio::task::JoinHandle;
 use crate::cache::DeviceCache;
 #[cfg(feature = "modbus")]
 use crate::models::DeviceConfig;
+use crate::models::DeviceStatus;
 #[cfg(feature = "dnp3")]
 use crate::models::Dnp3DeviceConfig;
 #[cfg(feature = "ethernet-ip")]
@@ -105,6 +106,9 @@ impl PollerManager {
     pub async fn start(&self, config: DeviceConfig) {
         let device_id = config.id.clone();
         self.cache.register_protocol(&device_id, "modbus").await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
+            .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;
         }
@@ -142,6 +146,9 @@ impl PollerManager {
     pub async fn start_s7(&self, config: S7DeviceConfig) {
         let device_id = config.id.clone();
         self.cache.register_protocol(&device_id, "s7").await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
+            .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;
         }
@@ -157,6 +164,9 @@ impl PollerManager {
         let device_id = config.id.clone();
         self.cache
             .register_protocol(&device_id, "ethernet_ip")
+            .await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
             .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;
@@ -196,6 +206,9 @@ impl PollerManager {
     pub async fn start_bacnet(&self, config: crate::models::BacnetDeviceConfig) {
         let device_id = config.id.clone();
         self.cache.register_protocol(&device_id, "bacnet").await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
+            .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;
         }
@@ -211,6 +224,9 @@ impl PollerManager {
         self.cache
             .register_protocol(&device_id, "voltrus_plc")
             .await;
+        self.cache
+            .register_poll_interval(&device_id, config.interval_ms)
+            .await;
         if self.is_running(&device_id).await {
             self.stop(&device_id).await;
         }
@@ -221,9 +237,19 @@ impl PollerManager {
         self.handles.write().await.insert(device_id, handle);
     }
 
+    /// Stop a device's poller. Its cached values stay visible but are marked
+    /// offline (bad quality): nothing refreshes them any more, so alarms,
+    /// history and the screens must not keep treating them as current.
     pub async fn stop(&self, device_id: &str) {
-        if let Some(handle) = self.handles.write().await.remove(device_id) {
+        let handle = self.handles.write().await.remove(device_id);
+        if let Some(handle) = handle {
             handle.abort();
+            // Wait for the task to end so a cache write it had in progress
+            // cannot land after the status below.
+            let _ = handle.await;
+            self.cache
+                .set_status(device_id, DeviceStatus::Offline)
+                .await;
         }
     }
 
@@ -234,9 +260,13 @@ impl PollerManager {
     }
 
     pub async fn stop_all(&self) {
-        let mut handles = self.handles.write().await;
-        for (_, handle) in handles.drain() {
+        let stopped: Vec<(String, JoinHandle<()>)> = self.handles.write().await.drain().collect();
+        for (_, handle) in &stopped {
             handle.abort();
+        }
+        for (id, handle) in stopped {
+            let _ = handle.await;
+            self.cache.set_status(&id, DeviceStatus::Offline).await;
         }
     }
 
@@ -282,14 +312,27 @@ impl PollerManager {
         }
     }
 
-    /// Start the pollers this node owns from the stored device configuration.
+    /// Start a poller for every enabled device of every protocol, as a node
+    /// that polls does at boot. Returns how many pollers were started.
+    pub async fn start_all_enabled(&self) -> anyhow::Result<usize> {
+        self.start_enabled(None).await
+    }
+
+    /// Start the pollers this node owns from the stored device configuration,
+    /// when it takes the devices over from its peer.
     ///
-    /// Every enabled Modbus and OPC-UA device starts, which is what a fresh
-    /// process starts at boot. S7, EtherNet/IP, Voltrus PLC, DNP3 and BACnet
-    /// devices are started by an operator, so they start only when their poller
-    /// id is in `also_running`: the set the previous owner of the devices was
-    /// running. Returns how many pollers were started.
+    /// Every enabled Modbus and OPC-UA device starts. Devices of the other
+    /// protocols start only when their poller id is in `also_running`, the set
+    /// the previous owner was running, so one an operator stopped stays
+    /// stopped. Returns how many pollers were started.
     pub async fn start_configured(&self, also_running: &HashSet<String>) -> anyhow::Result<usize> {
+        self.start_enabled(Some(also_running)).await
+    }
+
+    /// Start enabled devices; with `only`, devices other than Modbus and
+    /// OPC-UA start only when their poller id is in it.
+    async fn start_enabled(&self, only: Option<&HashSet<String>>) -> anyhow::Result<usize> {
+        let wanted = |id: &str| only.is_none_or(|ids| ids.contains(id));
         let mut started = 0usize;
         #[cfg(feature = "modbus")]
         for config in self.storage.get_all_device_configs().await? {
@@ -303,27 +346,27 @@ impl PollerManager {
         }
         #[cfg(feature = "s7")]
         for config in self.storage.get_all_s7_device_configs().await? {
-            if also_running.contains(&config.id) {
+            if wanted(&config.id) {
                 self.start_s7(config).await;
                 started += 1;
             }
         }
         #[cfg(feature = "ethernet-ip")]
         for config in self.storage.get_all_enip_device_configs().await? {
-            if also_running.contains(&config.id) {
+            if wanted(&config.id) {
                 self.start_ethernet_ip(config).await;
                 started += 1;
             }
         }
         for config in self.storage.get_all_voltrus_plc_device_configs().await? {
-            if also_running.contains(&config.id) {
+            if wanted(&config.id) {
                 self.start_voltrus_plc(config).await;
                 started += 1;
             }
         }
         #[cfg(feature = "dnp3")]
         for device in self.storage.list_dnp3_devices().await? {
-            if !device.enabled || !also_running.contains(&format!("dnp3_{}", device.id)) {
+            if !device.enabled || !wanted(&format!("dnp3_{}", device.id)) {
                 continue;
             }
             let points = self.storage.list_dnp3_points(device.id).await?;
@@ -335,7 +378,7 @@ impl PollerManager {
         }
         #[cfg(feature = "bacnet")]
         for device in self.storage.list_bacnet_devices().await? {
-            if !device.enabled || !also_running.contains(&format!("bacnet_{}", device.id)) {
+            if !device.enabled || !wanted(&format!("bacnet_{}", device.id)) {
                 continue;
             }
             let objects = self.storage.list_bacnet_objects(device.id).await?;
@@ -347,7 +390,88 @@ impl PollerManager {
                 started += 1;
             }
         }
-        let _ = also_running;
+        let _ = wanted;
         Ok(started)
+    }
+}
+
+#[cfg(all(test, feature = "s7", feature = "ethernet-ip"))]
+mod tests {
+    use super::*;
+
+    async fn manager_with_devices() -> PollerManager {
+        let storage = Storage::new_in_memory().unwrap();
+        // Port 1 refuses connections; the pollers only retry in the background.
+        storage
+            .create_s7_device("on", "127.0.0.1:1", 0, 1, 1000, true)
+            .await
+            .unwrap();
+        storage
+            .create_s7_device("off", "127.0.0.1:1", 0, 1, 1000, false)
+            .await
+            .unwrap();
+        storage
+            .create_enip_device("line", "127.0.0.1:1", 0, 1000, true, 0)
+            .await
+            .unwrap();
+        PollerManager::new(
+            DeviceCache::new(),
+            storage,
+            crate::network::NetworkManager::new(Vec::new()),
+        )
+    }
+
+    #[tokio::test]
+    async fn boot_starts_every_enabled_device() {
+        let manager = manager_with_devices().await;
+        manager.start_all_enabled().await.unwrap();
+        let running = manager.running_ids().await;
+        assert!(running.contains(&"s7_1".to_string()), "{running:?}");
+        assert!(running.contains(&"enip_1".to_string()), "{running:?}");
+        assert!(
+            !running.contains(&"s7_2".to_string()),
+            "disabled: {running:?}"
+        );
+        manager.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn takeover_keeps_operator_stopped_devices_stopped() {
+        let manager = manager_with_devices().await;
+        let previously_running = HashSet::from(["enip_1".to_string()]);
+        manager.start_configured(&previously_running).await.unwrap();
+        let running = manager.running_ids().await;
+        assert_eq!(running, vec!["enip_1".to_string()]);
+        manager.stop_all().await;
+    }
+
+    #[tokio::test]
+    async fn a_stopped_device_goes_offline_with_bad_values() {
+        let manager = manager_with_devices().await;
+        manager.start_all_enabled().await.unwrap();
+        // As if the poller had read a good value.
+        manager
+            .cache
+            .update(
+                "enip_1",
+                std::collections::HashMap::from([("flow".into(), 12.0)]),
+                false,
+            )
+            .await;
+        manager
+            .cache
+            .set_status("enip_1", DeviceStatus::Online)
+            .await;
+        manager.stop("enip_1").await;
+        let snap = manager
+            .cache
+            .get_all()
+            .await
+            .into_iter()
+            .find(|s| s.device_id == "enip_1")
+            .unwrap();
+        assert_eq!(snap.status, DeviceStatus::Offline);
+        assert!(snap.quality_of("flow").is_bad());
+        manager.stop_all().await;
     }
 }

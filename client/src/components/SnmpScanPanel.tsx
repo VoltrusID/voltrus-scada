@@ -83,7 +83,7 @@ export function SnmpScanPanel({ onClose }: Props) {
       <div
         style={{
           background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10,
-          width: 640, maxHeight: '85vh', display: 'flex', flexDirection: 'column',
+          width: 640, maxWidth: 'calc(100vw - 32px)', maxHeight: '85vh', display: 'flex', flexDirection: 'column',
         }}
         onClick={e => e.stopPropagation()}
       >

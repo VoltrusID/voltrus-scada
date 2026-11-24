@@ -131,6 +131,7 @@ pub async fn instantiate_template(
 
     let instantiator =
         Instantiator::new(&state.storage, template, body.name.clone(), instance_counts);
+    instantiator.check_limits().map_err(AppError::bad_request)?;
 
     let result = instantiator.instantiate().await.map_err(AppError)?;
 
@@ -167,6 +168,7 @@ pub async fn preview_template(
     // Build a preview without actually creating anything
     let instantiator =
         Instantiator::new(&state.storage, template, "preview".into(), instance_counts);
+    instantiator.check_limits().map_err(AppError::bad_request)?;
     let expanded_tags = instantiator.expand_tag_patterns();
     let expanded_alarms = instantiator.expand_alarm_patterns(&expanded_tags);
 

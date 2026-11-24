@@ -194,6 +194,8 @@ pub(crate) async fn serve(
     ready: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> anyhow::Result<()> {
     let app_config = config::load_config(config_path)?;
+    crate::security::outbound::set_policy(app_config.outbound_http);
+    crate::security::set_trusted_proxy(app_config.trusted_proxy.clone());
 
     tracing::info!(
         "Loaded config: {} devices in YAML, port {}",
@@ -219,38 +221,27 @@ pub(crate) async fn serve(
         Arc::new(std::sync::RwLock::new(status))
     };
     tracing::info!("Edition: {}", ext.name());
+    crate::edition::install(ext.clone());
+
+    // SMTP settings, shared by the settings API and the flow engine's notify nodes.
+    let smtp_config = Arc::new(tokio::sync::RwLock::new(app_config.smtp.clone()));
 
     // FlowEngine (lazy: only spawns when enabled flows exist)
     let flow_engine = {
-        let engine = crate::flow_engine::engine::FlowEngine::new(storage.clone(), cache.clone());
+        let engine = crate::flow_engine::engine::FlowEngine::new(storage.clone(), cache.clone())
+            .with_smtp(smtp_config.clone())
+            .with_ws_manager(ws_manager.clone());
         let mut has_enabled_flows = false;
         if let Ok(flows) = storage.list_flows().await {
             for flow in &flows {
                 if flow.enabled {
-                    match (
-                        serde_json::from_str::<crate::flow_engine::trigger::TriggerConfig>(
-                            &flow.trigger_config,
-                        ),
-                        serde_json::from_str::<Vec<crate::flow_engine::node::NodeConfig>>(
-                            &flow.nodes,
-                        ),
-                    ) {
-                        (Ok(trigger), Ok(nodes)) => {
-                            let engine_flow = crate::flow_engine::engine::Flow {
-                                id: flow.id.clone(),
-                                name: flow.name.clone(),
-                                enabled: flow.enabled,
-                                trigger,
-                                nodes,
-                            };
+                    match crate::flow_engine::engine::Flow::from_db(flow) {
+                        Ok(engine_flow) => {
                             engine.add_flow(engine_flow).await;
                             has_enabled_flows = true;
                         }
-                        _ => {
-                            tracing::warn!(
-                                "Failed to deserialize flow {} config, skipping",
-                                flow.id
-                            );
+                        Err(e) => {
+                            tracing::warn!("Flow {} is not valid, skipping it: {}", flow.id, e);
                         }
                     }
                 }
@@ -279,36 +270,13 @@ pub(crate) async fn serve(
 
     // Load device configs from DB and start pollers. The passive node of a
     // redundant pair starts none: its peer owns the devices until it takes over.
-    let poller_manager = PollerManager::new(
-        cache.clone(),
-        storage.clone(),
-        network::NetworkManager::new(app_config.networks.clone()),
-    );
+    let network_manager = network::NetworkManager::new(app_config.networks.clone());
+    let poller_manager =
+        PollerManager::new(cache.clone(), storage.clone(), network_manager.clone());
     if crate::node_role::polls_devices() {
-        #[cfg(feature = "modbus")]
-        {
-            let device_configs = storage.get_all_device_configs().await?;
-            for config in &device_configs {
-                poller_manager.start(config.clone()).await;
-                tracing::info!("Started poller for device {}", config.id);
-            }
-        }
-
-        // Start OPC-UA pollers
-        #[cfg(feature = "opcua")]
-        match storage.get_all_opcua_device_configs().await {
-            Ok(opcua_configs) => {
-                for config in &opcua_configs {
-                    poller_manager.start_opcua(config.clone()).await;
-                    tracing::info!("Started OPC-UA poller for device {}", config.id);
-                }
-                if !opcua_configs.is_empty() {
-                    tracing::info!("Started {} OPC-UA device(s)", opcua_configs.len());
-                }
-            }
-            Err(e) => {
-                tracing::warn!("Failed to load OPC-UA device configs: {}", e);
-            }
+        match poller_manager.start_all_enabled().await {
+            Ok(started) => tracing::info!("Started {started} device poller(s)"),
+            Err(e) => tracing::warn!("Failed to start device pollers: {e:#}"),
         }
     } else {
         tracing::info!("Passive node: device pollers start when this node takes over");
@@ -332,7 +300,10 @@ pub(crate) async fn serve(
         None => None,
     };
 
-    // Spawn persistence task
+    // Spawn persistence task. A message on `flush_tx` asks for one last
+    // cycle at shutdown; the task answers once the samples are written.
+    let (flush_tx, mut flush_rx) =
+        tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(1);
     {
         let cache = cache.clone();
         let storage = storage.clone();
@@ -349,20 +320,43 @@ pub(crate) async fn serve(
                 crate::alarm_delay::DelayState,
             > = std::collections::HashMap::new();
             let mut history_filter = crate::deadband::HistoryFilter::new();
+            let mut tag_changes = crate::notification::TagChangeTracker::default();
+            let tag_change_queue = crate::notification::TagChangeQueue::start(
+                storage.clone(),
+                crate::notification::TAG_CHANGE_QUEUE_CAPACITY,
+                crate::notification::TAG_CHANGE_WORKERS,
+            );
             loop {
-                ticker.tick().await;
+                let flush_ack = tokio::select! {
+                    _ = ticker.tick() => None,
+                    ack = flush_rx.recv() => ack,
+                };
                 // The passive node of a redundant pair never stores samples or
                 // raises alarms: the active node does, and replication feeds this one.
                 if !crate::node_role::is_active() {
+                    if let Some(ack) = flush_ack {
+                        let _ = ack.send(());
+                        return;
+                    }
                     continue;
                 }
                 let snapshots = cache.get_all().await;
                 if snapshots.is_empty() {
+                    if let Some(ack) = flush_ack {
+                        let _ = ack.send(());
+                        return;
+                    }
                     continue;
                 }
                 let mut records = Vec::new();
                 for snap in &snapshots {
                     for (metric, value) in &snap.metrics {
+                        // A bad value has no number worth keeping and a stale one
+                        // was stored when it was read; history shows a gap.
+                        let quality = snap.quality_of(metric);
+                        if quality.is_bad() || quality == crate::quality::Quality::UncertainStale {
+                            continue;
+                        }
                         records.push((
                             snap.device_id.clone(),
                             snap.timestamp,
@@ -396,102 +390,30 @@ pub(crate) async fn serve(
                     history_filter.reset();
                     tracing::error!("Persistence error: {e}");
                 }
+                if let Some(ack) = flush_ack {
+                    tracing::info!("Final persistence pass wrote {} sample(s)", records.len());
+                    let _ = ack.send(());
+                    return;
+                }
 
                 // Evaluate alarm thresholds
                 if let Ok(sources) = sources {
-                    let mut value_map = std::collections::HashMap::new();
-                    for snap in &snapshots {
-                        for (metric, value) in &snap.metrics {
-                            value_map.insert(format!("{}:{}", snap.device_id, metric), *value);
-                        }
-                    }
-
                     for source in &sources {
-                        let value = if source.source_type == "modbus" {
-                            // Find device metrics
-                            let metrics: std::collections::HashMap<String, f64> = snapshots
-                                .iter()
-                                .filter(|s| {
-                                    s.device_id == source.device_id
-                                        && s.status == DeviceStatus::Online
-                                })
-                                .flat_map(|s| s.metrics.clone())
-                                .collect();
-
-                            if metrics.is_empty() {
-                                continue;
-                            }
-
-                            // Check for expression in source_config
-                            if let Ok(cfg) =
-                                serde_json::from_str::<serde_json::Value>(&source.source_config)
-                            {
-                                if let Some(expr_str) =
-                                    cfg.get("expression").and_then(|v| v.as_str())
-                                {
-                                    match crate::expression::evaluate(expr_str, &metrics) {
-                                        Ok(val) => val,
-                                        Err(_) => continue,
-                                    }
-                                } else {
-                                    *value_map
-                                        .get(&format!(
-                                            "{}:{}",
-                                            source.device_id,
-                                            crate::api::data::metric_name(
-                                                &source.key,
-                                                &source.device_id
-                                            )
-                                        ))
-                                        .unwrap_or(&source.base_val)
-                                }
-                            } else {
-                                *value_map
-                                    .get(&format!(
-                                        "{}:{}",
-                                        source.device_id,
-                                        crate::api::data::metric_name(
-                                            &source.key,
-                                            &source.device_id
-                                        )
-                                    ))
-                                    .unwrap_or(&source.base_val)
-                            }
-                        } else {
+                        // Only real device tags raise alarms, and only on a good
+                        // value: a value that is missing, bad or stale leaves the
+                        // tag's alarms as they are rather than raising or clearing
+                        // them on a number that does not describe the process.
+                        if source.source_type != "modbus" {
+                            continue;
+                        }
+                        let Some(value) = crate::alarm_eval::alarmable(crate::alarm_eval::resolve(
+                            source, &snapshots,
+                        )) else {
                             continue;
                         };
-
-                        // Parse alarm deadband + low-alarm thresholds from source_config.
-                        // Low thresholds are Optional: absent => disabled (no low alarm),
-                        // present (even 0) => enabled. High thresholds use warn_val/crit_val.
-                        let (deadband, low_warn, low_crit): (f64, Option<f64>, Option<f64>) =
-                            if let Ok(cfg) =
-                                serde_json::from_str::<serde_json::Value>(&source.source_config)
-                            {
-                                (
-                                    cfg.get("deadband").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                                    cfg.get("low_warn").and_then(|v| v.as_f64()),
-                                    cfg.get("low_crit").and_then(|v| v.as_f64()),
-                                )
-                            } else {
-                                (0.0, None, None)
-                            };
-
-                        // Decide which alarm condition (if any) is met. High alarms fire
-                        // when value >= threshold; low alarms when value <= threshold.
-                        // Critical takes precedence. The None arm resolves all active alarms
-                        // for this source with direction-aware deadband hysteresis.
-                        let cond = if source.crit_val > 0.0 && value >= source.crit_val {
-                            Some(("critical", source.crit_val, "high"))
-                        } else if source.warn_val > 0.0 && value >= source.warn_val {
-                            Some(("warning", source.warn_val, "high"))
-                        } else if low_crit.is_some_and(|lc| value <= lc) {
-                            Some(("critical", low_crit.unwrap_or(0.0), "low"))
-                        } else if low_warn.is_some_and(|lw| value <= lw) {
-                            Some(("warning", low_warn.unwrap_or(0.0), "low"))
-                        } else {
-                            None
-                        };
+                        let thresholds = crate::alarm_eval::Thresholds::of(source);
+                        let deadband = thresholds.deadband;
+                        let cond = thresholds.condition(value);
 
                         // ISA-18.2 on/off delays (seconds) from the source's
                         // threshold config. 0 keeps the immediate behavior.
@@ -511,22 +433,26 @@ pub(crate) async fn serve(
                                     .is_in_cooldown(&source.key, severity)
                                     .await
                                     .unwrap_or(false);
-                                let mut may_fire = !has_unresolved && !in_cooldown;
                                 // ISA-18.2 on delay: the raised condition must persist
                                 // for on_delay seconds before the alarm fires. While
-                                // suppressed by an existing alarm or cooldown, drop any
-                                // pending so a fresh delay starts after it resolves.
-                                if on_delay > 0 {
-                                    if may_fire {
-                                        let state =
-                                            alarm_delays.entry(source.key.clone()).or_default();
-                                        may_fire = crate::alarm_delay::update_delay(
-                                            state, true, on_delay, 0, now,
-                                        ) == crate::alarm_delay::DelayTransition::Fire;
-                                    } else if let Some(state) = alarm_delays.get_mut(&source.key) {
-                                        state.pending_since = None;
-                                    }
-                                }
+                                // suppressed by an existing alarm or cooldown, a fresh
+                                // delay starts after it resolves. The condition being
+                                // back also restarts any off delay.
+                                let may_fire = match alarm_delays.get_mut(&source.key) {
+                                    Some(state) => crate::alarm_delay::raised(
+                                        state,
+                                        !has_unresolved && !in_cooldown,
+                                        on_delay,
+                                        now,
+                                    ),
+                                    None if on_delay > 0 => crate::alarm_delay::raised(
+                                        alarm_delays.entry(source.key.clone()).or_default(),
+                                        !has_unresolved && !in_cooldown,
+                                        on_delay,
+                                        now,
+                                    ),
+                                    None => !has_unresolved && !in_cooldown,
+                                };
                                 if may_fire {
                                     let msg = if alarm_type == "low" {
                                         format!(
@@ -660,13 +586,29 @@ pub(crate) async fn serve(
                 // Dispatch tag_change webhooks for the latest data.
                 // We do this after persistence + alarm evaluation, not on every
                 // tick — outbound webhooks get the latest snapshot values.
-                {
-                    let storage_wh = storage.clone();
+                // Webhooks are loaded once per cycle and fire only for tags
+                // whose value or quality changed since the last one sent.
+                let webhooks = storage
+                    .get_outbound_webhooks_for_event("tag_change")
+                    .await
+                    .unwrap_or_else(|e| {
+                        tracing::warn!("Failed to load outbound webhooks: {e}");
+                        Vec::new()
+                    });
+                if !webhooks.is_empty() {
+                    let mut queue_full = 0usize;
+                    let present: std::collections::HashSet<&str> =
+                        snapshots.iter().map(|s| s.device_id.as_str()).collect();
+                    tag_changes.retain_devices(&present);
                     for snap in &snapshots {
                         if snap.status != DeviceStatus::Online {
                             continue;
                         }
                         for (metric, value) in &snap.metrics {
+                            let quality = snap.quality_of(metric);
+                            if !tag_changes.changed(&snap.device_id, metric, *value, quality) {
+                                continue;
+                            }
                             let payload = serde_json::json!({
                                 "event": "tag_change",
                                 "device_id": snap.device_id,
@@ -674,14 +616,21 @@ pub(crate) async fn serve(
                                 "value": value,
                                 "timestamp": snap.timestamp,
                                 "status": "online",
+                                "quality": quality,
                             });
-                            crate::notification::dispatch_outbound_webhooks(
-                                &storage_wh,
-                                "tag_change",
-                                &payload,
-                            )
-                            .await;
+                            // Recorded only once queued: a change the full
+                            // queue refused is offered again next cycle.
+                            if tag_change_queue.enqueue(&webhooks, payload) {
+                                tag_changes.record(&snap.device_id, metric, *value, quality);
+                            } else {
+                                queue_full += 1;
+                            }
                         }
+                    }
+                    if queue_full > 0 {
+                        tracing::warn!(
+                            "tag_change webhook queue full: {queue_full} change(s) wait for the next cycle"
+                        );
                     }
                 }
             }
@@ -741,7 +690,9 @@ pub(crate) async fn serve(
 
     // Shared Modbus connection pool (used by both command queue and direct writes)
     #[cfg(feature = "modbus")]
-    let modbus_pool = std::sync::Arc::new(crate::modbus::ModbusPool::new());
+    let modbus_pool = std::sync::Arc::new(
+        crate::modbus::ModbusPool::new().with_network_manager(network_manager.clone()),
+    );
 
     // Spawn command queue processor
     #[cfg(feature = "modbus")]
@@ -782,6 +733,12 @@ pub(crate) async fn serve(
         }
     };
 
+    match crate::ai_copilot::key_store::migrate_plaintext(&storage, &auth_secret).await {
+        Ok(true) => tracing::info!("Encrypted the stored AI copilot API key"),
+        Ok(false) => {}
+        Err(e) => tracing::warn!("Could not encrypt the stored AI copilot API key: {e}"),
+    }
+
     let login_rate_limiter = crate::security::LoginRateLimiter::new();
     let global_rate_limiter = crate::security::GlobalRateLimiter::new();
     let intrusion_detector = crate::security::IntrusionDetector::new();
@@ -800,27 +757,9 @@ pub(crate) async fn serve(
         });
     }
 
-    let (audit_logger, mut audit_rx) = crate::security::AuditLogger::new();
-
-    // Spawn audit log consumer
-    {
-        let storage = storage.clone();
-        tokio::spawn(async move {
-            while let Some(event) = audit_rx.recv().await {
-                if let Err(e) = storage
-                    .log_audit_event(
-                        &event.action,
-                        &event.username,
-                        &event.resource,
-                        event.details.as_deref(),
-                    )
-                    .await
-                {
-                    tracing::warn!("Failed to write audit log: {}", e);
-                }
-            }
-        });
-    }
+    let (audit_logger, audit_rx) = crate::security::AuditLogger::new();
+    crate::security::AuditLogger::spawn_writer(storage.clone(), audit_rx);
+    let shutdown_audit = audit_logger.clone();
 
     // Initialize MQTT broker
     #[cfg(feature = "mqtt-broker")]
@@ -926,6 +865,9 @@ pub(crate) async fn serve(
     })
     .await?;
 
+    let public_demo = api::shared_accounts::PublicDemo::from_config(&app_config);
+    api::shared_accounts::check_no_shared_admins(&storage, &public_demo).await?;
+
     let state = AppState {
         cache: cache.clone(),
         storage: storage.clone(),
@@ -934,19 +876,21 @@ pub(crate) async fn serve(
         auth_secret,
         cors_origin: app_config.cors_origin.clone(),
         cookie_secure: app_config.cookie_secure,
+        public_demo: Arc::new(public_demo),
         retention_config: app_config.retention.clone(),
         flow_engine,
         login_rate_limiter,
         global_rate_limiter,
         audit_logger,
+        mcp_guard: Arc::new(crate::security::McpGuard::new(app_config.mcp.clone())),
         intrusion_detector,
         license_status,
         ext: ext.clone(),
-        smtp_config: Arc::new(tokio::sync::RwLock::new(app_config.smtp.clone())),
+        smtp_config,
         config_path: config_path.to_string(),
         ws_manager: ws_manager.clone(),
         mqtt_broker_state,
-        network_manager: network::NetworkManager::new(app_config.networks.clone()),
+        network_manager: network_manager.clone(),
         health_monitor,
         widget_registry: widget_sdk::WidgetRegistry::new(std::path::PathBuf::from(
             "voltrus/widgets",
@@ -967,12 +911,21 @@ pub(crate) async fn serve(
         let _ = ready.send(());
     }
 
-    // Once `shutdown` resolves the server stops accepting; open connections
-    // (live-data WebSockets never end on their own) get DRAIN_TIMEOUT to finish.
+    // Once `shutdown` resolves the samples read since the last persistence pass
+    // and the queued audit entries are saved, then the server stops accepting;
+    // open connections (live-data WebSockets never end on their own) get
+    // DRAIN_TIMEOUT to finish.
     let (draining_tx, draining_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = async move {
         shutdown.await;
-        tracing::info!("Shutting down, draining connections...");
+        tracing::info!("Shutting down, saving data...");
+        flush_before_exit(
+            &flush_tx,
+            &shutdown_audit,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        tracing::info!("Draining connections...");
         let _ = draining_tx.send(());
     };
     let drain_deadline = async move {
@@ -1002,6 +955,32 @@ pub(crate) async fn serve(
     Ok(())
 }
 
+/// Before exiting: one last persistence pass for the samples read since the
+/// previous one, then let the audit writer store what is queued. Bounded by
+/// `limit` so a stuck database cannot hold the process up.
+async fn flush_before_exit(
+    flush_tx: &tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<()>>,
+    audit: &crate::security::AuditLogger,
+    limit: std::time::Duration,
+) {
+    let deadline = tokio::time::Instant::now() + limit;
+    let (ack_tx, ack_rx) = tokio::sync::oneshot::channel();
+    let persisted = async {
+        flush_tx.send(ack_tx).await.ok()?;
+        ack_rx.await.ok()
+    };
+    if tokio::time::timeout_at(deadline, persisted).await.is_err() {
+        tracing::warn!("Final persistence pass did not finish in time");
+    }
+    while audit.queued() > 0 {
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!("{} audit event(s) not written before exit", audit.queued());
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 /// Listen on `addr`, with TCP_NODELAY on every accepted socket: live-data frames are
 /// small and sent right after a request or response, so Nagle's algorithm plus the
 /// browser's delayed ACK would hold them back by tens of milliseconds.
@@ -1023,6 +1002,42 @@ fn set_nodelay(tcp_stream: &mut tokio::net::TcpStream) {
 mod tests {
     use super::*;
     use axum::serve::Listener;
+
+    #[tokio::test]
+    async fn shutdown_waits_for_the_final_persistence_pass() {
+        let (flush_tx, mut flush_rx) =
+            tokio::sync::mpsc::channel::<tokio::sync::oneshot::Sender<()>>(1);
+        let written = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let w = written.clone();
+        tokio::spawn(async move {
+            let ack = flush_rx.recv().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            w.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = ack.send(());
+        });
+        let (audit, _rx) = crate::security::AuditLogger::new();
+        flush_before_exit(&flush_tx, &audit, std::time::Duration::from_secs(5)).await;
+        assert!(written.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn shutdown_flush_is_bounded() {
+        // Nobody answers the flush and the audit queue is never read.
+        let (flush_tx, _flush_rx) = tokio::sync::mpsc::channel(1);
+        let (audit, _rx) = crate::security::AuditLogger::new();
+        audit.log(crate::security::AuditEvent {
+            action: "test".into(),
+            username: "u".into(),
+            resource: "r".into(),
+            details: None,
+        });
+        assert_eq!(audit.queued(), 1);
+        let started = std::time::Instant::now();
+        flush_before_exit(&flush_tx, &audit, std::time::Duration::from_millis(200)).await;
+        let took = started.elapsed();
+        assert!(took >= std::time::Duration::from_millis(200));
+        assert!(took < std::time::Duration::from_secs(2));
+    }
 
     #[tokio::test]
     async fn accepted_sockets_have_tcp_nodelay() {

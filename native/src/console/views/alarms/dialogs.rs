@@ -108,7 +108,7 @@ pub(super) fn open_shelve(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    if !console.is_operator() {
+    if !console.may_operate() {
         return;
     }
     if console.state::<State>().reason.is_none() {
@@ -331,7 +331,10 @@ pub(crate) fn confirm_acknowledge_all(
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    if !console.is_signed_in() {
+    if !console.may_operate() {
+        if console.is_signed_in() {
+            console.show_toast("Acknowledging needs an operator role", true, cx);
+        }
         return;
     }
     let focus = console
@@ -560,7 +563,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
         return div().into_any_element();
     };
     let scroll = console.scroll("alarms.detail");
-    let operator = console.is_operator();
+    let operator = console.may_operate();
     let now = time_now_secs();
     let Some(alarm) = find(console, id).cloned() else {
         return div()
@@ -659,7 +662,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
     facts.push(fact("Alarm", format!("#{}", alarm.id), &theme).font_family(MONO));
 
     let mut actions: Vec<AnyElement> = Vec::new();
-    if !resolved && !shelved && alarm.acknowledged_at.is_none() {
+    if operator && !resolved && !shelved && alarm.acknowledged_at.is_none() {
         let target = alarm.clone();
         actions.push(
             Button::new("detail-ack", "Acknowledge")
@@ -695,7 +698,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
             ("Esc", "Close"),
         ]
     } else {
-        &[("J K", "Next"), ("A", "Acknowledge"), ("Esc", "Close")]
+        &[("J K", "Next"), ("Esc", "Close")]
     };
 
     div()
@@ -820,7 +823,7 @@ fn journal(
     };
     if !operator {
         return section.child(note(
-            "The journal is kept for operators (admin, demo, integration).".into(),
+            "The journal is kept for operators (operator, demo, integration, admin).".into(),
         ));
     }
     let journal = console
@@ -896,8 +899,13 @@ mod tests {
 
     /// Signed in as an admin with one critical alarm waiting.
     fn with_an_alarm(cx: &mut gpui::TestAppContext) -> Harness {
+        with_an_alarm_as(cx, "admin")
+    }
+
+    /// Signed in as `role` with one critical alarm waiting.
+    fn with_an_alarm_as(cx: &mut gpui::TestAppContext, role: &str) -> Harness {
         let mut h = Harness::new(cx);
-        h.sign_in("admin");
+        h.sign_in(role);
         h.event(Event::Alarms {
             alarms: vec![Alarm {
                 id: 1,
@@ -936,6 +944,35 @@ mod tests {
         assert!(!on_dialog, "Tab moved to a button");
         h.keys("enter");
         assert!(!acknowledged_all(&h.commands()));
+    }
+
+    /// An operator acknowledges and shelves; a viewer reads only.
+    #[gpui::test]
+    fn an_operator_acknowledges_and_a_viewer_cannot(cx: &mut gpui::TestAppContext) {
+        let alarm = |h: &mut Harness| h.update(|console, _, _| console.alarms[0].clone());
+        let mut h = with_an_alarm_as(cx, "operator");
+        let first = alarm(&mut h);
+        h.update(|console, _, _| acknowledge(console, &first));
+        assert!(matches!(h.commands().as_slice(), [Command::Acknowledge(1)]));
+        h.update(confirm_acknowledge_all);
+        h.draw();
+        h.keys("enter");
+        assert!(acknowledged_all(&h.commands()));
+        h.update(|console, window, cx| open_shelve(console, 1, window, cx));
+        assert!(h.update(|console, _, _| console.overlay.is_some()));
+
+        for role in ["viewer", "user"] {
+            let mut h = with_an_alarm_as(cx, role);
+            let first = alarm(&mut h);
+            h.update(|console, _, _| acknowledge(console, &first));
+            h.update(confirm_acknowledge_all);
+            h.update(|console, window, cx| open_shelve(console, 1, window, cx));
+            assert!(h.commands().is_empty(), "{role} sends nothing");
+            assert!(
+                h.update(|console, _, _| console.overlay.is_none()),
+                "{role} gets no dialog"
+            );
+        }
     }
 
     #[gpui::test]

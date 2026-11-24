@@ -173,7 +173,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         right: f32::from(right),
         wordmark: measure(
             window,
-            "Voltrus SCADA",
+            &crate::console::shell::product_name(console),
             FONT_EMPHASIS,
             SANS,
             FontWeight::SEMIBOLD,
@@ -405,7 +405,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                         div()
                             .text_size(FONT_EMPHASIS)
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Voltrus SCADA"),
+                            .child(crate::console::shell::product_name(console)),
                     )
                 }),
         )

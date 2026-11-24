@@ -636,13 +636,24 @@ impl RecipeUpdate {
 }
 
 /// The answer to `POST /api/v1/recipes/{id}/load`: one queued command per
-/// value the server found a data source for.
+/// value the tag's write policy accepted, and the values it refused.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct RecipeLoad {
+    /// False when the write policy refused any value.
     pub ok: bool,
     pub command_ids: Vec<String>,
+    pub refused: Vec<RefusedValue>,
     pub message: String,
+}
+
+/// A recipe value the tag's write policy refused (not writable, out of
+/// range, rate limited, ...), with the server's reason.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct RefusedValue {
+    pub register: String,
+    pub error: String,
 }
 
 /// A command status no longer changes.
@@ -898,6 +909,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load.command_ids, ["cmd_a", "cmd_b"]);
+        let partly: RecipeLoad = serde_json::from_str(
+            r#"{"ok": false, "command_ids": ["cmd_a"], "refused": [{"register": "sp", "error": "Tag is not writable"}], "message": "m"}"#,
+        )
+        .unwrap();
+        assert_eq!(partly.refused[0].register, "sp");
+        assert_eq!(partly.refused[0].error, "Tag is not writable");
     }
 
     #[test]

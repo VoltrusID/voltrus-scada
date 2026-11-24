@@ -92,6 +92,13 @@ impl Ctx<'_> {
     }
 }
 
+fn seq_str<'a>(m: &'a Mapping, name: &str) -> Vec<&'a str> {
+    match m.get(name) {
+        Some(Value::Sequence(items)) => items.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn seq<'a>(m: &'a Mapping, name: &str) -> Vec<&'a Mapping> {
     match m.get(name) {
         Some(Value::Sequence(items)) => items.iter().filter_map(Value::as_mapping).collect(),
@@ -205,7 +212,19 @@ fn check_children(ctx: &mut Ctx<'_>, sec: &Section, e: &Mapping, at: &str) {
 fn check_plain(ctx: &mut Ctx<'_>, sec: &Section, e: &Mapping, at: &str) {
     match sec.name {
         "flows" => {
-            for (i, node) in seq(e, "nodes").into_iter().enumerate() {
+            if let Some(Value::Mapping(trigger)) = e.get("trigger") {
+                for r in seq_str(trigger, "tags") {
+                    if !ctx.tag_refs.contains(r) {
+                        ctx.error(format!("{at}.trigger"), format!("unknown tag '{r}'"));
+                    }
+                }
+            }
+            // v1 pipeline, or the nodes of a v2 graph.
+            let nodes = match e.get("nodes") {
+                Some(Value::Mapping(graph)) => seq(graph, "nodes"),
+                _ => seq(e, "nodes"),
+            };
+            for (i, node) in nodes.into_iter().enumerate() {
                 if let Some(r) = node.get("tag").and_then(Value::as_str)
                     && !ctx.tag_refs.contains(r)
                 {

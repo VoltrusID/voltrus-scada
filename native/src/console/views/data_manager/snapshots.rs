@@ -302,7 +302,7 @@ fn clear_diff(console: &mut Console, cx: &mut Context<Console>) {
 // ── New ──────────────────────────────────────────────────────────────────
 
 fn open_create(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         return;
     }
     let field = ops_kit::text_field("e.g. Before flow refactor", false, cx);
@@ -351,7 +351,7 @@ fn create(console: &mut Console, cx: &mut Context<Console>) {
 // ── Rollback ─────────────────────────────────────────────────────────────
 
 fn ask_rollback(console: &mut Console, id: i64, window: &mut Window, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         return;
     }
     let Some(snapshot) = by_id(console, id) else {
@@ -507,7 +507,7 @@ struct RowLook {
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
     ensure_search(console, window, cx);
     let theme = theme(cx).clone();
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let rows: Rc<[usize]> = table(console, cx).into();
     let shown = rows.len();
     // Loaded or not, and the failure, without copying the list.
@@ -956,7 +956,7 @@ fn snapshot_row(
                         .tooltip(if look.operator {
                             "Roll back to this  R"
                         } else {
-                            "Operators only"
+                            "Admin, demo or integration only"
                         })
                         .color(theme.warning)
                         .disabled(!look.operator)
@@ -1218,7 +1218,7 @@ fn detail_sheet(
     let state = console.state::<State>();
     let id = state.detail_id.unwrap_or(0);
     let lines = state.detail_lines.clone();
-    let operator = console.is_operator();
+    let operator = console.may_configure();
     let summary = match &console.state::<State>().detail {
         Some(Ok(detail)) => Some(detail.summary.clone()),
         _ => None,

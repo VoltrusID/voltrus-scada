@@ -1,6 +1,6 @@
 use tokio_modbus::prelude::*;
 
-use super::types::value_to_words;
+use super::types::encode_register;
 use crate::models::*;
 
 pub async fn write_tag(
@@ -26,12 +26,31 @@ pub async fn write_tag(
         }
     };
 
-    // Coil writes
+    let fail = |error: String| WriteResult {
+        success: false,
+        device_response: None,
+        error: Some(error),
+        latency_ms: start.elapsed().as_millis() as u64,
+    };
+
+    match register.register_area.as_str() {
+        "input" | "discrete" => {
+            return fail(format!(
+                "Register '{}' is in the read-only {} area",
+                register.name, register.register_area
+            ));
+        }
+        _ => {}
+    }
+
+    let bind_addr = pool.bind_address(config.network.as_deref()).await;
+
     if register.register_area == "coil" {
         return write_coil(
             pool,
             &config.id,
             socket_addr,
+            bind_addr,
             config.unit_id,
             register.protocol_address(),
             value != 0.0,
@@ -40,10 +59,13 @@ pub async fn write_tag(
         .await;
     }
 
-    let words = value_to_words(value, &register.reg_type, &config.endianness);
+    let words = match encode_register(value, register, &config.endianness) {
+        Ok(words) => words,
+        Err(e) => return fail(e),
+    };
 
     let ctx_result = pool
-        .get_or_connect(&config.id, socket_addr, config.unit_id, None)
+        .get_or_connect(&config.id, socket_addr, config.unit_id, bind_addr)
         .await;
 
     let mut ctx = match ctx_result {
@@ -75,7 +97,7 @@ pub async fn write_tag(
     };
 
     match write_result {
-        Ok(Ok(_)) => {
+        Ok(Ok(Ok(()))) => {
             pool.return_connection(&config.id, ctx).await;
             WriteResult {
                 success: true,
@@ -84,6 +106,16 @@ pub async fn write_tag(
                     register.name, protocol_addr, value, words
                 )),
                 error: None,
+                latency_ms: start.elapsed().as_millis() as u64,
+            }
+        }
+        // The device answered with a Modbus exception: it refused the write.
+        Ok(Ok(Err(code))) => {
+            pool.return_connection(&config.id, ctx).await;
+            WriteResult {
+                success: false,
+                device_response: None,
+                error: Some(format!("Device refused the write: Modbus exception {code}")),
                 latency_ms: start.elapsed().as_millis() as u64,
             }
         }
@@ -112,13 +144,14 @@ async fn write_coil(
     pool: &crate::modbus::pool::ModbusPool,
     device_id: &str,
     socket_addr: std::net::SocketAddr,
+    bind_addr: Option<std::net::SocketAddr>,
     unit_id: u8,
     address: u16,
     coil_on: bool,
     start: std::time::Instant,
 ) -> WriteResult {
     let ctx_result = pool
-        .get_or_connect(device_id, socket_addr, unit_id, None)
+        .get_or_connect(device_id, socket_addr, unit_id, bind_addr)
         .await;
 
     let mut ctx = match ctx_result {
@@ -141,7 +174,7 @@ async fn write_coil(
     .await;
 
     match result {
-        Ok(Ok(_)) => {
+        Ok(Ok(Ok(()))) => {
             pool.return_connection(device_id, ctx).await;
             WriteResult {
                 success: true,
@@ -158,7 +191,7 @@ async fn write_coil(
             .await;
 
             match fallback {
-                Ok(Ok(_)) => {
+                Ok(Ok(Ok(()))) => {
                     pool.return_connection(device_id, ctx).await;
                     WriteResult {
                         success: true,
@@ -167,6 +200,17 @@ async fn write_coil(
                             address, coil_on
                         )),
                         error: None,
+                        latency_ms: start.elapsed().as_millis() as u64,
+                    }
+                }
+                Ok(Ok(Err(code))) => {
+                    pool.return_connection(device_id, ctx).await;
+                    WriteResult {
+                        success: false,
+                        device_response: None,
+                        error: Some(format!(
+                            "Device refused the coil write: Modbus exception {code}"
+                        )),
                         latency_ms: start.elapsed().as_millis() as u64,
                     }
                 }

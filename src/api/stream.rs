@@ -67,6 +67,8 @@ pub fn spawn_data_broadcaster(
                         quality: s.status.clone(),
                         ts: now,
                         simulated: s.source_type != "modbus" && s.source_type != "api",
+                        data_quality: Some(s.quality.as_str().to_string()),
+                        ts_ms: s.ts_ms,
                     });
                 }
                 let msg = crate::ws_types::ServerMessage::TagUpdateBatch {

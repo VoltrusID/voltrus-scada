@@ -60,6 +60,9 @@ pub struct AlarmAuditEntry {
 pub struct ShelfAlarmRequest {
     pub duration_secs: u64,
     pub reason: String,
+    /// An electronic signature, when the edition asks for one (428 answer).
+    #[serde(default, skip_serializing)]
+    pub signature: Option<super::SignatureInput>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]

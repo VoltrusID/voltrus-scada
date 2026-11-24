@@ -23,8 +23,10 @@ ship a fix before details are made public.
 ## Scope
 
 In scope: the Core server, the web client, the SDKs and the default
-configuration in this repository. The Enterprise add-on is closed source;
-report problems in it through the same channels.
+configuration in this repository. The Enterprise add-on
+([VoltrusID/voltrus-scada-enterprise](https://github.com/VoltrusID/voltrus-scada-enterprise),
+source available) is in scope too; report problems in it through the same
+channels.
 
 Out of scope: findings that need an already compromised host, social
 engineering, denial of service by sending very large traffic volumes, and
@@ -39,3 +41,8 @@ anyway if we ship a vulnerable version).
 * Change the generated admin password on first sign-in, and restrict who can
   reach the server port. Industrial networks should not be exposed to the
   internet.
+* To run a public demo, give the shared login the `viewer` role, list it in
+  `shared_accounts` (its password and preferences can't be changed and wrong
+  passwords never lock it; the per-address login limit still applies) and put
+  the credentials in `login_hint`, which the sign-in page shows. Never list an
+  admin: the server refuses to start.

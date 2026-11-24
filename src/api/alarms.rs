@@ -3,7 +3,8 @@ use axum::extract::{Extension, Path, Query, State};
 use axum::response::IntoResponse;
 use serde_json::json;
 
-use super::{AppError, AppState, AuthUser};
+use super::{AppError, AppState, AuthUser, signature};
+use crate::edition::SignedAction;
 use crate::models::*;
 
 /// GET /api/alarms/active/count
@@ -119,8 +120,10 @@ async fn get_cooldown_secs(storage: &crate::storage::Storage) -> i64 {
     params(
         ("id" = i64, Path, description = "Alarm ID")
     ),
+    request_body(content = Option<SignedBody>, description = "Only when the edition asks for a signature (428)"),
     responses(
         (status = 200, body = serde_json::Value),
+        (status = 428, description = "Retry with `signature`"),
     ),
     tag = "Alarms",
     security(("api_key" = []), ("cookie_auth" = []))
@@ -128,27 +131,59 @@ async fn get_cooldown_secs(storage: &crate::storage::Storage) -> i64 {
 pub async fn acknowledge_alarm(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<i64>,
-) -> Result<impl IntoResponse, AppError> {
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> Result<axum::response::Response, AppError> {
+    let origin = signature::origin_of(&user, api_key.is_some());
+    acknowledge_alarm_as(&state, &user, origin, id, signature.as_ref()).await
+}
+
+/// Acknowledge one alarm for a caller of the given origin (REST or MCP).
+pub async fn acknowledge_alarm_as(
+    state: &AppState,
+    user: &AuthUser,
+    origin: crate::edition::ActionOrigin,
+    id: i64,
+    signature: Option<&SignatureInput>,
+) -> Result<axum::response::Response, AppError> {
+    let resource = format!("alarm:{id}");
+    let signed = match signature::authorize_action(
+        state,
+        user,
+        origin,
+        SignedAction::AlarmAck,
+        resource.clone(),
+        json!({"alarm_id": id}),
+        signature,
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
+    };
     let cooldown = get_cooldown_secs(&state.storage).await;
     let changed = state
         .storage
         .acknowledge_alarm(id, &user.username, cooldown)
         .await?;
+    signature::audit_signed(state, user, "alarm_acknowledge", resource, &signed);
     state.ws_manager.broadcast_alarm_updates(
         "acknowledged",
         Some(&user.username),
         changed.as_slice(),
     );
-    Ok(Json(json!({"ok": true})))
+    Ok(Json(json!({"ok": true})).into_response())
 }
 
 /// POST /api/alarms/acknowledge-all
 #[utoipa::path(
     post,
     path = "/api/v1/alarms",
+    request_body(content = Option<SignedBody>, description = "Only when the edition asks for a signature (428)"),
     responses(
         (status = 200, body = serde_json::Value),
+        (status = 428, description = "Retry with `signature`"),
     ),
     tag = "Alarms",
     security(("api_key" = []), ("cookie_auth" = []))
@@ -156,16 +191,39 @@ pub async fn acknowledge_alarm(
 pub async fn acknowledge_all(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
-) -> Result<impl IntoResponse, AppError> {
+    api_key: Option<Extension<super::ApiKeyAuth>>,
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> Result<axum::response::Response, AppError> {
+    let signed = match signature::authorize_action(
+        &state,
+        &user,
+        signature::origin_of(&user, api_key.is_some()),
+        SignedAction::AlarmAck,
+        "alarm:*".to_string(),
+        json!({"all": true}),
+        signature.as_ref(),
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
+    };
     let cooldown = get_cooldown_secs(&state.storage).await;
     let changed = state
         .storage
         .acknowledge_all(&user.username, cooldown)
         .await?;
+    signature::audit_signed(
+        &state,
+        &user,
+        "alarm_acknowledge_all",
+        "alarm:*".to_string(),
+        &signed,
+    );
     state
         .ws_manager
         .broadcast_alarm_updates("acknowledged", Some(&user.username), &changed);
-    Ok(Json(json!({"ok": true})))
+    Ok(Json(json!({"ok": true})).into_response())
 }
 
 /// POST /api/v1/alarms/{id}/shelf
@@ -185,19 +243,36 @@ pub async fn acknowledge_all(
 pub async fn shelf_alarm(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<i64>,
     Json(body): Json<ShelfAlarmRequest>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<axum::response::Response, AppError> {
+    let resource = format!("alarm:{id}");
+    let signed = match signature::authorize_action(
+        &state,
+        &user,
+        signature::origin_of(&user, api_key.is_some()),
+        SignedAction::AlarmShelve,
+        resource.clone(),
+        json!({"alarm_id": id, "shelve": true, "duration_secs": body.duration_secs, "reason": body.reason}),
+        body.signature.as_ref(),
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
+    };
     let now = crate::timeutil::now_secs();
     let shelved_until = now + body.duration_secs as i64;
     let changed = state
         .storage
         .shelf_alarm(id, shelved_until, &user.username, &body.reason)
         .await?;
+    signature::audit_signed(&state, &user, "alarm_shelve", resource, &signed);
     state
         .ws_manager
         .broadcast_alarm_updates("shelved", Some(&user.username), changed.as_slice());
-    Ok(Json(json!({"ok": true, "shelved_until": shelved_until})))
+    Ok(Json(json!({"ok": true, "shelved_until": shelved_until})).into_response())
 }
 
 /// POST /api/v1/alarms/{id}/unshelf
@@ -207,21 +282,42 @@ pub async fn shelf_alarm(
     params(
         ("id" = i64, Path, description = "Alarm ID")
     ),
+    request_body(content = Option<SignedBody>, description = "Only when the edition asks for a signature (428)"),
     responses(
         (status = 200, body = serde_json::Value),
+        (status = 428, description = "Retry with `signature`"),
     ),
     tag = "Alarms",
     security(("api_key" = []), ("cookie_auth" = []))
 )]
 pub async fn unshelf_alarm(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<i64>,
-) -> Result<impl IntoResponse, AppError> {
+    super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
+) -> Result<axum::response::Response, AppError> {
+    let resource = format!("alarm:{id}");
+    let signed = match signature::authorize_action(
+        &state,
+        &user,
+        signature::origin_of(&user, api_key.is_some()),
+        SignedAction::AlarmShelve,
+        resource.clone(),
+        json!({"alarm_id": id, "shelve": false}),
+        signature.as_ref(),
+    )
+    .await
+    {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
+    };
     let changed = state.storage.unshelf_alarm(id).await?;
+    signature::audit_signed(&state, &user, "alarm_unshelve", resource, &signed);
     state
         .ws_manager
         .broadcast_alarm_updates("unshelved", None, changed.as_slice());
-    Ok(Json(json!({"ok": true})))
+    Ok(Json(json!({"ok": true})).into_response())
 }
 
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams)]

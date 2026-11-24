@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use voltrus_scada_native::api::admin::{
     ApiKeyList, KEY_ROLES, NewApiKey, NotificationRule, PERMISSIONS, RbacRole, TestOutcome,
-    USER_ROLES, User, api_key_body, new_user_body, parse_targets, role_body, rule_body, test_body,
-    user_update_body,
+    USER_ROLES, User, api_key_body, disabled_body, new_user_body, parse_targets, role_body,
+    rule_body, test_body, user_update_body,
 };
 
 const SERVER_RBAC: &str = include_str!("../../src/models/rbac_types.rs");
@@ -41,6 +41,7 @@ struct ServerUser {
     salt: String,
     role: String,
     must_change_password: bool,
+    disabled: bool,
     #[serde(skip_serializing)]
     failed_attempts: i64,
     #[serde(skip_serializing)]
@@ -64,6 +65,8 @@ struct UpdateUserRequest {
     role: Option<String>,
     #[serde(default)]
     password: Option<String>,
+    #[serde(default)]
+    disabled: Option<bool>,
 }
 
 /// `models::rbac_types::Role`.
@@ -224,6 +227,7 @@ fn users_decode_without_secrets() {
             salt: "salt".into(),
             role: "admin".into(),
             must_change_password: false,
+            disabled: false,
             failed_attempts: 0,
             locked_until: None,
         },
@@ -234,6 +238,7 @@ fn users_decode_without_secrets() {
             salt: "pepper".into(),
             role: "demo".into(),
             must_change_password: true,
+            disabled: true,
             failed_attempts: 2,
             locked_until: Some(1_700_000_000),
         },
@@ -248,7 +253,7 @@ fn users_decode_without_secrets() {
             .collect();
         assert_eq!(
             keys,
-            BTreeSet::from(["id", "username", "role", "must_change_password"]),
+            BTreeSet::from(["id", "username", "role", "must_change_password", "disabled"]),
             "the secrets never reach the wire"
         );
     }
@@ -260,6 +265,7 @@ fn users_decode_without_secrets() {
             username: "ana.shiftlead".into(),
             role: "demo".into(),
             must_change_password: true,
+            disabled: true,
         }
     );
     assert!(users[0].is_admin() && !users[1].is_admin());
@@ -285,6 +291,7 @@ fn user_bodies_are_what_the_server_reads() {
         UpdateUserRequest {
             role: Some("demo".into()),
             password: Some("new-secret".into()),
+            disabled: None,
         }
     );
     let password_only: Value = user_update_body(None, Some("new-secret")).unwrap();
@@ -295,6 +302,9 @@ fn user_bodies_are_what_the_server_reads() {
     let password_only: UpdateUserRequest = serde_json::from_value(password_only).unwrap();
     assert_eq!(password_only.role, None);
     assert!(user_update_body(None, None).is_none());
+    let disable: UpdateUserRequest = serde_json::from_value(disabled_body(true)).unwrap();
+    assert_eq!(disable.disabled, Some(true));
+    assert_eq!((disable.role, disable.password), (None, None));
 }
 
 #[test]

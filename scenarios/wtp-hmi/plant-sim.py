@@ -10,7 +10,10 @@ standby takes over, flows follow demand.
 
 Map: holding registers, float32 big-endian, two words per tag, addresses in
 TAGS order (0, 2, 4, ...). Run/command tags are writable (FC06 or FC16); a
-write puts that tag in manual until it is written again.
+write puts that tag in manual until it is written again. Setpoints (SETPOINTS)
+are writable too: a write is clamped to the setpoint's range and the process
+follows it (cl2_dose_sp sets the hypochlorite dose, so the chlorine residual
+drifts towards the new level over a few minutes).
 """
 import argparse
 import asyncio
@@ -39,10 +42,13 @@ TAGS = [
     'power_kw', 'energy_kwh', 'bus_voltage', 'power_factor',
     # Added later; kept at the end so earlier addresses stay put
     'flash_mix_level', 'clarifier_rake_run',
+    'cl2_dose_sp',
 ]
 ADDR = {name: i * 2 for i, name in enumerate(TAGS)}
 WRITABLE = {'clarifier_rake_run', 'p101a_run', 'p101b_run', 'xv101_open', 'coag_pump_run', 'flash_mixer_run', 'sludge_pump_run',
             'cl2_pump_run', 'p301a_run', 'p301b_run', 'p301c_run', 'air_blower_run', 'backwash_pump_run', 'fcv201_pos'}
+# Setpoint -> (low, high) clamp the PLC applies to a write; the SCADA write policy is narrower.
+SETPOINTS = {'cl2_dose_sp': (0.0, 5.0)}
 
 DT = 0.5           # model step, seconds
 FAULT_PERIOD = 300  # P-101B trips for FAULT_LEN s every FAULT_PERIOD s
@@ -57,14 +63,18 @@ class Plant:
         v = self.v
         v.update(raw_tank_level=58.0, coag_tank_level=71.0, clearwell_level=64.0, xv101_open=1,
                  filter1_headloss=0.9, filter2_headloss=2.25, filter3_headloss=1.5,
-                 energy_kwh=184_220.0, fcv201_pos=46.0, p301a_speed=48.5, chlorine_residual=1.15)
+                 energy_kwh=184_220.0, fcv201_pos=46.0, p301a_speed=48.5, chlorine_residual=1.15,
+                 cl2_dose_sp=1.7)
         self.backwash_left = [0.0, 0.0, 0.0]
 
     def cmd(self, name: str, auto: float) -> float:
         return self.manual.get(name, auto)
 
     def write(self, name: str, value: float):
-        if name in WRITABLE:
+        if name in SETPOINTS:
+            if math.isfinite(value):
+                self.v[name] = clamp(value, *SETPOINTS[name])
+        elif name in WRITABLE:
             self.manual[name] = value
 
     def step(self):
@@ -140,7 +150,7 @@ class Plant:
         v['distribution_pressure'] = max(0.0, 1.1 + 1.55 * hl_pumps - 0.00025 * v['output_flow'] + n(0.03)) if hl_pumps else 0.4
 
         v['cl2_pump_run'] = self.cmd('cl2_pump_run', 1.0)
-        v['cl2_dose'] = (1.7 + 0.1 * math.sin(t / 150) + n(0.02)) * v['cl2_pump_run']
+        v['cl2_dose'] = (v['cl2_dose_sp'] + 0.1 * math.sin(t / 150) + n(0.02)) * v['cl2_pump_run']
         target = 1.15 * v['cl2_dose'] / 1.7
         v['chlorine_residual'] += (target - v['chlorine_residual']) * 0.01 * DT
         v['treated_ph'] = 7.6 + 0.08 * math.sin(t / 300) + n(0.01)

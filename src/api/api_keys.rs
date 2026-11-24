@@ -12,8 +12,10 @@ pub struct CreateApiKeyRequest {
     pub name: String,
     #[serde(default)]
     pub expires_at: Option<i64>,
-    /// Free text (the web sends a JSON list), stored and listed as given.
-    /// Not enforced: the key's `role` alone decides what it may call.
+    /// JSON list of scopes: `read`/`data:read` (every key reads) and
+    /// `write`/`data:write`. An integration key that lists scopes needs a
+    /// write scope to use the write routes; an empty list leaves the role in
+    /// charge. There is no admin scope.
     #[serde(default = "default_permissions")]
     pub permissions: String,
     /// Key role. Defaults to "api" (read-only). "integration" keys also pass
@@ -85,6 +87,11 @@ pub async fn create_api_key(
             .into_response());
     }
 
+    if let Err(message) = super::auth_middleware::validate_key_scopes(&body.permissions, &body.role)
+    {
+        return Ok((StatusCode::BAD_REQUEST, Json(json!({"error": message}))).into_response());
+    }
+
     let (id, plain_key) = state
         .storage
         .create_api_key(
@@ -110,7 +117,7 @@ pub async fn create_api_key(
         "role": body.role,
         "key": plain_key,
         "warning": "Store this key securely. It will not be shown again.",
-        "note": "Permissions are stored but not enforced: the key role decides access (api = read-only, integration = also operator routes)."
+        "note": "The role and scopes decide access: api = read-only; integration = also the operator routes, unless its permissions list scopes without write."
     }))
     .into_response())
 }

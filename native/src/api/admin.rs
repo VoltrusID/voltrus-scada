@@ -8,7 +8,8 @@
 //! (checked here the way the server checks them, so a form says what is
 //! wrong before it asks), and the rules that keep an admin from locking
 //! themselves out. Users, roles and keys are strictly admin routes;
-//! notification writes are operator routes, their list any user's.
+//! notification writes need admin, demo or integration, their list any
+//! user's.
 
 use std::fmt;
 
@@ -26,12 +27,28 @@ pub struct User {
     pub username: String,
     pub role: String,
     pub must_change_password: bool,
+    /// A disabled account keeps its row but cannot sign in (`models::User`).
+    pub disabled: bool,
 }
 
 impl User {
     pub fn is_admin(&self) -> bool {
         self.role == "admin"
     }
+
+    /// An admin who can still sign in: the server's last-admin checks count
+    /// only these (`count_other_active_admins`).
+    pub fn is_enabled_admin(&self) -> bool {
+        self.is_admin() && !self.disabled
+    }
+}
+
+/// Enabled admins other than `user`.
+fn other_enabled_admins(user: &User, users: &[User]) -> usize {
+    users
+        .iter()
+        .filter(|other| other.id != user.id && other.is_enabled_admin())
+        .count()
 }
 
 /// A role the server stores on a user: the only values
@@ -44,23 +61,25 @@ pub struct UserRole {
     pub reach: &'static str,
 }
 
-/// Least to most access. Only `admin` and `demo` pass the server's
-/// operator routes; `operator`, `viewer` and `user` read and acknowledge.
+/// Least to most access. `viewer` and `user` read only; `operator` also
+/// operates (writes tags, acknowledges and shelves alarms, cancels
+/// commands, loads recipes, runs flows, hands over shifts); `demo` and
+/// `admin` also configure.
 pub const USER_ROLES: [UserRole; 5] = [
     UserRole {
         id: "viewer",
         label: "Viewer",
-        reach: "Reads and acknowledges alarms",
+        reach: "Reads only",
     },
     UserRole {
         id: "user",
         label: "User",
-        reach: "Reads and acknowledges alarms",
+        reach: "Reads only",
     },
     UserRole {
         id: "operator",
         label: "Operator",
-        reach: "Reads and acknowledges alarms; the server's operator routes need demo or admin",
+        reach: "Operates: writes tags, acknowledges and shelves alarms, loads recipes, runs flows; configures nothing",
     },
     UserRole {
         id: "demo",
@@ -135,8 +154,8 @@ pub fn role_change_refused(me: &str, user: &User, role: &str, users: &[User]) ->
     if user.username == me {
         return Some("You cannot take away your own admin role".to_owned());
     }
-    let admins = users.iter().filter(|other| other.is_admin()).count();
-    (admins <= 1).then(|| format!("{} is the last admin", user.username))
+    (!user.disabled && other_enabled_admins(user, users) == 0)
+        .then(|| format!("{} is the last admin", user.username))
 }
 
 /// `PUT /api/v1/users/{id}` (`UpdateUserRequest`): the role when it
@@ -159,8 +178,27 @@ pub fn delete_refused(me: &str, user: &User, users: &[User]) -> Option<String> {
     if user.username == me {
         return Some("You cannot delete yourself".to_owned());
     }
-    let admins = users.iter().filter(|other| other.is_admin()).count();
-    (user.is_admin() && admins <= 1).then(|| format!("{} is the last admin", user.username))
+    (user.is_enabled_admin() && other_enabled_admins(user, users) == 0)
+        .then(|| format!("{} is the last admin", user.username))
+}
+
+/// Why `me` may not disable `user`, if they may not (the server refuses
+/// "cannot disable yourself" and the last enabled admin). Enabling is always
+/// allowed.
+pub fn disable_refused(me: &str, user: &User, users: &[User]) -> Option<String> {
+    if user.disabled {
+        return None;
+    }
+    if user.username == me {
+        return Some("You cannot disable yourself".to_owned());
+    }
+    (user.is_admin() && other_enabled_admins(user, users) == 0)
+        .then(|| format!("{} is the last enabled admin", user.username))
+}
+
+/// `PUT /api/v1/users/{id}` that disables or enables the account.
+pub fn disabled_body(disabled: bool) -> Value {
+    json!({ "disabled": disabled })
 }
 
 // ── Roles ────────────────────────────────────────────────────────────────
@@ -320,7 +358,7 @@ pub const KEY_ROLES: [KeyRole; 2] = [
     KeyRole {
         id: "integration",
         label: "Integration",
-        reach: "Also passes the operator routes: writes, screens, devices",
+        reach: "Also operates and configures: writes, screens, devices",
     },
 ];
 
@@ -581,7 +619,48 @@ mod tests {
             username: name.into(),
             role: role.into(),
             must_change_password: false,
+            disabled: false,
         }
+    }
+
+    #[test]
+    fn disabling_refuses_yourself_and_the_last_enabled_admin() {
+        let mut users = vec![
+            user(1, "admin", "admin"),
+            user(2, "ana", "demo"),
+            user(3, "bo", "admin"),
+        ];
+        assert!(
+            disable_refused("admin", &users[0], &users).is_some(),
+            "yourself"
+        );
+        assert!(disable_refused("admin", &users[1], &users).is_none());
+        assert!(disable_refused("admin", &users[2], &users).is_none());
+
+        // With bo disabled, admin is the last enabled admin.
+        users[2].disabled = true;
+        assert!(disable_refused("ana", &users[0], &users).is_some());
+        assert!(delete_refused("ana", &users[0], &users).is_some());
+        assert!(role_change_refused("ana", &users[0], "viewer", &users).is_some());
+        // A disabled admin may be enabled, deleted or demoted.
+        assert!(disable_refused("admin", &users[2], &users).is_none());
+        assert!(delete_refused("admin", &users[2], &users).is_none());
+        assert!(role_change_refused("admin", &users[2], "viewer", &users).is_none());
+
+        assert_eq!(disabled_body(true), json!({ "disabled": true }));
+        assert_eq!(disabled_body(false), json!({ "disabled": false }));
+    }
+
+    #[test]
+    fn a_user_row_reads_the_disabled_flag() {
+        let row: User = serde_json::from_value(json!({
+            "id": 4, "username": "oidc:ana", "role": "viewer", "disabled": true
+        }))
+        .unwrap();
+        assert!(row.disabled);
+        let old: User =
+            serde_json::from_value(json!({ "id": 5, "username": "x", "role": "viewer" })).unwrap();
+        assert!(!old.disabled, "an older server without the flag");
     }
 
     #[test]

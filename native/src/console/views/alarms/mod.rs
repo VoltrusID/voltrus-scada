@@ -108,7 +108,7 @@ fn online(console: &Console) -> bool {
 }
 
 fn fetch_summary(console: &mut Console) {
-    if online(console) && console.is_operator() {
+    if online(console) && console.may_operate() {
         request(
             console,
             "alarms.summary",
@@ -128,7 +128,7 @@ pub(super) fn fetch_history(console: &mut Console) {
 }
 
 fn fetch_analytics(console: &mut Console) {
-    if online(console) && console.is_operator() {
+    if online(console) && console.may_operate() {
         let now = time_now_secs();
         request(
             console,
@@ -142,7 +142,7 @@ fn fetch_analytics(console: &mut Console) {
 }
 
 fn fetch_audit(console: &mut Console) {
-    if online(console) && console.is_operator() {
+    if online(console) && console.may_operate() {
         request(
             console,
             "alarms.audit",
@@ -152,7 +152,7 @@ fn fetch_audit(console: &mut Console) {
 }
 
 pub(super) fn fetch_journal(console: &mut Console, alarm: i64) {
-    if online(console) && console.is_operator() {
+    if online(console) && console.may_operate() {
         console.call(
             CallKey::new("alarms.journal").with(alarm),
             Call::get::<Vec<AlarmJournalEntry>>(format!("/api/v1/alarms/{alarm}/journal")),
@@ -485,11 +485,11 @@ fn summary_strip(console: &Console, theme: &Theme) -> Stateful<gpui::Div> {
         .state_ref::<State>()
         .and_then(|state| state.summary.as_ref());
     let counts = match summary {
-        Some(Ok(summary)) if console.is_operator() => Counts::from_server(summary),
+        Some(Ok(summary)) if console.may_operate() => Counts::from_server(summary),
         _ => Counts::local(&console.alarms),
     };
     let note = match summary {
-        Some(Err(error)) if console.is_operator() => {
+        Some(Err(error)) if console.may_operate() => {
             format!("Summary unavailable ({error}); counted from the open alarms")
         }
         _ if counts.from_server => "Server summary".to_owned(),

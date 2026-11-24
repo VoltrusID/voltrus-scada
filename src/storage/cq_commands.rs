@@ -49,7 +49,13 @@ impl Storage {
     /// who created it (`created_by`) and why. Writes from a user (REST,
     /// WebSocket) use this so the audit trail starts with the person, not with
     /// the queue's own "system" transitions.
-    pub async fn insert_command_audited(&self, cmd: &Command, reason: Option<&str>) -> Result<()> {
+    /// `previous_value` is the tag's value when the write was queued.
+    pub async fn insert_command_audited(
+        &self,
+        cmd: &Command,
+        reason: Option<&str>,
+        previous_value: Option<f64>,
+    ) -> Result<()> {
         let conn = self.conn.clone();
         let cmd = cmd.clone();
         let reason = reason.map(str::to_string);
@@ -58,9 +64,16 @@ impl Storage {
             let tx = conn.unchecked_transaction().context("Begin tx failed")?;
             insert_command_row(&tx, &cmd)?;
             tx.execute(
-                "INSERT INTO command_audit_log (command_id, old_status, new_status, changed_by, reason, created_at)
-                 VALUES (?, '', ?, ?, ?, ?)",
-                rusqlite::params![cmd.id, cmd.status, cmd.created_by, reason, cmd.created_at],
+                "INSERT INTO command_audit_log (command_id, old_status, new_status, changed_by, reason, created_at, previous_value)
+                 VALUES (?, '', ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    cmd.id,
+                    cmd.status,
+                    cmd.created_by,
+                    reason,
+                    cmd.created_at,
+                    previous_value
+                ],
             )
             .context("Insert command audit log failed")?;
             tx.commit().context("Commit failed")?;
@@ -153,6 +166,75 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Mark every command left in `sent` as failed. A command is `sent` only
+    /// while the queue is delivering it, so one found at startup was cut off
+    /// by a restart: whether the device took the write is unknown, and
+    /// sending it again could apply a setpoint twice or late. Returns the
+    /// number of commands marked.
+    pub async fn fail_interrupted_commands(&self) -> Result<usize> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let tx = conn.unchecked_transaction().context("Begin tx failed")?;
+            let now = crate::timeutil::now_secs();
+            let reason = "Interrupted by restart: delivery not confirmed";
+            let ids: Vec<String> = {
+                let mut stmt = tx
+                    .prepare("SELECT id FROM commands WHERE status = 'sent'")
+                    .context("Prepare interrupted commands failed")?;
+                stmt.query_map([], |row| row.get(0))
+                    .context("Query interrupted commands failed")?
+                    .collect::<Result<_, _>>()
+                    .context("Row mapping failed")?
+            };
+            for id in &ids {
+                tx.execute(
+                    "UPDATE commands SET status = 'failed', resolved_at = ?, error_message = ? WHERE id = ?",
+                    rusqlite::params![now, reason, id],
+                )
+                .context("Update interrupted command failed")?;
+                tx.execute(
+                    "INSERT INTO command_audit_log (command_id, old_status, new_status, changed_by, reason, created_at)
+                     VALUES (?, 'sent', 'failed', 'system', ?, ?)",
+                    rusqlite::params![id, reason, now],
+                )
+                .context("Insert command audit log failed")?;
+            }
+            tx.commit().context("Commit failed")?;
+            Ok(ids.len())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Record how the read-back of an acknowledged write ended. `ts` is when
+    /// the deciding value was read (ISO 8601), `None` on a timeout.
+    pub async fn update_command_readback(
+        &self,
+        command_id: &str,
+        status: &str,
+        value: Option<f64>,
+        attempts: u32,
+        ts: Option<String>,
+    ) -> Result<()> {
+        let conn = self.conn.clone();
+        let command_id = command_id.to_string();
+        let status = status.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.execute(
+                "UPDATE commands SET readback_status = ?, readback_value = ?,
+                     readback_attempts = ?, readback_ts = ?
+                 WHERE id = ?",
+                rusqlite::params![status, value, attempts, ts, command_id],
+            )
+            .context("Update command readback failed")?;
+            Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     pub async fn get_command(&self, command_id: &str) -> Result<Option<Command>> {
         let conn = self.conn.clone();
         let command_id = command_id.to_string();
@@ -161,7 +243,8 @@ impl Storage {
             let result = conn.query_row(
                 "SELECT id, data_source_id, device_id, protocol, value, status, policy,
                         scheduled_at, retry_count, max_retries, error_message, created_at,
-                        sent_at, acked_at, resolved_at, created_by, device_ref
+                        sent_at, acked_at, resolved_at, created_by, device_ref,
+                        readback_status, readback_value, readback_attempts, readback_ts
                  FROM commands WHERE id = ?1",
                 rusqlite::params![command_id],
                 |row| {
@@ -183,10 +266,10 @@ impl Storage {
                         resolved_at: row.get(14)?,
                         created_by: row.get(15)?,
                         device_ref: row.get(16)?,
-                        readback_status: None,
-                        readback_value: None,
-                        readback_attempts: 0,
-                        readback_ts: None,
+                        readback_status: row.get(17)?,
+                        readback_value: row.get(18)?,
+                        readback_attempts: row.get(19)?,
+                        readback_ts: row.get(20)?,
                     })
                 },
             );
@@ -215,7 +298,8 @@ impl Storage {
             let mut sql = String::from(
                 "SELECT id, data_source_id, device_id, protocol, value, status, policy,
                         scheduled_at, retry_count, max_retries, error_message, created_at,
-                        sent_at, acked_at, resolved_at, created_by, device_ref
+                        sent_at, acked_at, resolved_at, created_by, device_ref,
+                        readback_status, readback_value, readback_attempts, readback_ts
                  FROM commands WHERE 1=1",
             );
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -276,10 +360,10 @@ impl Storage {
                         resolved_at: row.get(14)?,
                         created_by: row.get(15)?,
                         device_ref: row.get(16)?,
-                        readback_status: None,
-                        readback_value: None,
-                        readback_attempts: 0,
-                        readback_ts: None,
+                        readback_status: row.get(17)?,
+                        readback_value: row.get(18)?,
+                        readback_attempts: row.get(19)?,
+                        readback_ts: row.get(20)?,
                     })
                 })
                 .context("Query list_commands failed")?;
@@ -298,7 +382,8 @@ impl Storage {
                 .prepare(
                     "SELECT id, data_source_id, device_id, protocol, value, status, policy,
                         scheduled_at, retry_count, max_retries, error_message, created_at,
-                        sent_at, acked_at, resolved_at, created_by, device_ref
+                        sent_at, acked_at, resolved_at, created_by, device_ref,
+                        readback_status, readback_value, readback_attempts, readback_ts
                  FROM commands
                  WHERE status IN ('queued', 'pending')
                  ORDER BY created_at ASC",
@@ -324,10 +409,10 @@ impl Storage {
                         resolved_at: row.get(14)?,
                         created_by: row.get(15)?,
                         device_ref: row.get(16)?,
-                        readback_status: None,
-                        readback_value: None,
-                        readback_attempts: 0,
-                        readback_ts: None,
+                        readback_status: row.get(17)?,
+                        readback_value: row.get(18)?,
+                        readback_attempts: row.get(19)?,
+                        readback_ts: row.get(20)?,
                     })
                 })
                 .context("Query get_queued_commands failed")?;
@@ -345,7 +430,7 @@ impl Storage {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, command_id, old_status, new_status, changed_by, reason, created_at
+                    "SELECT id, command_id, old_status, new_status, changed_by, reason, created_at, previous_value
                  FROM command_audit_log
                  WHERE command_id = ?1
                  ORDER BY created_at ASC",
@@ -361,6 +446,7 @@ impl Storage {
                         changed_by: row.get(4)?,
                         reason: row.get(5)?,
                         created_at: row.get(6)?,
+                        previous_value: row.get(7)?,
                     })
                 })
                 .context("Query get_command_audit failed")?;

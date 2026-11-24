@@ -154,7 +154,10 @@ async fn live_login_sensors_ws_stream() {
             Some(Event::Tags(list)) => {
                 let keys: Vec<String> = list.iter().map(|tag| tag.key.clone()).collect();
                 handle.send(Command::Subscribe(keys.clone()));
-                handle.send(Command::History("30m".into()));
+                handle.send(Command::History {
+                    range: "30m".into(),
+                    keys: Vec::new(),
+                });
                 tags = Some(keys);
             }
             Some(Event::Link(Link::Live)) => live = true,
@@ -3022,7 +3025,15 @@ async fn live_data_manager_insights() {
         .send_empty(Method::POST, &insights::load_path(created.id))
         .await
         .expect("POST /recipes/{id}/load");
-    assert!(load.ok);
+    // Every value is either queued or refused by its tag's write policy (the
+    // plant's tags are read-only unless made writable), never dropped.
+    assert_eq!(
+        load.command_ids.len() + load.refused.len(),
+        created.values().len(),
+        "{load:?}"
+    );
+    assert_eq!(load.ok, load.refused.is_empty(), "{load:?}");
+    assert!(load.refused.iter().all(|r| !r.error.is_empty()), "{load:?}");
     for id in &load.command_ids {
         let command: QueuedCommand = api
             .get_json(&insights::command_path(id))

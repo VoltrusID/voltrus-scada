@@ -94,3 +94,29 @@ async fn test_no_results() {
         .unwrap();
     assert!(points.is_empty());
 }
+
+/// A failed read is cached as NaN. One NaN in a batch must not cost the other
+/// devices their history.
+#[tokio::test]
+async fn nan_sample_does_not_abort_the_batch() {
+    let storage = Storage::new_in_memory().unwrap();
+
+    let records = vec![
+        ("dev1".into(), 1000i64, "voltage".into(), f64::NAN),
+        ("dev2".into(), 1000i64, "current".into(), 12.5f64),
+    ];
+    storage.insert_batch(&records).await.unwrap();
+
+    let points = storage
+        .query_history("dev2", "current", 0, 2000)
+        .await
+        .unwrap();
+    assert_eq!(points.len(), 1);
+    assert!(
+        storage
+            .query_history("dev1", "voltage", 0, 2000)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

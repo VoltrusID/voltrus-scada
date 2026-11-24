@@ -141,11 +141,18 @@ impl WidgetRegistry {
     }
 
     pub fn asset_path(&self, widget_id: &str, filename: &str) -> Option<PathBuf> {
+        if !is_valid_widget_id(widget_id) || !is_valid_asset_name(filename) {
+            return None;
+        }
         let path = self.widgets_dir.join(widget_id).join(filename);
-        if path.exists() { Some(path) } else { None }
+        if path.is_file() { Some(path) } else { None }
     }
 
     pub async fn install(&self, widget_id: &str, zip_data: &[u8]) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            is_valid_widget_id(widget_id),
+            "invalid widget id: use 1-64 letters, digits, '-' or '_'"
+        );
         let widget_dir = self.widgets_dir.join(widget_id);
 
         let reader = std::io::Cursor::new(zip_data);
@@ -185,7 +192,20 @@ impl WidgetRegistry {
 
         let manifest_path = widget_dir.join("manifest.json");
         let content = fs::read_to_string(&manifest_path)?;
-        let manifest: WidgetManifest = serde_json::from_str(&content)?;
+        let manifest: WidgetManifest = match serde_json::from_str(&content) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = fs::remove_dir_all(&widget_dir);
+                return Err(e.into());
+            }
+        };
+        if manifest.id != widget_id {
+            let _ = fs::remove_dir_all(&widget_dir);
+            anyhow::bail!(
+                "manifest id {:?} does not match the widget id {widget_id:?} in the URL",
+                manifest.id
+            );
+        }
 
         let js_path = widget_dir.join("widget.js");
         if js_path.exists() {
@@ -209,6 +229,7 @@ impl WidgetRegistry {
     }
 
     pub async fn uninstall(&self, widget_id: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(is_valid_widget_id(widget_id), "invalid widget id");
         let widget_dir = self.widgets_dir.join(widget_id);
         if widget_dir.exists() {
             fs::remove_dir_all(&widget_dir)?;
@@ -216,6 +237,27 @@ impl WidgetRegistry {
         self.widgets.write().await.remove(widget_id);
         Ok(())
     }
+}
+
+/// A widget id names a directory under the widgets folder, so it must be a
+/// single plain path segment: 1-64 ASCII letters, digits, `-` or `_`.
+pub fn is_valid_widget_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// An asset is a file directly inside the widget's folder: no separators, no
+/// `..`, no leading dot.
+fn is_valid_asset_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && !name.starts_with('.')
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
 }
 
 #[cfg(test)]
@@ -381,5 +423,41 @@ mod tests {
 
         assert!(registry.install("demo", &zip).await.is_err());
         assert!(!root.path().join("widgets/demo").exists());
+    }
+
+    #[tokio::test]
+    async fn widget_id_cannot_leave_the_widgets_folder() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("config.yaml"), "auth_secret: x").unwrap();
+        fs::create_dir_all(root.path().join("keep")).unwrap();
+        let registry = WidgetRegistry::new(root.path().join("widgets"));
+        fs::create_dir_all(root.path().join("widgets")).unwrap();
+        let zip = build_zip(
+            &[("manifest.json", br#"{"id":"..","name":"x"}"#)],
+            zip::CompressionMethod::Stored,
+        );
+
+        for bad in ["..", "../keep", "a/b", "", ".", "x\\y", "../../tmp"] {
+            assert!(registry.asset_path(bad, "config.yaml").is_none(), "{bad}");
+            assert!(registry.install(bad, &zip).await.is_err(), "{bad}");
+            assert!(registry.uninstall(bad).await.is_err(), "{bad}");
+        }
+        assert!(registry.asset_path("demo", "../config.yaml").is_none());
+        assert!(registry.asset_path("demo", ".env").is_none());
+        assert!(root.path().join("config.yaml").exists());
+        assert!(root.path().join("keep").exists());
+    }
+
+    #[tokio::test]
+    async fn install_rejects_manifest_id_mismatch() {
+        let root = tempfile::tempdir().unwrap();
+        let registry = WidgetRegistry::new(root.path().join("widgets"));
+        let zip = build_zip(
+            &[("manifest.json", br#"{"id":"other","name":"x"}"#)],
+            zip::CompressionMethod::Stored,
+        );
+        assert!(registry.install("demo", &zip).await.is_err());
+        assert!(!root.path().join("widgets/demo").exists());
+        assert!(registry.get("other").await.is_none());
     }
 }

@@ -13,6 +13,10 @@ export interface SensorConfig {
 
 export interface SensorData {
   id: number; key: string; value: number; warn: number; crit: number; source_type: string; status: string; simulated?: boolean;
+  /** Data quality (see quality.ts); absent means good. */
+  quality?: string;
+  /** When the value was read from the device, Unix ms. */
+  ts_ms?: number;
 }
 
 export interface SystemInfo {
@@ -41,7 +45,11 @@ export interface DataPoint { value: number; ts: number; simulated?: boolean; lo?
 
 export interface Screen { id: string; name: string; type: string; sort_order: number }
 
-export interface LayoutItem { i: string; x: number; y: number; w: number; h: number }
+export interface LayoutItem {
+  i: string; x: number; y: number; w: number; h: number
+  /** Present on add-on widget items (`i` = `widget:<id>`), see dashboardWidgets.ts. */
+  widget?: { type: string; config: Record<string, unknown> }
+}
 
 export type ScreenLayouts = { lg: LayoutItem[]; md: LayoutItem[]; sm: LayoutItem[]; xs: LayoutItem[] }
 
@@ -253,6 +261,8 @@ export interface UserItem {
   id: number
   username: string
   role: string
+  /** A disabled account keeps its row but cannot sign in. */
+  disabled?: boolean
 }
 
 // ── Flow Engine types ──
@@ -275,45 +285,126 @@ export interface FlowRun {
   success: boolean
   error: string | null
   output: string | null
+  /** Per-node trace of a real run (graph engine). May arrive as a JSON string. */
+  trace?: FlowRunTraceStep[] | string | null
+}
+
+export interface FlowRunTraceStep {
+  node_id: string
+  port: number | null
+  /** Every port the message left on (a switch in `all` mode may use several). */
+  ports?: number[]
+  error: string | null
+}
+
+/** One step of a dry run (`POST /api/v1/flows/test`). */
+export interface FlowTraceStep {
+  node_id: string
+  type: string
+  input: unknown
+  output: unknown
+  /** Output port the message left on; null when the node emitted nothing. */
+  port: number | null
+  /** Every port the message left on (a switch in `all` mode may use several). */
+  ports?: number[]
+  error: string | null
+  duration_us: number
+  side_effect_skipped: boolean
 }
 
 export interface FlowTestResult {
-  success: boolean
-  output: Record<string, any>
-  node_results: FlowNodeResult[]
+  ok: boolean
+  /** Why the run failed (`ok` false). */
+  error?: string | null
+  trace: FlowTraceStep[]
+  /** Ids of the nodes where a message ended (a count from early servers). */
+  outputs_reached: string[] | number
 }
 
-export interface FlowNodeResult {
-  node_id: string
-  result?: string
-  output?: Record<string, any>
-  error?: string
+export interface FlowTestInput {
+  payload: unknown
+  metadata: Record<string, unknown>
 }
 
-export type FlowNodeType =
-  | 'filter'
-  | 'transform'
-  | 'threshold'
-  | 'lookup'
-  | 'expression'
-  | 'script'
-  | 'data_source_out'
-  | 'http_out'
-  | 'alarm_out'
-  | 'write_out'
-  | 'dsl'
+// ── Flow graph (nodes JSON, version 2) ──
 
-export type FlowTriggerType = 'modbus' | 'timer' | 'mqtt'
+export interface FlowGraphNodeV2 {
+  id: string
+  type: string
+  x: number
+  y: number
+  name?: string
+  [config: string]: unknown
+}
 
+export interface FlowGraphEdgeV2 {
+  from: string
+  port: number
+  to: string
+}
+
+export interface FlowGraphV2 {
+  version: 2
+  nodes: FlowGraphNodeV2[]
+  edges: FlowGraphEdgeV2[]
+}
+
+/** Legacy (version 1) node: an entry of the old JSON array, run in order. */
 export interface FlowNodeConfig {
   id: string
-  type: FlowNodeType
+  type: string
   [key: string]: any
 }
 
 export interface FlowTriggerConfig {
-  type: FlowTriggerType
+  type: string
   [key: string]: any
+}
+
+// ── Node catalogue (`GET /api/v1/flows/node-types`) ──
+
+export type FlowFieldKind =
+  | 'string' | 'number' | 'bool' | 'select' | 'expression' | 'code' | 'tag'
+  | 'device' | 'json' | 'duration_ms' | 'cron' | 'severity'
+
+export interface FlowField {
+  key: string
+  label: string
+  kind: FlowFieldKind | string
+  required?: boolean
+  default?: unknown
+  options?: { value: string; label: string }[]
+  help?: string
+  /** The field takes several values (a list of tag ids for `tag`). */
+  multiple?: boolean
+  /** For a `json` list of objects: the fields of one item, edited as a list form. */
+  item_fields?: FlowField[]
+}
+
+export type FlowNodeCategory = 'logic' | 'transform' | 'output' | 'timing' | 'advanced'
+
+export interface FlowTriggerType {
+  type: string
+  label: string
+  description?: string
+  fields: FlowField[]
+}
+
+export interface FlowNodeTypeDef {
+  type: string
+  label: string
+  category: FlowNodeCategory | string
+  description?: string
+  outputs: string[]
+  side_effect?: boolean
+  /** Config key whose list adds one output per item before `outputs` (switch: `rules`). */
+  dynamic_outputs?: string
+  fields: FlowField[]
+}
+
+export interface FlowCatalogue {
+  triggers: FlowTriggerType[]
+  nodes: FlowNodeTypeDef[]
 }
 
 // -- Notification Settings types --
@@ -336,6 +427,8 @@ export interface WsTagUpdate {
   quality: string
   ts: number
   simulated: boolean
+  data_quality?: string
+  ts_ms?: number
 }
 
 export interface WsCommandAck {
@@ -365,8 +458,11 @@ export interface AiSettings {
   api_key: string
   api_key_set: boolean
   api_key_preview: string
-  default_model: string
+  default_model: string | null
+  base_url: string | null
   enabled: boolean
+  /** Whether this install may use the hosted Voltrus AI provider; absent from older servers. */
+  hosted_ai_available?: boolean
 }
 
 export interface AiProposal {

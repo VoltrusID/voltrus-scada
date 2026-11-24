@@ -34,11 +34,17 @@ pub enum Page {
 /// server's own grouping (`auth_middleware.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Role {
-    /// Any signed-in user.
+    /// Any signed-in user: `viewer` and the legacy `user` read only.
     Any,
-    /// Admin, demo or integration: the server's `demo_protected` routes.
-    Operator,
-    /// Strictly admin: users, roles, API keys, imports, tag writes.
+    /// Runs the plant: `operator` and up. Tag writes, alarm acknowledge
+    /// and shelving, command cancels, recipe loads, flow runs, shift
+    /// handover, OEE downtime, the alarm journal and analytics.
+    Operate,
+    /// Operates and configures: `demo`, `integration` and admin (the
+    /// server's `demo_protected` routes). Devices, screens, data sources,
+    /// write policies, settings.
+    Configure,
+    /// Strictly admin: users, roles, API keys, imports.
     Admin,
 }
 
@@ -215,7 +221,7 @@ pub static PAGES: &[PageSpec] = &[
         title: "Shift handover",
         icon: Icon::Clock,
         digit: None,
-        role: Role::Operator,
+        role: Role::Operate,
         placement: Placement::More,
         render: views::shift::render,
         badge: None,
@@ -230,7 +236,7 @@ pub static PAGES: &[PageSpec] = &[
         title: "Audit log",
         icon: Icon::ScrollText,
         digit: None,
-        role: Role::Operator,
+        role: Role::Configure,
         placement: Placement::More,
         render: views::audit::render,
         badge: None,
@@ -353,6 +359,7 @@ mod tests {
 
     #[test]
     fn roles_order_from_any_to_admin() {
-        assert!(Role::Any < Role::Operator && Role::Operator < Role::Admin);
+        assert!(Role::Any < Role::Operate && Role::Operate < Role::Configure);
+        assert!(Role::Configure < Role::Admin);
     }
 }

@@ -22,6 +22,7 @@ use crate::models::*;
         (status = 202, body = serde_json::Value),
         (status = 400),
         (status = 403),
+        (status = 428, description = "The edition wants this write signed: retry with `signature`"),
         (status = 429),
     ),
     tag = "Commands",
@@ -30,9 +31,22 @@ use crate::models::*;
 pub async fn write_tag(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(tag_id): Path<i64>,
     Json(body): Json<WriteRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let origin = super::signature::origin_of(&user, api_key.is_some());
+    write_tag_as(&state, &user, origin, tag_id, body).await
+}
+
+/// `POST /tags/{id}/write` for a caller of the given origin (REST or MCP).
+pub async fn write_tag_as(
+    state: &AppState,
+    user: &AuthUser,
+    origin: crate::edition::ActionOrigin,
+    tag_id: i64,
+    body: WriteRequest,
+) -> Result<axum::response::Response, AppError> {
     let Some(value) = body.value.as_f64() else {
         return Ok(WriteError::Invalid("Invalid numeric value".into()).into_response());
     };
@@ -44,7 +58,12 @@ pub async fn write_tag(
         reason: body.reason,
         command_id: None,
     };
-    match submit_tag_write(&state, &user.username, submission).await {
+    let actor = Actor {
+        username: &user.username,
+        role: &user.role,
+        origin,
+    };
+    match submit_tag_write(state, &actor, submission, body.signature.as_ref()).await {
         Ok(cmd) => Ok((
             StatusCode::ACCEPTED,
             Json(json!({
@@ -85,6 +104,9 @@ pub enum WriteError {
     Invalid(String),
     /// The tag's write rate limit is used up (429).
     RateLimited(String),
+    /// The edition wants the write signed and it was not, or not validly
+    /// (428 or 403, see [`super::signature`]).
+    Signature(super::signature::SignatureError),
     Internal(anyhow::Error),
 }
 
@@ -96,12 +118,20 @@ impl WriteError {
             | WriteError::NotWritable(m)
             | WriteError::Invalid(m)
             | WriteError::RateLimited(m) => m.clone(),
+            WriteError::Signature(e) => e.message(),
             WriteError::Internal(e) => {
                 tracing::error!("Tag write failed: {e:#}");
                 "Internal error".to_string()
             }
         }
     }
+}
+
+/// Who is writing: the user or key, its role, and how the write came in.
+pub struct Actor<'a> {
+    pub username: &'a str,
+    pub role: &'a str,
+    pub origin: crate::edition::ActionOrigin,
 }
 
 impl From<anyhow::Error> for WriteError {
@@ -112,7 +142,11 @@ impl From<anyhow::Error> for WriteError {
 
 impl IntoResponse for WriteError {
     fn into_response(self) -> axum::response::Response {
+        if let WriteError::Signature(e) = self {
+            return e.into_response();
+        }
         let status = match &self {
+            WriteError::Signature(e) => e.status(),
             WriteError::NotFound(_) => StatusCode::NOT_FOUND,
             WriteError::NotWritable(_) => StatusCode::FORBIDDEN,
             WriteError::Invalid(_) => StatusCode::BAD_REQUEST,
@@ -127,20 +161,143 @@ impl IntoResponse for WriteError {
 const MAX_CLIENT_COMMAND_ID_LEN: usize = 64;
 
 /// Check a write against the tag's policy (writable, mandatory reason, range,
-/// deadband, rate limit) and put it into the command queue, with an audit entry
-/// naming `username`. Every write entry point goes through here so none can skip
-/// the policy.
+/// deadband, rate limit), get it signed when the edition asks for a signature,
+/// and put it into the command queue with an audit entry naming the actor and
+/// holding the previous and the new value. Every interactive write entry point
+/// (REST, WebSocket, MCP) goes through here so none can skip the policy.
 pub async fn submit_tag_write(
     state: &AppState,
+    actor: &Actor<'_>,
+    req: TagWriteSubmission,
+    signature: Option<&SignatureInput>,
+) -> Result<Command, WriteError> {
+    let value = req.value;
+    let tag_id = req.tag_id;
+    let checked = check_write(&state.storage, &state.cache, &req).await?;
+
+    let ctx = crate::edition::ActionContext {
+        action: crate::edition::SignedAction::TagWrite,
+        origin: actor.origin,
+        username: actor.username.to_string(),
+        role: actor.role.to_string(),
+        resource: format!("data_source:{tag_id}"),
+        details: checked.details(value),
+    };
+    let signed = super::signature::authorize(state, &ctx, signature)
+        .await
+        .map_err(WriteError::Signature)?;
+
+    let previous = checked.previous;
+    let reason = checked.reason.clone();
+    let cmd = insert_write(&state.storage, actor.username, req, checked).await?;
+
+    let mut details = format!("command={}", cmd.id);
+    if let Some(previous) = previous {
+        details.push_str(&format!(" previous={previous}"));
+    }
+    details.push_str(&format!(" value={value}"));
+    if let Some(signed) = &signed {
+        details.push_str(&signed.audit_suffix());
+    }
+    if let Some(r) = reason {
+        details.push_str(&format!(" reason={r}"));
+    }
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: "tag_write".to_string(),
+        username: actor.username.to_string(),
+        resource: format!("data_source:{tag_id}"),
+        details: Some(details),
+    });
+
+    Ok(cmd)
+}
+
+/// The write policy and the queue insert, without the security audit event:
+/// for writes that start inside the server (flows, recipes) as well as the API.
+/// The command, its reason and the previous value still go into the command
+/// audit log.
+///
+/// A flow (`username` `flow:<id>`) cannot sign: when the edition wants a
+/// signature for the write (asked with origin [`ActionOrigin::Flow`]), it is
+/// refused. A recipe load asks for its signature before it queues any write.
+///
+/// [`ActionOrigin::Flow`]: crate::edition::ActionOrigin::Flow
+pub async fn enqueue_checked_write(
+    storage: &crate::storage::Storage,
+    cache: &crate::cache::DeviceCache,
     username: &str,
     req: TagWriteSubmission,
 ) -> Result<Command, WriteError> {
+    let checked = check_write(storage, cache, &req).await?;
+    if username.starts_with("flow:") {
+        let ext = crate::edition::installed();
+        unattended_write_allowed(ext.as_ref(), username, &req, &checked).await?;
+    }
+    insert_write(storage, username, req, checked).await
+}
+
+/// Refuse a flow's write the edition wants signed: nobody is there to sign.
+pub(crate) async fn unattended_write_allowed(
+    ext: &dyn crate::edition::Extension,
+    username: &str,
+    req: &TagWriteSubmission,
+    checked: &CheckedWrite,
+) -> Result<(), WriteError> {
+    let ctx = crate::edition::ActionContext {
+        action: crate::edition::SignedAction::TagWrite,
+        origin: crate::edition::ActionOrigin::Flow,
+        username: username.to_string(),
+        role: "flow".to_string(),
+        resource: format!("data_source:{}", req.tag_id),
+        details: checked.details(req.value),
+    };
+    match ext.signature_required(&ctx).await {
+        None => Ok(()),
+        Some(requirement) => Err(WriteError::Signature(
+            super::signature::SignatureError::NotPossible(format!(
+                "This write needs an electronic signature ({}), which a flow cannot give",
+                requirement.meaning
+            )),
+        )),
+    }
+}
+
+/// A write that passed the tag's policy, ready to be queued.
+pub struct CheckedWrite {
+    tag_id: i64,
+    reason: Option<String>,
+    target: CommandTarget,
+    command_id: String,
+    /// The tag's value in the live cache now, if it has one.
+    pub previous: Option<f64>,
+    key: String,
+    device_ref: String,
+}
+
+impl CheckedWrite {
+    /// Details of the write for the edition's signature hook.
+    pub fn details(&self, value: f64) -> serde_json::Value {
+        json!({
+            "tag_id": self.tag_id,
+            "key": self.key,
+            "device_id": self.device_ref,
+            "value": value,
+            "previous": self.previous,
+        })
+    }
+}
+
+/// Check a write against the tag's write policy without queuing it.
+pub async fn check_write(
+    storage: &crate::storage::Storage,
+    cache: &crate::cache::DeviceCache,
+    req: &TagWriteSubmission,
+) -> Result<CheckedWrite, WriteError> {
     let tag_id = req.tag_id;
     let value = req.value;
 
     // 1. Get write policy — also validates that the data source exists
-    let policy = state
-        .storage
+    let policy = storage
         .get_write_policy(tag_id)
         .await?
         .ok_or_else(|| WriteError::NotFound("Data source not found".into()))?;
@@ -183,34 +340,37 @@ pub async fn submit_tag_write(
         )));
     }
 
-    // 6. Check deadband against current cached value
-    if let Some(deadband) = policy.write_deadband
-        && deadband > 0.0
-    {
-        // The cache holds a metric under the bare register name, scoped by device
-        // (the data source key may be device-qualified, `plts_1.voltage`).
-        let source = state.storage.get_data_source_by_id(tag_id).await?;
-        if let Some(source) = source
-            && let Some(current) = state
-                .cache
+    // 6. The current value: the audit trail's previous value, and the deadband
+    //    reference. The cache holds a metric under the bare register name,
+    //    scoped by device (the data source key may be device-qualified,
+    //    `plts_1.voltage`).
+    let source = storage.get_data_source_by_id(tag_id).await?;
+    let previous = match &source {
+        Some(source) => {
+            cache
                 .get_device_metric(
                     &source.device_id,
                     super::data::metric_name(&source.key, &source.device_id),
                 )
                 .await
-            && (value - current).abs() <= deadband
-        {
-            return Err(WriteError::Invalid(format!(
-                "Value {value} is within deadband {deadband} of current value {current}"
-            )));
         }
+        None => None,
+    };
+    if let Some(deadband) = policy.write_deadband
+        && deadband > 0.0
+        && let Some(current) = previous
+        && (value - current).abs() <= deadband
+    {
+        return Err(WriteError::Invalid(format!(
+            "Value {value} is within deadband {deadband} of current value {current}"
+        )));
     }
 
     // 7. Check rate limit
     if let Some(max_rate) = policy.write_max_rate
         && max_rate > 0
     {
-        let recent = state.storage.count_recent_writes(tag_id, 60).await?;
+        let recent = storage.count_recent_writes(tag_id, 60).await?;
         if recent >= max_rate {
             return Err(WriteError::RateLimited(format!(
                 "Rate limit exceeded: {recent} writes in the last 60s (max {max_rate})"
@@ -219,14 +379,13 @@ pub async fn submit_tag_write(
     }
 
     // 8. Get device info
-    let target = state
-        .storage
+    let target = storage
         .get_data_source_device_id(tag_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Device not found for data source"))?;
 
-    // 9. Create and insert Command
-    let command_id = match req.command_id {
+    // 9. The command id
+    let command_id = match req.command_id.clone() {
         Some(id) => {
             let valid = !id.is_empty()
                 && id.len() <= MAX_CLIENT_COMMAND_ID_LEN
@@ -238,7 +397,7 @@ pub async fn submit_tag_write(
                     "Command id must be 1-64 characters of letters, digits, '-' or '_'".into(),
                 ));
             }
-            if state.storage.get_command(&id).await?.is_some() {
+            if storage.get_command(&id).await?.is_some() {
                 return Err(WriteError::Invalid("Command id is already in use".into()));
             }
             id
@@ -250,13 +409,39 @@ pub async fn submit_tag_write(
             .collect::<String>()
             .to_lowercase(),
     };
+    let (key, device_ref) = source.map(|s| (s.key, s.device_id)).unwrap_or_default();
+    Ok(CheckedWrite {
+        tag_id,
+        reason: reason.map(str::to_string),
+        target,
+        command_id,
+        previous,
+        key,
+        device_ref,
+    })
+}
+
+/// Queue a checked write, with the command audit log's first entry.
+async fn insert_write(
+    storage: &crate::storage::Storage,
+    username: &str,
+    req: TagWriteSubmission,
+    checked: CheckedWrite,
+) -> Result<Command, WriteError> {
+    let CheckedWrite {
+        reason,
+        target,
+        command_id,
+        previous,
+        ..
+    } = checked;
     let now = crate::timeutil::now_secs();
     let cmd = Command {
         id: command_id,
-        data_source_id: tag_id,
+        data_source_id: req.tag_id,
         device_id: target.device_id,
         protocol: target.protocol,
-        value: value.to_string(),
+        value: req.value.to_string(),
         status: CommandStatus::Pending.as_str().to_string(),
         policy: req.policy,
         scheduled_at: req.scheduled_at,
@@ -275,18 +460,63 @@ pub async fn submit_tag_write(
         readback_ts: None,
     };
 
-    state.storage.insert_command_audited(&cmd, reason).await?;
+    storage
+        .insert_command_audited(&cmd, reason.as_deref(), previous)
+        .await?;
 
-    state.audit_logger.log(crate::security::AuditEvent {
-        action: "tag_write".to_string(),
-        username: username.to_string(),
-        resource: format!("data_source:{tag_id}"),
-        details: Some(match reason {
-            Some(r) => format!("command={} value={value} reason={r}", cmd.id),
-            None => format!("command={} value={value}", cmd.id),
-        }),
-    });
+    Ok(cmd)
+}
 
+/// Record a write that went straight to a device instead of through the
+/// queue (the Voltrus PLC write endpoint) as a finished command: it counts
+/// toward the tag's `write_max_rate` like a queued write, and the command
+/// audit trail holds who wrote what, the reason and the previous value.
+pub async fn record_direct_write(
+    storage: &crate::storage::Storage,
+    username: &str,
+    req: TagWriteSubmission,
+    checked: CheckedWrite,
+    result: &crate::models::WriteResult,
+) -> Result<Command, WriteError> {
+    let CheckedWrite {
+        reason,
+        target,
+        command_id,
+        previous,
+        ..
+    } = checked;
+    let now = crate::timeutil::now_secs();
+    let status = if result.success {
+        CommandStatus::Acked
+    } else {
+        CommandStatus::Failed
+    };
+    let cmd = Command {
+        id: command_id,
+        data_source_id: req.tag_id,
+        device_id: target.device_id,
+        protocol: target.protocol,
+        value: req.value.to_string(),
+        status: status.as_str().to_string(),
+        policy: req.policy,
+        scheduled_at: None,
+        retry_count: 0,
+        max_retries: 0,
+        error_message: result.error.clone(),
+        created_at: now,
+        sent_at: Some(now),
+        acked_at: result.success.then_some(now),
+        resolved_at: Some(now),
+        created_by: username.to_string(),
+        device_ref: target.device_ref,
+        readback_status: None,
+        readback_value: None,
+        readback_attempts: 0,
+        readback_ts: None,
+    };
+    storage
+        .insert_command_audited(&cmd, reason.as_deref(), previous)
+        .await?;
     Ok(cmd)
 }
 
@@ -459,12 +689,51 @@ pub async fn get_write_policy(
 )]
 pub async fn update_write_policy(
     State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(data_source_id): Path<i64>,
-    Json(body): Json<WritePolicyUpdate>,
-) -> Result<impl IntoResponse, AppError> {
+    Json(body): Json<WritePolicyPatch>,
+) -> Result<axum::response::Response, AppError> {
+    let WritePolicyPatch {
+        update: body,
+        signature,
+    } = body;
+    let ctx = crate::edition::ActionContext {
+        action: crate::edition::SignedAction::ModeSwitch,
+        origin: super::signature::origin_of(&user, api_key.is_some()),
+        username: user.username.clone(),
+        role: user.role.clone(),
+        resource: format!("data_source:{data_source_id}:write_policy"),
+        details: json!({"mode": "write_policy", "tag_id": data_source_id, "policy": body}),
+    };
+    let signed = match super::signature::authorize(&state, &ctx, signature.as_ref()).await {
+        Ok(signed) => signed,
+        Err(e) => return Ok(e.into_response()),
+    };
     state
         .storage
         .update_write_policy(data_source_id, &body)
         .await?;
-    Ok(Json(json!({"ok": true})))
+    // The write policy is the guard on setpoint writes; who loosened it matters.
+    let mut details = serde_json::to_string(&body).unwrap_or_default();
+    if let Some(signed) = &signed {
+        details.push_str(&signed.audit_suffix());
+    }
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: "update_write_policy".to_string(),
+        username: user.username.clone(),
+        resource: format!("data_source:{data_source_id}"),
+        details: Some(details),
+    });
+    Ok(Json(json!({"ok": true})).into_response())
+}
+
+/// `PATCH /data-sources/{id}/write-policy` body: the policy fields and, when
+/// the edition asks for one, a signature.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+pub struct WritePolicyPatch {
+    #[serde(flatten)]
+    pub update: WritePolicyUpdate,
+    #[serde(default)]
+    pub signature: Option<SignatureInput>,
 }

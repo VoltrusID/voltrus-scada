@@ -29,7 +29,7 @@ mod banner;
 pub(crate) mod editor;
 mod faceplate;
 mod paint;
-mod pinch;
+pub(crate) mod pinch;
 mod scene;
 mod symbols;
 mod widgets;
@@ -52,6 +52,7 @@ use voltrus_scada_native::mimic::{
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Command, Reply};
 use voltrus_scada_native::screens::OVERVIEW;
+use voltrus_scada_native::signature::{self, Signable, Signed};
 use voltrus_scada_native::tag_api::{self, WriteAccepted, WriteMode};
 use vt_ui::Icon;
 use vt_ui::components::{Button, empty_state, kbd};
@@ -162,6 +163,8 @@ pub(crate) struct State {
     setpoint: Option<(String, f64)>,
     /// The REST write in flight: its tag.
     sending: Option<i64>,
+    /// That write, to send again signed if the server asks for a signature.
+    signable: Option<Signable>,
     /// The WebSocket write sent from the faceplate: its widget and tag.
     sent: Option<(String, i64)>,
     /// The last REST write's answer, by widget.
@@ -202,6 +205,7 @@ impl Default for State {
             armed: None,
             setpoint: None,
             sending: None,
+            signable: None,
             sent: None,
             result: None,
             focus: None,
@@ -318,7 +322,7 @@ pub fn on_show(console: &mut Console, window: &mut Window, cx: &mut Context<Cons
 }
 
 /// Start reading trackpad pinches (once per session).
-fn listen_for_pinches(console: &mut Console, cx: &mut Context<Console>) {
+pub(crate) fn listen_for_pinches(console: &mut Console, cx: &mut Context<Console>) {
     let state = console.state::<State>();
     if state.pinch_listening {
         return;
@@ -339,7 +343,12 @@ fn listen_for_pinches(console: &mut Console, cx: &mut Context<Console>) {
 }
 
 fn on_gesture(console: &mut Console, gesture: pinch::Gesture, cx: &mut Context<Console>) {
-    if console.page != Page::Mimic || console.phase != Phase::Console {
+    if console.phase != Phase::Console {
+        return;
+    }
+    // The one listener serves the flow editor's canvas too.
+    if console.page != Page::Mimic {
+        crate::console::views::data_manager::flows::editor::pinch(console, gesture, cx);
         return;
     }
     let state = console.state::<State>();
@@ -432,8 +441,21 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
         "mimic.write" => {
             let state = console.state::<State>();
             state.sending = None;
+            let signable = state.signable.take();
             let widget = state.faceplate.clone().unwrap_or_default();
-            let result = reply.take::<WriteAccepted>();
+            let result = match reply.take::<Signed<WriteAccepted>>() {
+                Ok(Signed::Done(answer)) => Ok(answer),
+                // The prompt sends the command again, signed; its answer
+                // comes as a toast.
+                Ok(Signed::Ask(ask)) => {
+                    if let Some(action) = signable {
+                        super::sign::queue(console, action, ask);
+                    }
+                    cx.notify();
+                    return;
+                }
+                Err(error) => Err(error),
+            };
             let message = match &result {
                 Ok(answer) => format!("Command sent: {}", answer.command_id),
                 Err(error) => format!("Command refused: {error}"),
@@ -709,12 +731,8 @@ fn arm(console: &mut Console, on: bool, cx: &mut Context<Console>) {
         console.show_toast("This equipment takes no commands", true, cx);
         return;
     };
-    if mimic::write_route(console.is_admin(), console.is_operator()).is_none() {
-        console.show_toast(
-            "Commands need the operator role (admin, demo or integration)",
-            true,
-            cx,
-        );
+    if mimic::write_route(console.is_admin(), console.may_operate()).is_none() {
+        console.show_toast("Commands need an operator role", true, cx);
         return;
     }
     let Some(tag) = widget.tag() else {
@@ -756,7 +774,7 @@ fn trim_number(value: f64) -> String {
 /// Send the armed command: over the WebSocket for an admin, through the
 /// policy-checked REST write for other operators.
 fn confirm(console: &mut Console, cx: &mut Context<Console>) {
-    let route = mimic::write_route(console.is_admin(), console.is_operator());
+    let route = mimic::write_route(console.is_admin(), console.may_operate());
     let state = console.state::<State>();
     let Some(armed) = state.armed.take() else {
         return;
@@ -782,12 +800,20 @@ fn confirm(console: &mut Console, cx: &mut Context<Console>) {
             };
             state.sending = Some(armed.tag);
             state.result = None;
+            state.signable = Some(Signable::TagWrite {
+                tag: armed.tag,
+                value: armed.value,
+                mode,
+                reason: String::new(),
+            });
             let path = format!("/api/v1/tags/{}/write", armed.tag);
             console.call(
                 CallKey::new("mimic.write").with(armed.tag),
                 Call::new(move |api| async move {
-                    api.send_json::<_, WriteAccepted>(reqwest::Method::POST, &path, &body)
-                        .await
+                    signature::signed(
+                        api.send_json::<_, WriteAccepted>(reqwest::Method::POST, &path, &body)
+                            .await,
+                    )
                 }),
             );
         }
@@ -1031,6 +1057,34 @@ fn samples_for(widget: &Widget) -> usize {
     }
 }
 
+/// The tags a trend widget draws (none for other widgets).
+fn trend_tags(store: &crate::console::store::Store, widget: &Widget) -> Vec<i64> {
+    match widget.kind {
+        WidgetKind::Trend => widget.tag().into_iter().collect(),
+        WidgetKind::MultiTrend => shown_multi(store, widget),
+        _ => Vec::new(),
+    }
+}
+
+/// The tags a multi-tag widget shows: its bound ones in the plant's order,
+/// or the plant's first tags when none is bound.
+fn shown_multi(store: &crate::console::store::Store, widget: &Widget) -> Vec<i64> {
+    // The plant's first tags stand in for none bound; bound ones go in
+    // the plant's order: only the candidates, never every tag.
+    let candidates: Vec<i64> = if widget.tags.is_empty() {
+        store.tags.iter().take(24).map(|tag| tag.info.id).collect()
+    } else {
+        let mut known: Vec<(usize, i64)> = widget
+            .tags
+            .iter()
+            .filter_map(|id| store.position(*id).map(|at| (at, *id)))
+            .collect();
+        known.sort_unstable();
+        known.into_iter().map(|(_, id)| id).collect()
+    };
+    mimic::shown_tags(widget, &candidates)
+}
+
 /// A widget prepared for drawing.
 fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
     let store = &console.store;
@@ -1048,20 +1102,7 @@ fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
             | WidgetKind::MultiTrend
     );
     let tags = if multi {
-        // The plant's first tags stand in for none bound; bound ones go in
-        // the plant's order: only the candidates, never every tag.
-        let candidates: Vec<i64> = if widget.tags.is_empty() {
-            store.tags.iter().take(24).map(|tag| tag.info.id).collect()
-        } else {
-            let mut known: Vec<(usize, i64)> = widget
-                .tags
-                .iter()
-                .filter_map(|id| store.position(*id).map(|at| (at, *id)))
-                .collect();
-            known.sort_unstable();
-            known.into_iter().map(|(_, id)| id).collect()
-        };
-        mimic::shown_tags(widget, &candidates)
+        shown_multi(store, widget)
             .into_iter()
             .filter_map(|id| store.get(id).map(|tag| TagView::of(tag, samples)))
             .collect()
@@ -1117,6 +1158,20 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
             .is_some_and(|state| state.layouts.contains_key(&active(console)))
     {
         cx.defer_in(window, |console, _, _| sync(console));
+    }
+    // The shown screen's trend widgets keep their tags' history long.
+    if console.page == Page::Mimic
+        && console.phase == Phase::Console
+        && let Some(layout) = layout(console)
+    {
+        let wanted: std::collections::BTreeSet<i64> = layout
+            .widgets
+            .iter()
+            .flat_map(|widget| trend_tags(&console.store, widget))
+            .collect();
+        if wanted != console.mimic_trend {
+            cx.defer_in(window, move |console, _, _| console.set_mimic_trend(wanted));
+        }
     }
     editor::launch_ready(console, window, cx);
     if editor::editing(console) && console.stress.is_none() {
@@ -1239,7 +1294,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         }
     }
 
-    let can_command = mimic::write_route(console.is_admin(), console.is_operator()).is_some();
+    let can_command = mimic::write_route(console.is_admin(), console.may_operate()).is_some();
     let (tabs, names) = console.state_ref::<Screens>().map_or_else(
         || (vec![OVERVIEW.to_owned()], vec!["Overview".to_owned()]),
         |screens| {
@@ -1254,7 +1309,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         Some(Loaded::Ready(layout)) => layout.widgets.len(),
         _ => 0,
     };
-    let edit = console.is_operator().then(|| editor::edit_button(cx));
+    let edit = console.may_configure().then(|| editor::edit_button(cx));
     let bar = sub_bar(
         &tabs, &names, &screen, zoom, fitted, count, edit, &theme, cx,
     );

@@ -117,6 +117,8 @@ interface Props {
   editMode: boolean
   onBrandingClick: () => void
   activeAlarmCount: number
+  /** The active alarm count could not be fetched. */
+  alarmsUnavailable?: boolean
   effectiveNavShortcuts: Record<string, string>
   showShortcutsPanel: boolean
   onToggleShortcutsPanel: () => void
@@ -128,7 +130,10 @@ interface Props {
   onTagsClick: () => void
   onAssetsClick: () => void
   onScriptsClick: () => void
+  /** May configure (admin, demo): edit mode and the configuration tools. */
   isAdmin: boolean
+  /** May operate (operator and up): the Flows list, to start and stop flows. */
+  canOperate?: boolean
   username: string
   onLogout: () => void
   onAlarmPanelToggle: () => void
@@ -262,9 +267,9 @@ const Icons = {
 
 export function AppHeader({
   branding, editMode, onBrandingClick,
-  activeAlarmCount, effectiveNavShortcuts,
+  activeAlarmCount, alarmsUnavailable = false, effectiveNavShortcuts,
   showShortcutsPanel, onToggleShortcutsPanel, shortcutsPanel,
-  mode, onSettingsClick, onDataManagerClick, onFlowsClick, onTagsClick, isAdmin,
+  mode, onSettingsClick, onDataManagerClick, onFlowsClick, onTagsClick, isAdmin, canOperate = isAdmin,
   username, onLogout, onAlarmPanelToggle, onCommandPanelToggle, onExportClick, onShiftHandoverToggle,
   onSnapshotsClick, onAuditPanelToggle, onImportWizardClick, onNodeRedWizardClick, onMqttPanelClick, onEdrPanelClick, onAssetsClick, onScriptsClick, onSystemClick,
   // Screen tabs
@@ -293,11 +298,12 @@ export function AppHeader({
     { label: 'Commands', icon: Icons.pen, onClick: onCommandPanelToggle },
   ]
 
+  const flowsItem: MenuItem = { label: 'Flows', icon: Icons.layers, onClick: onFlowsClick, active: true, activeColor: 'amber' }
   if (isAdmin) {
     actionItems.push(
       { label: 'Tags', icon: Icons.tag, onClick: onTagsClick, active: true, activeColor: 'green' },
       { label: 'Assets', icon: Icons.briefcase, onClick: onAssetsClick, active: true, activeColor: 'purple' },
-      { label: 'Flows', icon: Icons.layers, onClick: onFlowsClick, active: true, activeColor: 'amber' },
+      flowsItem,
       { label: 'Scripts', icon: Icons.code, onClick: onScriptsClick, active: true, activeColor: 'green' },
       { label: 'System', icon: Icons.settings, onClick: onSystemClick, active: true, activeColor: 'green' },
       { label: 'Import Data', icon: Icons.upload, onClick: onImportWizardClick },
@@ -306,6 +312,8 @@ export function AppHeader({
       { label: 'EDR Compat', icon: Icons.shield, onClick: onEdrPanelClick },
       { label: 'Audit Log', icon: Icons.audit, onClick: onAuditPanelToggle },
     )
+  } else if (canOperate) {
+    actionItems.push(flowsItem)
   }
 
   const drawerItemStyle: React.CSSProperties = {
@@ -423,7 +431,7 @@ export function AppHeader({
           {!isMobile && <div style={DIVIDER_V} />}
 
           {/* Unified bell */}
-          <UnifiedBell authed={true} activeAlarmCount={activeAlarmCount} onOpenAlarmPanel={onAlarmPanelToggle} />
+          <UnifiedBell authed={true} activeAlarmCount={activeAlarmCount} alarmsUnavailable={alarmsUnavailable} onOpenAlarmPanel={onAlarmPanelToggle} />
 
           {/* Keyboard shortcuts (desktop only) */}
           {!isMobile && (
@@ -615,6 +623,11 @@ export function AppHeader({
               <span>Alarms &amp; Notifications</span>
             </button>
             <div style={{ height: 1, background: 'var(--border)', margin: '8px 16px' }} />
+            {!isAdmin && canOperate && (
+              <button style={drawerItemStyle} onClick={() => { closeDrawer(); onFlowsClick(); }}>
+                {Icons.layers}<span>Flows</span>
+              </button>
+            )}
             {isAdmin && (
               <>
                 <button style={drawerItemStyle} onClick={() => { closeDrawer(); onAssetsClick(); }}>

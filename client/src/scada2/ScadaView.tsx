@@ -12,10 +12,12 @@ import { SymbolThumb } from './hmi/SymbolView'
 import { Faceplate } from './hmi/Faceplate'
 import { AlarmBanner } from './AlarmBanner'
 import type { SensorConfig, SensorData, ScadaEquipmentItem, ScadaConnectionItem } from '../types'
-import { useDashboardSelector } from '../store/dashboardStore'
 import { wsWriteTagResult } from '../api/websocket'
 import { writeTag } from '../api/commands'
 import { toast } from '../components/Toast'
+import { getScreenWidget, initialConfigOf, scadaSizeOf } from '../edition/widgets'
+import { isSignatureCancelled } from '../signature/logic'
+import { useRole } from '../RoleContext'
 
 // Import all widgets to trigger registration
 import './widgets/SymbolWidget'
@@ -107,7 +109,7 @@ export const ScadaView: React.FC<Props> = ({
   sensors, activeScreen, scadaEquipment, scadaConnections, loaded,
   onSave, onSensorClick, isAdmin, toolbarSlotSetter,
 }) => {
-  const currentValues = useDashboardSelector(s => s.currentValues) as Record<string, SensorData>
+  const { canOperate } = useRole()
   const [history, dispatch] = useReducer(historyReducer, emptyHistory)
   const layout = history.present
   const dirty = history.present !== history.saved
@@ -217,6 +219,17 @@ export const ScadaView: React.FC<Props> = ({
 
   const addWidgetType = useCallback((type: ScadaWidgetType, x?: number, y?: number, sensorId: number | null = null) => {
     const m = WIDGET_MANIFESTS[type]
+    if (!m) {
+      // An add-on widget: no tag binding, its own default size and settings.
+      const def = getScreenWidget(type, 'scada')
+      if (!def) return
+      const { width, height } = scadaSizeOf(def)
+      const pos = x != null && y != null ? clampPos(x, y, width, height) : placeAt(width, height)
+      const widget = createWidget(type, null, pos.x, pos.y, width, height)
+      widget.config = initialConfigOf(def)
+      addWidget(widget)
+      return
+    }
     const pos = x != null && y != null ? clampPos(x, y, m.defaultWidth, m.defaultHeight) : placeAt(m.defaultWidth, m.defaultHeight)
     addWidget(createWidget(type, sensorId, pos.x, pos.y, m.defaultWidth, m.defaultHeight))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -271,7 +284,7 @@ export const ScadaView: React.FC<Props> = ({
       if (outcome === 'queued') toast.info('Command queued, the device has not answered yet')
       if (outcome === null) await writeTag(sensorId, value)
     } catch (err: any) {
-      toast.error(err.message || 'Write failed')
+      if (!isSignatureCancelled(err)) toast.error(err.message || 'Write failed')
     }
   }, [])
 
@@ -284,7 +297,7 @@ export const ScadaView: React.FC<Props> = ({
       else toast.success('Command sent')
       return true
     } catch (err: any) {
-      toast.error(err.message || 'Write failed')
+      if (!isSignatureCancelled(err)) toast.error(err.message || 'Write failed')
       return false
     }
   }, [])
@@ -438,7 +451,6 @@ export const ScadaView: React.FC<Props> = ({
           <ScadaCanvas
             layout={layout}
             sensors={sensors}
-            currentValues={currentValues}
             editMode={editMode}
             selectedId={editMode ? (selection?.kind === 'widget' ? selection.id : connectFrom) : faceplateWidget?.id ?? null}
             zoom={editMode ? zoom : 'fit'}
@@ -453,14 +465,14 @@ export const ScadaView: React.FC<Props> = ({
             onMoveWidget={(id, x, y) => dispatch({ type: 'MOVE_WIDGET', id, x, y })}
             onResizeWidget={(id, x, y, width, height) => dispatch({ type: 'RESIZE_WIDGET', id, x, y, width, height })}
             onDrop={handleDrop}
-            onWriteValue={handleWriteValue}
+            onWriteValue={canOperate ? handleWriteValue : undefined}
+            isActivatable={w => w.sensorId != null && FACEPLATE_TYPES.has(w.type)}
             onClickEmpty={() => { setSelection(null); setConnectFrom(null); setFaceplateId(null) }}
             onPointerMove={editMode && connectFrom ? (x, y) => setPointer({ x, y }) : undefined}
           >
             <ConnectionLayer
               widgets={layout.widgets}
               connections={layout.connections}
-              currentValues={currentValues}
               editMode={editMode}
               selectedId={selection?.kind === 'connection' ? selection.id : null}
               onSelect={tool === 'select' ? id => setSelection({ kind: 'connection', id }) : undefined}
@@ -472,7 +484,6 @@ export const ScadaView: React.FC<Props> = ({
               key={faceplateWidget.id}
               widget={faceplateWidget}
               sensors={sensors}
-              currentValues={currentValues}
               onCommand={sendCommand}
               onOpenDetail={onSensorClick}
               onClose={() => setFaceplateId(null)}

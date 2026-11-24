@@ -3,6 +3,7 @@ import type { SensorConfig } from '../types'
 import { SYMBOLS, SYMBOL_CATEGORIES } from './hmi/symbols'
 import { SymbolThumb } from './hmi/SymbolView'
 import { WIDGET_MANIFESTS } from './widgets/registry'
+import { screenWidgets } from '../edition/widgets'
 import type { ScadaWidgetType, WidgetManifest } from './widgets/types'
 import { DND_SYMBOL, DND_TAG, DND_WIDGET } from './ScadaCanvas'
 
@@ -28,6 +29,8 @@ export const ScadaPalette: React.FC<Props> = ({ sensors, onAddSymbol, onAddWidge
   const symbols = useMemo(() => SYMBOLS.filter(s => !q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q)), [q])
   const widgets = useMemo(() => (Object.values(WIDGET_MANIFESTS) as WidgetManifest[])
     .filter(m => !SYMBOL_BACKED.has(m.type) && (!q || m.displayName.toLowerCase().includes(q))), [q])
+  // Add-on widget types (none in Community, so the section does not appear).
+  const addons = useMemo(() => screenWidgets('scada').filter(d => !q || d.label.toLowerCase().includes(q)), [q])
   const tags = useMemo(() => sensors.filter(s => !q || s.name.toLowerCase().includes(q) || s.key.toLowerCase().includes(q)), [sensors, q])
 
   return (
@@ -90,6 +93,19 @@ export const ScadaPalette: React.FC<Props> = ({ sensors, onAddSymbol, onAddWidge
                 <span style={{ fontSize: 10, color: 'var(--muted)' }}>{m.compatibleDataTypes.join(' · ')}</span>
               </Row>
             ))}
+            {addons.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <SectionLabel>Add-ons</SectionLabel>
+                {addons.map(d => (
+                  <Row key={d.type}
+                    onClick={() => onAddWidget(d.type as ScadaWidgetType)}
+                    onDragStart={e => { e.dataTransfer.setData(DND_WIDGET, d.type); e.dataTransfer.effectAllowed = 'copy' }}>
+                    <span style={{ width: 22, display: 'flex', justifyContent: 'center', fontSize: 14, color: 'var(--text-dim)' }}>{d.icon ?? '▣'}</span>
+                    <span style={{ flex: 1, fontSize: 12 }}>{d.label}</span>
+                  </Row>
+                ))}
+              </div>
+            )}
           </>
         )}
 

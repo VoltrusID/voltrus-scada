@@ -1747,13 +1747,14 @@ pub fn shown_tags(widget: &Widget, all: &[i64]) -> Vec<i64> {
 pub const ARM_TIMEOUT: Duration = Duration::from_secs(6);
 
 /// How the console sends an operator command: an admin over the
-/// WebSocket, other operators through the REST write (policy-checked and
-/// recorded); viewers cannot.
-pub fn write_route(admin: bool, operator: bool) -> Option<WriteMode> {
-    WriteMode::allowed(admin, operator)
-        .iter()
-        .copied()
-        .find(|mode| *mode == WriteMode::Direct || *mode == WriteMode::Immediate)
+/// WebSocket, the other roles that operate through the REST write
+/// (recorded as a command); viewers cannot.
+pub fn write_route(admin: bool, operate: bool) -> Option<WriteMode> {
+    match (WriteMode::allowed(operate).is_empty(), admin) {
+        (true, _) => None,
+        (false, true) => Some(WriteMode::Direct),
+        (false, false) => Some(WriteMode::Immediate),
+    }
 }
 
 /// One command button: its word and the value it writes.

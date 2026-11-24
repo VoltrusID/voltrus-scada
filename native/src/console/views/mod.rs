@@ -23,6 +23,7 @@ pub(crate) mod overview;
 pub(crate) mod performance;
 pub(crate) mod settings;
 pub(crate) mod shift;
+pub(crate) mod sign;
 mod sign_in;
 pub(crate) mod spark;
 mod station;
@@ -83,6 +84,26 @@ pub(crate) fn tail_rows(len: usize, row_height: f32) -> usize {
 /// One of the [`tail_rows`].
 pub(crate) fn tail_row(row_height: f32) -> AnyElement {
     div().w_full().h(px(row_height)).into_any_element()
+}
+
+/// Scrolling counts as input too: a capture-phase listener, as scroll
+/// views stop the event before it bubbles to the root.
+fn activity_on_scroll(cx: &mut Context<Console>) -> impl IntoElement {
+    let console = cx.entity().downgrade();
+    gpui::canvas(
+        |_, _, _| (),
+        move |_, (), window, _| {
+            window.on_mouse_event(move |_: &gpui::ScrollWheelEvent, phase, _, cx| {
+                if phase == gpui::DispatchPhase::Capture
+                    && let Some(console) = console.upgrade()
+                {
+                    console.read(cx).note_activity();
+                }
+            });
+        },
+    )
+    .absolute()
+    .size_0()
 }
 
 impl Render for Console {
@@ -158,6 +179,15 @@ impl Render for Console {
             .text_size(FONT_BODY)
             .track_focus(&self.focus)
             .key_context(CONSOLE)
+            // Real input keeps a session with an idle timeout open (the
+            // runtime reports it, throttled); timers and polling never do.
+            .capture_key_down(cx.listener(|console, _: &gpui::KeyDownEvent, _, _| {
+                console.note_activity();
+            }))
+            .capture_any_mouse_down(cx.listener(|console, _: &gpui::MouseDownEvent, _, _| {
+                console.note_activity();
+            }))
+            .child(activity_on_scroll(cx))
             .on_action(cx.listener(|console, _: &Quit, _, cx| {
                 console.shutdown();
                 cx.quit();

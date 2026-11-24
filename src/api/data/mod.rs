@@ -13,7 +13,6 @@ use axum::response::IntoResponse;
 use serde_json::json;
 
 use super::{AppError, AppState, generators};
-use crate::expression;
 use crate::models::*;
 
 /// Metric name for a data source key.

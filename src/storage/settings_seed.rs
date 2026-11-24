@@ -1,39 +1,116 @@
 use super::Storage;
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::path::{Path, PathBuf};
+
+/// Name of the file, next to the database, holding the admin password the
+/// server generated on first start. Deleted when the admin changes it.
+pub const INITIAL_ADMIN_PASSWORD_FILE: &str = "initial-admin-password";
+
+/// Where the generated admin password is kept for a database at `db_path`;
+/// `None` for an in-memory database.
+pub fn initial_admin_password_path(db_path: &str) -> Option<PathBuf> {
+    if db_path == ":memory:" || db_path.is_empty() {
+        return None;
+    }
+    let dir = Path::new(db_path)
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    Some(dir.join(INITIAL_ADMIN_PASSWORD_FILE))
+}
+
+/// Write `password` to [`initial_admin_password_path`], created with mode 0600
+/// (owner only) so the password is never readable by other local accounts,
+/// even for an instant.
+fn write_initial_admin_password(db_path: &str, password: &str) -> Result<Option<PathBuf>> {
+    use std::io::Write;
+    let Some(path) = initial_admin_password_path(db_path) else {
+        return Ok(None);
+    };
+    // A stale file from an earlier database would otherwise make create_new fail.
+    let _ = std::fs::remove_file(&path);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .with_context(|| format!("create {}", path.display()))?;
+    writeln!(file, "{password}").with_context(|| format!("write {}", path.display()))?;
+    Ok(Some(path))
+}
+
+/// Remove the generated-password file once the admin has chosen a password.
+/// Missing file is fine (already removed, or never generated).
+pub fn remove_initial_admin_password(db_path: &str) {
+    if let Some(path) = initial_admin_password_path(db_path)
+        && let Err(e) = std::fs::remove_file(&path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("Could not delete {}: {e}", path.display());
+    }
+}
 
 impl Storage {
     // ── Seed ──
 
-    /// Seed a fresh database: the `admin` user with a random password (logged
-    /// once, to be changed on first login), the default roles and the data
-    /// sources of the configured devices. Existing data is left alone.
+    /// Seed a fresh database: the `admin` user with a random password (written
+    /// to [`INITIAL_ADMIN_PASSWORD_FILE`] next to the database, to be changed
+    /// on first login), the default roles and the data sources of the
+    /// configured devices. Existing data is left alone.
     pub async fn seed_database(
         &self,
         device_configs: &[crate::models::DeviceConfig],
     ) -> Result<()> {
-        if let Some(password) = self.seed(device_configs).await? {
-            tracing::warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-            tracing::warn!("  GENERATED ADMIN PASSWORD: {}", password);
-            tracing::warn!("  You will be required to change this on first login.");
-            tracing::warn!("  Save this password now — it will NOT be shown again.");
-            tracing::warn!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        if let Some(written) = self.seed(device_configs).await? {
+            // The password goes to a file only this account can read, not to the
+            // log: logs are shipped, rotated and read by people who should not
+            // get the admin password.
+            match written {
+                Ok(Some(path)) => tracing::warn!(
+                    "Generated the admin password and wrote it to {} (readable by this account only). \
+                     Sign in as admin with it; you must change it at first sign-in, which deletes the file.",
+                    path.display()
+                ),
+                Ok(None) => tracing::warn!(
+                    "Generated an admin password for the in-memory database; it is not saved anywhere"
+                ),
+                Err(e) => tracing::error!(
+                    "Could not write the generated admin password file: {e:#}. \
+                     Run `voltrus --reset-admin-password` to set a new one."
+                ),
+            }
         }
         Ok(())
     }
 
-    /// [`Storage::seed_database`] without logging the generated `admin`
-    /// password, for setup tools whose output ends up in logs. Returns whether
-    /// `admin` was created.
+    /// [`Storage::seed_database`] without logging, for setup tools that report
+    /// themselves. Returns whether `admin` was created; its password is in
+    /// [`INITIAL_ADMIN_PASSWORD_FILE`] then, as with `seed_database`.
     pub async fn seed_database_quietly(
         &self,
         device_configs: &[crate::models::DeviceConfig],
     ) -> Result<bool> {
-        Ok(self.seed(device_configs).await?.is_some())
+        match self.seed(device_configs).await? {
+            Some(Err(e)) => {
+                // `admin` exists now; failing here would not create it again.
+                tracing::error!("Could not write the generated admin password file: {e:#}");
+                Ok(true)
+            }
+            Some(Ok(_)) => Ok(true),
+            None => Ok(false),
+        }
     }
 
-    /// The seed itself; returns the generated `admin` password when it created
-    /// the user.
-    async fn seed(&self, device_configs: &[crate::models::DeviceConfig]) -> Result<Option<String>> {
+    /// The seed itself. When it created `admin`, returns the outcome of writing
+    /// the generated password file (its path, `None` for an in-memory database).
+    async fn seed(
+        &self,
+        device_configs: &[crate::models::DeviceConfig],
+    ) -> Result<Option<Result<Option<PathBuf>>>> {
         let mut generated = None;
         let existing = self.get_user_by_username("admin").await?;
         if existing.is_none() {
@@ -48,7 +125,7 @@ impl Storage {
             self.create_user("admin", &password_hash, "", "admin")
                 .await?;
             self.set_must_change_password("admin", true).await?;
-            generated = Some(password);
+            generated = Some(write_initial_admin_password(self.db_path(), &password));
         }
 
         // Seed default RBAC roles if none exist

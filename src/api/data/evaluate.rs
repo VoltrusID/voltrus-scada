@@ -9,74 +9,46 @@ pub(crate) fn evaluate_data_sources(
     data_sources
         .iter()
         .map(|ds| {
-            // Cache metrics are stored under the bare register name.
-            let metric = metric_name(&ds.key, &ds.device_id);
-            let value = if ds.source_type == "modbus" {
-                let metrics = cache_data
-                    .iter()
-                    .find(|s| s.device_id == ds.device_id && s.status == DeviceStatus::Online)
-                    .map(|s| &s.metrics);
-
-                match metrics {
-                    None => f64::NAN,
-                    Some(m) => {
-                        if let Ok(cfg) =
-                            serde_json::from_str::<serde_json::Value>(&ds.source_config)
-                        {
-                            if let Some(expr_str) = cfg.get("expression").and_then(|v| v.as_str()) {
-                                if expr_str.is_empty() {
-                                    m.get(metric).copied().unwrap_or(f64::NAN)
-                                } else {
-                                    match expression::evaluate(expr_str, m) {
-                                        Ok(val) => val,
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Expression eval error for {}: {e}",
-                                                ds.key
-                                            );
-                                            f64::NAN
-                                        }
-                                    }
-                                }
-                            } else {
-                                m.get(metric).copied().unwrap_or(f64::NAN)
-                            }
-                        } else {
-                            m.get(metric).copied().unwrap_or(f64::NAN)
-                        }
-                    }
-                }
+            let tag = if ds.source_type == "modbus" {
+                // Never read (device or metric not in the cache) reads as a
+                // communication failure: there is no value to show.
+                crate::alarm_eval::resolve(ds, cache_data).unwrap_or(crate::alarm_eval::TagValue {
+                    value: f64::NAN,
+                    quality: crate::quality::Quality::BadCommFailure,
+                    ts_ms: 0,
+                })
             } else {
+                // Synthetic tags: a value pushed for the device wins over the generator.
+                let metric = metric_name(&ds.key, &ds.device_id);
                 let cached = cache_data
                     .iter()
                     .find(|s| s.device_id == ds.device_id && s.status == DeviceStatus::Online)
-                    .and_then(|s| s.metrics.get(metric).copied());
-                cached.unwrap_or_else(|| generators::generate_value(ds, now))
-            };
-
-            // Low-alarm thresholds live in source_config (absent = disabled).
-            let (low_warn, low_crit) = serde_json::from_str::<serde_json::Value>(&ds.source_config)
-                .ok()
-                .map(|cfg| {
-                    (
-                        cfg.get("low_warn").and_then(|v| v.as_f64()),
-                        cfg.get("low_crit").and_then(|v| v.as_f64()),
-                    )
+                    .and_then(|s| {
+                        let value = *s.metrics.get(metric)?;
+                        Some(crate::alarm_eval::TagValue {
+                            value,
+                            quality: s.quality_of(metric),
+                            ts_ms: s.metric_ts(metric),
+                        })
+                    });
+                cached.unwrap_or_else(|| crate::alarm_eval::TagValue {
+                    value: generators::generate_value(ds, now),
+                    quality: crate::quality::Quality::Good,
+                    ts_ms: 0,
                 })
-                .unwrap_or((None, None));
-            let status = if value.is_nan() {
-                "offline".to_string()
-            } else if (ds.crit_val > 0.0 && value >= ds.crit_val)
-                || low_crit.is_some_and(|lc| value <= lc)
-            {
-                "critical".to_string()
-            } else if (ds.warn_val > 0.0 && value >= ds.warn_val)
-                || low_warn.is_some_and(|lw| value <= lw)
-            {
-                "warning".to_string()
-            } else {
-                "normal".to_string()
             };
+            let value = tag.value;
+
+            let status = if value.is_nan() {
+                "offline"
+            } else {
+                match crate::alarm_eval::Thresholds::of(ds).condition(value) {
+                    Some(("critical", _, _)) => "critical",
+                    Some(_) => "warning",
+                    None => "normal",
+                }
+            }
+            .to_string();
 
             DataSourceData {
                 id: ds.id,
@@ -86,6 +58,8 @@ pub(crate) fn evaluate_data_sources(
                 crit: ds.crit_val,
                 source_type: ds.source_type.clone(),
                 status,
+                quality: tag.quality,
+                ts_ms: (tag.ts_ms > 0).then_some(tag.ts_ms),
             }
         })
         .collect()

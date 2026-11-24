@@ -1,19 +1,20 @@
-import React, { useCallback, useMemo, useState } from 'react'
+import React, { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { Canvas, useFrame } from '@react-three/fiber'
 import { Html, Line, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import type { SensorConfig, SensorData } from '../types'
 import type { ConnectionInstance, WidgetInstance } from '../scada2/widgets/types'
-import { useDashboardSelector } from '../store/dashboardStore'
-import { symbolLiveState, stateText, stateColor, type SymbolLiveState } from '../scada2/hmi/SymbolView'
+import { useSensorCurrentValue, useTrackedCurrentValues } from '../store/dashboardStore'
+import { symbolLiveState, stateText, type SymbolLiveState } from '../scada2/hmi/SymbolView'
 import { Faceplate } from '../scada2/hmi/Faceplate'
 import { AlarmBanner } from '../scada2/AlarmBanner'
 import { isRunning } from '../scada2/connections/ConnectionLayer'
 import { wsWriteTagResult } from '../api/websocket'
 import { writeTag } from '../api/commands'
+import { isSignatureCancelled } from '../signature/logic'
 import { toast } from '../components/Toast'
 import { placeLayout, bounds, type PlacedItem, type PlacedArea } from './placement'
-import { Pipes3D, type PipeRun } from './Pipes3D'
+import { Pipes3D, type PipeRoute } from './Pipes3D'
 import { TwinEnvironment, CameraRig, type CameraGoal } from './Stage'
 import { MAT } from './materials'
 import * as M from './models'
@@ -27,6 +28,11 @@ interface Props {
   /** Switch to the hand-placed free layout. */
   onFreeLayout?: () => void
 }
+
+/** The 3D view and its overlays are dark in both themes, so they use the dark HMI state colours. */
+const HMI_ON_DARK = { run: '#34c47a', warn: '#f5b21b', fault: '#f04646', stale: '#d65ce8', idle: '#a1a1aa' } as const
+const plateStateColor = (st: SymbolLiveState['state']) =>
+  st === 'running' ? HMI_ON_DARK.run : st === 'fault' ? HMI_ON_DARK.fault : st === 'stale' ? HMI_ON_DARK.stale : HMI_ON_DARK.idle
 
 const fmt = (d: SensorData | undefined, s: SensorConfig | undefined) => (d?.value == null ? '' : d.value.toFixed(s?.decimals ?? 1))
 
@@ -72,12 +78,12 @@ function TagPlate({ it, live, value, unit, selected }: { it: PlacedItem; live: S
   const showState = it.def.binding === 'state' && it.widget.sensorId != null
   if (!label && !showValue) return null
   const alarm = live.alarm
-  const border = alarm === 'crit' ? 'var(--hmi-fault)' : alarm === 'warn' ? 'var(--hmi-warn)' : selected ? 'var(--cyan)' : 'rgba(255,255,255,.14)'
+  const border = alarm === 'crit' ? HMI_ON_DARK.fault : alarm === 'warn' ? HMI_ON_DARK.warn : selected ? '#22d3ee' : 'rgba(255,255,255,.14)'
   return (
     <Html position={[0, it.top + 0.35, 0]} center zIndexRange={[10, 0]} style={{ pointerEvents: 'none' }}>
       <div className={alarm === 'crit' || live.state === 'fault' ? 'hmi-blink' : undefined} style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, padding: '3px 7px', borderRadius: 4, whiteSpace: 'nowrap',
-        background: 'rgba(13,15,18,.86)', border: `1px solid ${live.state === 'fault' ? 'var(--hmi-fault)' : border}`,
+        background: 'rgba(13,15,18,.86)', border: `1px solid ${live.state === 'fault' ? HMI_ON_DARK.fault : border}`,
         fontFamily: 'Inter, sans-serif', boxShadow: '0 4px 14px rgba(0,0,0,.4)',
       }}>
         {label && <div style={{ fontSize: 11, fontWeight: 700, color: '#e8edf2', letterSpacing: '.02em' }}>{label}</div>}
@@ -87,7 +93,7 @@ function TagPlate({ it, live, value, unit, selected }: { it: PlacedItem; live: S
             {unit && <span style={{ color: '#8b95a1', fontSize: 10, marginLeft: 3 }}>{unit}</span>}
           </div>
         )}
-        {showState && <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: stateColor(live.state) }}>{stateText(it.def, live.state)}</div>}
+        {showState && <div style={{ fontSize: 9, fontWeight: 800, letterSpacing: '.1em', color: plateStateColor(live.state) }}>{stateText(it.def, live.state)}</div>}
       </div>
     </Html>
   )
@@ -121,10 +127,69 @@ function Equipment({ it, live, value, unit, selected, hovered, showLabels, onSel
   )
 }
 
+function liveOf(it: PlacedItem, s: SensorConfig | undefined, values: Record<string, SensorData>) {
+  const d = it.widget.sensorId != null ? values[String(it.widget.sensorId)] : undefined
+  return { live: symbolLiveState(it.def, it.config, it.widget.sensorId, s, d, values), value: fmt(d, s), unit: s?.unit ?? '' }
+}
+
+/** One piece of equipment, subscribed to its own tags only. */
+const LiveEquipment = memo(function LiveEquipment({ it, sensor, ...rest }: {
+  it: PlacedItem; sensor: SensorConfig | undefined; selected: boolean; hovered: boolean; showLabels: boolean
+  onSelect: (id: string) => void; onHover: (id: string | null) => void
+}) {
+  const values = useTrackedCurrentValues()
+  const l = liveOf(it, sensor, values)
+  return <Equipment it={it} live={l.live} value={l.value} unit={l.unit} {...rest} />
+})
+
+/** Pipes and cables; geometry depends on the layout only, live data just switches the flow on or off. */
+function LivePipes({ routes, widgetById }: { routes: PipeRoute[]; widgetById: Map<string, WidgetInstance> }) {
+  const values = useTrackedCurrentValues()
+  const flowing = new Set<string>()
+  for (const r of routes) {
+    if (r.kind !== 'data' && (isRunning(widgetById.get(r.from.id), values) || isRunning(widgetById.get(r.to.id), values))) flowing.add(r.id)
+  }
+  const key = [...flowing].sort().join(',')
+  // A new Set every render; keep the previous one while the same runs flow.
+  const stable = useMemo(() => flowing, [key])
+  return <Pipes3D routes={routes} flowing={stable} />
+}
+
+function KpiTile({ sensor, sensorId }: { sensor: SensorConfig | undefined; sensorId: number }) {
+  const d = useSensorCurrentValue(sensorId)
+  return (
+    <div style={{ minWidth: 130, padding: '7px 12px', borderRadius: 6, background: 'rgba(13,15,18,.78)', border: '1px solid rgba(255,255,255,.08)', backdropFilter: 'blur(4px)' }}>
+      <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.08em', color: '#8b95a1', textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 170 }}>{sensor?.name}</div>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 700, color: '#e8edf2' }}>
+        {fmt(d, sensor) || '----'} <span style={{ fontSize: 11, color: '#8b95a1', fontWeight: 500 }}>{sensor?.unit}</span>
+      </div>
+    </div>
+  )
+}
+
+/** Running / stopped / tripped totals for the legend. */
+function StateLegend({ items, sensorById }: { items: PlacedItem[]; sensorById: Map<number, SensorConfig> }) {
+  const values = useTrackedCurrentValues()
+  const counts: Record<string, number> = {}
+  for (const it of items) {
+    if (it.def.binding !== 'state' || it.widget.sensorId == null) continue
+    const st = liveOf(it, sensorById.get(it.widget.sensorId), values).live.state
+    counts[st] = (counts[st] ?? 0) + 1
+  }
+  return (
+    <>
+      <Legend color={HMI_ON_DARK.run}>Running {counts.running ?? 0}</Legend>
+      <Legend color="#7d8792">Stopped {counts.stopped ?? 0}</Legend>
+      <Legend color={HMI_ON_DARK.fault}>Tripped {counts.fault ?? 0}</Legend>
+    </>
+  )
+}
+
 /** Pulsing red ground ring under tripped equipment, visible from across the plant. */
 function FaultRing({ radius }: { radius: number }) {
   const ref = React.useRef<THREE.Mesh>(null)
   const mat = useMemo(() => new THREE.MeshBasicMaterial({ color: '#f04646', transparent: true, depthWrite: false }), [])
+  useEffect(() => () => mat.dispose(), [mat])
   useFrame(({ clock }) => {
     const k = (clock.elapsedTime * 1.2) % 1
     if (ref.current) ref.current.scale.setScalar(1 + k * 0.8)
@@ -158,6 +223,7 @@ function textTexture(title: string, subtitle: string): THREE.CanvasTexture {
 /** Concrete pad per process area, outlined in safety yellow with its name painted on the floor. */
 function AreaPad({ a }: { a: PlacedArea }) {
   const tex = useMemo(() => textTexture(a.title, a.subtitle), [a.title, a.subtitle])
+  useEffect(() => () => tex.dispose(), [tex])
   const y = 0.025
   const x0 = a.x - a.w / 2 + 0.2, x1 = a.x + a.w / 2 - 0.2, z0 = a.z - a.d / 2 + 0.2, z1 = a.z + a.d / 2 - 0.2
   const tw = Math.min(a.w * 0.8, 9)
@@ -174,7 +240,6 @@ function AreaPad({ a }: { a: PlacedArea }) {
 }
 
 export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, screenName, onOpenDetail, onFreeLayout }) => {
-  const currentValues = useDashboardSelector(s => s.currentValues) as Record<string, SensorData>
   const { items, areas } = useMemo(() => placeLayout(widgets), [widgets])
   const box = useMemo(() => bounds(items), [items])
   const byId = useMemo(() => new Map(items.map(i => [i.id, i])), [items])
@@ -208,19 +273,12 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
     if (it) flyToItem(it)
   }, [byId, flyToItem])
 
-  const live = (it: PlacedItem) => {
-    const s = it.widget.sensorId != null ? sensorById.get(it.widget.sensorId) : undefined
-    const d = it.widget.sensorId != null ? currentValues[String(it.widget.sensorId)] : undefined
-    return { live: symbolLiveState(it.def, it.config, it.widget.sensorId, s, d, currentValues), value: fmt(d, s), unit: s?.unit ?? '' }
-  }
-
-  const runs: PipeRun[] = useMemo(() => connections.flatMap(c => {
+  const routes: PipeRoute[] = useMemo(() => connections.flatMap(c => {
     const from = byId.get(c.fromWidgetId)
     const to = byId.get(c.toWidgetId)
     if (!from || !to) return []
-    const flowing = c.connectionType !== 'data' && (isRunning(widgetById.get(c.fromWidgetId), currentValues) || isRunning(widgetById.get(c.toWidgetId), currentValues))
-    return [{ id: c.id, kind: c.connectionType, from, to, waypoints: c.waypoints, flowing }]
-  }), [connections, byId, widgetById, currentValues])
+    return [{ id: c.id, kind: c.connectionType, from, to, waypoints: c.waypoints }]
+  }), [connections, byId])
 
   const sendCommand = useCallback(async (sensorId: number, value: number) => {
     try {
@@ -230,7 +288,7 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
       else toast.success('Command sent')
       return true
     } catch (err: any) {
-      toast.error(err.message || 'Write failed')
+      if (!isSignatureCancelled(err)) toast.error(err.message || 'Write failed')
       return false
     }
   }, [])
@@ -239,12 +297,6 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
   const kpis = widgets.filter(w => w.type === 'big_number' && w.sensorId != null).slice(0, 4)
   const header = widgets.find(w => w.type === 'label' && w.config?.bold)?.config?.text ?? screenName
   const selectedWidget = selected ? widgetById.get(selected) : undefined
-  const counts = items.reduce((acc, it) => {
-    if (it.def.binding !== 'state' || it.widget.sensorId == null) return acc
-    const st = live(it).live.state
-    acc[st] = (acc[st] ?? 0) + 1
-    return acc
-  }, {} as Record<string, number>)
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 520, overflow: 'hidden' }}>
@@ -262,14 +314,11 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
             autoRotate={orbit} autoRotateSpeed={0.35} />
           <CameraRig goal={goal} onArrive={arrive} />
           {areas.map(a => <AreaPad key={a.id} a={a} />)}
-          <Pipes3D runs={runs} />
-          {items.map(it => {
-            const l = live(it)
-            return (
-              <Equipment key={it.id} it={it} live={l.live} value={l.value} unit={l.unit} selected={selected === it.id} hovered={hovered === it.id}
-                showLabels={showLabels} onSelect={select} onHover={setHovered} />
-            )
-          })}
+          <LivePipes routes={routes} widgetById={widgetById} />
+          {items.map(it => (
+            <LiveEquipment key={it.id} it={it} sensor={it.widget.sensorId != null ? sensorById.get(it.widget.sensorId) : undefined}
+              selected={selected === it.id} hovered={hovered === it.id} showLabels={showLabels} onSelect={select} onHover={setHovered} />
+          ))}
         </Canvas>
 
         {/* Title + KPIs */}
@@ -277,22 +326,11 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
           <div style={{ padding: '8px 12px', borderRadius: 6, background: 'rgba(13,15,18,.78)', border: '1px solid rgba(255,255,255,.08)', backdropFilter: 'blur(4px)' }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#e8edf2' }}>{String(header).replace('Process Overview', '3D Plant Twin')}</div>
             <div style={{ marginTop: 3, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#8b95a1' }}>
-              <span style={{ width: 7, height: 7, borderRadius: 4, background: 'var(--hmi-run)' }} /> live · {items.length} assets · {runs.filter(r => r.kind === 'flow').length} pipe runs
+              <span style={{ width: 7, height: 7, borderRadius: 4, background: HMI_ON_DARK.run }} /> live · {items.length} assets · {routes.filter(r => r.kind === 'flow').length} pipe runs
             </div>
           </div>
           <span style={{ flex: 1 }} />
-          {kpis.map(w => {
-            const s = sensorById.get(w.sensorId!)
-            const d = currentValues[String(w.sensorId)]
-            return (
-              <div key={w.id} style={{ minWidth: 130, padding: '7px 12px', borderRadius: 6, background: 'rgba(13,15,18,.78)', border: '1px solid rgba(255,255,255,.08)', backdropFilter: 'blur(4px)' }}>
-                <div style={{ fontSize: 9, fontWeight: 700, letterSpacing: '.08em', color: '#8b95a1', textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 170 }}>{s?.name}</div>
-                <div style={{ fontFamily: 'var(--font-mono)', fontSize: 20, fontWeight: 700, color: '#e8edf2' }}>
-                  {fmt(d, s) || '----'} <span style={{ fontSize: 11, color: '#8b95a1', fontWeight: 500 }}>{s?.unit}</span>
-                </div>
-              </div>
-            )
-          })}
+          {kpis.map(w => <KpiTile key={w.id} sensorId={w.sensorId!} sensor={sensorById.get(w.sensorId!)} />)}
         </div>
 
         {/* Area navigation + view toggles */}
@@ -307,9 +345,7 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
 
         {/* Legend */}
         <div style={{ position: 'absolute', zIndex: 20, left: 14, bottom: 12, display: 'flex', gap: 12, padding: '6px 10px', borderRadius: 6, background: 'rgba(13,15,18,.78)', border: '1px solid rgba(255,255,255,.08)', fontSize: 11, color: '#c4ccd4' }}>
-          <Legend color="var(--hmi-run)">Running {counts.running ?? 0}</Legend>
-          <Legend color="#7d8792">Stopped {counts.stopped ?? 0}</Legend>
-          <Legend color="var(--hmi-fault)">Tripped {counts.fault ?? 0}</Legend>
+          <StateLegend items={items} sensorById={sensorById} />
           <Legend color="#4aa3ff">Flow</Legend>
           <span style={{ color: '#6b7480' }}>Drag to orbit · scroll to zoom · click equipment</span>
         </div>
@@ -319,7 +355,6 @@ export const PlantTwin: React.FC<Props> = ({ widgets, connections, sensors, scre
             key={selectedWidget.id}
             widget={selectedWidget}
             sensors={sensors}
-            currentValues={currentValues}
             onCommand={sendCommand}
             onOpenDetail={onOpenDetail}
             onClose={() => setSelected(null)}

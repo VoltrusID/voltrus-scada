@@ -79,6 +79,7 @@ impl Harness {
             role: role.into(),
             server: SERVER.into(),
             must_change_password: false,
+            password_expired: false,
         });
         self.event(Event::Link(Link::Live));
         for _ in 0..64 {

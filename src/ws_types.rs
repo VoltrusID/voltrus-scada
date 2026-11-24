@@ -4,9 +4,17 @@ use serde::{Deserialize, Serialize};
 pub struct TagUpdateEntry {
     pub tag_id: String,
     pub value: f64,
+    /// The tag's status (`normal`, `warning`, `critical`, `offline`); the
+    /// name predates per-value data quality, which is `data_quality`.
     pub quality: String,
     pub ts: i64,
     pub simulated: bool,
+    /// Data quality of the value (`good`, `uncertain_stale`, `bad_comm_failure`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_quality: Option<String>,
+    /// When the value was read from the device, Unix ms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ts_ms: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,8 +36,49 @@ pub enum ClientMessage {
         /// Why the write is made; required by tags with `write_requires_reason`.
         #[serde(default)]
         reason: Option<String>,
+        /// An electronic signature, sent after a `CommandAck` that carried
+        /// `signature_required`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<WsSignature>,
     },
     Ping,
+}
+
+/// A signature on a WebSocket tag write (see `models::SignatureInput`).
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct WsSignature {
+    pub password: String,
+    #[serde(default)]
+    pub meaning: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl std::fmt::Debug for WsSignature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WsSignature")
+            .field("password", &"<redacted>")
+            .field("meaning", &self.meaning)
+            .field("reason", &self.reason)
+            .finish()
+    }
+}
+
+impl From<WsSignature> for crate::models::SignatureInput {
+    fn from(s: WsSignature) -> Self {
+        Self {
+            password: s.password,
+            meaning: s.meaning,
+            reason: s.reason,
+        }
+    }
+}
+
+/// The signature a write needs, on its `CommandAck`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WsSignatureRequired {
+    pub action: String,
+    pub meaning: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +97,10 @@ pub enum ServerMessage {
         quality: String,
         ts: i64,
         simulated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data_quality: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ts_ms: Option<i64>,
     },
     /// Batch of tag updates sent in a single message to reduce per-message overhead.
     TagUpdateBatch {
@@ -58,6 +111,11 @@ pub enum ServerMessage {
         status: String,
         device_response: Option<String>,
         latency_ms: Option<u64>,
+        /// Set when the write needs an electronic signature: `status` is
+        /// `signature_required` (none given) or `rejected` (wrong password,
+        /// `device_response` says so). Resend the write with `signature`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature_required: Option<WsSignatureRequired>,
     },
     DeviceStatus {
         device_id: String,
@@ -123,6 +181,8 @@ mod tests {
             quality: "good".to_string(),
             ts: 1700000000,
             simulated: false,
+            data_quality: None,
+            ts_ms: None,
         };
         let bytes = rmp_serde::to_vec(&msg).unwrap();
         let decoded: ServerMessage = rmp_serde::from_slice(&bytes).unwrap();
@@ -148,6 +208,7 @@ mod tests {
                 value: 42.0,
                 command_id: None,
                 reason: None,
+                signature: None,
             },
             ClientMessage::Ping,
         ];
@@ -173,6 +234,8 @@ mod tests {
                 quality: "good".to_string(),
                 ts: 0,
                 simulated: false,
+                data_quality: None,
+                ts_ms: None,
             },
             ServerMessage::TagUpdateBatch {
                 updates: vec![TagUpdateEntry {
@@ -181,6 +244,8 @@ mod tests {
                     quality: "normal".to_string(),
                     ts: 1,
                     simulated: true,
+                    data_quality: None,
+                    ts_ms: None,
                 }],
             },
             ServerMessage::CommandAck {
@@ -188,6 +253,7 @@ mod tests {
                 status: "acked".to_string(),
                 device_response: None,
                 latency_ms: Some(50),
+                signature_required: None,
             },
             ServerMessage::DeviceStatus {
                 device_id: "d1".to_string(),
@@ -218,6 +284,8 @@ mod tests {
             quality: "good".to_string(),
             ts: 1700000000,
             simulated: false,
+            data_quality: None,
+            ts_ms: None,
         };
         let bytes = rmp_serde::to_vec_named(&msg).unwrap();
         eprintln!(
@@ -248,6 +316,8 @@ mod tests {
             quality: "good".to_string(),
             ts: 1700000000,
             simulated: false,
+            data_quality: None,
+            ts_ms: None,
         };
         let msgpack_bytes = rmp_serde::to_vec(&msg).unwrap();
         let json_bytes = serde_json::to_vec(&msg).unwrap();
@@ -281,5 +351,52 @@ mod tests {
             }
             other => panic!("expected AlarmUpdate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn tag_updates_without_quality_still_decode_and_quality_round_trips() {
+        // A batch as servers before per-value quality sent it.
+        let old = serde_json::json!({
+            "type": "TagUpdateBatch",
+            "updates": [{"tag_id": "t", "value": 1.0, "quality": "normal", "ts": 5, "simulated": false}],
+        });
+        let bytes = rmp_serde::to_vec_named(&old).unwrap();
+        let ServerMessage::TagUpdateBatch { updates } = rmp_serde::from_slice(&bytes).unwrap()
+        else {
+            panic!("Wrong message type")
+        };
+        assert_eq!(updates[0].data_quality, None);
+
+        let entry = TagUpdateEntry {
+            tag_id: "t".into(),
+            value: f64::NAN,
+            quality: "offline".into(),
+            ts: 5,
+            simulated: false,
+            data_quality: Some("bad_comm_failure".into()),
+            ts_ms: Some(5_123),
+        };
+        let bytes = rmp_serde::to_vec_named(&ServerMessage::TagUpdateBatch {
+            updates: vec![entry],
+        })
+        .unwrap();
+        let ServerMessage::TagUpdateBatch { updates } = rmp_serde::from_slice(&bytes).unwrap()
+        else {
+            panic!("Wrong message type")
+        };
+        assert_eq!(updates[0].data_quality.as_deref(), Some("bad_comm_failure"));
+        assert_eq!(updates[0].ts_ms, Some(5_123));
+        // Without quality the fields are left out, so old clients see the old shape.
+        let json = serde_json::to_value(TagUpdateEntry {
+            tag_id: "t".into(),
+            value: 1.0,
+            quality: "normal".into(),
+            ts: 5,
+            simulated: false,
+            data_quality: None,
+            ts_ms: None,
+        })
+        .unwrap();
+        assert!(json.get("data_quality").is_none() && json.get("ts_ms").is_none());
     }
 }

@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import type { Alarm } from '../types'
 import { useAcknowledgeAlarm, fetchJson } from '../queries'
+import { useRole } from '../RoleContext'
 
 export const ALARM_BANNER_ROWS = 3
 const ROW_H = 26
@@ -21,6 +22,7 @@ export const AlarmBanner: React.FC = () => {
     refetchInterval: 3_000,
   })
   const ack = useAcknowledgeAlarm()
+  const { canOperate } = useRole()
   const navigate = useNavigate()
 
   const active = alarms.filter(a => a.resolved_at == null && a.shelved_until == null)
@@ -66,7 +68,7 @@ export const AlarmBanner: React.FC = () => {
             <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', color: unacked ? color : 'var(--text-muted)' }}>
               {unacked ? 'UNACKED' : `ACK · ${a.acknowledged_by ?? ''}`}
             </span>
-            {unacked ? (
+            {unacked && canOperate ? (
               <button onClick={() => ack.mutate(a.id)} disabled={ack.isPending} style={{
                 height: 20, padding: '0 10px', borderRadius: 4, border: '1px solid var(--border)', background: 'var(--input-bg)',
                 color: 'var(--fg)', cursor: 'pointer', fontSize: 11, fontWeight: 600,

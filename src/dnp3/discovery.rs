@@ -7,8 +7,13 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::dnp3::datalink::Dnp3Frame;
-use crate::dnp3::master::build_link_reset_frame;
+use crate::dnp3::datalink::{ControlByte, LinkFrame, ParseResult, func, parse_frame};
+
+/// Outstation addresses tried by the probe. Outstations ignore frames for
+/// other addresses and never answer broadcasts, so the common defaults are
+/// asked in one write and whichever answers reveals its address.
+const PROBE_ADDRESSES: [u16; 4] = [10, 1, 0, 1024];
+const PROBE_MASTER: u16 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DiscoveredDnp3Device {
@@ -69,30 +74,50 @@ async fn probe_outstation(
         _ => return None,
     };
 
-    let frame = build_link_reset_frame(1, 0);
-    let bytes = match frame.encode() {
-        Ok(b) => b,
-        Err(_) => return None,
-    };
+    let mut bytes = Vec::new();
+    for dest in PROBE_ADDRESSES {
+        let control = ControlByte {
+            dir: true,
+            prm: true,
+            fcb: false,
+            fcv: false,
+            func: func::PRI_REQUEST_LINK_STATUS,
+        };
+        bytes.extend(
+            LinkFrame::new(control, dest, PROBE_MASTER, vec![])
+                .encode()
+                .ok()?,
+        );
+    }
     if stream.write_all(&bytes).await.is_err() {
         return None;
     }
 
-    let mut buf = [0u8; 256];
-    let read_result = tokio::time::timeout(timeout, stream.read(&mut buf)).await;
-    match read_result {
-        Ok(Ok(n)) if n >= 8 => {
-            if let Ok(response) = Dnp3Frame::decode(&buf[..n]) {
-                Some(DiscoveredDnp3Device {
-                    ip: ip.to_string(),
-                    port,
-                    outstation_address: response.source,
-                })
-            } else {
-                None
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut rx = Vec::new();
+    let mut buf = [0u8; 512];
+    loop {
+        let n = match tokio::time::timeout_at(deadline, stream.read(&mut buf)).await {
+            Ok(Ok(n)) if n > 0 => n,
+            _ => return None,
+        };
+        rx.extend_from_slice(&buf[..n]);
+        loop {
+            match parse_frame(&rx) {
+                Ok(ParseResult::Frame(f, _)) if f.destination == PROBE_MASTER => {
+                    return Some(DiscoveredDnp3Device {
+                        ip: ip.to_string(),
+                        port,
+                        outstation_address: f.source,
+                    });
+                }
+                Ok(ParseResult::Frame(_, used)) => {
+                    rx.drain(..used);
+                }
+                Ok(ParseResult::Incomplete) => break,
+                Err(_) => return None,
             }
         }
-        _ => None,
     }
 }
 

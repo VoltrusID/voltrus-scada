@@ -15,8 +15,8 @@ use serde::de::IgnoredAny;
 use time::OffsetDateTime;
 use voltrus_scada_native::api::Method;
 use voltrus_scada_native::api::shell::{
-    AlarmCooldown, AuthProviders, LicenseStatus, MAX_COOLDOWN_SECS, ShortcutMap, ThemeMode, UiLang,
-    UiTheme, UserNotification, UserNotifications,
+    AlarmCooldown, AuthProviders, Branding, LicenseStatus, MAX_COOLDOWN_SECS, ShortcutMap,
+    ThemeMode, UiLang, UiTheme, UserNotification, UserNotifications,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Command, RaisedAlarm, Reply};
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
@@ -73,6 +73,8 @@ pub struct Shell {
     pub notifications: Vec<UserNotification>,
     pub notifications_error: Option<String>,
     pub license: Option<LicenseStatus>,
+    /// The server's white-label brand, when its licence has one.
+    pub branding: Option<Branding>,
     pub providers: Option<AuthProviders>,
     pub providers_error: Option<String>,
     probe_seq: i64,
@@ -451,10 +453,74 @@ pub fn on_public_reply(
                 shell.providers_error = Some(error);
             }
         },
-        "shell.license" => shell.license = reply.take::<LicenseStatus>().ok(),
+        "shell.license" => {
+            shell.license = reply.take::<LicenseStatus>().ok();
+            let white_label = shell
+                .license
+                .as_ref()
+                .is_some_and(|license| license.has("white_label"));
+            let base = shell.probed.clone();
+            if white_label {
+                console.send(Command::Public {
+                    base,
+                    key: CallKey::new("shell.branding").with(key.arg),
+                    call: Call::new(|api| async move {
+                        api.get_public::<Branding>("/api/v1/settings/branding")
+                            .await
+                    }),
+                });
+            } else {
+                shell.branding = None;
+                apply_theme(console, cx);
+            }
+        }
+        // A server without the add-on answers 404: Voltrus's own look.
+        "shell.branding" => {
+            shell.branding = reply.take::<Branding>().ok();
+            apply_theme(console, cx);
+        }
         _ => {}
     }
     cx.notify();
+}
+
+/// The product name the console shows: the server's brand, else Voltrus
+/// SCADA.
+pub fn product_name(console: &Console) -> String {
+    console
+        .state_ref::<Shell>()
+        .and_then(|shell| shell.branding.as_ref())
+        .and_then(Branding::title)
+        .unwrap_or("Voltrus SCADA")
+        .to_owned()
+}
+
+/// The line under the product name on the sign-in card, from the brand.
+pub fn product_subtitle(console: &Console) -> Option<String> {
+    console
+        .state_ref::<Shell>()
+        .and_then(|shell| shell.branding.as_ref())
+        .and_then(Branding::subtitle)
+        .map(str::to_owned)
+}
+
+/// `theme` in the brand's accent, if the brand sets a valid one (the
+/// accent, its soft and selected tints, and the text on it).
+pub fn branded(mut theme: Theme, branding: Option<&Branding>) -> Theme {
+    let Some(rgb) = branding.and_then(Branding::accent_rgb) else {
+        return theme;
+    };
+    let accent = gpui::rgb(rgb);
+    let tint = |alpha: f32| -> gpui::Hsla { gpui::Rgba { a: alpha, ..accent }.into() };
+    theme.accent = accent.into();
+    theme.accent_soft = tint(0.12);
+    theme.selected = tint(if theme.dark { 0.16 } else { 0.12 });
+    theme.accent_fg = if Branding::white_on_accent(rgb) {
+        gpui::rgb(0xff_ff_ff).into()
+    } else {
+        gpui::rgb(0x09_09_0b).into()
+    };
+    theme
 }
 
 /// The shell's commands, on the console's root.
@@ -585,11 +651,14 @@ pub fn apply_theme(console: &mut Console, cx: &mut Context<Console>) {
     let shell = console.state::<Shell>();
     let dark = wanted_dark(shell, system_dark, now_dark);
     let name = shell.prefs.theme_for(dark).to_owned();
-    show_theme(console.catalog.resolve(&name, dark), cx);
+    let branding = shell.branding.clone();
+    let next = branded(console.catalog.resolve(&name, dark), branding.as_ref());
+    show_theme(next, cx);
 }
 
 fn show_theme(next: Theme, cx: &mut Context<Console>) {
-    if theme::theme(cx).name != next.name {
+    let now = theme::theme(cx);
+    if now.name != next.name || now.accent != next.accent || now.accent_fg != next.accent_fg {
         theme::set_theme(next, cx);
     }
 }
@@ -804,7 +873,7 @@ pub fn parse_cooldown(text: &str) -> Result<i64, String> {
 }
 
 pub fn save_cooldown(console: &mut Console, cx: &mut Context<Console>) {
-    if !console.is_operator() {
+    if !console.may_configure() {
         return;
     }
     let Some(input) = console.state::<Shell>().cooldown_input.clone() else {
@@ -854,7 +923,7 @@ pub fn set_os_notifications(console: &mut Console, on: bool, cx: &mut Context<Co
         // One now, so the system asks for permission while the operator
         // looks.
         os_notify(
-            "Voltrus SCADA",
+            &product_name(console),
             "Critical alarms will show here while the console runs.",
         );
     }
@@ -1012,16 +1081,20 @@ pub fn dismiss(console: &Console, id: i64) {
 // ── System notifications and the clock ────────────────────────────────────
 
 /// An AppleScript string literal of `text`.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn applescript_string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// A notification in the system's notification centre (macOS, through
-/// `osascript`: no extra dependency and no entitlement).
+/// `osascript`: no extra dependency and no entitlement). Elsewhere none:
+/// the toast and the alarm sound still tell.
+#[cfg(not(target_os = "macos"))]
+fn os_notify(_: &str, _: &str) {}
+
+/// See the other platforms' [`os_notify`].
+#[cfg(target_os = "macos")]
 fn os_notify(title: &str, body: &str) {
-    if !OS_NOTIFICATIONS {
-        return;
-    }
     let script = format!(
         "display notification {} with title {}",
         applescript_string(body),
@@ -1042,6 +1115,7 @@ fn os_notify(title: &str, body: &str) {
 
 /// Wait for a notification's process off the UI thread: one thread for
 /// all of them, started with the first.
+#[cfg(target_os = "macos")]
 fn reap(child: std::process::Child) {
     static REAPER: std::sync::LazyLock<
         std::sync::Mutex<std::sync::mpsc::Sender<std::process::Child>>,
@@ -1123,6 +1197,27 @@ mod tests {
         sort_notifications(&mut list);
         let ids: Vec<i64> = list.iter().map(|n| n.id).collect();
         assert_eq!(ids, [3, 2, 4, 1]);
+    }
+
+    #[test]
+    fn a_brand_accent_recolours_the_theme_and_an_invalid_one_does_not() {
+        let catalog = vt_ui::theme::ThemeCatalog::bundled();
+        let base = catalog.resolve(vt_ui::theme::DEFAULT_DARK, true);
+        let brand = Branding {
+            title: "Acme Water".into(),
+            accent: Some("#0055aa".into()),
+            ..Branding::default()
+        };
+        let themed = branded(base.clone(), Some(&brand));
+        assert_eq!(themed.accent, gpui::Hsla::from(gpui::rgb(0x0055aa)));
+        assert_eq!(themed.accent_fg, gpui::Hsla::from(gpui::rgb(0xffffff)));
+        assert_eq!(themed.name, base.name, "the same theme, recoloured");
+        let invalid = Branding {
+            accent: Some("blue".into()),
+            ..Branding::default()
+        };
+        assert_eq!(branded(base.clone(), Some(&invalid)).accent, base.accent);
+        assert_eq!(branded(base.clone(), None).accent, base.accent);
     }
 
     #[test]

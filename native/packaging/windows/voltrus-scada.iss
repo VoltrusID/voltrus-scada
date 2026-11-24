@@ -7,7 +7,7 @@
 ; uninstalls.
 ;
 ; Built by native/scripts/installer-windows.ps1 (Inno Setup 6.3 or later):
-;   ISCC /DAppVersion=0.50.1 /DAppNumericVersion=0.50.1.0 /DBinDir=<target\release>
+;   ISCC /DAppVersion=x.y.z /DAppNumericVersion=x.y.z.0 /DBinDir=<target\release>
 ;        /DOutputDir=<dist> /DOutputBaseFilename=<name> voltrus-scada.iss
 ; The installer is not code-signed: SmartScreen warns before it runs.
 ;

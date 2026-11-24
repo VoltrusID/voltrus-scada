@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { inputStyle, monoInputStyle, labelStyle, labelTextStyle } from '../styles'
 import type { WritePolicy } from '../api/commands'
 import { writeTag } from '../api/commands'
+import { isSignatureCancelled } from '../signature/logic'
 
 interface Props {
   tagId: number
@@ -34,7 +35,7 @@ export function WriteDialog({ tagId, tagName, currentValue, policy, onClose }: P
       const result = await writeTag(tagId, numValue, writePolicy, reason.trim() || undefined)
       setSuccess({ command_id: result.command_id })
     } catch (e: any) {
-      setError(e.message || 'Write failed')
+      if (!isSignatureCancelled(e)) setError(e.message || 'Write failed')
     } finally {
       setLoading(false)
     }
@@ -50,7 +51,7 @@ export function WriteDialog({ tagId, tagName, currentValue, policy, onClose }: P
       onClick={handleBackdropClick}
     >
       <div
-        style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 440, maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}
+        style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, width: 440, maxWidth: 'calc(100vw - 32px)', maxHeight: '85vh', display: 'flex', flexDirection: 'column' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}

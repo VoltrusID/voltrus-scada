@@ -45,6 +45,37 @@ async fn test_command_crud_lifecycle() {
     assert_eq!(fetched.status, "acked");
     assert!(fetched.acked_at.is_some());
     assert!(fetched.resolved_at.is_some());
+    assert_eq!(fetched.readback_status, None);
+
+    // Read-back outcome lands in its own columns and every query returns it.
+    storage
+        .update_command_readback(
+            "cmd_test1",
+            "mismatch",
+            Some(99.0),
+            2,
+            Some("2026-11-10T00:00:00.000000000Z".into()),
+        )
+        .await
+        .unwrap();
+    let fetched = storage.get_command("cmd_test1").await.unwrap().unwrap();
+    assert_eq!(fetched.readback_status.as_deref(), Some("mismatch"));
+    assert_eq!(fetched.readback_value, Some(99.0));
+    assert_eq!(fetched.readback_attempts, 2);
+    assert!(fetched.readback_ts.is_some());
+    let listed = storage
+        .list_commands(&CommandQuery {
+            tag: None,
+            status: None,
+            device: None,
+            from: None,
+            to: None,
+            limit: None,
+            offset: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(listed[0].readback_status.as_deref(), Some("mismatch"));
 }
 
 #[tokio::test]

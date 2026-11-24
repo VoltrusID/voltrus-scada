@@ -3,40 +3,43 @@ import { SensorConfig } from './types';
 import { stColor, btnStyle, safeMinMax, displayShortcut, inputStyle, labelTextStyle } from './styles';
 import { TvDetailChart, OverlaySeries, AnnotationMarker } from './TvDetailChart';
 import { HistoryRangeBar } from './CustomRangePicker';
-import { useDetailData, useSensorCurrentValue, useDashboardSelector } from './store/dashboardStore';
+import { useDetailData, useSensorCurrentValue, useSensorDataPointsMany } from './store/dashboardStore';
 import { WriteDialog } from './components/WriteDialog';
 import { WritePolicyEditor } from './components/WritePolicyEditor';
 import { useAnnotations, useCreateAnnotation, useDeleteAnnotation } from './queries/annotations';
 import { useQuery } from '@tanstack/react-query';
 import { getWritePolicy } from './api/commands';
 
-export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, historyDetail, onDetailChange, historyAutoAgg, shortcuts, mode, onModeChange, allSensors, isAdmin }: {
+export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, historyDetail, onDetailChange, historyAutoAgg, shortcuts, mode, onModeChange, allSensors, isAdmin, canOperate = isAdmin }: {
   sensor: SensorConfig; onBack: () => void; historyRange: string; onRangeChange: (r: string) => void;
   historyDetail?: 'auto' | 'full'; onDetailChange?: (d: 'auto' | 'full') => void;
   historyAutoAgg?: string;
   shortcuts: Record<number, string>;
   mode: 'live' | 'history' | 'flows'; onModeChange: (m: 'live' | 'history' | 'flows') => void;
   allSensors?: SensorConfig[];
+  /** May configure: the write policy editor. */
   isAdmin?: boolean;
+  /** May operate: the write dialog. */
+  canOperate?: boolean;
 }) {
   const data = useDetailData(sensor.id, mode)
   const currentValue = useSensorCurrentValue(sensor.id)
-  const allCurrentValues = useDashboardSelector(s => s.currentValues)
-  const dataMap = useDashboardSelector(s => s.dataMap)
 
   const st = currentValue?.status ?? 'normal';
   const isOffline = st === 'offline';
   const curV = isOffline ? null : currentValue ? currentValue.value : sensor.base_val;
 
   const [overlayIds, setOverlayIds] = useState<number[]>([]);
+  // Only the overlaid tags' points: other tags' live updates do not redraw this view.
+  const overlayPoints = useSensorDataPointsMany(overlayIds);
   const [showPicker, setShowPicker] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const [showWriteDialog, setShowWriteDialog] = useState(false);
-  // The stored policy (admin only: the write controls are); the dialogs open with it, not with defaults.
+  // The stored policy (only operators and up see the write controls); the dialogs open with it, not with defaults.
   const { data: writePolicy, refetch: refetchWritePolicy } = useQuery({
     queryKey: ['write-policy', sensor.id],
     queryFn: () => getWritePolicy(sensor.id),
-    enabled: !!isAdmin,
+    enabled: !!(isAdmin || canOperate),
     staleTime: 0,
   });
   const [showPolicyEditor, setShowPolicyEditor] = useState(false);
@@ -100,10 +103,10 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
     return overlayIds.map(id => {
       const s = allSensors.find(x => x.id === id);
       if (!s) return null;
-      const pts = dataMap[String(s.id)] ?? [];
+      const pts = overlayPoints[String(s.id)] ?? [];
       return { data: pts, color: s.color, name: s.name, unit: s.unit };
     }).filter(Boolean) as OverlaySeries[];
-  }, [allSensors, overlayIds, dataMap]);
+  }, [allSensors, overlayIds, overlayPoints]);
 
   const sparklineSensors = useMemo(() =>
     (allSensors ?? []).filter(s => s.chart_type === 'sparkline' && s.id !== sensor.id && !overlayIds.includes(s.id)),
@@ -134,7 +137,7 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>CSV
           </a>
           <div style={{ padding: '2px 8px', borderRadius: 4, fontWeight: 600, fontSize: 10, textTransform: 'uppercase', background: st === 'critical' ? 'rgba(239,68,68,.15)' : st === 'warning' ? 'rgba(234,179,8,.15)' : st === 'offline' ? 'rgba(100,100,100,.15)' : 'rgba(34,197,94,.15)', color: stColor(st) }}>{st}</div>
-          {isAdmin && (
+          {canOperate && (
             <button
               onClick={() => setShowWriteDialog(true)}
               disabled={!writePolicy}
@@ -214,8 +217,6 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
               <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 6, padding: 5, minWidth: 200, maxHeight: 200, overflowY: 'auto', zIndex: 10, boxShadow: '0 8px 24px rgba(0,0,0,.4)' }}>
                 <div style={{ fontSize: 9, color: 'var(--muted)', padding: '2px 5px 5px', textTransform: 'uppercase', letterSpacing: '.05em' }}>Sparkline sensors</div>
                 {sparklineSensors.map(s => {
-                  const cv = allCurrentValues[String(s.id)]
-                  const curVal = cv ? cv.value : null
                   return (
                     <button key={s.id} onClick={() => toggleOverlay(s.id)} style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', padding: '5px 6px', border: 'none', background: 'none', borderRadius: 3, cursor: 'pointer', color: 'var(--fg)', fontSize: 11, textAlign: 'left' }}
                       onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,.05)')}
@@ -225,7 +226,7 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
                         <div style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</div>
                         <div style={{ fontSize: 9, color: 'var(--muted)' }}>{s.key}</div>
                       </div>
-                      {curVal != null && <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: s.color, fontWeight: 600 }}>{curVal.toFixed(s.decimals)}</div>}
+                      <PickerValue sensor={s} />
                     </button>
                   );
                 })}
@@ -234,7 +235,7 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
           </div>
         </div>
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          <TvDetailChart data={data} color={sensor.color} warn={sensor.warn_val} crit={sensor.crit_val} unit={sensor.unit} overlays={overlays} annotations={chartAnnotations} onAnnotationClick={handleAnnotationClick} />
+          <TvDetailChart data={data} live={mode !== 'history'} resetKey={mode === 'history' ? `history|${historyRange}|${historyDetail ?? 'auto'}|${historyAutoAgg ?? ''}` : 'live'} color={sensor.color} warn={sensor.warn_val} crit={sensor.crit_val} unit={sensor.unit} overlays={overlays} annotations={chartAnnotations} onAnnotationClick={handleAnnotationClick} />
 
           {/* Top-left toolbar: hint + notes toggle */}
           <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', alignItems: 'center', gap: 6, zIndex: 5 }}>
@@ -383,4 +384,11 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
       )}
     </div>
   );
+}
+
+/** Current value in the overlay picker, subscribed to its own tag. */
+function PickerValue({ sensor }: { sensor: SensorConfig }) {
+  const cv = useSensorCurrentValue(sensor.id)
+  if (cv?.value == null) return null
+  return <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: sensor.color, fontWeight: 600 }}>{cv.value.toFixed(sensor.decimals)}</div>
 }

@@ -134,10 +134,11 @@ function CommandRow({ cmd, onExpand, expanded, onCancel, showCancel }: {
 
 interface Props {
   onClose: () => void
-  isAdmin: boolean
+  /** May operate: cancel pending commands. */
+  canOperate: boolean
 }
 
-export function CommandPanel({ onClose, isAdmin }: Props) {
+export function CommandPanel({ onClose, canOperate }: Props) {
   const navigate = useNavigate()
   const routerSearch = useRouterState({ select: s => s.location.search }) as { tab?: string }
   const panelTab: PanelTab = (PANEL_TABS as readonly string[]).includes(routerSearch.tab as string) ? routerSearch.tab as PanelTab : 'history'
@@ -299,7 +300,7 @@ export function CommandPanel({ onClose, isAdmin }: Props) {
               expanded={expandedId === cmd.id}
               onExpand={() => setExpandedId(expandedId === cmd.id ? null : cmd.id)}
               onCancel={() => handleCancel(cmd.id)}
-              showCancel={isAdmin}
+              showCancel={canOperate}
             />
           ))}
         </div>

@@ -92,6 +92,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let theme = theme(cx).clone();
     let rate = console.rate.per_second(Instant::now());
     let unacknowledged = console.unacknowledged();
+    let may_acknowledge = console.may_operate();
     let tile_count = console.store.tags.len().min(TILES);
     let list = keyboard_list(
         ListKeys {
@@ -395,7 +396,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let more = store.tags.len().saturating_sub(TILES);
     let tag_total = store.tags.len();
 
-    let header_controls = if unacknowledged > 0 {
+    let header_controls = if unacknowledged > 0 && may_acknowledge {
         vec![
             Button::new("overview-ack-all", "Acknowledge all")
                 .icon(Icon::Check)

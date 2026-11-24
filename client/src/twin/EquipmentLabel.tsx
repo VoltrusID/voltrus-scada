@@ -1,14 +1,15 @@
 import { Html } from '@react-three/drei'
-import { SensorConfig, SensorData } from '../types'
+import { SensorConfig } from '../types'
+import { useTrackedCurrentValues } from '../store/dashboardStore'
 import { stColor } from '../styles'
 
 interface Props {
   name: string
   sensors: SensorConfig[]
-  currentValues: Record<string, SensorData>
 }
 
-export function EquipmentLabel({ name, sensors, currentValues }: Props) {
+export function EquipmentLabel({ name, sensors }: Props) {
+  const currentValues = useTrackedCurrentValues()
   return (
     <Html position={[0, 2.0, 0]} center style={{ pointerEvents: 'none' }}>
       <div style={{
@@ -24,7 +25,7 @@ export function EquipmentLabel({ name, sensors, currentValues }: Props) {
           {name}
         </div>
         {sensors.map(s => {
-          const cv = currentValues[s.id]
+          const cv = currentValues[String(s.id)]
           const st = cv?.status ?? 'normal'
           return (
             <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, marginTop: 2 }}>

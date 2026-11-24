@@ -37,6 +37,9 @@ pub struct WsManager {
     /// direct write take the first acknowledgement of their command id as its
     /// outcome, so the first one they see has to be the final one.
     origins: DashMap<String, String>,
+    /// Every alarm message also goes here, for server-side listeners (flows
+    /// with an alarm trigger).
+    alarm_events: tokio::sync::broadcast::Sender<ServerMessage>,
 }
 
 /// Whether a command status is final: nothing follows it.
@@ -57,6 +60,7 @@ impl WsManager {
         Self {
             connections: DashMap::new(),
             origins: DashMap::new(),
+            alarm_events: tokio::sync::broadcast::channel(256).0,
         }
     }
 
@@ -178,6 +182,13 @@ impl WsManager {
     /// Broadcast an alarm message to all connections.
     pub fn broadcast_alarm(&self, msg: ServerMessage) {
         self.broadcast_preencoded(&msg);
+        let _ = self.alarm_events.send(msg);
+    }
+
+    /// Alarm raised (`Alarm`) and state change (`AlarmUpdate`) messages, as
+    /// they are broadcast.
+    pub fn subscribe_alarm_events(&self) -> tokio::sync::broadcast::Receiver<ServerMessage> {
+        self.alarm_events.subscribe()
     }
 
     /// Tell every connection that `changes` moved to a new state: one
@@ -329,6 +340,8 @@ mod tests {
                 quality: "good".to_string(),
                 ts: 0,
                 simulated: false,
+                data_quality: None,
+                ts_ms: None,
             },
         );
 
@@ -352,6 +365,8 @@ mod tests {
                 quality: "good".to_string(),
                 ts: 0,
                 simulated: false,
+                data_quality: None,
+                ts_ms: None,
             },
         );
         assert!(matches!(
@@ -370,6 +385,8 @@ mod tests {
                 quality: "good".to_string(),
                 ts: 1,
                 simulated: false,
+                data_quality: None,
+                ts_ms: None,
             },
         );
         match rx.try_recv() {
@@ -434,6 +451,7 @@ mod tests {
             status: "acked".to_string(),
             device_response: Some("OK".to_string()),
             latency_ms: Some(12),
+            signature_required: None,
         });
 
         match rx.try_recv() {
@@ -466,6 +484,7 @@ mod tests {
             status: "acked".to_string(),
             device_response: None,
             latency_ms: None,
+            signature_required: None,
         };
         assert!(mgr.send_to("c1", ack.clone()));
         assert!(!mgr.send_to("gone", ack));

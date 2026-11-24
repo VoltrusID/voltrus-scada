@@ -102,6 +102,32 @@ async fn test_password_change_revokes_refresh_tokens() {
 }
 
 #[tokio::test]
+async fn test_self_password_change_signs_out_the_other_sessions() {
+    let (app, _admin, _ops_id, ops_laptop) = setup_second_admin().await;
+    let ops_phone = login(&app, "ops", "pw1").await;
+    let (status, body) = send_request(
+        &app,
+        "POST",
+        "/api/v1/auth/change-password",
+        None,
+        Some(&ops_laptop),
+        Some(serde_json::json!({"old_password": "pw1", "new_password": "a-new-password-2"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        refresh_status(&app, &ops_phone).await,
+        StatusCode::UNAUTHORIZED,
+        "the other session is signed out"
+    );
+    assert_eq!(
+        refresh_status(&app, &ops_laptop).await,
+        StatusCode::OK,
+        "the session that changed it stays"
+    );
+}
+
+#[tokio::test]
 async fn test_deleted_user_session_ends() {
     let (app, admin, ops_id, ops) = setup_second_admin().await;
     let (status, _) = send_request(
@@ -153,4 +179,106 @@ async fn test_login_with_presented_refresh_token_revokes_it() {
 
     assert_eq!(refresh_status(&app, &first).await, StatusCode::UNAUTHORIZED);
     assert_eq!(refresh_status(&app, &other).await, StatusCode::OK);
+}
+
+/// Disabling a user through the API ends their open session and their
+/// refresh token at once.
+#[tokio::test]
+async fn test_disabling_a_user_ends_session_and_refresh() {
+    let (app, admin, ops_id, ops) = setup_second_admin().await;
+    let (status, _) = send_request(
+        &app,
+        "PUT",
+        &format!("/api/v1/users/{ops_id}"),
+        None,
+        Some(&admin),
+        Some(serde_json::json!({"disabled": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = send_request(&app, "GET", "/api/v1/users", None, Some(&ops), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(refresh_status(&app, &ops).await, StatusCode::UNAUTHORIZED);
+}
+
+/// A refresh token that was never revoked (the flag set by another path,
+/// such as an add-on edition) still mints no session for a disabled user.
+#[tokio::test]
+async fn test_refresh_refused_for_disabled_user_with_live_token() {
+    let state = seeded_admin_app_state().await;
+    let app = create_router(state.clone());
+    let pw = crate::api::auth::hash_password("pw1");
+    state
+        .storage
+        .create_user("ops", &pw, "", "operator")
+        .await
+        .unwrap();
+    let ops = login(&app, "ops", "pw1").await;
+    let id = state
+        .storage
+        .get_user_by_username("ops")
+        .await
+        .unwrap()
+        .unwrap()
+        .id;
+    state.storage.set_user_disabled(id, true).await.unwrap();
+    assert_eq!(refresh_status(&app, &ops).await, StatusCode::UNAUTHORIZED);
+
+    // The refused attempt revoked the token: it stays dead after re-enabling.
+    state.storage.set_user_disabled(id, false).await.unwrap();
+    assert_eq!(refresh_status(&app, &ops).await, StatusCode::UNAUTHORIZED);
+}
+
+/// An add-on whose identity provider vouches for any bearer token "ok-<name>".
+struct FakeBearer;
+
+impl crate::edition::Extension for FakeBearer {
+    fn authenticate_bearer<'a>(
+        &'a self,
+        token: &'a str,
+    ) -> crate::edition::BoxFuture<'a, Option<crate::edition::ExternalIdentity>> {
+        Box::pin(async move {
+            token
+                .strip_prefix("ok-")
+                .map(|name| crate::edition::ExternalIdentity {
+                    username: name.to_string(),
+                    role: "viewer".to_string(),
+                })
+        })
+    }
+}
+
+async fn bearer_status(app: &Router, name: &str) -> StatusCode {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/screens")
+                .header("authorization", format!("Bearer ok-{name}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+/// A provider's bearer token does not get past a local account an admin disabled.
+#[tokio::test]
+async fn test_bearer_token_refused_for_disabled_local_account() {
+    let mut state = seeded_admin_app_state().await;
+    state.ext = std::sync::Arc::new(FakeBearer);
+    let app = create_router(state.clone());
+    let id = state
+        .storage
+        .create_user("oidc:ana", "", "", "viewer")
+        .await
+        .unwrap();
+    assert_eq!(bearer_status(&app, "oidc:ana").await, StatusCode::OK);
+    assert_eq!(bearer_status(&app, "external-only").await, StatusCode::OK);
+    state.storage.set_user_disabled(id, true).await.unwrap();
+    assert_eq!(
+        bearer_status(&app, "oidc:ana").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(bearer_status(&app, "external-only").await, StatusCode::OK);
 }

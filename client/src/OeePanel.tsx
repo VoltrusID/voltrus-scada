@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { useRole } from './RoleContext'
 import {
   useOeeMetrics,
   useDowntimeEvents,
@@ -70,6 +72,8 @@ function daysMaskToString(mask: number): string {
 }
 
 export function OeePanel() {
+  const { t } = useTranslation()
+  const { canOperate, canConfigure } = useRole()
   const [deviceId, setDeviceId] = useState('')
   const [timeRange, setTimeRange] = useState<'8h' | '24h' | '7d'>('8h')
 
@@ -116,6 +120,13 @@ export function OeePanel() {
 
       {deviceId && metrics ? (
         <>
+          {metrics.tracking && (
+            <div role="status" style={{ maxWidth: 560, margin: '0 auto 16px', padding: '8px 12px', border: '1px solid #f59e0b', borderRadius: 6, color: 'var(--text)', fontSize: 13 }}>
+              {metrics.tracking.startsWith('not tracked: choose a state metric')
+                ? t('oee.notTracked', { device: deviceId })
+                : metrics.tracking}
+            </div>
+          )}
           {/* OEE Gauges */}
           <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginBottom: 24, flexWrap: 'wrap' }}>
             <OeeGauge value={metrics.oee} label="OEE" color={metrics.oee >= 0.85 ? '#22c55e' : metrics.oee >= 0.65 ? '#f59e0b' : '#ef4444'} />
@@ -180,7 +191,7 @@ export function OeePanel() {
                     {ev.reason || '--'}
                   </td>
                   <td style={{ padding: '8px 12px' }}>
-                    {!ev.ended_at && <CloseEventButton eventId={ev.id} />}
+                    {!ev.ended_at && canOperate && <CloseEventButton eventId={ev.id} />}
                   </td>
                 </tr>
               ))}
@@ -194,7 +205,7 @@ export function OeePanel() {
       )}
 
       {/* Shift Configuration */}
-      <ShiftManager shifts={shifts} />
+      <ShiftManager shifts={shifts} canConfigure={canConfigure} />
     </div>
   )
 }
@@ -231,7 +242,7 @@ function CloseEventButton({ eventId }: { eventId: number }) {
         disabled={closeMutation.isPending}
         style={{
           padding: '3px 10px', fontSize: 11, cursor: 'pointer',
-          background: 'var(--cyan)', color: '#000', border: 'none', borderRadius: 4,
+          background: 'var(--cyan)', color: 'var(--on-accent)', border: 'none', borderRadius: 4,
           fontWeight: 600,
         }}
       >
@@ -241,7 +252,7 @@ function CloseEventButton({ eventId }: { eventId: number }) {
   )
 }
 
-function ShiftManager({ shifts }: { shifts: { id: number; name: string; start_hour: number; start_minute: number; duration_hours: number; days_mask: number }[] | undefined }) {
+function ShiftManager({ shifts, canConfigure }: { shifts: { id: number; name: string; start_hour: number; start_minute: number; duration_hours: number; days_mask: number }[] | undefined; canConfigure: boolean }) {
   const createMutation = useCreateShift()
   const deleteMutation = useDeleteShift()
   const [showForm, setShowForm] = useState(false)
@@ -275,18 +286,18 @@ function ShiftManager({ shifts }: { shifts: { id: number; name: string; start_ho
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
         <h3 style={{ margin: 0 }}>Shift Configuration</h3>
-        <button
+        {canConfigure && <button
           onClick={() => setShowForm(!showForm)}
           style={{
             padding: '4px 12px', fontSize: 12, cursor: 'pointer',
-            background: 'var(--cyan)', color: '#000', border: 'none', borderRadius: 4, fontWeight: 600,
+            background: 'var(--cyan)', color: 'var(--on-accent)', border: 'none', borderRadius: 4, fontWeight: 600,
           }}
         >
           {showForm ? 'Cancel' : '+ Add Shift'}
-        </button>
+        </button>}
       </div>
 
-      {showForm && (
+      {canConfigure && showForm && (
         <div style={{
           padding: 16, marginBottom: 12, background: 'var(--bg2)',
           border: '1px solid var(--border)', borderRadius: 8,
@@ -349,7 +360,7 @@ function ShiftManager({ shifts }: { shifts: { id: number; name: string; start_ho
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <span style={{ fontWeight: 600, fontSize: 14 }}>{shift.name}</span>
-                <button
+                {canConfigure && <button
                   onClick={() => deleteMutation.mutate(shift.id)}
                   style={{
                     padding: '2px 8px', fontSize: 11, cursor: 'pointer',
@@ -358,7 +369,7 @@ function ShiftManager({ shifts }: { shifts: { id: number; name: string; start_ho
                   }}
                 >
                   Delete
-                </button>
+                </button>}
               </div>
               <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 4 }}>
                 {String(shift.start_hour).padStart(2, '0')}:{String(shift.start_minute).padStart(2, '0')} -- {shift.duration_hours}h

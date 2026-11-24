@@ -249,9 +249,9 @@ mod tests {
     fn plist_runs_the_service_from_the_station_dir() {
         let plist = render_plist(
             Path::new("/Applications/Voltrus SCADA.app/Contents/MacOS/voltrus"),
-            Path::new("/Users/op/Library/Application Support/Voltrus <&> SCADA"),
+            Path::new("/Volumes/Home/op/Library/Application Support/Voltrus <&> SCADA"),
         );
-        let dir = "/Users/op/Library/Application Support/Voltrus &lt;&amp;&gt; SCADA";
+        let dir = "/Volumes/Home/op/Library/Application Support/Voltrus &lt;&amp;&gt; SCADA";
         assert!(plist.contains(&format!("<key>Label</key>\n\t<string>{LABEL}</string>")));
         assert!(plist.contains(&format!(
             "<array>\n\t\t<string>/Applications/Voltrus SCADA.app/Contents/MacOS/voltrus</string>\n\

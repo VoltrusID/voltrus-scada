@@ -689,3 +689,74 @@ fn a_station_that_does_not_answer_offers_to_finish_or_start_its_service(cx: &mut
     assert!(h.update(|console, _, _| console.station.local.as_ref().is_some_and(|l| l.idle())));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The server's roles in the console's levels: viewers read, operators
+/// operate, demo and integration also configure, admins do everything.
+#[gpui::test]
+fn roles_map_to_operate_configure_and_admin(cx: &mut TestAppContext) {
+    use pages::Role;
+    for (role, level, operate, configure, admin) in [
+        ("viewer", Role::Any, false, false, false),
+        ("user", Role::Any, false, false, false),
+        ("operator", Role::Operate, true, false, false),
+        ("Operator", Role::Operate, true, false, false),
+        ("demo", Role::Configure, true, true, false),
+        ("integration", Role::Configure, true, true, false),
+        ("admin", Role::Admin, true, true, true),
+    ] {
+        let mut h = Harness::new(cx);
+        h.sign_in(role);
+        let got = h.update(|console, _, _| {
+            (
+                console.role(),
+                console.may_operate(),
+                console.may_configure(),
+                console.is_admin(),
+            )
+        });
+        assert_eq!(got, (Some(level), operate, configure, admin), "{role}");
+    }
+}
+
+#[gpui::test]
+fn trended_and_mimic_trend_tags_get_their_history_fetched(cx: &mut TestAppContext) {
+    let mut h = Harness::new(cx);
+    h.sign_in("operator");
+    h.event(Event::Tags(
+        (1..=6)
+            .map(|id| Harness::tag(id, &format!("t{id}")))
+            .collect(),
+    ));
+    let sent = h.commands();
+    let history: Vec<(String, Vec<String>)> = sent
+        .into_iter()
+        .filter_map(|command| match command {
+            Command::History { range, keys } => Some((range, keys)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        history.first(),
+        Some(&("30m".to_owned(), Vec::new())),
+        "every tag's short past first"
+    );
+    // The first four tags start on the Trends chart: only theirs follow.
+    assert_eq!(
+        history.get(1).map(|(_, keys)| keys.clone()),
+        Some(vec!["t1".into(), "t2".into(), "t3".into(), "t4".into()])
+    );
+
+    // A mimic trend widget's tag not on the chart: an hour of it.
+    h.update(|console, _, _| console.set_mimic_trend([6, 2].into_iter().collect()));
+    let sent = h.commands();
+    assert!(
+        matches!(
+            sent.as_slice(),
+            [Command::History { range, keys }] if range == "1h" && keys == &["t6".to_owned()]
+        ),
+        "{sent:?}"
+    );
+    // The same set again asks nothing.
+    h.update(|console, _, _| console.set_mimic_trend([6, 2].into_iter().collect()));
+    assert!(h.commands().is_empty());
+}

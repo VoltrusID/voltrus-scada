@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
-import { useUsers, useCreateUser, useUpdateUser, useDeleteUser, useRoles } from './queries'
+import { useUsers, useAuthMe, useCreateUser, useUpdateUser, useDeleteUser, useRoles } from './queries'
 import { inputStyle, btnStyle } from './styles'
 import type { UserItem } from './types'
+import { disableRefused, toggleDisabledBody } from './userStatus'
 
 const ROLE_COLORS: Record<string, { bg: string; color: string }> = {
   admin: { bg: 'rgba(168,85,247,.15)', color: '#a855f7' },
@@ -16,10 +17,14 @@ export function UserManager({ onClose, embedded }: { onClose: () => void; embedd
   const createMut = useCreateUser()
   const updateMut = useUpdateUser()
   const deleteMut = useDeleteUser()
+  const toggleMut = useUpdateUser()
+  const { data: me } = useAuthMe()
+  const myName = me?.username ?? ''
 
   const [showAdd, setShowAdd] = useState(false)
   const [editUser, setEditUser] = useState<UserItem | null>(null)
   const [confirmDelete, setConfirmDelete] = useState<UserItem | null>(null)
+  const [confirmDisable, setConfirmDisable] = useState<UserItem | null>(null)
 
   useEffect(() => {
     if (embedded) return
@@ -43,10 +48,17 @@ export function UserManager({ onClose, embedded }: { onClose: () => void; embedd
     deleteMut.mutate(id, { onSuccess: () => setConfirmDelete(null) })
   }
 
+  const handleToggleDisabled = (u: UserItem) => {
+    toggleMut.mutate({ id: u.id, ...toggleDisabledBody(u) }, { onSuccess: () => setConfirmDisable(null) })
+  }
+
   const tableContent = (
     <>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, flexShrink: 0 }}>
-        <span style={{ color: 'var(--muted)', fontSize: 13 }}>{users.length} users</span>
+        <span style={{ color: 'var(--muted)', fontSize: 13 }}>
+          {users.length} users
+          {users.some(u => u.disabled) && ` (${users.filter(u => u.disabled).length} disabled)`}
+        </span>
         <button style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)' }} onClick={() => setShowAdd(true)} aria-label="Add new user">+ Add User</button>
       </div>
       <div style={{ flex: 1, overflow: 'auto', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10 }}>
@@ -60,14 +72,23 @@ export function UserManager({ onClose, embedded }: { onClose: () => void; embedd
             <tr>
               <th style={thStyle}>Username</th>
               <th style={thStyle}>Role</th>
-              <th style={{ ...thStyle, width: 180 }}>Actions</th>
+              <th style={{ ...thStyle, width: 250 }}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {users.map(u => (
-              <tr key={u.id}>
+              <tr key={u.id} style={u.disabled ? { opacity: 0.65 } : undefined}>
                 <td style={tdStyle}>
                   <span style={{ fontWeight: 600 }}>{u.username}</span>
+                  {u.username === myName && <span style={{ marginLeft: 6, fontSize: 11, color: 'var(--muted)' }}>(you)</span>}
+                  {u.disabled && (
+                    <span style={{
+                      display: 'inline-block', marginLeft: 8, padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                      background: 'rgba(239,68,68,.12)', color: 'var(--crit)',
+                    }}>
+                      Disabled
+                    </span>
+                  )}
                 </td>
                 <td style={tdStyle}>
                   <span style={{
@@ -82,6 +103,25 @@ export function UserManager({ onClose, embedded }: { onClose: () => void; embedd
                 <td style={tdStyle}>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button style={{ ...btnStyle, fontSize: 11, padding: '4px 10px' }} onClick={() => setEditUser(u)} aria-label={`Edit user ${u.username}`}>Edit</button>
+                    {(() => {
+                      const refused = disableRefused(myName, u, users)
+                      return u.disabled ? (
+                        <button
+                          style={{ ...btnStyle, fontSize: 11, padding: '4px 10px', borderColor: 'var(--green)', color: 'var(--green)' }}
+                          onClick={() => handleToggleDisabled(u)}
+                          disabled={toggleMut.isPending}
+                          aria-label={`Enable user ${u.username}`}
+                        >Enable</button>
+                      ) : (
+                        <button
+                          style={{ ...btnStyle, fontSize: 11, padding: '4px 10px', borderColor: 'var(--warn)', color: 'var(--warn)', ...(refused ? { opacity: 0.4, cursor: 'not-allowed' } : {}) }}
+                          onClick={() => setConfirmDisable(u)}
+                          disabled={!!refused}
+                          title={refused ?? 'Block sign-in and end this user\'s sessions'}
+                          aria-label={`Disable user ${u.username}`}
+                        >Disable</button>
+                      )
+                    })()}
                     <button style={{ ...btnStyle, fontSize: 11, padding: '4px 10px', borderColor: 'var(--crit)', color: 'var(--crit)' }} onClick={() => setConfirmDelete(u)} aria-label={`Delete user ${u.username}`}>Delete</button>
                   </div>
                 </td>
@@ -92,6 +132,25 @@ export function UserManager({ onClose, embedded }: { onClose: () => void; embedd
         )}
       </div>
 
+      {toggleMut.error && !confirmDisable && (
+        <p role="alert" style={{ fontSize: 12, color: 'var(--crit)', marginTop: 8 }}>{toggleMut.error.message}</p>
+      )}
+      {confirmDisable && (
+        <div style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(0,0,0,.6)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div role="dialog" aria-label="Disable user" style={{ background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, maxWidth: 400, width: '90%' }}>
+            <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Disable User</h3>
+            <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 16 }}>
+              Disable <strong style={{ color: 'var(--fg)' }}>{confirmDisable.username}</strong>? They are signed out everywhere and cannot sign in again,
+              including through single sign-on, until you enable the account. Their history is kept.
+            </p>
+            {toggleMut.error && <p style={{ fontSize: 12, color: 'var(--crit)', marginBottom: 8 }}>{toggleMut.error.message}</p>}
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button style={btnStyle} onClick={() => { setConfirmDisable(null); toggleMut.reset() }}>Cancel</button>
+              <button style={{ ...btnStyle, borderColor: 'var(--warn)', color: 'var(--warn)' }} onClick={() => handleToggleDisabled(confirmDisable)} disabled={toggleMut.isPending}>Disable</button>
+            </div>
+          </div>
+        </div>
+      )}
       {showAdd && <AddUserDialog onSave={handleCreate} onClose={() => setShowAdd(false)} error={createMut.error?.message} roles={roles} />}
       {editUser && <EditUserDialog user={editUser} onSave={handleUpdate} onClose={() => setEditUser(null)} error={updateMut.error?.message} roles={roles} />}
       {confirmDelete && (
@@ -100,6 +159,7 @@ export function UserManager({ onClose, embedded }: { onClose: () => void; embedd
             <h3 style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Delete User</h3>
             <p style={{ fontSize: 13, color: 'var(--muted)', marginBottom: 16 }}>
               Delete user <strong style={{ color: 'var(--fg)' }}>{confirmDelete.username}</strong>? This cannot be undone.
+              {' '}A user who signs in through single sign-on gets a new account at their next sign-in; disable them instead to keep them out.
             </p>
             {deleteMut.error && <p style={{ fontSize: 12, color: 'var(--crit)', marginBottom: 8 }}>{deleteMut.error.message}</p>}
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>

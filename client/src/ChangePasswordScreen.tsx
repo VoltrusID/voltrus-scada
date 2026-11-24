@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 const INPUT: React.CSSProperties = {
   width: '100%',
@@ -14,7 +15,8 @@ const INPUT: React.CSSProperties = {
   boxSizing: 'border-box',
 }
 
-export function ChangePasswordScreen({ onSubmit }: { onSubmit: (oldPassword: string, newPassword: string) => Promise<void> }) {
+export function ChangePasswordScreen({ onSubmit, expired }: { onSubmit: (oldPassword: string, newPassword: string) => Promise<void>; expired?: boolean }) {
+  const { t } = useTranslation()
   const [oldPw, setOldPw] = useState('')
   const [pw, setPw] = useState('')
   const [pw2, setPw2] = useState('')
@@ -24,27 +26,26 @@ export function ChangePasswordScreen({ onSubmit }: { onSubmit: (oldPassword: str
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!oldPw) { setError('Current password is required'); return }
-    if (pw !== pw2) { setError('Passwords do not match'); return }
-    if (pw.length < 8) { setError('Password must be at least 8 characters'); return }
+    if (!oldPw) { setError(t('auth.currentPasswordRequired')); return }
+    if (pw !== pw2) { setError(t('auth.passwordMismatch')); return }
+    if (pw.length < 8) { setError(t('auth.passwordTooShort')); return }
     setLoading(true)
     setError('')
     try {
       await onSubmit(oldPw, pw)
     } catch (err: any) {
-      setError(err.message || 'Failed to change password')
+      setError(err.message || t('auth.changeFailed'))
     } finally {
       setLoading(false)
     }
   }
 
   const strength = pw.length === 0 ? 0 : pw.length < 8 ? 1 : pw.length < 12 ? 2 : 3
-  const strengthLabel = ['', 'Weak', 'Good', 'Strong'][strength]
+  const strengthLabel = ['', t('auth.strengthWeak'), t('auth.strengthGood'), t('auth.strengthStrong')][strength]
   const strengthColor = ['', '#ef4444', '#f59e0b', '#22c55e'][strength]
 
   return (
-    <div style={{
-      height: '100vh',
+    <div className="viewport-min-height" style={{
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -78,10 +79,10 @@ export function ChangePasswordScreen({ onSubmit }: { onSubmit: (oldPassword: str
                 <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
               </svg>
             </div>
-            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--fg)' }}>Change Your Password</h1>
+            <h1 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--fg)' }}>{t('auth.changePassword')}</h1>
           </div>
           <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>
-            You must set a new password before continuing.
+            {expired ? t('auth.passwordExpiredDesc') : t('auth.changePasswordDesc')}
           </p>
         </div>
 
@@ -89,12 +90,12 @@ export function ChangePasswordScreen({ onSubmit }: { onSubmit: (oldPassword: str
         <form onSubmit={handleSubmit} style={{ padding: '28px 36px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
           {/* Current password */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Current Password</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>{t('auth.currentPassword')}</span>
             <input
               type="password"
               value={oldPw}
               onChange={e => { setOldPw(e.target.value); setError('') }}
-              placeholder="Enter current password"
+              placeholder={t('auth.currentPasswordPlaceholder')}
               required
               style={INPUT}
               autoFocus
@@ -105,13 +106,13 @@ export function ChangePasswordScreen({ onSubmit }: { onSubmit: (oldPassword: str
 
           {/* New password */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>New Password</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>{t('auth.newPasswordLabel')}</span>
             <div style={{ position: 'relative' }}>
               <input
                 type={showPw ? 'text' : 'password'}
                 value={pw}
                 onChange={e => { setPw(e.target.value); setError('') }}
-                placeholder="Min 8 characters"
+                placeholder={t('auth.newPasswordPlaceholder')}
                 required
                 minLength={8}
                 style={{ ...INPUT, paddingRight: 42 }}
@@ -156,19 +157,19 @@ export function ChangePasswordScreen({ onSubmit }: { onSubmit: (oldPassword: str
 
           {/* Confirm password */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>Confirm Password</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em' }}>{t('auth.confirmPasswordLabel')}</span>
             <input
               type="password"
               value={pw2}
               onChange={e => { setPw2(e.target.value); setError('') }}
-              placeholder="Re-enter your password"
+              placeholder={t('auth.confirmPasswordPlaceholder')}
               required
               style={INPUT}
               onFocus={e => { e.currentTarget.style.borderColor = 'rgba(245,158,11,.5)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(245,158,11,.1)' }}
               onBlur={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.boxShadow = 'none' }}
             />
             {pw2.length > 0 && pw !== pw2 && (
-              <span style={{ fontSize: 11, color: 'var(--crit)', marginTop: 2 }}>Passwords do not match</span>
+              <span style={{ fontSize: 11, color: 'var(--crit)', marginTop: 2 }}>{t('auth.passwordMismatch')}</span>
             )}
           </div>
 
@@ -207,7 +208,7 @@ export function ChangePasswordScreen({ onSubmit }: { onSubmit: (oldPassword: str
               opacity: loading ? 0.6 : 1,
             }}
           >
-            {loading ? 'Updating...' : 'Update Password'}
+            {loading ? t('auth.updating') : t('auth.updatePassword')}
           </button>
         </form>
       </div>

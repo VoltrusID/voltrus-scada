@@ -423,7 +423,7 @@ pub struct PublishRequest {
 )]
 pub async fn publish_message(
     State(state): State<AppState>,
-    Extension(_user): Extension<AuthUser>,
+    Extension(user): Extension<AuthUser>,
     Json(req): Json<PublishRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let broker = state
@@ -435,9 +435,20 @@ pub async fn publish_message(
         return Err(AppError(anyhow::anyhow!("Topic cannot be empty")));
     }
 
-    broker
-        .publish_sync(&req.topic, req.payload.as_bytes())
-        .map_err(|e| AppError(anyhow::anyhow!("{}", e)))?;
+    let published = broker.publish_sync(&req.topic, req.payload.as_bytes());
+    // A publish can drive anything subscribed to the topic, so attempts are
+    // recorded whether or not the broker took them.
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: "mqtt_publish".to_string(),
+        username: user.username.clone(),
+        resource: format!("mqtt_topic:{}", req.topic),
+        details: Some(format!(
+            "bytes={}; outcome={}",
+            req.payload.len(),
+            if published.is_ok() { "ok" } else { "error" }
+        )),
+    });
+    published.map_err(|e| AppError(anyhow::anyhow!("{}", e)))?;
 
     Ok(Json(json!({
         "message": "Published",

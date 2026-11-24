@@ -195,7 +195,7 @@ export function DataExportPanel({ onClose }: Props) {
             disabled={exporting}
             style={{
               padding: '10px 16px', borderRadius: 6, border: 'none',
-              background: 'var(--cyan)', color: '#fff', fontWeight: 600,
+              background: 'var(--cyan)', color: 'var(--on-accent)', fontWeight: 600,
               cursor: exporting ? 'wait' : 'pointer', fontSize: 14,
               opacity: exporting ? 0.7 : 1,
             }}

@@ -6,6 +6,7 @@ import { symbolSchema } from './widgets/SymbolWidget'
 import { SYMBOL_MAP } from './hmi/symbols'
 import { resolveSymbol } from './hmi/resolve'
 import { CONNECTION_TYPES } from './connections/ConnectionLayer'
+import { getScreenWidget, isAddonWidgetType } from '../edition/widgets'
 
 export const INSPECTOR_WIDTH = 288
 
@@ -38,7 +39,7 @@ const input: React.CSSProperties = {
 
 export function widgetTitle(w: WidgetInstance): string {
   if (w.type === 'symbol') return SYMBOL_MAP[w.config?.symbol]?.name ?? 'Symbol'
-  return WIDGET_MANIFESTS[w.type]?.displayName ?? w.type
+  return WIDGET_MANIFESTS[w.type]?.displayName ?? getScreenWidget(w.type)?.label ?? w.type
 }
 
 export const WidgetInspector: React.FC<WidgetProps> = ({ widget, sensors, onUpdate, onUpdateConfig, onDuplicate, onReorder, onDelete }) => {
@@ -56,12 +57,20 @@ export const WidgetInspector: React.FC<WidgetProps> = ({ widget, sensors, onUpda
   const config = resolved?.config ?? widget.config ?? {}
 
   const setPrimary = (id: number | null) => onUpdate({ sensorId: id, sensorIds: id != null ? [id] : [] })
+  // Add-on widgets bring their own settings form and take no tag binding.
+  const addon = !manifest && isAddonWidgetType(widget.type)
+  const AddonEditor = addon ? getScreenWidget(widget.type, 'scada')?.configEditor : undefined
 
   return (
     <div style={panel}>
       <Header title={widgetTitle(widget)} subtitle={widget.id} />
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        <Section title="Tag binding">
+        {AddonEditor && (
+          <Section title="Settings">
+            <AddonEditor config={widget.config ?? {}} onChange={c => onUpdate({ config: c }, `${widget.id}:config`)} surface="scada" sensors={sensors} />
+          </Section>
+        )}
+        {!addon && <Section title="Tag binding">
           {multi ? (
             <MultiTagPicker sensors={sensors} value={widget.sensorIds ?? []}
               onChange={ids => onUpdate({ sensorIds: ids, sensorId: ids[0] ?? null })} />
@@ -70,7 +79,7 @@ export const WidgetInspector: React.FC<WidgetProps> = ({ widget, sensors, onUpda
               placeholder={def && def.binding === 'none' ? '— Static (no tag) —' : '— Not bound —'} />
           )}
           {def && <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6 }}>{bindingHint(def.binding)}</div>}
-        </Section>
+        </Section>}
 
         <Section title="Position & size">
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>

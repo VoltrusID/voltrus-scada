@@ -428,15 +428,14 @@ pub struct GroupVariation {
 
 /// The server's fixed `common_group_variations()`, in its order; the e2e
 /// test checks the server still answers these.
-pub const DNP3_GROUP_VARIATIONS: [(u8, u8, &str); 8] = [
+pub const DNP3_GROUP_VARIATIONS: [(u8, u8, &str); 7] = [
     (1, 2, "Binary Input"),
     (10, 2, "Binary Output Status"),
-    (20, 1, "Counter Input"),
-    (21, 1, "Frozen Counter"),
-    (30, 4, "Analog Input (float32)"),
-    (30, 1, "Analog Input (int32)"),
-    (32, 3, "Analog Output Status (float32)"),
-    (40, 3, "Analog Output Block (float32)"),
+    (20, 1, "Counter"),
+    (30, 1, "Analog Input (32-bit)"),
+    (30, 5, "Analog Input (float32)"),
+    (40, 1, "Analog Output Status (32-bit)"),
+    (40, 3, "Analog Output Status (float32)"),
 ];
 
 /// `POST /api/v1/dnp3/scan` answers a bare list.

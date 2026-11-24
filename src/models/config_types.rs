@@ -25,6 +25,14 @@ pub struct AppConfig {
     /// `Secure` attribute of the login cookies: `true`, `false` or `auto` (default).
     #[serde(default)]
     pub cookie_secure: CookieSecure,
+    /// Usernames shared with many people (a public demo's `guest`): their
+    /// password and preferences can't be changed and wrong passwords never lock them.
+    #[serde(default)]
+    pub shared_accounts: Vec<String>,
+    /// Plain-text line shown under the sign-in form, at most
+    /// [`LOGIN_HINT_MAX_CHARS`] characters.
+    #[serde(default)]
+    pub login_hint: Option<String>,
     #[serde(default)]
     pub retention: RetentionConfig,
     #[serde(default)]
@@ -53,6 +61,98 @@ pub struct AppConfig {
     pub networks: Vec<NetworkConfig>,
     #[serde(default)]
     pub device_templates: DeviceTemplatesConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+    /// Where webhooks and flow HTTP nodes may send requests
+    /// (`crate::security::outbound`).
+    #[serde(default)]
+    pub outbound_http: crate::security::outbound::OutboundPolicy,
+    /// The reverse proxy or tunnel whose header names the client address.
+    /// Default: `X-Forwarded-For` from this machine (127.0.0.1, ::1).
+    #[serde(default)]
+    pub trusted_proxy: crate::security::TrustedProxy,
+}
+
+/// Longest accepted `login_hint`.
+pub const LOGIN_HINT_MAX_CHARS: usize = 200;
+
+/// `mcp:` in the config file: guardrails on the MCP endpoint.
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpConfig {
+    /// Hide and refuse every tool that changes something. An admin can also
+    /// switch this on at runtime (`PUT /api/v1/settings/mcp`); the config value
+    /// cannot be overridden from there.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Which write tools answer with a proposal and a confirmation token
+    /// instead of acting: `true` (default) = write_tag and the destructive
+    /// tools, `all` = every write tool, `false` = none.
+    #[serde(default)]
+    pub require_confirmation: ConfirmationMode,
+    /// Seconds a confirmation token stays valid.
+    #[serde(default = "default_mcp_confirmation_ttl")]
+    pub confirmation_ttl_secs: u64,
+    /// Tool calls per minute per credential (0 = unlimited).
+    #[serde(default = "default_mcp_calls_per_minute")]
+    pub calls_per_minute: u32,
+    /// Of those, calls that change something (0 = unlimited).
+    #[serde(default = "default_mcp_writes_per_minute")]
+    pub writes_per_minute: u32,
+}
+
+fn default_mcp_confirmation_ttl() -> u64 {
+    300
+}
+fn default_mcp_calls_per_minute() -> u32 {
+    60
+}
+fn default_mcp_writes_per_minute() -> u32 {
+    10
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            read_only: false,
+            require_confirmation: ConfirmationMode::default(),
+            confirmation_ttl_secs: default_mcp_confirmation_ttl(),
+            calls_per_minute: default_mcp_calls_per_minute(),
+            writes_per_minute: default_mcp_writes_per_minute(),
+        }
+    }
+}
+
+/// `mcp.require_confirmation`: a boolean or `"all"`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConfirmationMode {
+    Off,
+    /// write_tag and the tools flagged destructive.
+    #[default]
+    Destructive,
+    All,
+}
+
+impl<'de> Deserialize<'de> for ConfirmationMode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Raw {
+            Bool(bool),
+            Text(String),
+        }
+        match Raw::deserialize(d)? {
+            Raw::Bool(true) => Ok(Self::Destructive),
+            Raw::Bool(false) => Ok(Self::Off),
+            Raw::Text(t) => match t.to_ascii_lowercase().as_str() {
+                "all" => Ok(Self::All),
+                "true" | "destructive" => Ok(Self::Destructive),
+                "false" | "off" | "none" => Ok(Self::Off),
+                other => Err(serde::de::Error::custom(format!(
+                    "mcp.require_confirmation must be true, false or \"all\", not {other:?}"
+                ))),
+            },
+        }
+    }
 }
 
 /// `device_templates:` in the config file.
@@ -74,6 +174,10 @@ pub struct MqttBrokerConfig {
     pub max_connections: u32,
     #[serde(default)]
     pub auth: MqttAuthConfig,
+    /// Topics the broker page keeps last values for. Past this, the topic
+    /// updated longest ago is forgotten to make room for a new one.
+    #[serde(default = "default_mqtt_max_tracked_topics")]
+    pub max_tracked_topics: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -106,6 +210,7 @@ impl Default for MqttBrokerConfig {
             port: default_mqtt_port(),
             max_connections: default_mqtt_max_connections(),
             auth: MqttAuthConfig::default(),
+            max_tracked_topics: default_mqtt_max_tracked_topics(),
         }
     }
 }
@@ -115,6 +220,9 @@ fn default_mqtt_port() -> u16 {
 }
 fn default_mqtt_max_connections() -> u32 {
     100
+}
+pub fn default_mqtt_max_tracked_topics() -> usize {
+    10_000
 }
 fn default_mqtt_auth_mode() -> String {
     "none".to_string()
@@ -469,13 +577,47 @@ pub fn default_interval() -> u64 {
     1000
 }
 
+/// Register order of 32- and 64-bit Modbus values (docs/device-templates.md).
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Endianness {
     #[default]
     Big,
     Little,
     Swapped,
+    /// As `little` for 32-bit values; 64-bit values high dword first, each
+    /// dword low word first. How `little` read float64 up to v0.51.
+    LittleDword,
+    /// As `swapped` for 32-bit values; 64-bit values high dword first, each
+    /// dword byte-reversed. How `swapped` read float64 up to v0.51.
+    SwappedDword,
+}
+
+impl Endianness {
+    /// Every name, as stored and accepted.
+    pub const NAMES: [&'static str; 5] =
+        ["big", "little", "swapped", "little_dword", "swapped_dword"];
+
+    /// The order a stored name stands for; anything unknown is `big`.
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "little" => Self::Little,
+            "swapped" => Self::Swapped,
+            "little_dword" => Self::LittleDword,
+            "swapped_dword" => Self::SwappedDword,
+            _ => Self::Big,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Big => "big",
+            Self::Little => "little",
+            Self::Swapped => "swapped",
+            Self::LittleDword => "little_dword",
+            Self::SwappedDword => "swapped_dword",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]

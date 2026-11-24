@@ -104,3 +104,53 @@ pub async fn export_audit_csv(
         csv,
     ))
 }
+
+/// GET /api/v1/audit/verify — walk the audit log's hash chain and report the
+/// first row that was altered, inserted out of chain or follows a deleted one.
+pub async fn verify_audit_chain(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AppError> {
+    let report = state.storage.verify_audit_chain().await?;
+    Ok(Json(json!({
+        "ok": report.ok,
+        "checked": report.checked,
+        "unhashed_legacy": report.unhashed_legacy,
+        "first_bad_id": report.first_bad_id,
+        "dropped_since_start": state.audit_logger.dropped(),
+    })))
+}
+
+/// Audit entry for every state-changing call on the routes it wraps, named
+/// after the route (`PUT /api/v1/screens/{id}/layouts`) with the concrete path
+/// as the resource and the answer's status, so refused attempts show too.
+/// For handlers whose own entry would add nothing beyond who, what and when.
+pub async fn audit_writes_middleware(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::Method;
+    let method = req.method().clone();
+    if matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        return next.run(req).await;
+    }
+    let path = req.uri().path().to_string();
+    let route = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| path.clone());
+    let username = req
+        .extensions()
+        .get::<super::AuthUser>()
+        .map(|u| u.username.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let resp = next.run(req).await;
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: format!("{method} {route}"),
+        username,
+        resource: path,
+        details: Some(format!("status={}", resp.status().as_u16())),
+    });
+    resp
+}

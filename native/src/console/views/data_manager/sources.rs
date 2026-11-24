@@ -269,8 +269,12 @@ fn element_id(name: &'static str, id: i64) -> ElementId {
 /// "New data source" (N, the palette): the Sources section with an empty
 /// form.
 pub fn new_source(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    if !console.allows(Role::Operator) {
-        console.show_toast("Adding data sources needs the operator role", true, cx);
+    if !console.allows(Role::Configure) {
+        console.show_toast(
+            "Adding data sources needs the admin, demo or integration role",
+            true,
+            cx,
+        );
         return;
     }
     if console.page != Page::DataManager {

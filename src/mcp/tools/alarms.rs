@@ -1,4 +1,4 @@
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Query, State};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -37,7 +37,7 @@ pub fn tools() -> Vec<Tool> {
             description: "Acknowledge one alarm by id (from list_alarms), recording who did it \
                 and starting the alarm cooldown. Operators watching the SCADA see the change at \
                 once. Only acknowledge an alarm you have reviewed.",
-            access: Access::Write,
+            access: Access::Operate,
             destructive: false,
             input_schema: || {
                 json!({
@@ -105,11 +105,14 @@ fn acknowledge_alarm(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
         if !ctx.state.storage.alarm_exists(id).await? {
             return Err(ToolError::new(format!("alarm {id} not found")));
         }
+        // MCP cannot sign: an acknowledgement the edition wants signed is refused.
         let out = from_handler(
-            alarms::acknowledge_alarm(
-                State(ctx.state.clone()),
-                Extension(ctx.user.clone()),
-                Path(id),
+            alarms::acknowledge_alarm_as(
+                &ctx.state,
+                &ctx.user,
+                crate::edition::ActionOrigin::Mcp,
+                id,
+                None,
             )
             .await,
         )

@@ -13,7 +13,9 @@ JetBrains Mono for values.
 ## What it does
 
 - **Sign in** under the Voltrus logo, with the server address, username and
-  password. The address and username are remembered in
+  password. A server whose licence includes white-label branding shows its
+  product name, the line under it and its accent colour instead of
+  Voltrus's (the logo stays Voltrus's). The address and username are remembered in
   `<config dir>/voltrus-native/config.toml`
   (`~/Library/Application Support/voltrus-native/` on macOS); the password
   never is. When the server flags a generated or reset password, the console
@@ -73,9 +75,13 @@ JetBrains Mono for values.
   and server in `<config dir>/voltrus-native/alarm-sound.toml`.
 - **Trends**: the chosen tags on one time axis over 5 min, 30 min, 1 h, 6 h or 24 h,
   filled from the server's history and extended by live values. While the
-  link is live the chart moves on once a second. Each tag keeps a day of
-  history: live values of the last 15 minutes at full rate, older ones
-  thinned to one per 20 seconds.
+  link is live the chart moves on once a second. A tag on the chart keeps
+  a day of history (its range fetched from the server when it is added):
+  live values of the last 15 minutes at full rate, older ones thinned to
+  one per 20 seconds, as do the tags the shown mimic screen's trend widgets
+  draw (an hour fetched for them). The other tags keep 35 minutes, what the sparklines
+  and the mimic's faceplate draw, so a plant of thousands of tags does not
+  hold a day of each.
 - **Data Manager** (More menu, palette; offered to a role that sees at least
   one section): a sidebar of sections grouped Data, Protocols, Insights,
   Admin and Engineering as in the web client (only built sections are
@@ -127,8 +133,10 @@ JetBrains Mono for values.
   **Admin** (as the web client's group): **Users** (admin only): every
   account with its role; N adds one (name, the password typed twice in
   masked fields, role), Enter changes the role and optionally the password,
-  P resets a password, ⌫ deletes after a confirmation; the console refuses
-  demoting or deleting yourself or the last admin. **Roles** (admin only):
+  P resets a password, the row's disable button disables an account after a
+  confirmation (or enables it again at once; the status column says
+  "disabled"), ⌫ deletes after a confirmation; the console refuses
+  demoting, disabling or deleting yourself or the last enabled admin. **Roles** (admin only):
   the server's RBAC roles with their permissions picked from the 24 the
   server accepts. **Notifications** (operators): who hears of a tag's (or
   every tag's) alarms by email, webhook or push; N, Enter, Space turns a
@@ -273,11 +281,21 @@ JetBrains Mono for values.
   pick.
 
 The network side runs on its own tokio thread: it signs in, keeps the
-WebSocket open, reconnects with backoff (2 s, 5 s, then every 10 s), and
-renews the 15-minute session token with the session's refresh token
-(`POST /auth/refresh`) every 10 minutes and before each reconnect (30
-seconds after a renewal the server did not answer), so REST calls keep
-working. It does not keep the password (only while the server wants it
+WebSocket open (pinged every 15 s; 30 s without a word from the server
+counts as a dead link, which leaves Live and reconnects), reconnects with
+backoff (2 s, 5 s, then every 10 s) and loads the tags and alarms again
+after a reconnect, and renews the session token with the session's
+refresh token (`POST /auth/refresh`) at two thirds of the lifetime the
+server gave it (10 of the core's 15 minutes; less when an edition's idle
+timeout or session limit shortens it), before each reconnect, and when a
+request is refused with 401 (which is then sent once more), so REST calls
+keep working. While the server's session policy has an idle timeout, key
+presses, clicks and scrolling are reported (`POST /auth/activity`, at most
+once per min(60 s, timeout / 3)), so only an operator who walked away is
+signed out; a session the server ended says why, in the web client's
+words. A request any edition wants signed (an electronic signature)
+asks for it in the same prompt as tag writes and alarm actions and is sent
+again with it, whatever the page. It does not keep the password (only while the server wants it
 changed), and a renewal or a sign-in elsewhere leaves the user's other
 sessions alone (a sign-in replaces only the refresh token it presents). Only the operator's own
 sign-in waits for the server; every other REST call (tags, alarms,
@@ -285,7 +303,7 @@ history, alarm actions, password changes, renewals) runs on its own and
 never holds up the tag stream. Answers that arrive after the session ended
 are dropped. When the server refuses a renewal (the refresh token revoked
 or expired, for instance after a password or role change, or a deletion) the session
-ends with "Not authorised". Signing out, quitting and starting a stress
+ends and the sign-in card says so. Signing out, quitting and starting a stress
 test all sign the session out of the server, which revokes its refresh
 token. When a session ends (sign-out, a refused renewal, or before the next
 sign-in) every page's state goes with it; only the operator's own
@@ -342,11 +360,25 @@ meter takes the refresh rate from the display).
 How the console is built, and how to add a page, a REST call, a key, an
 overlay or an animation: [`docs/architecture.md`](docs/architecture.md).
 
-Requires a recent stable Rust (edition 2024). CI builds and tests on macOS
-and Windows; GPUI also supports Linux (X11 or Wayland), which is not tested
-here. On a Mac whose Xcode lacks the Metal toolchain (`cannot execute tool
-'metal'`), either `xcodebuild -downloadComponent MetalToolchain` or build
-with `--features gpui/runtime_shaders` (the shaders then compile at launch).
+Requires a recent stable Rust (edition 2024). CI checks formatting, lints
+and tests on Linux, builds and tests on Windows, and runs the end-to-end
+test, the bundle, the stress pass and the screenshots on macOS. On Linux
+(X11 or Wayland) GPUI and the alarm sound need the system's libraries; on
+Debian or Ubuntu:
+
+```bash
+sudo apt-get install pkg-config clang cmake libasound2-dev libfontconfig-dev \
+  libfreetype-dev libwayland-dev libx11-xcb-dev libxkbcommon-dev \
+  libxkbcommon-x11-dev libvulkan1
+```
+
+TLS (`https://` and `wss://`) trusts the operating system's certificate
+store and the bundled webpki roots. For a plant CA that is not installed on
+the computer, name a PEM file in the console's `config.toml`:
+`ca_file = "/path/to/plant-ca.pem"` (a relative path is read from
+`config.toml`'s directory). Certificates in it that are not valid are left
+out, and the sign-in card says what could not be used. Certificates are
+always verified.
 
 ## Local station mode
 
@@ -448,7 +480,9 @@ command is in the palette and on its keys).
   signs in to it by itself. `station init` leaves the station folder to
   SYSTEM and Administrators; Users may read `station.toml`. Uninstalling stops and
   removes the service and keeps the plant data unless asked (`/REMOVEDATA`
-  when silent). Unsigned: SmartScreen warns before it runs. The console's
+  when silent). The installer is not code-signed (the project has no
+  signing certificate), so Windows SmartScreen warns before it runs: choose
+  **More info**, then **Run anyway**. The console's
   icon and version resource come from `native/build.rs`
   (`native/packaging/windows/voltrus.ico`, made from `AppIcon.svg` by
   `swift native/scripts/windows-icon.swift`).
@@ -676,7 +710,9 @@ cargo run -p voltrus-scada-native --example ws_probe -- http://localhost:3000 ad
   every request, so a role change applies at once and a deleted user is
   signed out; a role or password change or a deletion also revokes the
   user's refresh tokens. `PUT /users/{id}` with `disabled: true` disables an
-  account: its sessions end at once, login answers 403 "Account disabled"
+  account: its sessions end at once, its refresh tokens are revoked and
+  refresh refuses a disabled account even with a token that was not,
+  login answers 403 "Account disabled"
   (after a correct password), and `disabled: false` re-enables it; the
   `GET /users` rows carry `disabled`. Deleting a user also deletes their
   notifications and keeps the annotations and shift handovers they wrote under

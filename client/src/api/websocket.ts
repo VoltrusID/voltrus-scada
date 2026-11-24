@@ -3,9 +3,14 @@ import { encode, decode } from '@msgpack/msgpack';
 export interface TagUpdate {
   tag_id: string;
   value: number;
+  /** The tag's status (normal/warning/critical/offline), despite the name. */
   quality: string;
   ts: number;
   simulated: boolean;
+  /** Per-value data quality; absent from older servers. */
+  data_quality?: string;
+  /** When the value was read from the device, Unix ms. */
+  ts_ms?: number;
 }
 
 export interface TagUpdateBatch {
@@ -17,6 +22,8 @@ export interface CommandAck {
   status: string;
   device_response?: string;
   latency_ms?: number;
+  /** Set when the server wants this write electronically signed (status `signature_required` or `rejected`). */
+  signature_required?: { action: string; meaning: string };
 }
 
 export interface DeviceStatus {
@@ -61,6 +68,23 @@ type TransportCallback = (transport: Transport) => void;
 export const WS_FAILURES_BEFORE_FALLBACK = 3;
 /** While on SSE, how often a WebSocket is tried again. */
 export const SSE_PROBE_INTERVAL_MS = 60_000;
+/**
+ * Reconnect delays are spread by this fraction either way, so the clients of a
+ * restarted server (a control room of kiosks) do not all come back at once.
+ */
+export const RECONNECT_JITTER = 0.3;
+/** How often an open WebSocket sends the server an application-level `Ping`. */
+export const KEEPALIVE_INTERVAL_MS = 20_000;
+/**
+ * A socket whose server answers pings and has said nothing for this long is
+ * treated as dead (a half-open TCP connection after a network change) and replaced.
+ */
+export const STALE_AFTER_MS = 3 * KEEPALIVE_INTERVAL_MS;
+
+/** `ms` spread by up to ±RECONNECT_JITTER. */
+export function jittered(ms: number, rand: () => number = Math.random): number {
+  return Math.round(ms * (1 - RECONNECT_JITTER + 2 * RECONNECT_JITTER * rand()));
+}
 
 /** Event names the server uses on the SSE stream: the `type` of each message. */
 const SSE_EVENTS = [
@@ -103,6 +127,17 @@ export class VoltrusWebSocket {
   private batchBuffer: TagUpdate[] = [];
   private batchTimer: ReturnType<typeof setTimeout> | null = null;
   private connectCallbacks: (() => void)[] = [];
+  private keepaliveTimer: ReturnType<typeof setTimeout> | null = null;
+  private staleTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Set once the server answered a `Ping`. Servers that never answer get no
+   * staleness check: a quiet plant (no subscribed tag changing) is not a dead socket.
+   */
+  private serverAnswersPing = false;
+  private readonly onWake = (): void => {
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+    this.retryNow();
+  };
 
   /** `sseUrl` enables the fallback; without it only the WebSocket is used. */
   connect(url: string, token?: string, sseUrl?: string): void {
@@ -111,7 +146,61 @@ export class VoltrusWebSocket {
     this.token = token ?? '';
     this.reconnectDelay = 1000;
     this.wsFailures = 0;
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('online', this.onWake);
+      if (typeof document !== 'undefined') document.addEventListener('visibilitychange', this.onWake);
+    }
     this.doConnect();
+  }
+
+  /**
+   * The network came back or the tab became visible: a connection waiting out its
+   * back-off is tried at once instead of after up to 30 s.
+   */
+  private retryNow(): void {
+    if (!this.url || !this.reconnectTimer) return;
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    this.reconnectDelay = 1000;
+    if (this.transport === 'sse') {
+      if (this.sseUrl && !this.es) this.openEventSource();
+    } else {
+      this.doConnect();
+    }
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
+    if (this.staleTimer) clearTimeout(this.staleTimer);
+    this.keepaliveTimer = null;
+    this.staleTimer = null;
+  }
+
+  private scheduleKeepalive(ws: WebSocket): void {
+    if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
+    this.keepaliveTimer = setTimeout(() => {
+      this.keepaliveTimer = null;
+      if (this.ws !== ws) return;
+      this.send({ type: 'Ping' });
+      this.scheduleKeepalive(ws);
+    }, KEEPALIVE_INTERVAL_MS);
+  }
+
+  /** The server spoke on `ws`: push back the deadline after which it counts as dead. */
+  private heardFrom(ws: WebSocket): void {
+    if (this.staleTimer) clearTimeout(this.staleTimer);
+    this.staleTimer = null;
+    if (!this.serverAnswersPing) return;
+    this.staleTimer = setTimeout(() => {
+      this.staleTimer = null;
+      if (this.ws !== ws) return;
+      console.warn('WS: no traffic for', STALE_AFTER_MS, 'ms, reconnecting');
+      // close() on a dead connection can take minutes to report; drop the socket now.
+      ws.onclose = null;
+      ws.onmessage = null;
+      ws.close();
+      this.onMainWebSocketClosed(ws, true);
+    }, STALE_AFTER_MS);
   }
 
   getTransport(): Transport {
@@ -159,11 +248,14 @@ export class VoltrusWebSocket {
         } else if (this.ws === ws) {
           this.wsFailures = 0;
           this.reconnectDelay = 1000;
+          this.scheduleKeepalive(ws);
         }
       }
       if (this.ws !== ws) return;
       try {
         const msg = decode(event.data as ArrayBuffer) as Record<string, unknown>;
+        if (msg.type === 'Pong') this.serverAnswersPing = true;
+        this.heardFrom(ws);
         this.handleMessage(msg);
       } catch (e) {
         console.warn('WS: failed to decode message', e);
@@ -192,6 +284,7 @@ export class VoltrusWebSocket {
 
   private onMainWebSocketClosed(ws: WebSocket, heard: boolean): void {
     if (this.ws !== ws) return;
+    this.stopKeepalive();
     this.disconnectCallbacks.forEach(cb => cb());
     if (heard) {
       this.wsFailures = 0;
@@ -255,7 +348,7 @@ export class VoltrusWebSocket {
         this.reconnectTimer = setTimeout(() => {
           this.reconnectTimer = null;
           if (this.sseUrl && this.transport === 'sse') this.openEventSource();
-        }, this.reconnectDelay);
+        }, jittered(this.reconnectDelay));
         this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
       }
     };
@@ -288,6 +381,7 @@ export class VoltrusWebSocket {
     this.wsFailures = 0;
     this.reconnectDelay = 1000;
     this.setTransport('ws');
+    this.scheduleKeepalive(ws);
     this.connectCallbacks.forEach(cb => cb());
   }
 
@@ -359,6 +453,12 @@ export class VoltrusWebSocket {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;
     }
+    this.stopKeepalive();
+    this.serverAnswersPing = false;
+    if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('online', this.onWake);
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', this.onWake);
+    }
     // Clear URLs before closing to prevent race with onclose triggering reconnect
     this.url = '';
     this.sseUrl = '';
@@ -418,7 +518,7 @@ export class VoltrusWebSocket {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       if (this.url) this.doConnect();
-    }, delay);
+    }, jittered(delay));
   }
 }
 
@@ -462,7 +562,8 @@ export const WS_WRITE_WAIT_MS = 15_000;
  * write at once (`rejected`) and an accepted one when the command is final (`acked`,
  * `failed`, `expired`); until then it is queued, so a device that does not answer within
  * `waitMs` is reported as `queued`, not as a failure. Resolves `null` when there is no
- * WebSocket that can write (the caller uses the REST endpoint); rejects with the server's
+ * WebSocket that can write, or when the server wants the write signed: the caller then
+ * uses the REST endpoint, whose fetch prompts for the signature. Rejects with the server's
  * reason when the write was refused or failed.
  */
 export function wsWriteTagResult(
@@ -481,7 +582,8 @@ export function wsWriteTagResult(
     };
     const onAck = (ack: CommandAck) => {
       if (ack.command_id !== commandId) return;
-      if (ack.status === 'acked') finish(() => resolve('acked'));
+      if (ack.signature_required || ack.status === 'signature_required') finish(() => resolve(null));
+      else if (ack.status === 'acked') finish(() => resolve('acked'));
       else if (['rejected', 'failed', 'expired', 'cancelled'].includes(ack.status)) {
         finish(() => reject(new Error(ack.device_response || `Write ${ack.status}`)));
       }

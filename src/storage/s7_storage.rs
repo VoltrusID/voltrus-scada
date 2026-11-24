@@ -236,7 +236,7 @@ impl Storage {
                 "INSERT OR IGNORE INTO data_sources (key, name, unit, color, min_val, max_val, warn_val, crit_val,
                  base_val, sort_order, decimals, source_type, source_config, device_id, chart_type)
                  VALUES (?1, ?2, '', '#3b82f6', 0, 0, 0, 0, 0, 0, 1, 's7', '{}', ?3, 'sparkline')",
-                rusqlite::params![source_key, ds_name, device_name],
+                rusqlite::params![source_key, ds_name, device_id.to_string()],
             );
 
             Ok(conn.last_insert_rowid())
@@ -318,7 +318,18 @@ impl Storage {
             let device_key = format!("s7_{}", device.id);
             let mut s7_tags = Vec::new();
             for tag_row in &tags {
-                match crate::s7::S7Client::parse_tag_address(&tag_row.tag_address) {
+                // Queued writes resolve the tag the same way, so a value is
+                // written in the type it is read in.
+                let resolved = crate::s7::S7Tag::resolve(&tag_row.tag_address, &tag_row.data_type)
+                    .or_else(|e| {
+                        tracing::warn!(
+                            "S7 tag '{}' on device '{}': {e}; reading it by its address type",
+                            tag_row.name,
+                            device.name
+                        );
+                        crate::s7::S7Client::parse_tag_address(&tag_row.tag_address)
+                    });
+                match resolved {
                     Ok(s7_tag) => s7_tags.push(s7_tag),
                     Err(e) => {
                         tracing::warn!(

@@ -19,12 +19,29 @@ name is the `type` and the data is the message as JSON, for example:
 
 ```
 event: TagUpdateBatch
-data: {"type":"TagUpdateBatch","updates":[{"tag_id":"inverter-1.power","value":412.5,"quality":"good","ts":1761700000,"simulated":false}]}
+data: {"type":"TagUpdateBatch","updates":[{"tag_id":"inverter-1.power","value":412.5,"quality":"normal","ts":1761700000,"simulated":false,"data_quality":"good","ts_ms":1761700000123}]}
 ```
 
 The first event of a stream is `AuthOk` (the signed-in user and permissions), as on
 the WebSocket. A comment line is sent every 15 seconds to keep proxies from closing an
 idle stream. A value that is NaN (a failed read) is `null` in JSON.
+
+The user or key behind a stream is checked again every 30 seconds, as on the
+WebSocket: when the user is disabled or deleted, must change their password,
+has another role than when the stream opened, or the sign-in session has ended
+(signed out, password changed elsewhere, revoked; or, for a stream opened with
+an access token only, that token expired), or the key is revoked or expired,
+the stream sends an `AuthError` event and ends. The client reconnects with
+what it has now.
+
+Each tag update may also carry `data_quality` and `ts_ms`. `ts_ms` is when the value
+was read, in Unix milliseconds. `data_quality` is one of `good`, `uncertain`,
+`uncertain_stale` (not refreshed for three poll intervals), `bad`,
+`bad_comm_failure` (the device is unreachable; the value is the last one read),
+`bad_device_error` or `bad_config_error`. A missing `data_quality` means `good`.
+The older `quality` field is the tag's status (`normal`, `warning`, `critical`,
+`offline`) and is kept as
+it was.
 
 ## Writing a tag
 
@@ -41,8 +58,19 @@ outcome, as it could when writes went straight to the device. The intermediate `
 and `queued` (a retry) acknowledgements are broadcast to every other connection but not
 to the requester. A device that is offline leaves the write queued, so a client should
 stop waiting after a timeout and show it as queued (the web client does after 15 s).
-Only admins may write over the
-WebSocket. Clients that are not on the WebSocket (including the event stream) write
+
+After `acked`, the server checks the device really holds the value: the next fresh poll
+of good quality is compared with the written value. One more `CommandAck` follows, with
+status `readback_confirmed`, `readback_mismatch` (two fresh polls disagreed) or
+`readback_timeout` (no fresh good value within three poll intervals or 10 s). An acked
+value is never written into the live cache: the screen shows it once a poll confirms it.
+
+The same roles may write over the WebSocket as over REST and MCP: admins, operators,
+demo users and integration API keys (viewers and read-only keys may not). The user or
+key is checked again on every write and
+every 30 seconds; a socket whose user is disabled or deleted, whose role or
+sign-in session changed as above, or whose key is revoked, is closed with code
+1008. An application-level `Ping` message is answered with `Pong`. Clients that are not on the WebSocket (including the event stream) write
 with the REST endpoint.
 
 ## The web client

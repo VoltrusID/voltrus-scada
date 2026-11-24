@@ -11,6 +11,7 @@ pub mod notification_types;
 pub mod operations;
 pub mod protocol_device_types;
 pub mod rbac_types;
+pub mod signature_types;
 
 pub use alarm_types::*;
 pub use analytics::*;
@@ -25,6 +26,7 @@ pub use notification_types::*;
 pub use operations::*;
 pub use protocol_device_types::*;
 pub use rbac_types::*;
+pub use signature_types::*;
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -46,6 +48,29 @@ pub struct DeviceSnapshot {
     /// back to "modbus" for back-compat with pre-protocol snapshots.
     #[serde(default)]
     pub protocol: Option<String>,
+    /// Unix milliseconds of the latest update (`timestamp` is the same in seconds).
+    #[serde(default)]
+    pub ts_ms: i64,
+    /// Quality of each metric that is not good. Only the exceptions are listed
+    /// so the snapshot of a healthy device serializes as it always has.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[schema(value_type = Object)]
+    pub quality: HashMap<String, crate::quality::Quality>,
+    /// Unix milliseconds at which each metric was last read from the device.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub metric_ts_ms: HashMap<String, i64>,
+}
+
+impl DeviceSnapshot {
+    /// The stored quality of `metric` (good unless listed otherwise).
+    pub fn quality_of(&self, metric: &str) -> crate::quality::Quality {
+        self.quality.get(metric).copied().unwrap_or_default()
+    }
+
+    /// When `metric` was last read, in Unix ms (the snapshot's time if unknown).
+    pub fn metric_ts(&self, metric: &str) -> i64 {
+        self.metric_ts_ms.get(metric).copied().unwrap_or(self.ts_ms)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, ToSchema)]
@@ -240,6 +265,10 @@ pub struct FlowRun {
     pub success: bool,
     pub error: Option<String>,
     pub output: Option<String>,
+    /// Per-node trace (node_id, type, input, output, port, error, duration_us),
+    /// kept for the newest runs of each flow; values are truncated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace: Option<serde_json::Value>,
 }
 
 // ── AI Copilot types ──
@@ -250,6 +279,11 @@ pub struct AiSettingsResponse {
     pub api_key_set: bool,
     pub api_key_preview: String,
     pub default_model: Option<String>,
+    /// Base URL of the `byok_openai_compatible` provider.
+    pub base_url: Option<String>,
+    /// Whether the hosted `voltrus_ai` provider can be used: only when an
+    /// add-on edition registers it. Clients offer it only then.
+    pub hosted_ai_available: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, utoipa::ToSchema)]
@@ -460,6 +494,7 @@ mod tests {
             total_running_secs: 3600,
             total_planned_secs: 4235,
             downtime_count: 3,
+            tracking: None,
         };
         let json = serde_json::to_string(&metrics).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

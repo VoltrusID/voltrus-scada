@@ -3,6 +3,7 @@ import { Rnd } from 'react-rnd'
 import type { SensorConfig, SensorData } from '../../types'
 import type { WidgetInstance } from './types'
 import { getWidgetComponent } from './registry'
+import { ScreenWidgetView } from '../../components/ScreenWidgetView'
 
 interface WidgetShellProps {
   instance: WidgetInstance
@@ -19,6 +20,8 @@ interface WidgetShellProps {
   onMove: (id: string, x: number, y: number) => void
   onResize: (id: string, x: number, y: number, width: number, height: number) => void
   onWriteValue?: (value: number) => void
+  /** In run mode, activating the widget does something (opens its faceplate): make it a keyboard button. */
+  activatable?: boolean
 }
 
 // SVG symbols draw strokes right at their edge, so they must not be clipped.
@@ -37,7 +40,7 @@ const HANDLES = {
 
 export default function WidgetShell({
   instance, sensor, data, sensors, currentValues,
-  editMode, selected, scale, locked, onSelect, onMove, onResize, onWriteValue,
+  editMode, selected, scale, locked, onSelect, onMove, onResize, onWriteValue, activatable = false,
 }: WidgetShellProps) {
   const [hover, setHover] = useState(false)
 
@@ -60,8 +63,8 @@ export default function WidgetShell({
     [onResize, instance.id],
   )
 
+  // Types core does not know are add-on widgets (or ones this build lacks, drawn as a placeholder).
   const WidgetComponent = getWidgetComponent(instance.type)
-  if (!WidgetComponent) return null
 
   // At runtime `selected` marks the equipment whose faceplate is open.
   const outline = !editMode ? (selected ? '1.5px solid var(--cyan)' : 'none')
@@ -91,6 +94,17 @@ export default function WidgetShell({
       <div
         onMouseDown={editMode ? () => onSelect(instance.id) : undefined}
         onClick={editMode ? undefined : () => onSelect(instance.id)}
+        {...(!editMode && activatable ? {
+          role: 'button',
+          tabIndex: 0,
+          'aria-label': `${sensor?.name ?? instance.type}: open faceplate`,
+          'aria-pressed': selected,
+          onKeyDown: (e: React.KeyboardEvent) => {
+            if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
+            e.preventDefault()
+            onSelect(instance.id)
+          },
+        } : {})}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         style={{
@@ -102,16 +116,29 @@ export default function WidgetShell({
         }}
       >
         <div style={{ flex: 1, minHeight: 0, overflow: UNCLIPPED.has(instance.type) ? 'visible' : 'hidden', pointerEvents: editMode ? 'none' : undefined }}>
-          <WidgetComponent
-            instance={instance}
-            sensor={sensor}
-            data={data}
-            sensors={sensors}
-            currentValues={currentValues}
-            editMode={editMode}
-            selected={selected}
-            onWriteValue={onWriteValue}
-          />
+          {WidgetComponent ? (
+            <WidgetComponent
+              instance={instance}
+              sensor={sensor}
+              data={data}
+              sensors={sensors}
+              currentValues={currentValues}
+              editMode={editMode}
+              selected={selected}
+              onWriteValue={onWriteValue}
+            />
+          ) : (
+            <ScreenWidgetView
+              type={instance.type}
+              config={instance.config ?? {}}
+              surface="scada"
+              width={instance.width}
+              height={instance.height}
+              editMode={editMode}
+              sensors={sensors}
+              values={currentValues}
+            />
+          )}
         </div>
       </div>
     </Rnd>

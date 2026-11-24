@@ -28,19 +28,182 @@ use crate::ws_types::{ClientMessage, ServerMessage};
 pub async fn websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     jar: axum_extra::extract::cookie::CookieJar,
 ) -> impl IntoResponse {
     let cookie_token = jar.get("voltrus_token").map(|c| c.value().to_string());
-    ws.on_upgrade(move |socket| handle_socket(socket, state, cookie_token))
+    let refresh_cookie = jar.get("voltrus_refresh").map(|c| c.value().to_string());
+    let header_key = headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .filter(|k| !k.is_empty())
+        .map(str::to_string);
+    // A browser session that must change its password first is refused
+    // before the upgrade, with the same 403 as the REST API.
+    if header_key.is_none()
+        && let Some(token) = &cookie_token
+        && let Some((_, user)) =
+            crate::api::auth_middleware::verify_session_user(&state, token).await
+        && crate::api::auth_middleware::password_change_pending(&state, &user)
+    {
+        return crate::api::auth_middleware::password_change_required_response();
+    }
+    ws.on_upgrade(move |socket| {
+        handle_socket(socket, state, cookie_token, header_key, refresh_cookie)
+    })
+    .into_response()
+}
+
+/// How often an open socket re-reads its user or key, so a disabled or deleted
+/// user, or a revoked or expired key, loses the live feed within this delay
+/// even if it never writes.
+pub(super) const RECHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Who is on the other end of a socket. Only the identity is kept: the role is
+/// read from the database again on every write and every [`RECHECK_INTERVAL`].
+#[derive(Clone, Debug)]
+pub(super) enum WsPrincipal {
+    User(String),
+    ApiKey(i64),
+}
+
+impl WsPrincipal {
+    fn name(&self) -> String {
+        match self {
+            WsPrincipal::User(username) => username.clone(),
+            WsPrincipal::ApiKey(id) => format!("api_key:{id}"),
+        }
+    }
+
+    /// The principal's current role, or `None` when it may no longer use the
+    /// socket. Fails closed on a storage error.
+    pub(super) async fn current_role(&self, state: &AppState) -> Option<String> {
+        match self {
+            WsPrincipal::User(username) => {
+                let user = state.storage.get_user_by_username(username).await.ok()??;
+                // A user who must change their password (flagged after the
+                // socket opened) loses the feed like a disabled one.
+                let usable = !user.disabled
+                    && !crate::api::auth_middleware::password_change_pending(state, &user);
+                usable.then_some(user.role)
+            }
+            WsPrincipal::ApiKey(id) => {
+                let (permissions, role) = state.storage.api_key_access(*id).await.ok()??;
+                Some(super::effective_key_role(&role, &permissions).to_string())
+            }
+        }
+    }
+}
+
+/// What an open socket or event stream was granted when it opened: the role,
+/// and for a person the sign-in session it belongs to. Checked every
+/// [`RECHECK_INTERVAL`]; a stream whose grant no longer holds is closed, and
+/// the client reconnects with what it has now.
+#[derive(Clone, Debug)]
+pub(super) struct Grant {
+    pub role: String,
+    pub session: SessionTie,
+}
+
+/// How a person's stream is tied to their sign-in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SessionTie {
+    /// The browser session (refresh-token chain) that began at this time
+    /// (Unix seconds): it ends at sign-out, a password change elsewhere, an
+    /// admin revoking it, or its end of life.
+    Refresh { started_at: i64 },
+    /// Only an access token was presented: the stream ends when it expires
+    /// (Unix milliseconds).
+    Expires { exp_ms: u64 },
+    /// API keys and sign-in-provider tokens are checked by other means.
+    None,
+}
+
+/// A refresh token rotated by a refresh is revoked just before its successor
+/// is stored; a session counts as open for this long after a revocation.
+#[cfg(not(test))]
+const SESSION_GRACE_SECS: i64 = 10;
+/// Tests revoke and check within the same second.
+#[cfg(test)]
+const SESSION_GRACE_SECS: i64 = -1;
+
+impl SessionTie {
+    /// The tie of a session whose access token has `claims`, from the
+    /// `voltrus_refresh` cookie of the same request when it belongs to the
+    /// same user, else the access token's expiry.
+    pub(super) async fn of(
+        state: &AppState,
+        claims: &crate::models::TokenClaims,
+        refresh_cookie: Option<&str>,
+    ) -> Self {
+        if let Some(raw) = refresh_cookie.filter(|r| !r.is_empty()) {
+            let hash = crate::api::auth::hash_refresh_token(raw);
+            if let Ok(Some(rt)) = state.storage.get_refresh_token_by_hash(&hash).await
+                && rt.username == claims.username
+                && rt.revoked_at.is_none()
+            {
+                return SessionTie::Refresh {
+                    started_at: rt.session_started_at.unwrap_or(rt.created_at),
+                };
+            }
+        }
+        SessionTie::Expires { exp_ms: claims.exp }
+    }
+
+    /// Whether the session is still open. Fails closed on a storage error.
+    pub(super) async fn alive(&self, state: &AppState, username: &str) -> bool {
+        match self {
+            SessionTie::Refresh { started_at } => state
+                .storage
+                .session_alive(username, *started_at, SESSION_GRACE_SECS)
+                .await
+                .unwrap_or(false),
+            SessionTie::Expires { exp_ms } => (crate::timeutil::now_millis() as u64) < *exp_ms,
+            SessionTie::None => true,
+        }
+    }
+}
+
+impl WsPrincipal {
+    /// Whether the stream may stay open: the principal may still use it
+    /// ([`WsPrincipal::current_role`]), its role is the one it was granted,
+    /// and a person's session is still open.
+    pub(super) async fn still_granted(&self, state: &AppState, grant: &Grant) -> bool {
+        let Some(role) = self.current_role(state).await else {
+            return false;
+        };
+        if role != grant.role {
+            return false;
+        }
+        match self {
+            WsPrincipal::User(username) => grant.session.alive(state, username).await,
+            WsPrincipal::ApiKey(_) => true,
+        }
+    }
+}
+
+/// Whether the socket loop keeps going after a client message.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum After {
+    Continue,
+    /// The principal's access is gone: close the socket.
+    Close,
 }
 
 // -- Socket handler --------------------------------------------------------
 
-async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<String>) {
+async fn handle_socket(
+    socket: WebSocket,
+    state: AppState,
+    cookie_token: Option<String>,
+    header_key: Option<String>,
+    refresh_cookie: Option<String>,
+) {
     let (mut sink, mut stream) = socket.split();
 
-    // 1. Obtain token: prefer cookie from upgrade request, fall back to Auth message.
-    let token = if let Some(t) = cookie_token {
+    // 1. Obtain credentials: an X-API-Key header on the upgrade request, else the
+    //    session cookie, else the token (session token or API key) of an Auth message.
+    let token = if let Some(t) = header_key.clone().or(cookie_token) {
         t
     } else {
         // No cookie – wait for a MessagePack Auth message (non-browser clients).
@@ -100,26 +263,53 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
         }
     };
 
-    // 3. Validate the token and re-read the user's current role.
-    let claims = match crate::api::auth_middleware::verify_session(&state, &token).await {
-        Some(c) => c,
-        None => {
+    // 3. Validate the credentials and read the current role.
+    let principal = if header_key.is_none()
+        && let Some((claims, user)) =
+            crate::api::auth_middleware::verify_session_user(&state, &token).await
+    {
+        if crate::api::auth_middleware::password_change_pending(&state, &user) {
             let _ = send_msg(
                 &mut sink,
                 &ServerMessage::AuthError {
-                    message: "Invalid or expired token".to_string(),
+                    message: format!(
+                        "{}: {}",
+                        crate::api::auth_middleware::PASSWORD_CHANGE_REQUIRED,
+                        crate::api::auth_middleware::PASSWORD_CHANGE_REQUIRED_MESSAGE
+                    ),
                 },
             )
             .await;
             return;
         }
+        let tie = SessionTie::of(&state, &claims, refresh_cookie.as_deref()).await;
+        Some((WsPrincipal::User(claims.username), tie))
+    } else {
+        crate::api::auth_middleware::authenticate_api_key(&state, &token)
+            .await
+            .map(|(_, key)| (WsPrincipal::ApiKey(key.id), SessionTie::None))
+    };
+    let Some((principal, grant)) = (match principal {
+        Some((p, session)) => p
+            .current_role(&state)
+            .await
+            .map(|role| (p, Grant { role, session })),
+        None => None,
+    }) else {
+        let _ = send_msg(
+            &mut sink,
+            &ServerMessage::AuthError {
+                message: "Invalid or expired token".to_string(),
+            },
+        )
+        .await;
+        return;
     };
 
-    let username = claims.username.clone();
-    let role = claims.role.clone();
+    let username = principal.name();
 
     // 4. Determine permissions from role.
-    let permissions = role_to_permissions(&role);
+    let permissions = role_to_permissions(&grant.role);
 
     // 5. Generate a unique connection ID.
     let conn_id = format!(
@@ -130,7 +320,7 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
             .as_nanos()
     );
 
-    tracing::info!("WS: user={} role={} conn={}", username, role, conn_id);
+    tracing::info!("WS: user={} role={} conn={}", username, grant.role, conn_id);
 
     // 6. Register with WsManager and get the receiver for outgoing messages.
     let mut rx = state
@@ -156,12 +346,21 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
     //    incoming WebSocket frames from the client.
     let conn_id_loop = conn_id.clone();
     let ws_manager_loop = state.ws_manager.clone();
-    let username_loop = username.clone();
-    let role_loop = role.clone();
     let state_loop = state.clone();
+    let mut recheck = tokio::time::interval_at(
+        tokio::time::Instant::now() + RECHECK_INTERVAL,
+        RECHECK_INTERVAL,
+    );
 
     loop {
         tokio::select! {
+            _ = recheck.tick() => {
+                if !principal.still_granted(&state_loop, &grant).await {
+                    tracing::info!("WS: {} lost access, closing conn={}", username, conn_id);
+                    close_revoked(&mut sink).await;
+                    break;
+                }
+            }
             // Outgoing message from WsManager broadcast channel
             msg = rx.recv() => {
                 match msg {
@@ -195,14 +394,17 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
                                 continue;
                             }
                         };
-                        handle_client_message(
+                        let after = handle_client_message(
                             &client_msg,
                             &conn_id_loop,
                             &ws_manager_loop,
                             &state_loop,
-                            &username_loop,
-                            &role_loop,
+                            &principal,
                         ).await;
+                        if after == After::Close {
+                            close_revoked(&mut sink).await;
+                            break;
+                        }
                     }
                     Some(Ok(Message::Ping(data))) => {
                         let _ = sink.send(Message::Pong(data)).await;
@@ -233,14 +435,25 @@ async fn handle_socket(socket: WebSocket, state: AppState, cookie_token: Option<
 
 // -- Client message dispatch -----------------------------------------------
 
-async fn handle_client_message(
+/// Tell the client why the socket closes (policy violation, 1008).
+async fn close_revoked(sink: &mut futures_util::stream::SplitSink<WebSocket, Message>) {
+    let _ = sink
+        .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+            code: 1008,
+            reason: "credentials revoked or account disabled".into(),
+        })))
+        .await;
+}
+
+pub(super) async fn handle_client_message(
     msg: &ClientMessage,
     conn_id: &str,
     ws_manager: &Arc<crate::ws_manager::WsManager>,
     state: &AppState,
-    username: &str,
-    role: &str,
-) {
+    principal: &WsPrincipal,
+) -> After {
+    let username = principal.name();
+    let username = username.as_str();
     match msg {
         ClientMessage::Subscribe { tag_ids } => {
             ws_manager.subscribe(conn_id, tag_ids);
@@ -261,41 +474,70 @@ async fn handle_client_message(
             value,
             command_id,
             reason,
+            signature,
         } => {
             let cmd_id = command_id.clone().unwrap_or_else(next_command_id);
 
-            // Permission check: only admins can write via WebSocket
-            if role != "admin" {
+            // The role is read again here: one granted at connect time may have
+            // been taken away since.
+            let Some(role) = principal.current_role(state).await else {
+                reject_write(
+                    ws_manager,
+                    conn_id,
+                    cmd_id,
+                    "Credentials revoked or account disabled",
+                );
+                return After::Close;
+            };
+            if !super::role_allows_operation(&role) {
                 tracing::warn!(
                     "WS: user={} (role={}) denied tag write to {}",
                     username,
                     role,
                     tag_id
                 );
-                reject_write(ws_manager, conn_id, cmd_id, "Only admins can write tags");
-                return;
+                reject_write(
+                    ws_manager,
+                    conn_id,
+                    cmd_id,
+                    "Tag writes need the operator, demo, admin or integration role",
+                );
+                return After::Continue;
             }
 
+            let origin = match principal {
+                WsPrincipal::ApiKey(_) => crate::edition::ActionOrigin::ApiKey,
+                _ => crate::edition::ActionOrigin::Session,
+            };
+            let actor = super::commands::Actor {
+                username,
+                role: &role,
+                origin,
+            };
             handle_tag_write(
                 state,
                 conn_id,
-                username,
+                &actor,
                 tag_id,
                 *value,
                 reason.clone(),
+                signature.clone().map(Into::into),
                 cmd_id,
             )
             .await;
         }
 
         ClientMessage::Ping => {
-            // Application-level ping -- WS protocol ping/pong handled separately.
+            // Application-level ping: the web client takes a missing Pong as
+            // a dead socket (the WS protocol's own ping/pong is separate).
+            ws_manager.send_to(conn_id, ServerMessage::Pong);
         }
 
         ClientMessage::Auth { .. } => {
             tracing::debug!("WS: ignoring duplicate Auth message");
         }
     }
+    After::Continue
 }
 
 // -- Tag write handling: through the command queue -------------------------
@@ -324,6 +566,7 @@ fn reject_write(
             status: "rejected".to_string(),
             device_response: Some(reason.to_string()),
             latency_ms: None,
+            signature_required: None,
         },
     );
 }
@@ -336,15 +579,22 @@ fn reject_write(
 /// reason); otherwise its first `CommandAck` for the command id is the final outcome
 /// (`acked`, `failed` or `expired`), the intermediate `sent` and `queued` going to the
 /// other connections only.
+///
+/// A write the edition wants signed is answered with `signature_required` set
+/// on the `CommandAck` (status `signature_required`, or `rejected` for a wrong
+/// password); the client resends it with `signature`.
+#[allow(clippy::too_many_arguments)]
 async fn handle_tag_write(
     state: &AppState,
     conn_id: &str,
-    username: &str,
+    actor: &super::commands::Actor<'_>,
     tag_id: &str,
     value: f64,
     reason: Option<String>,
+    signature: Option<crate::models::SignatureInput>,
     cmd_id: String,
 ) {
+    let username = actor.username;
     if !crate::node_role::is_active() {
         reject_write(
             &state.ws_manager,
@@ -378,7 +628,7 @@ async fn handle_tag_write(
     };
     // Registered before the command exists: the queue may answer within milliseconds.
     state.ws_manager.expect_final_ack(&cmd_id, conn_id);
-    match super::commands::submit_tag_write(state, username, submission).await {
+    match super::commands::submit_tag_write(state, actor, submission, signature.as_ref()).await {
         Ok(cmd) => {
             // No answer yet: the requester's first `CommandAck` for this id is the
             // queue's final one (`acked`, `failed`, `expired`), as it was the device's
@@ -399,7 +649,42 @@ async fn handle_tag_write(
                 data_source_id,
                 message
             );
-            reject_write(&state.ws_manager, conn_id, cmd_id, &message);
+            let prompt = match &refusal {
+                super::commands::WriteError::Signature(e) => {
+                    e.prompt()
+                        .map(|(action, req)| crate::ws_types::WsSignatureRequired {
+                            action: action.to_string(),
+                            meaning: req.meaning.clone(),
+                        })
+                }
+                _ => None,
+            };
+            match prompt {
+                Some(required) => {
+                    let missing = matches!(
+                        refusal,
+                        super::commands::WriteError::Signature(
+                            super::signature::SignatureError::Required { .. }
+                        )
+                    );
+                    state.ws_manager.send_to(
+                        conn_id,
+                        ServerMessage::CommandAck {
+                            command_id: cmd_id,
+                            status: if missing {
+                                "signature_required"
+                            } else {
+                                "rejected"
+                            }
+                            .to_string(),
+                            device_response: Some(message),
+                            latency_ms: None,
+                            signature_required: Some(required),
+                        },
+                    );
+                }
+                None => reject_write(&state.ws_manager, conn_id, cmd_id, &message),
+            }
         }
     }
 }
@@ -408,10 +693,12 @@ async fn handle_tag_write(
 
 /// Map a user role to a list of permission strings.
 pub(super) fn role_to_permissions(role: &str) -> Vec<String> {
-    match role {
-        "admin" => vec!["read".to_string(), "write".to_string(), "admin".to_string()],
-        "api" => vec!["read".to_string(), "write".to_string()],
-        _ => vec!["read".to_string()],
+    if role == "admin" {
+        vec!["read".to_string(), "write".to_string(), "admin".to_string()]
+    } else if super::role_allows_operation(role) {
+        vec!["read".to_string(), "write".to_string()]
+    } else {
+        vec!["read".to_string()]
     }
 }
 
@@ -484,6 +771,7 @@ mod tests {
             value: 42.0,
             command_id: Some(command_id.to_string()),
             reason: None,
+            signature: None,
         }
     }
 
@@ -566,20 +854,195 @@ mod tests {
         (state, requester, other, id)
     }
 
-    async fn dispatch(state: &AppState, role: &str, msg: ClientMessage) {
-        handle_client_message(&msg, "me", &state.ws_manager, state, "admin", role).await;
+    /// Handle `msg` from the signed-in user `username`.
+    async fn dispatch(state: &AppState, username: &str, msg: ClientMessage) -> After {
+        dispatch_as(state, &WsPrincipal::User(username.to_string()), msg).await
+    }
+
+    async fn dispatch_as(state: &AppState, principal: &WsPrincipal, msg: ClientMessage) -> After {
+        handle_client_message(&msg, "me", &state.ws_manager, state, principal).await
+    }
+
+    async fn add_user(state: &AppState, username: &str, role: &str) -> i64 {
+        state
+            .storage
+            .create_user(username, &crate::api::auth::hash_password("pw"), "", role)
+            .await
+            .unwrap();
+        state
+            .storage
+            .get_user_by_username(username)
+            .await
+            .unwrap()
+            .unwrap()
+            .id
     }
 
     #[tokio::test]
-    async fn non_admin_write_is_rejected_to_the_requester_only() {
+    async fn read_only_user_write_is_rejected_to_the_requester_only() {
         let (state, mut me, mut other, id) = setup(true).await;
-        dispatch(&state, "operator", write_msg(&id.to_string(), "c1")).await;
+        add_user(&state, "watcher", "viewer").await;
+        let after = dispatch(&state, "watcher", write_msg(&id.to_string(), "c1")).await;
+        assert_eq!(after, After::Continue, "a refused write keeps the socket");
 
         let (command_id, status, reason) = only_ack(&mut me);
         assert_eq!((command_id.as_str(), status.as_str()), ("c1", "rejected"));
-        assert!(reason.unwrap().contains("admin"));
+        assert!(
+            reason
+                .unwrap()
+                .contains("operator, demo, admin or integration role")
+        );
         assert!(other.try_recv().is_err(), "nobody else is told");
         assert_eq!(state.cache.get_metric_value("temp").await, Some(1.0));
+    }
+
+    /// A stream is tied to the role it was granted and to its sign-in
+    /// session: a role change, a revoked session (sign-out, password change
+    /// elsewhere) or an expired access token ends it.
+    #[tokio::test]
+    async fn the_grant_ends_with_the_session_or_a_role_change() {
+        let (state, _me, _other, _) = setup(false).await;
+        let uid = add_user(&state, "olga", "operator").await;
+        let now = crate::timeutil::now_secs();
+        state
+            .storage
+            .create_session_refresh_token("olga", "h1", now + 3600, now, now - 5, now)
+            .await
+            .unwrap();
+        let principal = WsPrincipal::User("olga".into());
+        let grant = Grant {
+            role: "operator".into(),
+            session: SessionTie::Refresh {
+                started_at: now - 5,
+            },
+        };
+        assert!(principal.still_granted(&state, &grant).await);
+
+        // A refresh rotates the token: the session goes on.
+        state.storage.revoke_refresh_token("h1").await.unwrap();
+        state
+            .storage
+            .create_session_refresh_token("olga", "h2", now + 3600, now, now - 5, now)
+            .await
+            .unwrap();
+        assert!(principal.still_granted(&state, &grant).await);
+
+        // Demoted: the grant no longer holds.
+        state.storage.update_user_role(uid, "viewer").await.unwrap();
+        assert!(!principal.still_granted(&state, &grant).await);
+        state
+            .storage
+            .update_user_role(uid, "operator")
+            .await
+            .unwrap();
+
+        // Signed out everywhere (a password change elsewhere): over.
+        state
+            .storage
+            .revoke_all_user_refresh_tokens("olga")
+            .await
+            .unwrap();
+        assert!(!principal.still_granted(&state, &grant).await);
+
+        // Only an access token: over once it expires.
+        let expiring = |exp_ms: u64| Grant {
+            role: "operator".into(),
+            session: SessionTie::Expires { exp_ms },
+        };
+        let now_ms = crate::timeutil::now_millis() as u64;
+        assert!(
+            principal
+                .still_granted(&state, &expiring(now_ms + 60_000))
+                .await
+        );
+        assert!(!principal.still_granted(&state, &expiring(now_ms - 1)).await);
+    }
+
+    /// An application-level Ping is answered with a Pong to that socket only.
+    #[tokio::test]
+    async fn ping_is_answered_with_pong() {
+        let (state, mut me, mut other, _) = setup(false).await;
+        add_user(&state, "watcher", "viewer").await;
+        let after = dispatch(&state, "watcher", ClientMessage::Ping).await;
+        assert_eq!(after, After::Continue);
+        assert!(matches!(
+            me.try_recv(),
+            Ok(WsFrame::Message(ServerMessage::Pong))
+        ));
+        assert!(other.try_recv().is_err());
+    }
+
+    /// The WebSocket follows the REST rule: a demo user may write.
+    #[tokio::test]
+    async fn demo_user_write_is_queued() {
+        let (state, mut me, _other, id) = setup(true).await;
+        add_user(&state, "demo1", "demo").await;
+        dispatch(&state, "demo1", write_msg(&id.to_string(), "c1")).await;
+        assert_accepted(&mut me);
+        let cmd = state.storage.get_command("c1").await.unwrap().unwrap();
+        assert_eq!(cmd.created_by, "demo1");
+    }
+
+    /// The role is read on every write: a user demoted or disabled after
+    /// connecting loses the right at once, and a disabled one loses the socket.
+    #[tokio::test]
+    async fn demoted_or_disabled_user_is_rechecked_on_write() {
+        let (state, mut me, _other, id) = setup(true).await;
+        let uid = add_user(&state, "demo1", "demo").await;
+        let principal = WsPrincipal::User("demo1".into());
+
+        state.storage.update_user_role(uid, "viewer").await.unwrap();
+        let after = dispatch_as(&state, &principal, write_msg(&id.to_string(), "c1")).await;
+        assert_eq!(after, After::Continue);
+        assert_eq!(only_ack(&mut me).1, "rejected");
+
+        state.storage.set_user_disabled(uid, true).await.unwrap();
+        let after = dispatch_as(&state, &principal, write_msg(&id.to_string(), "c2")).await;
+        assert_eq!(after, After::Close, "a disabled user's socket is closed");
+        assert_eq!(only_ack(&mut me).1, "rejected");
+        assert!(principal.current_role(&state).await.is_none());
+        assert!(state.storage.get_command("c2").await.unwrap().is_none());
+    }
+
+    /// Keys: integration writes, read-only refused, a revoked key's socket closes
+    /// (on its next write here; the periodic re-check uses the same lookup).
+    #[tokio::test]
+    async fn api_key_sockets_follow_the_key() {
+        let (state, mut me, _other, id) = setup(true).await;
+        let (ro, _) = state
+            .storage
+            .create_api_key("ro", "admin", None, "[]", "api")
+            .await
+            .unwrap();
+        let (int, _) = state
+            .storage
+            .create_api_key("int", "admin", None, "[]", "integration")
+            .await
+            .unwrap();
+
+        let after = dispatch_as(
+            &state,
+            &WsPrincipal::ApiKey(ro),
+            write_msg(&id.to_string(), "c1"),
+        )
+        .await;
+        assert_eq!(after, After::Continue);
+        assert_eq!(only_ack(&mut me).1, "rejected");
+
+        dispatch_as(
+            &state,
+            &WsPrincipal::ApiKey(int),
+            write_msg(&id.to_string(), "c2"),
+        )
+        .await;
+        assert_accepted(&mut me);
+
+        state.storage.revoke_api_key(int).await.unwrap();
+        let principal = WsPrincipal::ApiKey(int);
+        assert!(principal.current_role(&state).await.is_none());
+        let after = dispatch_as(&state, &principal, write_msg(&id.to_string(), "c3")).await;
+        assert_eq!(after, After::Close);
+        assert_eq!(only_ack(&mut me).1, "rejected");
     }
 
     #[tokio::test]
@@ -669,6 +1132,7 @@ mod tests {
             value: 42.0,
             command_id: Some("c1".into()),
             reason: Some("raise setpoint for test run".into()),
+            signature: None,
         };
         dispatch(&state, "admin", msg).await;
 
@@ -706,6 +1170,7 @@ mod tests {
             value: 5.0,
             command_id: None,
             reason: None,
+            signature: None,
         };
         dispatch(&state, "admin", msg).await;
         assert_accepted(&mut me);
@@ -728,6 +1193,7 @@ mod tests {
                 status: status.to_string(),
                 device_response: response.map(str::to_string),
                 latency_ms: None,
+                signature_required: None,
             });
     }
 
@@ -821,6 +1287,7 @@ mod tests {
             value: 51.0,
             command_id: Some("high".into()),
             reason: None,
+            signature: None,
         };
         dispatch(&state, "admin", too_high).await;
         assert_rejected(&state, &mut me, id, "high", "above maximum").await;
@@ -830,6 +1297,7 @@ mod tests {
             value: 9.0,
             command_id: Some("low2".into()),
             reason: None,
+            signature: None,
         };
         dispatch(&state, "admin", too_low).await;
         assert_rejected(&state, &mut me, id, "low2", "below minimum").await;
@@ -843,6 +1311,7 @@ mod tests {
             value: f64::NAN,
             command_id: Some("nan".into()),
             reason: None,
+            signature: None,
         };
         dispatch(&state, "admin", msg).await;
         assert_rejected(&state, &mut me, id, "nan", "Invalid numeric value").await;
@@ -866,6 +1335,7 @@ mod tests {
             value: 42.0,
             command_id: Some("c2".into()),
             reason: Some("   ".into()),
+            signature: None,
         };
         dispatch(&state, "admin", blank).await;
         assert_rejected(&state, &mut me, id, "c2", "Reason is required").await;

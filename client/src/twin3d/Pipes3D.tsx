@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { memo, useEffect, useMemo } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { Line } from '@react-three/drei'
 import * as THREE from 'three'
@@ -9,14 +9,14 @@ import { toWorld } from './placement'
 
 export type PipeKind = 'flow' | 'power' | 'data'
 
-export interface PipeRun {
+/** A pipe or cable between two items: layout only, so its geometry is built once. */
+export interface PipeRoute {
   id: string
   kind: PipeKind
   from: PlacedItem
   to: PlacedItem
   /** Explicit route from the 2D editor, stage px. */
   waypoints: [number, number][]
-  flowing: boolean
 }
 
 const CABLE_Y = 2.45
@@ -99,7 +99,7 @@ function roundedPath(pts: THREE.Vector3[], radius = 0.35): THREE.CurvePath<THREE
 
 const FLOW_PERIOD = 0.9 // metres per dash
 
-function FlowPipe({ pts, flowing }: { pts: THREE.Vector3[]; flowing: boolean }) {
+const FlowPipe = memo(function FlowPipe({ pts, flowing }: { pts: THREE.Vector3[]; flowing: boolean }) {
   const { geom, mat, length, sleepers } = useMemo(() => {
     const path = roundedPath(pts)
     const length = path.getLength()
@@ -135,16 +135,17 @@ function FlowPipe({ pts, flowing }: { pts: THREE.Vector3[]; flowing: boolean }) 
       ))}
     </group>
   )
-}
+})
 
-function CableRun({ pts, live }: { pts: THREE.Vector3[]; live: boolean }) {
+const CableRun = memo(function CableRun({ pts, live }: { pts: THREE.Vector3[]; live: boolean }) {
   const geom = useMemo(() => new THREE.TubeGeometry(roundedPath(pts, 0.25) as unknown as THREE.Curve<THREE.Vector3>, Math.max(8, pts.length * 12), 0.035, 6, false), [pts])
   useEffect(() => () => geom.dispose(), [geom])
   return <mesh geometry={geom} material={live ? MAT.cable : MAT.rubber} castShadow />
-}
+})
 
-export function Pipes3D({ runs }: { runs: PipeRun[] }) {
-  const built = useMemo(() => runs.map(run => {
+/** Polyline points of each route, built from the layout alone. */
+export function buildRoutePoints(routes: PipeRoute[]): { run: PipeRoute; pts: THREE.Vector3[] }[] {
+  return routes.map(run => {
     const plan = planRoute(run.from, run.to, run.waypoints)
     if (run.kind === 'flow') {
       return { run, pts: plan.map(([x, z]) => new THREE.Vector3(x, PIPE_Y, z)) }
@@ -163,14 +164,22 @@ export function Pipes3D({ runs }: { runs: PipeRun[] }) {
       return { run, pts: pts.filter((p, i) => i === 0 || p.distanceTo(pts[i - 1]) > 0.02) }
     }
     return { run, pts: [new THREE.Vector3(run.from.x, run.from.top * 0.8, run.from.z), new THREE.Vector3(run.to.x, run.to.top * 0.8, run.to.z)] }
-  }), [runs])
+  })
+}
+
+/**
+ * Tube geometry, flow textures and materials depend on `routes` only; a live
+ * update changes `flowing`, which animates the existing pipes.
+ */
+export function Pipes3D({ routes, flowing }: { routes: PipeRoute[]; flowing: ReadonlySet<string> }) {
+  const built = useMemo(() => buildRoutePoints(routes), [routes])
 
   return (
     <group>
       {built.map(({ run, pts }) =>
         pts.length < 2 ? null
-          : run.kind === 'flow' ? <FlowPipe key={run.id} pts={pts} flowing={run.flowing} />
-          : run.kind === 'power' ? <CableRun key={run.id} pts={pts} live={run.flowing} />
+          : run.kind === 'flow' ? <FlowPipe key={run.id} pts={pts} flowing={flowing.has(run.id)} />
+          : run.kind === 'power' ? <CableRun key={run.id} pts={pts} live={flowing.has(run.id)} />
           : <Line key={run.id} points={pts} color="#5b8fd1" lineWidth={1.5} dashed dashSize={0.25} gapSize={0.15} />,
       )}
     </group>

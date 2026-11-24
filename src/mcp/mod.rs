@@ -10,11 +10,18 @@
 //! session cookie. Tools run in-process against the same handlers the REST
 //! routes use, so validation, write policy and audit behaviour cannot drift.
 //! Authorisation is per tool: read tools need any authenticated principal,
-//! write tools need the role the REST operational write routes need
-//! ([`crate::api::role_allows_operational_writes`]). Admin-only operations
+//! operating tools (write_tag, acknowledge_alarm, start/stop_flow) need an
+//! operating role ([`crate::api::role_allows_operation`]) and configuration
+//! tools the role the REST configuration routes need
+//! ([`crate::api::role_allows_configuration`]). Admin-only operations
 //! (users, roles, API keys, licence, security) have no tool at all; the
 //! whole-project export/import and the catalog import are the exceptions, and
 //! only a signed-in admin may call them (`Access::AdminRead`/`AdminWrite`).
+//!
+//! Guardrails (`mcp:` in the config, state in [`crate::security::McpGuard`]):
+//! a read-only mode that hides and refuses write tools, a two-step
+//! confirmation for `write_tag` and destructive tools (`confirm_action`), and
+//! per-credential rate limits. See `docs/mcp.md`.
 //!
 //! Add a tool by creating a module under `tools/` that returns a `Vec<Tool>`
 //! and listing it in [`tools::registry`].

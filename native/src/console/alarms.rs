@@ -55,7 +55,7 @@ impl View {
     pub fn role(self) -> Role {
         match self {
             Self::List => Role::Any,
-            Self::Analytics | Self::Audit => Role::Operator,
+            Self::Analytics | Self::Audit => Role::Operate,
         }
     }
 
@@ -535,7 +535,7 @@ mod tests {
     fn analytics_and_audit_need_an_operator() {
         assert!(View::allowed(None).is_empty());
         assert_eq!(View::allowed(Some(Role::Any)), [View::List]);
-        assert_eq!(View::allowed(Some(Role::Operator)), View::ALL);
+        assert_eq!(View::allowed(Some(Role::Operate)), View::ALL);
         assert_eq!(View::allowed(Some(Role::Admin)), View::ALL);
     }
 

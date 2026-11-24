@@ -255,6 +255,15 @@ pub(super) fn run_migrations(conn: &Connection) {
         );
     }
 
+    // Migration: write read-back. An acknowledged write is confirmed (or not)
+    // by the next poll; these record the outcome next to the command.
+    let _ = conn.execute_batch("ALTER TABLE commands ADD COLUMN readback_status TEXT");
+    let _ = conn.execute_batch("ALTER TABLE commands ADD COLUMN readback_value REAL");
+    let _ = conn.execute_batch(
+        "ALTER TABLE commands ADD COLUMN readback_attempts INTEGER NOT NULL DEFAULT 0",
+    );
+    let _ = conn.execute_batch("ALTER TABLE commands ADD COLUMN readback_ts TEXT");
+
     // Migration: v0.31.0 -- BACnet/IP device and object tables
     let _ = conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS bacnet_devices (
@@ -511,6 +520,27 @@ pub(super) fn run_migrations(conn: &Connection) {
             Err(e) => tracing::error!("Failed to repair {table} timestamps: {e}"),
         }
     }
+
+    // Migration: hash chain on the audit log (tamper evidence). Older rows keep
+    // NULL and are reported as pre-chain by verify_audit_chain.
+    let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN prev_hash TEXT");
+    let _ = conn.execute_batch("ALTER TABLE audit_log ADD COLUMN hash TEXT");
+
+    // Migration: the tag's value when a write was queued, on the command's
+    // first audit entry (audit trail of setpoint changes: old and new value).
+    let _ = conn.execute_batch("ALTER TABLE command_audit_log ADD COLUMN previous_value REAL");
+
+    // Migration: session limits (idle and absolute timeout). A refresh token
+    // carries when its session started and when the user was last active;
+    // older rows fall back to created_at.
+    let _ = conn.execute_batch("ALTER TABLE refresh_tokens ADD COLUMN session_started_at INTEGER");
+    let _ = conn.execute_batch("ALTER TABLE refresh_tokens ADD COLUMN last_activity_at INTEGER");
+
+    // Migration: flow graphs. The per-node trace of a flow's recent runs (kept
+    // on the newest runs only, see insert_flow_run), and the SHA-256 of the
+    // flow's webhook token (the token itself is shown once and not stored).
+    let _ = conn.execute_batch("ALTER TABLE flow_runs ADD COLUMN trace TEXT");
+    let _ = conn.execute_batch("ALTER TABLE flows ADD COLUMN webhook_token_hash TEXT");
 }
 
 /// Any second-based timestamp before the year 5138 is below this; a rollup

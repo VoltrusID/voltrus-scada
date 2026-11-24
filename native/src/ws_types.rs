@@ -15,6 +15,35 @@ pub struct TagUpdateEntry {
     pub simulated: bool,
 }
 
+/// An electronic signature (21 CFR Part 11) sent with an action an
+/// Enterprise add-on requires one for: the signed-in user's password, the
+/// meaning exactly as the server stated it, and the user's reason. The
+/// password never shows in `Debug`.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signature {
+    pub password: String,
+    pub meaning: String,
+    pub reason: String,
+}
+
+impl std::fmt::Debug for Signature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Signature")
+            .field("meaning", &self.meaning)
+            .field("reason", &self.reason)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the server wants signed: the action (`tag_write`, `alarm_ack`, …)
+/// and the meaning to show the user, read-only.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SignatureRequired {
+    pub action: String,
+    pub meaning: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ClientMessage {
@@ -31,6 +60,9 @@ pub enum ClientMessage {
         tag_id: String,
         value: f64,
         command_id: Option<String>,
+        /// Only when the server asked for one (Enterprise add-ons).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<Signature>,
     },
     Ping,
 }
@@ -56,11 +88,16 @@ pub enum ServerMessage {
     TagUpdateBatch {
         updates: Vec<TagUpdateEntry>,
     },
+    /// `status` is `signature_required` when the write needs an electronic
+    /// signature, or `rejected` with `signature_required` set when the one
+    /// sent was refused (a wrong password).
     CommandAck {
         command_id: String,
         status: String,
         device_response: Option<String>,
         latency_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature_required: Option<SignatureRequired>,
     },
     DeviceStatus {
         device_id: String,

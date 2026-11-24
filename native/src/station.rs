@@ -340,9 +340,9 @@ mod tests {
             Some(PathBuf::from("C:\\ProgramData").join("Voltrus SCADA"))
         );
         assert_eq!(
-            dir_for(Os::Mac, env(&[("HOME", "/Users/op")])),
+            dir_for(Os::Mac, env(&[("HOME", "/Volumes/Home/op")])),
             Some(PathBuf::from(
-                "/Users/op/Library/Application Support/Voltrus SCADA"
+                "/Volumes/Home/op/Library/Application Support/Voltrus SCADA"
             ))
         );
         assert_eq!(dir_for(Os::Mac, env(&[])), None);

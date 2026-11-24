@@ -1,9 +1,11 @@
 import type { ComponentType, ReactNode } from 'react'
 import type { BrandingSettings } from './branding'
 import type { LicenseInfo } from './license'
+import type { ScreenWidgetDef } from './widgets'
 
 export type { BrandingSettings } from './branding'
 export type { FeatureFlag, FeatureFlags, LicenseInfo, LicenseStatusName, LicenseTier } from './license'
+export type { ScreenSurface, ScreenWidgetConfigEditorProps, ScreenWidgetDef, ScreenWidgetRenderProps } from './widgets'
 
 /** Props the Data Manager hands to every enterprise tab. */
 export interface DataManagerTabContext {
@@ -30,7 +32,7 @@ export interface DataManagerTab {
 
 export interface LoginProvidersProps {
   /** Called after a non-password login succeeded; core re-reads the session. */
-  onLoggedIn: (session: { username?: string; role?: string; must_change_password?: boolean }) => void
+  onLoggedIn: (session: { username?: string; role?: string; must_change_password?: boolean; shared?: boolean }) => void
 }
 
 export interface BrandingProvider {
@@ -91,4 +93,6 @@ export interface EnterpriseClientModule {
   notificationChannels?: NotificationChannel[]
   /** Translation bundles, registered under the `enterprise` i18n namespace. */
   locales?: LocaleBundles
+  /** Extra dashboard / SCADA widget types (live camera...), registered at startup. See widgets.ts. */
+  screenWidgets?: ScreenWidgetDef[]
 }

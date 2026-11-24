@@ -103,6 +103,10 @@ pub struct CommandAuditEntry {
     pub changed_by: String,
     pub reason: Option<String>,
     pub created_at: i64,
+    /// On the entry that created the command: the tag's value in the live
+    /// cache when the write was queued (`None` when it had none yet).
+    #[serde(default)]
+    pub previous_value: Option<f64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default, utoipa::ToSchema)]
@@ -123,6 +127,9 @@ pub struct WriteRequest {
     pub policy: String,
     pub scheduled_at: Option<i64>,
     pub reason: Option<String>,
+    /// An electronic signature, when the edition asks for one (428 answer).
+    #[serde(default, skip_serializing)]
+    pub signature: Option<super::SignatureInput>,
 }
 
 fn default_write_policy() -> String {

@@ -1002,7 +1002,8 @@ fn refuse(protocol: &Protocol, console: &mut Console, cx: &mut Context<Console>)
 pub(crate) fn role_name(role: Role) -> &'static str {
     match role {
         Role::Any => "viewer",
-        Role::Operator => "operator (admin, demo or integration)",
+        Role::Operate => "operator",
+        Role::Configure => "admin, demo or integration",
         Role::Admin => "admin",
     }
 }

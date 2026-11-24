@@ -89,6 +89,15 @@ struct StationConfig<'a> {
     db_path: &'a str,
     auth_secret: &'a str,
     cookie_secure: bool,
+    trusted_proxy: StationProxy,
+}
+
+/// `trusted_proxy` of a station: no reverse proxy runs in front of it, so the
+/// client is the TCP peer and no local program can claim another address
+/// with `X-Forwarded-For` (the default trusts that header from loopback).
+#[derive(Serialize)]
+struct StationProxy {
+    header: &'static str,
 }
 
 /// Outcome of [`init`].
@@ -103,6 +112,8 @@ pub struct Initialized {
     pub password_changed: bool,
     /// The seed created the `admin` user with a random password (not shown).
     pub admin_created: bool,
+    /// Where a newly created `admin`'s generated password is saved.
+    pub admin_password_file: PathBuf,
     pub config_path: PathBuf,
 }
 
@@ -169,6 +180,8 @@ pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
         config_created,
         password_changed,
         admin_created,
+        admin_password_file: crate::storage::initial_admin_password_path(path_str(&db_path)?)
+            .unwrap_or_else(|| dir.join(crate::storage::INITIAL_ADMIN_PASSWORD_FILE)),
         config_path,
     })
 }
@@ -348,6 +361,7 @@ fn render_config(dir: &Path, port: u16) -> Result<String> {
         db_path: path_str(&db_path)?,
         auth_secret: &auth_secret,
         cookie_secure: false,
+        trusted_proxy: StationProxy { header: "none" },
     })
     .context("Cannot encode config.yaml")?;
     Ok(format!(
@@ -452,8 +466,10 @@ pub(crate) async fn handle_cli(args: &[String]) -> bool {
             println!("Console user: {}", done.username);
             if done.admin_created {
                 println!(
-                    "Created user admin with a random password. Set one with \
+                    "Created user admin with a random password, saved in {} \
+                     (administrators only). Set one with \
                      `voltrus --reset-admin-password \"{}\"` or under Users.",
+                    done.admin_password_file.display(),
                     done.config_path.display()
                 );
             }
@@ -517,8 +533,8 @@ mod tests {
     #[test]
     fn station_dir_macos_default() {
         assert_eq!(
-            resolve_station_dir(env_of(&[("HOME", "/Users/op")])),
-            PathBuf::from("/Users/op/Library/Application Support/Voltrus SCADA")
+            resolve_station_dir(env_of(&[("HOME", "/Volumes/Home/op")])),
+            PathBuf::from("/Volumes/Home/op/Library/Application Support/Voltrus SCADA")
         );
     }
 
@@ -595,6 +611,10 @@ mod tests {
         );
         assert_eq!(app_config.auth_secret.as_deref().map(str::len), Some(48));
         assert_eq!(app_config.cookie_secure, crate::models::CookieSecure::Never);
+        assert_eq!(
+            app_config.trusted_proxy.header,
+            crate::security::ProxyHeader::None
+        );
         assert!(dir.join(LOG_DIR).is_dir());
         #[cfg(unix)]
         {

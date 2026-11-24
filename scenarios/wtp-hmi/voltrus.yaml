@@ -151,3 +151,6 @@ devices:
       - name: "clarifier_rake_run"
         address: 90
         type: "float32"
+      - name: "cl2_dose_sp"
+        address: 92
+        type: "float32"

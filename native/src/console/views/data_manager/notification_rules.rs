@@ -97,7 +97,7 @@ pub(crate) struct State {
 }
 
 fn fetch(console: &mut Console, again: bool) {
-    if console.stress.is_some() || !console.is_operator() {
+    if console.stress.is_some() || !console.may_configure() {
         return;
     }
     let state = console.state::<State>();
@@ -198,7 +198,7 @@ pub fn new_rule(console: &mut Console, window: &mut Window, cx: &mut Context<Con
     if kit::open_section(
         console,
         "notifications",
-        Role::Operator,
+        Role::Configure,
         "Managing notifications",
         window,
         cx,

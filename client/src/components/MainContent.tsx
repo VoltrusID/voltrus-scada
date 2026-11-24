@@ -1,10 +1,12 @@
 import { lazy, Suspense, useCallback } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { SensorGrid } from '../SensorGrid'
-import { CanvasView } from '../CanvasView'
 import { ScreenLayouts, CanvasLayoutItem, SensorConfig } from '../types'
 import type { LayoutItem } from '../types'
+import type { DashboardWidget } from '../dashboardWidgets'
 
+// The free canvas (react-rnd) is not the default view: load it when opened.
+const CanvasView = lazy(() => import('../CanvasView').then(m => ({ default: m.CanvasView })))
 const DigitalTwinView = lazy(() => import('../DigitalTwinView').then(m => ({ default: m.DigitalTwinView })))
 const ScadaView = lazy(() => import('../scada2/ScadaView').then(m => ({ default: m.ScadaView })))
 
@@ -42,6 +44,8 @@ interface Props {
   isAdmin: boolean
   scadaToolbarSlotSetter?: (slot: React.ReactNode) => void
   screenName?: string
+  dashboardWidgets?: DashboardWidget[]
+  onDashboardWidgetsChange?: (widgets: DashboardWidget[]) => void
 }
 
 export function MainContent({
@@ -52,7 +56,7 @@ export function MainContent({
   twinLayouts, twinCamera, twinConnections, sensors,
   saveScadaEquipmentMut, saveScadaConnectionsMut, saveTwinLayoutMut,
   saveTwinConnectionsMut, updateSensorMut, fetchOk, isAdmin,
-  scadaToolbarSlotSetter, screenName,
+  scadaToolbarSlotSetter, screenName, dashboardWidgets, onDashboardWidgetsChange,
 }: Props) {
   const queryClient = useQueryClient()
 
@@ -81,12 +85,15 @@ export function MainContent({
         forcedBreakpoint={forcedBreakpoint}
         shortcuts={shortcuts}
         mode={mode}
+        widgets={dashboardWidgets}
+        onWidgetsChange={onDashboardWidgetsChange}
       />
     )
   }
 
   if (viewMode === 'canvas') {
     return (
+      <Suspense fallback={null}>
       <CanvasView
         screenSensors={screenSensors}
         canvasLayouts={canvasLayouts}
@@ -102,6 +109,7 @@ export function MainContent({
         shortcuts={shortcuts}
         mode={mode}
       />
+      </Suspense>
     )
   }
 

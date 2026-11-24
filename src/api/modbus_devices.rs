@@ -349,11 +349,7 @@ pub async fn get_poller_statuses(
 pub async fn scan_modbus_registers(
     Json(body): Json<ScanRegisterRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    let endianness = match body.endianness.as_str() {
-        "little" => Endianness::Little,
-        "swapped" => Endianness::Swapped,
-        _ => Endianness::Big,
-    };
+    let endianness = Endianness::from_name(&body.endianness);
     let results = crate::modbus::scan_registers(
         &body.ip,
         body.port,

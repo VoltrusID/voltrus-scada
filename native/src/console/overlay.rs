@@ -344,7 +344,13 @@ mod tests {
         let all = entries(Some(Role::Any));
         assert_eq!(all[0].title.as_ref(), "Go to Overview");
         assert!(
-            all.iter()
+            !all.iter()
+                .any(|entry| entry.title.as_ref() == "Acknowledge all alarms"),
+            "a viewer cannot acknowledge"
+        );
+        assert!(
+            entries(Some(Role::Operate))
+                .iter()
                 .any(|entry| entry.title.as_ref() == "Acknowledge all alarms")
         );
         assert!(

@@ -1,5 +1,6 @@
 use super::Storage;
 use anyhow::{Context, Result};
+use rusqlite::OptionalExtension;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ApiKeyInfo {
@@ -105,6 +106,31 @@ impl Storage {
                 }
                 None => Ok(None),
             }
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// The (permissions, role) of a key that still exists and has not
+    /// expired, for re-checking a long-lived connection without the key text.
+    pub async fn api_key_access(&self, id: i64) -> Result<Option<(String, String)>> {
+        let now = crate::timeutil::now_secs();
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let row: Option<(String, Option<i64>, String)> = conn
+                .query_row(
+                    "SELECT permissions, expires_at, role FROM api_keys WHERE id = ?1",
+                    rusqlite::params![id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .context("Query api_key failed")?;
+            Ok(row.and_then(|(permissions, expires_at, role)| {
+                expires_at
+                    .is_none_or(|exp| exp >= now)
+                    .then_some((permissions, role))
+            }))
         })
         .await
         .context("Task join failed")?

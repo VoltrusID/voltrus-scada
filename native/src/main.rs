@@ -49,7 +49,7 @@ usage: voltrus-native [--sign-in] [--page {pages}] [--tag <key>]
   --alarms           open the Alarms page with this view or dialog once signed in
   --screen           the dashboard's and the mimic's screen: its id, or 1 for the overview,
                      2 for the first
-  --edit             open the dashboard in edit mode (operator roles); with
+  --edit             open the dashboard in edit mode (admin, demo, integration); with
                      --page mimic, the mimic's editor
   --section          the Data Manager's section to show (with --page data), e.g. flows
   --window           the window's size in points, e.g. 1280x800 (screenshots; the
@@ -339,6 +339,7 @@ fn main() -> ExitCode {
             cx.set_menus(console::menus());
             cx.on_action(|_: &console::Quit, cx| cx.quit());
 
+            console::config::trust_ca_file();
             let (runtime, events) = match voltrus_scada_native::runtime::start() {
                 Ok(started) => started,
                 Err(error) => {
@@ -528,6 +529,8 @@ mod tests {
 
     #[test]
     fn stress_options_parse_and_need_stress() {
+        let report = std::env::temp_dir().join("report.txt");
+        let report_arg = report.to_str().expect("a UTF-8 temp dir");
         let plan = parse(&args(&[
             "--stress",
             "--stress-tags",
@@ -539,7 +542,7 @@ mod tests {
             "--stress-seconds",
             "20",
             "--stress-report",
-            "/tmp/report.txt",
+            report_arg,
         ]))
         .unwrap()
         .stress
@@ -554,7 +557,7 @@ mod tests {
                 },
                 switch_every: None,
                 stop_after: Some(Duration::from_secs(20)),
-                report: Some(PathBuf::from("/tmp/report.txt")),
+                report: Some(report.clone()),
             }
         );
         assert_eq!(

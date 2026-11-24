@@ -317,10 +317,11 @@ async fn test_assigned_custom_role_does_not_change_route_access() {
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
-/// SCADA-16 S19 design note, pinned: an API key's `permissions` text is
-/// stored as given; its `role` alone decides access.
+/// An API key's `permissions` can only narrow its role, never lift it:
+/// unknown scope names grant nothing, and an empty list leaves the role in
+/// charge (scope narrowing is tested in security_rules.rs).
 #[tokio::test]
-async fn test_api_key_role_decides_access_not_permissions_text() {
+async fn test_api_key_permissions_never_lift_the_role() {
     let app = test_app_with_seeded_admin().await;
     let admin = format!("voltrus_token={}", admin_cookie(&app).await);
     let make = |role: &'static str, permissions: &'static str| {
@@ -338,8 +339,8 @@ async fn test_api_key_role_decides_access_not_permissions_text() {
             .await;
             assert_eq!(status, StatusCode::OK, "{key}");
             assert!(
-                key["note"].as_str().unwrap().contains("not enforced"),
-                "the response says permissions are not enforced: {key}"
+                key["note"].as_str().unwrap().contains("scopes"),
+                "the response says how role and scopes combine: {key}"
             );
             key["key"].as_str().unwrap().to_string()
         }

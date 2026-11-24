@@ -26,11 +26,10 @@ const GROUP_VARIATIONS: &[(&str, &str)] = &[
     ("1.2", "G1 V2 · Binary input"),
     ("10.2", "G10 V2 · Binary output status"),
     ("20.1", "G20 V1 · Counter"),
-    ("21.1", "G21 V1 · Frozen counter"),
-    ("30.4", "G30 V4 · Analog input (float32)"),
-    ("30.1", "G30 V1 · Analog input (int32)"),
-    ("32.3", "G32 V3 · Analog output status (float32)"),
-    ("40.3", "G40 V3 · Analog output block (float32)"),
+    ("30.1", "G30 V1 · Analog input (32-bit)"),
+    ("30.5", "G30 V5 · Analog input (float32)"),
+    ("40.1", "G40 V1 · Analog output status (32-bit)"),
+    ("40.3", "G40 V3 · Analog output status (float32)"),
 ];
 
 const TYPES: &[(&str, &str)] = &[
@@ -161,7 +160,7 @@ static POINTS: Child = Child {
             "group_variation",
             "Group and variation",
             GROUP_VARIATIONS,
-            "30.4",
+            "30.5",
         ),
         int("point_index", "Index", "0", 0, 65535),
         choice("data_type", "Data type", TYPES, "float64"),
@@ -339,7 +338,7 @@ mod tests {
         finish_point(&mut sent, false);
         assert_eq!(
             Value::Object(sent),
-            json!({"name": "kw", "display_name": "kw", "group_num": 30, "variation": 4,
+            json!({"name": "kw", "display_name": "kw", "group_num": 30, "variation": 5,
                 "point_index": 0, "data_type": "float64", "scale": 1.0, "deadband": 0.0})
         );
     }

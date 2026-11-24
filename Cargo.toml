@@ -9,7 +9,7 @@ opt-level = 3
 
 [package]
 name = "voltrus"
-version = "0.50.1"
+version = "0.51.0"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 publish = false
@@ -89,6 +89,8 @@ hmac = "=0.12.1"
 sha2 = "=0.10.9"
 hex = "=0.4.3"
 base64 = "=0.22.1"
+# HKDF + AES-256-GCM for secrets stored in SQLite; already in the tree via rustls.
+ring = "=0.17.14"
 argon2 = "=0.5.3"
 password-hash = "=0.5.0"
 rand = "=0.9.4"
@@ -119,12 +121,18 @@ toml = "0.8"
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
 
+[target.'cfg(unix)'.dependencies]
+# localtime_r for the server's UTC offset (flow schedule triggers); already in the tree.
+libc = "0.2"
+
 [build-dependencies]
 flate2 = "=1.1.9"
 
 [dev-dependencies]
 http = "=1.4.0"
 tower = { version = "=0.5.3", features = ["util"] }
+# Paused clock in tests (#[tokio::test(start_paused = true)]).
+tokio = { version = "=1.52.1", features = ["test-util"] }
 
 # The native console's GPUI: crates.io 0.2.2 plus Metal memory and
 # frame-pacing fixes, kept in the VoltrusID fork of muxy-app/gpui (Apache-2.0)

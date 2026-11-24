@@ -86,9 +86,60 @@ pub fn update_delay(
     }
 }
 
+/// One evaluation tick in which the raised condition holds. `may_fire` is
+/// false while an existing alarm or a cooldown suppresses a new one. Returns
+/// whether the alarm fires now.
+///
+/// Whatever happens, an off-delay pending is over: the normal condition did
+/// not persist, so the next return to normal starts the off delay afresh.
+pub fn raised(state: &mut DelayState, may_fire: bool, on_delay_secs: i64, now: i64) -> bool {
+    state.clear_pending_since = None;
+    if !may_fire {
+        // A fresh on delay starts once the suppression ends.
+        state.pending_since = None;
+        return false;
+    }
+    update_delay(state, true, on_delay_secs, 0, now) == DelayTransition::Fire
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_return_of_the_condition_restarts_the_off_delay() {
+        // Alarm active, off delay 60 s. Normal from t=100 (clear pending)...
+        let mut state = DelayState::default();
+        assert_eq!(
+            update_delay(&mut state, false, 0, 60, 100),
+            DelayTransition::Pending
+        );
+        // ...the condition comes back at t=130 while the alarm is still
+        // active, so nothing may fire and there is no on delay...
+        assert!(!raised(&mut state, false, 0, 130));
+        assert_eq!(state.clear_pending_since, None);
+        // ...and normal again at t=200 must wait the full 60 s, not resolve
+        // on the stale pending from t=100.
+        assert_eq!(
+            update_delay(&mut state, false, 0, 60, 200),
+            DelayTransition::Pending
+        );
+        assert_eq!(
+            update_delay(&mut state, false, 0, 60, 260),
+            DelayTransition::Resolve
+        );
+    }
+
+    #[test]
+    fn raised_honours_suppression_and_on_delay() {
+        let mut state = DelayState::default();
+        assert!(raised(&mut state, true, 0, 10));
+        assert!(!raised(&mut state, true, 5, 10));
+        assert!(!raised(&mut state, false, 5, 20));
+        assert_eq!(state.pending_since, None, "suppression drops the pending");
+        assert!(!raised(&mut state, true, 5, 30));
+        assert!(raised(&mut state, true, 5, 35));
+    }
 
     // The evaluation loop ticks roughly every persist_interval seconds; these
     // tests replay ticks with an injected clock instead of sleeping.
