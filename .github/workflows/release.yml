@@ -7,21 +7,38 @@ name: Release
 # is downloaded into ./static before `cargo build --release`, because a release
 # build embeds ./static into the executable (build.rs). The archives therefore
 # hold the binary alone, no static/ folder.
+#
+# Run by hand (workflow_dispatch), or on a pull request that changes this
+# workflow or the Windows installer, it is a dry run: everything is built,
+# named after the version in Cargo.toml and kept as workflow artifacts, the
+# Windows installer is installed and uninstalled on the runner, and nothing
+# is published. No signing secrets are used: the Windows installer and the
+# macOS app are not code-signed.
 
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - native/packaging/**
+      - native/scripts/installer-windows.ps1
+      - native/scripts/station-windows.ps1
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   client:
     name: Build web client
     runs-on: ubuntu-latest
+    outputs:
+      # The tag on a release; for a dry run, v<version in Cargo.toml>.
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -30,9 +47,15 @@ jobs:
           cache: npm
           cache-dependency-path: client/package-lock.json
       - name: Check tag matches Cargo.toml
+        id: version
         run: |
           v="v$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
-          [ "$v" = "${GITHUB_REF_NAME}" ] || { echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version $v"; exit 1; }
+          if [ "${GITHUB_EVENT_NAME}" = push ] && [ "${GITHUB_REF_TYPE}" = tag ]; then
+            [ "$v" = "${GITHUB_REF_NAME}" ] || { echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version $v"; exit 1; }
+          else
+            echo "Dry run (${GITHUB_EVENT_NAME} on ${GITHUB_REF_NAME}): files are named $v, nothing is published"
+          fi
+          echo "tag=$v" >> "$GITHUB_OUTPUT"
       - name: Build
         run: |
           cd client
@@ -48,6 +71,8 @@ jobs:
     name: ${{ matrix.name }}
     needs: client
     runs-on: ${{ matrix.os }}
+    env:
+      RELEASE_TAG: ${{ needs.client.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -115,7 +140,7 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          name="voltrus-core-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          name="voltrus-core-${RELEASE_TAG}-${{ matrix.name }}"
           rel="target/${{ matrix.target }}/release"
           mkdir -p "dist/$name"
           cp "$rel/voltrus${{ matrix.ext }}" "$rel/modbus-sim${{ matrix.ext }}" "dist/$name/"
@@ -140,13 +165,17 @@ jobs:
             dist/*.sha256
           if-no-files-found: error
 
-  # The native operator console, as an ad-hoc signed app bundle for Apple
-  # silicon (see native/README-native.md).
+  # The native operator console with the server inside, as an ad-hoc signed
+  # app bundle for Apple silicon (see native/README-native.md). The server
+  # embeds the web client, so this job waits for it like `build`.
   native-macos:
     name: native-macos-aarch64
+    needs: client
     runs-on: macos-15
     permissions:
       contents: read
+    env:
+      RELEASE_TAG: ${{ needs.client.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -155,12 +184,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: native-macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: static
+          path: static
       - name: Build
-        run: cargo build --locked --release -p voltrus-scada-native
+        run: |
+          test -f static/index.html || { echo "static/index.html is missing: the web client has to be built first"; exit 1; }
+          cargo build --locked --release --workspace --bin voltrus-native --bin voltrus
       - name: Package
         run: |
-          zip="voltrus-native-${GITHUB_REF_NAME}-macos-aarch64.zip"
-          VERSION="${GITHUB_REF_NAME#v}" native/scripts/bundle-macos.sh target/release/voltrus-native dist "$zip"
+          zip="voltrus-native-${RELEASE_TAG}-macos-aarch64.zip"
+          VERSION="${RELEASE_TAG#v}" SERVER=target/release/voltrus \
+            native/scripts/bundle-macos.sh target/release/voltrus-native dist "$zip"
           (cd dist && shasum -a 256 "$zip" > "$zip.sha256")
       - uses: actions/upload-artifact@v4
         with:
@@ -169,10 +205,76 @@ jobs:
             dist/*.zip
             dist/*.sha256
 
+  # Windows as a local station: the console and the server (with the web
+  # client embedded) in one Inno Setup installer that runs the server as the
+  # VoltrusSCADA service (native/packaging/windows/voltrus-scada.iss). Built
+  # with MSVC on Windows; the installer is not code-signed.
+  native-windows:
+    name: native-windows-x86_64
+    needs: client
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ needs.client.outputs.tag }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-windows
+      - uses: actions/download-artifact@v4
+        with:
+          name: static
+          path: static
+      - name: Check licence notices
+        shell: bash
+        run: native/scripts/check-notices.sh
+      - name: Build
+        run: |
+          if (-not (Test-Path static/index.html)) { throw 'static/index.html is missing: the web client has to be built first' }
+          cargo build --locked --release --workspace --bin voltrus-native --bin voltrus
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Installer
+        run: |
+          $name = "voltrus-scada-$env:RELEASE_TAG-windows-x86_64-setup"
+          $setup = native/scripts/installer-windows.ps1 -BinDir target/release -Out dist `
+            -Version ($env:RELEASE_TAG.TrimStart('v')) -Name $name
+          $hash = (Get-FileHash -Algorithm SHA256 $setup).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText("$setup.sha256", "$hash  $name.exe`n")
+          "SETUP=$setup" >> $env:GITHUB_ENV
+      # The installer that is published, installed silently on the runner:
+      # service running, health, the console signing in by itself, uninstall.
+      - name: Install and uninstall
+        run: native/scripts/station-windows.ps1 -Installer $env:SETUP -Out station-check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          # No hyphen: the release job attaches only `*-*` artifacts.
+          name: windows_station_check
+          path: station-check
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-x86_64
+          path: |
+            dist/*-setup.exe
+            dist/*-setup.exe.sha256
+          if-no-files-found: error
+
   release:
     name: Publish release
-    needs: [build, native-macos]
+    needs: [build, native-macos, native-windows]
+    # A tag push only: a run started by hand is a dry run, even on a tag.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -187,4 +289,4 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --title "Voltrus SCADA Core ${GITHUB_REF_NAME}" \
             --generate-notes \
-            --notes "Open-source Core under AGPL-3.0-or-later. These binaries are Core only (no Enterprise add-on, no licence key needed)."
+            --notes "Open-source Core under AGPL-3.0-or-later. These binaries are Core only (no Enterprise add-on, no licence key needed). The Windows installer and the macOS app are not code-signed: SmartScreen and Gatekeeper ask before the first run."

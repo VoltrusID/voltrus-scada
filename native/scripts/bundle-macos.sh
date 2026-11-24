@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Wrap the release binary in an app bundle and zip it.
-# Usage: [VERSION=x.y.z] native/scripts/bundle-macos.sh <binary> <output dir> [zip name]
+# Usage: [VERSION=x.y.z] [SERVER=<voltrus binary>] native/scripts/bundle-macos.sh <binary> <output dir> [zip name]
 # VERSION overrides the bundle version (default: native/Cargo.toml's version).
+# SERVER bundles the server as Contents/MacOS/voltrus: the console then offers
+# to set this Mac up as a local station (`voltrus station init`, `voltrus
+# service install` as a LaunchAgent).
 set -euo pipefail
 
 binary="$1"
@@ -13,30 +16,19 @@ app="$out/Voltrus SCADA.app"
 root="$(cd "$native/.." && pwd)"
 notices="$native/packaging/licenses"
 
-# The licence notices must describe the vt-ui revision that is built: the
-# one Cargo.lock resolves, not whatever the notices were last copied from.
-vt_ui_rev="$(awk '
-  /^\[\[package\]\]/ { in_vt_ui = 0 }
-  /^name = "vt-ui"$/ { in_vt_ui = 1 }
-  in_vt_ui && /^source = "git\+https:\/\/github.com\/VoltrusID\/voltrus-explorers\?rev=/ { print; exit }
-' "$root/Cargo.lock" | sed -n 's/.*?rev=\([0-9a-f]\{40\}\)#.*/\1/p')"
-if [ -z "$vt_ui_rev" ]; then
-  echo "error: no vt-ui git source (voltrus-explorers?rev=...) in $root/Cargo.lock" >&2
+# The licence notices must describe the vt-ui revision that is built.
+"$native/scripts/check-notices.sh"
+if [ -n "${SERVER:-}" ] && [ ! -f "$SERVER" ]; then
+  echo "error: SERVER=$SERVER is not a file" >&2
   exit 1
 fi
-readme_rev="$(sed -n 's/.*voltrus-explorers at rev \([0-9a-f]\{40\}\).*/\1/p' "$notices/README")"
-notice_rev="$(sed -n 's#.*voltrus-explorers/tree/\([0-9a-f]\{40\}\)/.*#\1#p' "$root/NOTICE")"
-for named in "native/packaging/licenses/README:$readme_rev" "NOTICE source offer:$notice_rev"; do
-  if [ "${named##*:}" != "$vt_ui_rev" ]; then
-    echo "error: ${named%:*} names vt-ui rev '${named##*:}', but Cargo.lock builds $vt_ui_rev." >&2
-    echo "       Re-copy the notices from voltrus-explorers at $vt_ui_rev (see native/packaging/licenses/README) and update both revs." >&2
-    exit 1
-  fi
-done
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/voltrus-native"
+if [ -n "${SERVER:-}" ]; then
+  cp "$SERVER" "$app/Contents/MacOS/voltrus"
+fi
 # Licence texts for everything the bundle ships (also inside the zip).
 licenses="$app/Contents/Resources/Licenses"
 mkdir -p "$licenses"
@@ -60,9 +52,15 @@ for size in 16 32 128 256 512; do
   sips -z "$double" "$double" "$work/AppIcon.png" --out "$iconset/icon_${size}x${size}@2x.png" > /dev/null
 done
 iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
-# Ad-hoc signature: required to launch on Apple silicon. It is not a
-# Developer ID signature, so Gatekeeper asks before the first launch.
-codesign --force --deep --sign - "$app"
+# Ad-hoc signatures: required to launch on Apple silicon. They are not
+# Developer ID signatures, so Gatekeeper asks before the first launch. The
+# server, which launchd runs on its own, is signed first under its own
+# identifier, then the bundle around it.
+if [ -n "${SERVER:-}" ]; then
+  codesign --force --sign - --identifier id.voltrus.scada.server "$app/Contents/MacOS/voltrus"
+fi
+codesign --force --sign - "$app"
+codesign --verify --deep --strict "$app"
 
 (cd "$out" && ditto -c -k --keepParent "Voltrus SCADA.app" "$zip")
 echo "Bundled $app ($version) as $out/$zip"

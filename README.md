@@ -153,7 +153,11 @@ cp config.yaml.example config.yaml   # set auth_secret and your devices
 ./voltrus config.yaml                # then open http://localhost:3000
 ```
 
-On Windows, unzip the archive and run `voltrus.exe config.yaml`. The Linux
+On Windows, unzip the archive and run `voltrus.exe config.yaml`, or run
+`voltrus-scada-$V-windows-x86_64-setup.exe`, which installs the server as a
+service and the native console as one station (see "Local station" below).
+The installer is not code-signed, so Windows SmartScreen warns before it
+runs: choose **More info**, then **Run anyway**. The Linux
 archive also has `modbus-sim`, a simulated power meter on port 5020, and a
 `voltrus.service` unit for systemd. Sign-in and the first admin password are
 described below under "Open http://localhost:3000".
@@ -269,6 +273,42 @@ import would create, update or delete; without `--dry-run` it applies it in one
 transaction (`--mode replace` also deletes what the project does not list).
 Secrets are written as `${ENV_NAME}` references. Format and examples:
 [`docs/project-format.md`](docs/project-format.md).
+
+### Local station / run as a service
+
+One PC can run the server and the native console together, like a classic HMI
+station. The server runs as an OS background service on 127.0.0.1, so closing
+the console never stops polling, alarms, history or writes.
+
+```bash
+voltrus station init            # config.yaml, data.db, logs/, station.toml
+voltrus station init --new-password  # a new password for the station account
+voltrus service install         # Windows service / macOS LaunchAgent
+voltrus service start
+voltrus service status          # exit 0 running, 3 stopped, 4 not installed
+```
+
+The station directory is `%ProgramData%\Voltrus SCADA` on Windows,
+`~/Library/Application Support/Voltrus SCADA` on macOS and
+`~/.local/share/voltrus-scada` elsewhere (override with `--dir` or
+`VOLTRUS_STATION_DIR`). `station init` picks a free port from 3000, keeps an
+existing config and writes `station.toml`, the credential of the `station`
+account the console signs in with (an operator when created, since every
+local account that can read the file signs in as it; it keeps any role you
+give it later; `admin`'s generated password is in `initial-admin-password`
+there, readable by administrators only); run it again to repair it. It also
+locks the directory down: private to your account on macOS and Linux; on
+Windows (run it as administrator) owned by Administrators, with only SYSTEM and
+Administrators allowed in and Users allowed to read `station.toml`. The
+service runs `voltrus service run --dir <station dir>` and logs to
+`logs/voltrus.log`. On Linux use the systemd unit in
+[`deploy/voltrus.service`](deploy/voltrus.service) instead of `voltrus service`.
+
+On Windows the release's `voltrus-scada-<version>-windows-x86_64-setup.exe`
+does all of this: it installs the server and the native console, runs
+`station init`, `service install` and `service start`, and the console signs
+in by itself. It is unsigned (SmartScreen warns, as above). Uninstalling
+removes the service and keeps the plant data.
 
 ### Simulators and scenarios
 

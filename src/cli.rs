@@ -44,6 +44,25 @@ USAGE:
     voltrus import <FILE> [OPTIONS]     Import project from .voltrus-scada archive
     voltrus template builtins <DIR>     Write the built-in device templates as files into DIR
     voltrus template catalog <DIR>      Write DIR/index.json listing the template files in DIR with sha256
+    voltrus station init [--dir DIR] [--port PORT]
+                                            Set up this computer as a local station: config.yaml
+                                            (127.0.0.1, free port from 3000), data.db, logs/ and the
+                                            console sign-in station.toml in DIR (default: the
+                                            station directory). Safe to run again. Locks DIR down
+                                            (Windows: run as administrator)
+    voltrus service install|uninstall|start|stop|status [--dir DIR]
+                                            Manage the local station server as a background service
+                                            (Windows service VoltrusSCADA, macOS LaunchAgent
+                                            id.voltrus.scada.server). status exits 0 running,
+                                            3 stopped, 4 not installed
+    voltrus service run [--dir DIR]     Run the station server (what the service manager starts);
+                                            logs to DIR/logs/voltrus.log
+
+STATION DIRECTORY:
+    VOLTRUS_STATION_DIR if set, else
+    Windows: %ProgramData%\\Voltrus SCADA
+    macOS:   ~/Library/Application Support/Voltrus SCADA
+    Linux:   $XDG_DATA_HOME/voltrus-scada or ~/.local/share/voltrus-scada
 
 BACKUP OPTIONS:
     --output <PATH>    Output archive path (default: voltrus-backup-YYYYMMDD-HHMMSS.tar.gz)
@@ -76,6 +95,8 @@ EXAMPLES:
     voltrus                              # Start with config.yaml
     voltrus /etc/voltrus/prod.yaml       # Start with custom config
     voltrus --reset-admin-password       # Reset lost admin password
+    voltrus station init                 # Set up this computer as a local station
+    voltrus service install && voltrus service start   # ... and run it in the background
     voltrus backup                       # Create backup in current directory
     voltrus backup --output /tmp/bak.tar.gz  # Custom output path
     voltrus restore backup.tar.gz        # Restore from archive
@@ -124,6 +145,8 @@ pub async fn handle_cli(args: &[String], ext: &dyn crate::edition::Extension) ->
         "export" => handle_export(args),
         "import" => handle_import(args),
         "template" => handle_template(args),
+        "station" => crate::station::handle_cli(args).await,
+        "service" => crate::service::handle_cli(args),
         "--dump-openapi" => handle_dump_openapi(),
         other if other.starts_with('-') => {
             eprintln!("Unknown option: {}", other);

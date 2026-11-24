@@ -57,28 +57,19 @@ pub fn remove_initial_admin_password(db_path: &str) {
 impl Storage {
     // ── Seed ──
 
+    /// Seed a fresh database: the `admin` user with a random password (written
+    /// to [`INITIAL_ADMIN_PASSWORD_FILE`] next to the database, to be changed
+    /// on first login), the default roles and the data sources of the
+    /// configured devices. Existing data is left alone.
     pub async fn seed_database(
         &self,
         device_configs: &[crate::models::DeviceConfig],
     ) -> Result<()> {
-        let existing = self.get_user_by_username("admin").await?;
-        if existing.is_none() {
-            use rand::Rng;
-            let password: String = rand::rng()
-                .sample_iter(&rand::distr::Alphanumeric)
-                .take(16)
-                .map(char::from)
-                .collect();
-            let password_hash = crate::api::auth::hash_password(&password);
-
-            self.create_user("admin", &password_hash, "", "admin")
-                .await?;
-            self.set_must_change_password("admin", true).await?;
-
+        if let Some(written) = self.seed(device_configs).await? {
             // The password goes to a file only this account can read, not to the
             // log: logs are shipped, rotated and read by people who should not
             // get the admin password.
-            match write_initial_admin_password(self.db_path(), &password) {
+            match written {
                 Ok(Some(path)) => tracing::warn!(
                     "Generated the admin password and wrote it to {} (readable by this account only). \
                      Sign in as admin with it; you must change it at first sign-in, which deletes the file.",
@@ -93,6 +84,49 @@ impl Storage {
                 ),
             }
         }
+        Ok(())
+    }
+
+    /// [`Storage::seed_database`] without logging, for setup tools that report
+    /// themselves. Returns whether `admin` was created; its password is in
+    /// [`INITIAL_ADMIN_PASSWORD_FILE`] then, as with `seed_database`.
+    pub async fn seed_database_quietly(
+        &self,
+        device_configs: &[crate::models::DeviceConfig],
+    ) -> Result<bool> {
+        match self.seed(device_configs).await? {
+            Some(Err(e)) => {
+                // `admin` exists now; failing here would not create it again.
+                tracing::error!("Could not write the generated admin password file: {e:#}");
+                Ok(true)
+            }
+            Some(Ok(_)) => Ok(true),
+            None => Ok(false),
+        }
+    }
+
+    /// The seed itself. When it created `admin`, returns the outcome of writing
+    /// the generated password file (its path, `None` for an in-memory database).
+    async fn seed(
+        &self,
+        device_configs: &[crate::models::DeviceConfig],
+    ) -> Result<Option<Result<Option<PathBuf>>>> {
+        let mut generated = None;
+        let existing = self.get_user_by_username("admin").await?;
+        if existing.is_none() {
+            use rand::Rng;
+            let password: String = rand::rng()
+                .sample_iter(&rand::distr::Alphanumeric)
+                .take(16)
+                .map(char::from)
+                .collect();
+            let password_hash = crate::api::auth::hash_password(&password);
+
+            self.create_user("admin", &password_hash, "", "admin")
+                .await?;
+            self.set_must_change_password("admin", true).await?;
+            generated = Some(write_initial_admin_password(self.db_path(), &password));
+        }
 
         // Seed default RBAC roles if none exist
         if let Err(e) = self.seed_default_roles().await {
@@ -105,7 +139,7 @@ impl Storage {
             self.seed_device_data_sources(device_configs).await?;
         }
 
-        Ok(())
+        Ok(generated)
     }
 
     /// Seed data sources for the devices defined in config.yaml.

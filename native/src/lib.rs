@@ -22,6 +22,8 @@
 //! - [`mimic`]: HMI mimic screens: the server's SCADA rows, the editable
 //!   screen model, the symbol library's geometry, live states, connection
 //!   routes and the faceplate's command rules.
+//! - [`station`]: the local station (the server installed on this computer
+//!   as a service): its directory, its credential and its setup commands.
 pub mod api;
 pub mod device_file;
 pub mod mimic;
@@ -29,6 +31,7 @@ pub mod perf;
 pub mod runtime;
 pub mod screens;
 pub mod signature;
+pub mod station;
 pub mod stress;
 pub mod tag_api;
 pub mod tls;

@@ -363,7 +363,13 @@ pub enum Event {
         /// ... because the old one expired (not a generated one).
         password_expired: bool,
     },
-    SignInFailed(String),
+    SignInFailed {
+        message: String,
+        /// The server refused the credentials (wrong password, locked or
+        /// disabled account), as opposed to being unreachable or busy:
+        /// trying them again only counts towards locking the account.
+        refused: bool,
+    },
     PasswordChanged(Result<(), String>),
     Tags(Vec<DataSource>),
     Updates(Vec<TagUpdateEntry>),
@@ -1005,7 +1011,10 @@ impl Actor {
                         self.begin(api, must_change.then_some(password), login.session);
                     }
                     Err(error) => {
-                        self.out.send(Event::SignInFailed(error.to_string()));
+                        self.out.send(Event::SignInFailed {
+                            message: error.to_string(),
+                            refused: api::refused(&error),
+                        });
                         self.out.send(Event::Link(Link::SignedOut));
                     }
                 }
