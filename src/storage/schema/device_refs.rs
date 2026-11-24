@@ -4,6 +4,10 @@
 //! source with the device's name as `device_id`. Writes and device lookups
 //! need the numeric id, so those tags could not be written. Runs at every
 //! start; a repaired row is numeric and is not looked at again.
+//!
+//! The same pass records each such tag's own name in `source_config.tag`, the
+//! metric its device's poller files the value under. Reading it from the key
+//! (`[s7_]<device name>:<tag name>`) breaks when the device name has a `:`.
 
 use rusqlite::Connection;
 
@@ -14,12 +18,70 @@ const PROTOCOL_TABLES: [(&str, &str); 3] = [
     ("enip", "enip_devices"),
 ];
 
+/// Data source type and the table of its device's tags (`device_id`, `name`).
+const TAG_TABLES: [(&str, &str); 3] = [
+    ("s7", "s7_tags"),
+    ("opcua", "opcua_nodes"),
+    ("enip", "enip_tags"),
+];
+
 pub(super) fn repair_device_refs(conn: &Connection) {
     for (source_type, table) in PROTOCOL_TABLES {
         if let Err(e) = repair(conn, source_type, table) {
             tracing::warn!("Repairing {source_type} data source device ids failed: {e}");
         }
     }
+    for (source_type, table) in TAG_TABLES {
+        if let Err(e) = backfill_tag_names(conn, source_type, table) {
+            tracing::warn!("Recording {source_type} tag names on data sources failed: {e}");
+        }
+    }
+}
+
+/// Write `source_config.tag` for protocol data sources that lack it: the name
+/// of the device's tag that the key ends with (`:<name>`). When no tag or
+/// more than one fits, the row is left alone and keeps the key-based lookup.
+fn backfill_tag_names(conn: &Connection, source_type: &str, table: &str) -> rusqlite::Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, key, device_id, source_config FROM data_sources
+         WHERE source_type = ?1 AND device_id <> '' AND device_id NOT GLOB '*[^0-9]*'",
+    )?;
+    let rows: Vec<(i64, String, String, String)> = stmt
+        .query_map([source_type], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut names = conn.prepare(&format!("SELECT name FROM {table} WHERE device_id = ?1"))?;
+    for (id, key, device, config) in rows {
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&config).unwrap_or_else(|_| serde_json::json!({}));
+        if !cfg.is_object() || cfg.get("tag").and_then(|v| v.as_str()).is_some() {
+            continue;
+        }
+        let tags: Vec<String> = names
+            .query_map([&device], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let fits: Vec<&String> = tags
+            .iter()
+            .filter(|n| key.ends_with(&format!(":{n}")))
+            .collect();
+        if let [name] = fits.as_slice() {
+            cfg["tag"] = serde_json::Value::String((*name).clone());
+            conn.execute(
+                "UPDATE data_sources SET source_config = ?1 WHERE id = ?2",
+                rusqlite::params![cfg.to_string(), id],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn repair(conn: &Connection, source_type: &str, table: &str) -> rusqlite::Result<()> {
@@ -145,5 +207,60 @@ mod tests {
             target.map(|t| (t.device_id, t.protocol)),
             Some((device, "s7".into()))
         );
+    }
+
+    /// The S7 poller must file a tag's value where the tag's data source
+    /// looks for it: the device `s7_<id>` and the tag's name as the metric.
+    #[cfg(feature = "s7")]
+    #[tokio::test]
+    async fn s7_poller_config_files_values_where_the_data_source_reads() {
+        let storage = crate::storage::Storage::new_in_memory().unwrap();
+        let device = storage
+            .create_s7_device("PLC1", "127.0.0.1:102", 0, 1, 1000, true)
+            .await
+            .unwrap();
+        storage
+            .create_s7_tag(device, "PLC1", "DB1.DBD0", "temp", "", "real")
+            .await
+            .unwrap();
+        let ds = storage
+            .find_data_source_by_device_and_key(&device.to_string(), "s7_PLC1:temp")
+            .await
+            .unwrap()
+            .expect("data source on the device id");
+
+        let configs = storage.get_all_s7_device_configs().await.unwrap();
+        let config = configs.first().expect("one S7 device");
+        let metric = config.tags.first().and_then(|t| t.name.clone());
+
+        let (cache_device, cache_metric) =
+            crate::alarm_eval::cache_location(&ds).expect("an S7 tag reads from a device");
+        assert_eq!(config.id, cache_device);
+        assert_eq!(metric, Some(cache_metric));
+    }
+
+    #[test]
+    fn tag_names_are_recorded_even_when_the_device_name_has_a_colon() {
+        let conn = Connection::open_in_memory().unwrap();
+        super::super::init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO s7_devices (id, name, url, created_at) VALUES (3, '10.0.0.5:102', 'x:102', 0);
+             INSERT INTO s7_tags (device_id, tag_address, name, display_name, data_type, created_at)
+               VALUES (3, 'DB1.DBD0', 'temp', '', 'REAL', 0);
+             INSERT INTO data_sources (key, name, unit, color, min_val, max_val, warn_val, crit_val,
+               base_val, sort_order, decimals, source_type, source_config, device_id, chart_type)
+               VALUES ('s7_10.0.0.5:102:temp', 'temp', '', '', 0, 0, 0, 0, 0, 0, 1, 's7', '{}', '3', 'sparkline');",
+        )
+        .unwrap();
+        repair_device_refs(&conn);
+        let config: String = conn
+            .query_row(
+                "SELECT source_config FROM data_sources WHERE key = 's7_10.0.0.5:102:temp'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&config).unwrap();
+        assert_eq!(cfg["tag"], "temp");
     }
 }

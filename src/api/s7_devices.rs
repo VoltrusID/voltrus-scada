@@ -80,6 +80,7 @@ pub async fn create_device(
     }
 
     super::check_poll_interval(req.interval_ms)?;
+    super::check_device_name_free(&state.storage, "s7", &req.name, None).await?;
 
     let id = state
         .storage
@@ -151,6 +152,9 @@ pub async fn update_device(
         super::check_poll_interval(interval_ms)?;
     }
 
+    if let Some(name) = req.name.as_deref() {
+        super::check_device_name_free(&state.storage, "s7", name, Some(id)).await?;
+    }
     state
         .storage
         .update_s7_device(

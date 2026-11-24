@@ -208,6 +208,54 @@ pub fn check_poll_interval(interval_ms: u64) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Refuse a device name that would give its tags the same data source key
+/// as another device's tags: S7 tags are keyed `s7_<device>:<tag>`, OPC UA and
+/// EtherNet/IP tags both `<device>:<tag>`. Alarm state and notifications are
+/// keyed by that key, so two such devices would share them. `own` is the
+/// protocol and id of the device being renamed.
+#[allow(unused_variables, unused_mut)]
+pub(crate) async fn check_device_name_free(
+    storage: &crate::storage::Storage,
+    protocol: &str,
+    name: &str,
+    own: Option<i64>,
+) -> Result<(), AppError> {
+    let mut taken: Vec<(&str, i64, String)> = Vec::new();
+    #[cfg(feature = "s7")]
+    if protocol == "s7" {
+        for d in storage.list_s7_devices().await? {
+            taken.push(("s7", d.id, d.name));
+        }
+    }
+    #[cfg(feature = "opcua")]
+    if protocol == "opcua" || protocol == "enip" {
+        for d in storage.list_opcua_devices().await? {
+            taken.push(("opcua", d.id, d.name));
+        }
+    }
+    #[cfg(feature = "ethernet-ip")]
+    if protocol == "opcua" || protocol == "enip" {
+        for d in storage.list_enip_devices().await? {
+            taken.push(("enip", d.id, d.name));
+        }
+    }
+    let clash = taken
+        .iter()
+        .find(|(p, id, n)| n == name && !(*p == protocol && Some(*id) == own));
+    match clash {
+        Some((p, _, _)) => Err(AppError::bad_request(format!(
+            "A {} device is already called '{name}'; device names must be unique so their tags \
+             keep separate values and alarms",
+            match *p {
+                "s7" => "S7",
+                "opcua" => "OPC UA",
+                _ => "EtherNet/IP",
+            }
+        ))),
+        None => Ok(()),
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         if let Some(RejectedJson(status, body)) = self.0.downcast_ref::<RejectedJson>() {

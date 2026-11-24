@@ -80,7 +80,8 @@ pub fn spawn_data_broadcaster(
                         value: s.value,
                         quality: s.status.clone(),
                         ts: now,
-                        simulated: s.source_type != "modbus" && s.source_type != "api",
+                        simulated: !crate::alarm_eval::is_device_source_type(&s.source_type)
+                            && s.source_type != "api",
                         data_quality: Some(s.quality.as_str().to_string()),
                         ts_ms: s.ts_ms,
                     });

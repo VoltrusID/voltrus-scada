@@ -260,3 +260,178 @@ async fn test_get_write_policy() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// Tags of two devices with the same name would share a data source key, and
+/// with it alarm state: the name is refused on create and on rename.
+#[cfg(feature = "s7")]
+#[tokio::test]
+async fn test_s7_device_names_must_be_unique() {
+    let (app, cookie, _) = admin_app().await;
+    let body = |name: &str| json!({"name": name, "url": "127.0.0.1:102", "rack": 0, "slot": 1, "interval_ms": 1000, "enabled": false});
+    let (status, first) = send_request(
+        &app,
+        "POST",
+        "/api/v1/s7/devices",
+        None,
+        Some(&cookie),
+        Some(body("PLC1")),
+    )
+    .await;
+    assert!(status.is_success(), "{first}");
+    let (status, err) = send_request(
+        &app,
+        "POST",
+        "/api/v1/s7/devices",
+        None,
+        Some(&cookie),
+        Some(body("PLC1")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+
+    let (status, second) = send_request(
+        &app,
+        "POST",
+        "/api/v1/s7/devices",
+        None,
+        Some(&cookie),
+        Some(body("PLC2")),
+    )
+    .await;
+    assert!(status.is_success(), "{second}");
+    let id = second["id"].as_i64().unwrap();
+    let (status, err) = send_request(
+        &app,
+        "PUT",
+        &format!("/api/v1/s7/devices/{id}"),
+        None,
+        Some(&cookie),
+        Some(json!({"name": "PLC1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+    // Keeping its own name is fine.
+    let (status, ok) = send_request(
+        &app,
+        "PUT",
+        &format!("/api/v1/s7/devices/{id}"),
+        None,
+        Some(&cookie),
+        Some(json!({"name": "PLC2"})),
+    )
+    .await;
+    assert!(status.is_success(), "{ok}");
+}
+
+/// OPC UA and EtherNet/IP tags share the key format `<device>:<tag>`.
+#[cfg(all(feature = "opcua", feature = "ethernet-ip"))]
+#[tokio::test]
+async fn test_opcua_and_enip_device_names_do_not_collide() {
+    let (app, cookie, _) = admin_app().await;
+    let (status, created) = send_request(
+        &app,
+        "POST",
+        "/api/v1/opcua/devices",
+        None,
+        Some(&cookie),
+        Some(json!({
+            "name": "Line1", "url": "opc.tcp://127.0.0.1:4840",
+            "security_policy": "None", "security_mode": "None",
+            "username": null, "password": null, "interval_ms": 1000
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+    let (status, err) = send_request(
+        &app,
+        "POST",
+        "/api/v1/enip/devices",
+        None,
+        Some(&cookie),
+        Some(json!({"name": "Line1", "url": "127.0.0.1:44818", "slot": 0, "interval_ms": 1000})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
+}
+
+/// An S7 tag reads its poller's values: the live data API from the cache
+/// under `s7_<id>`, history from that device's telemetry, even when the
+/// device's name has a ':' in it.
+#[cfg(feature = "s7")]
+#[tokio::test]
+async fn test_s7_tag_reads_live_value_and_history_from_its_poller() {
+    let state = seeded_admin_app_state().await;
+    let storage = state.storage.clone();
+    let cache = state.cache.clone();
+    let app = create_router(state);
+    let cookie = format!("voltrus_token={}", admin_cookie(&app).await);
+
+    let (status, dev) = send_request(
+        &app,
+        "POST",
+        "/api/v1/s7/devices",
+        None,
+        Some(&cookie),
+        Some(json!({"name": "10.0.0.5:102", "url": "10.0.0.5:102", "rack": 0, "slot": 1, "interval_ms": 1000, "enabled": false})),
+    )
+    .await;
+    assert!(status.is_success(), "{dev}");
+    let id = dev["id"].as_i64().unwrap();
+    let (status, tag) = send_request(
+        &app,
+        "POST",
+        &format!("/api/v1/s7/devices/{id}/tags"),
+        None,
+        Some(&cookie),
+        Some(json!({"tag_address": "DB1.DBD0", "name": "temp", "display_name": "", "data_type": "REAL"})),
+    )
+    .await;
+    assert!(status.is_success(), "{tag}");
+
+    let device = format!("s7_{id}");
+    cache
+        .update(
+            &device,
+            std::collections::HashMap::from([("temp".to_string(), 42.5)]),
+            false,
+        )
+        .await;
+    cache
+        .set_status(&device, crate::models::DeviceStatus::Online)
+        .await;
+
+    let (status, data) = send_request(&app, "GET", "/api/v1/data", None, Some(&cookie), None).await;
+    assert_eq!(status, StatusCode::OK, "{data}");
+    let row = data
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == "s7_10.0.0.5:102:temp")
+        .expect("the S7 tag in /data");
+    assert_eq!(row["value"], 42.5, "{row}");
+    assert_eq!(row["quality"], "good", "{row}");
+
+    let now = crate::timeutil::now_secs();
+    storage
+        .insert_batch(&[
+            (device.clone(), now - 120, "temp".to_string(), 40.0),
+            (device.clone(), now - 60, "temp".to_string(), 41.0),
+        ])
+        .await
+        .unwrap();
+    let (status, hist) = send_request(
+        &app,
+        "GET",
+        "/api/v1/history?sensor=s7_10.0.0.5:102:temp&range=5m",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{hist}");
+    let values = hist["data"]["s7_10.0.0.5:102:temp"]["values"]
+        .as_array()
+        .expect("history values");
+    let real: Vec<f64> = values.iter().filter_map(|v| v.as_f64()).collect();
+    assert!(real.contains(&40.0) && real.contains(&41.0), "{hist}");
+}

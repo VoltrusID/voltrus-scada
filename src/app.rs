@@ -387,9 +387,7 @@ pub(crate) async fn serve(
                                 )
                                 .ok()?;
                                 let rule = crate::deadband::HistoryRule::from_source_config(&cfg)?;
-                                let metric =
-                                    crate::api::data::metric_name(&source.key, &source.device_id);
-                                Some(((source.device_id.clone(), metric.to_string()), rule))
+                                Some((crate::alarm_eval::cache_ref(source), rule))
                             })
                             .collect(),
                     );
@@ -412,7 +410,7 @@ pub(crate) async fn serve(
                         // value: a value that is missing, bad or stale leaves the
                         // tag's alarms as they are rather than raising or clearing
                         // them on a number that does not describe the process.
-                        if source.source_type != "modbus" {
+                        if !crate::alarm_eval::is_device_source_type(&source.source_type) {
                             continue;
                         }
                         let Some(value) = crate::alarm_eval::alarmable(crate::alarm_eval::resolve(

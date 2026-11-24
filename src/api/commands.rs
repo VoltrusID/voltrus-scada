@@ -347,12 +347,8 @@ pub async fn check_write(
     let source = storage.get_data_source_by_id(tag_id).await?;
     let previous = match &source {
         Some(source) => {
-            cache
-                .get_device_metric(
-                    &source.device_id,
-                    super::data::metric_name(&source.key, &source.device_id),
-                )
-                .await
+            let (device, metric) = crate::alarm_eval::cache_ref(source);
+            cache.get_device_metric(&device, &metric).await
         }
         None => None,
     };

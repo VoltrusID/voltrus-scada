@@ -154,9 +154,10 @@ pub async fn get_compression_deadband(
         .filter_map(|source| {
             let cfg = serde_json::from_str::<serde_json::Value>(&source.source_config).ok()?;
             let rule = HistoryRule::from_source_config(&cfg)?;
+            let (device_id, metric) = crate::alarm_eval::cache_ref(source);
             Some(DeadbandEntryResponse {
-                device_id: source.device_id.clone(),
-                metric: crate::api::data::metric_name(&source.key, &source.device_id).to_string(),
+                device_id,
+                metric,
                 deadband_type: match rule.kind {
                     DeadbandKind::Absolute => "absolute",
                     DeadbandKind::Percent => "percent",

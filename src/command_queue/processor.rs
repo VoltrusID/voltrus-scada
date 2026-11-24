@@ -186,13 +186,16 @@ impl CommandQueue {
                 .await
                 .ok()
                 .flatten();
-            let cache_device_id = ds.as_ref().map(|d| d.device_id.clone()).unwrap_or_else(|| {
-                if cmd.device_ref.is_empty() {
-                    cmd.device_id.to_string()
-                } else {
-                    cmd.device_ref.clone()
-                }
-            });
+            let cache_device_id = ds
+                .as_ref()
+                .map(|d| crate::alarm_eval::cache_ref(d).0)
+                .unwrap_or_else(|| {
+                    if cmd.device_ref.is_empty() {
+                        cmd.device_id.to_string()
+                    } else {
+                        cmd.device_ref.clone()
+                    }
+                });
 
             // -- Device online check --
             if !self.cache.is_device_online(&cache_device_id).await {
@@ -354,7 +357,7 @@ impl CommandQueue {
         let tracker = readback::PendingReadback::new(
             cmd.id.clone(),
             cache_device_id.to_string(),
-            crate::api::data::metric_name(&ds.key, &ds.device_id).to_string(),
+            crate::alarm_eval::cache_ref(ds).1,
             value,
             readback::tolerance(value, deadband),
             crate::timeutil::now_millis(),

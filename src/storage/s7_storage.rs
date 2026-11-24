@@ -235,8 +235,13 @@ impl Storage {
             let _ = conn.execute(
                 "INSERT OR IGNORE INTO data_sources (key, name, unit, color, min_val, max_val, warn_val, crit_val,
                  base_val, sort_order, decimals, source_type, source_config, device_id, chart_type)
-                 VALUES (?1, ?2, '', '#3b82f6', 0, 0, 0, 0, 0, 0, 1, 's7', '{}', ?3, 'sparkline')",
-                rusqlite::params![source_key, ds_name, device_id.to_string()],
+                 VALUES (?1, ?2, '', '#3b82f6', 0, 0, 0, 0, 0, 0, 1, 's7', ?4, ?3, 'sparkline')",
+                rusqlite::params![
+                    source_key,
+                    ds_name,
+                    device_id.to_string(),
+                    serde_json::json!({ "tag": name }).to_string()
+                ],
             );
 
             Ok(conn.last_insert_rowid())
@@ -330,7 +335,13 @@ impl Storage {
                         crate::s7::S7Client::parse_tag_address(&tag_row.tag_address)
                     });
                 match resolved {
-                    Ok(s7_tag) => s7_tags.push(s7_tag),
+                    // The poller files a value under the tag's name, the
+                    // metric its data source (`s7_<device>:<name>`) reads.
+                    // Without it the value went under `<area>_<offset>`.
+                    Ok(mut s7_tag) => {
+                        s7_tag.name = Some(tag_row.name.clone());
+                        s7_tags.push(s7_tag)
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "Failed to parse S7 tag '{}' for device '{}': {}",
