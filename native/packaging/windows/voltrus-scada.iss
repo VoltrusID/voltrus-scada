@@ -82,6 +82,11 @@ Source: "{#BinDir}\voltrus.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoDir}\NOTICE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#RepoDir}\THIRD-PARTY-LICENSES.md"; DestDir: "{app}"; Flags: ignoreversion
+; A build that adds licensed code to the Core (the official Enterprise build)
+; passes that code's licence: /DExtraLicense=<path>.
+#ifdef ExtraLicense
+Source: "{#ExtraLicense}"; DestDir: "{app}"; DestName: "LICENSE-Enterprise.txt"; Flags: ignoreversion
+#endif
 ; The console's bundled third-party works, as in the macOS app bundle.
 Source: "{#RepoDir}\native\packaging\licenses\OFL-JetBrainsMono.txt"; DestDir: "{app}\Licenses"; Flags: ignoreversion
 Source: "{#RepoDir}\native\packaging\licenses\LICENSE-lucide.txt"; DestDir: "{app}\Licenses"; Flags: ignoreversion
