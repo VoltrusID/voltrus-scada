@@ -146,4 +146,33 @@ mod tests {
             Some((device, "s7".into()))
         );
     }
+
+    /// The S7 poller must file a tag's value where the tag's data source
+    /// looks for it: the device `s7_<id>` and the tag's name as the metric.
+    #[tokio::test]
+    async fn s7_poller_config_files_values_where_the_data_source_reads() {
+        let storage = crate::storage::Storage::new_in_memory().unwrap();
+        let device = storage
+            .create_s7_device("PLC1", "127.0.0.1:102", 0, 1, 1000, true)
+            .await
+            .unwrap();
+        storage
+            .create_s7_tag(device, "PLC1", "DB1.DBD0", "temp", "", "real")
+            .await
+            .unwrap();
+        let ds = storage
+            .find_data_source_by_device_and_key(&device.to_string(), "s7_PLC1:temp")
+            .await
+            .unwrap()
+            .expect("data source on the device id");
+
+        let configs = storage.get_all_s7_device_configs().await.unwrap();
+        let config = configs.first().expect("one S7 device");
+        let metric = config.tags.first().and_then(|t| t.name.clone());
+
+        let (cache_device, cache_metric) =
+            crate::alarm_eval::cache_location(&ds).expect("an S7 tag reads from a device");
+        assert_eq!(config.id, cache_device);
+        assert_eq!(metric.as_deref(), Some(cache_metric));
+    }
 }

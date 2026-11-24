@@ -464,11 +464,11 @@ async fn refresh_tags(shared: &Shared) {
     for id in ids {
         match shared.storage.get_data_source_by_id(id).await {
             Ok(Some(ds)) => {
-                let metric = crate::api::data::metric_name(&ds.key, &ds.device_id).to_string();
+                let (device_id, metric) = crate::alarm_eval::cache_ref(&ds);
                 shared.tags.insert(
                     id,
                     TagRef {
-                        device_id: ds.device_id,
+                        device_id,
                         metric,
                         key: ds.key,
                     },

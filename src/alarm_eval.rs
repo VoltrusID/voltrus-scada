@@ -25,12 +25,60 @@ fn expression_of(cfg: &serde_json::Value) -> Option<&str> {
         .filter(|s| !s.is_empty())
 }
 
-/// The value of a device tag (`source_type` "modbus", which covers every
-/// polled protocol) from the cache. `None` when the device or the metric is
-/// not in the cache: nothing was ever read, so there is nothing to show or
-/// to judge, and no stand-in value is made up.
+/// Whether tags of this `source_type` are read from a device by a poller,
+/// as opposed to simulated or pushed through the API.
+pub fn is_device_source_type(source_type: &str) -> bool {
+    matches!(source_type, "modbus" | "s7" | "opcua" | "enip")
+}
+
+/// Where a device tag's value lives in the cache: the cache's device id and
+/// the metric name. `None` for a tag that is not read from a device.
+///
+/// Modbus tags name the cache device directly and key their metric as
+/// `<device>.<metric>` (or just `<metric>`). The S7, OPC UA and EtherNet/IP
+/// managers create their tags with the numeric device id and the key
+/// `[s7_]<device name>:<tag name>`, while their pollers fill the cache under
+/// `<protocol>_<id>` with the tag name as the metric.
+pub fn cache_location(ds: &DataSource) -> Option<(String, &str)> {
+    match ds.source_type.as_str() {
+        "modbus" => Some((
+            ds.device_id.clone(),
+            crate::api::data::metric_name(&ds.key, &ds.device_id),
+        )),
+        p @ ("s7" | "opcua" | "enip") => {
+            let (_, metric) = ds.key.split_once(':')?;
+            let prefix = format!("{p}_");
+            let device = if ds.device_id.starts_with(&prefix) {
+                ds.device_id.clone()
+            } else {
+                format!("{prefix}{}", ds.device_id)
+            };
+            Some((device, metric))
+        }
+        _ => None,
+    }
+}
+
+/// The cache device id and metric a tag is read under: [`cache_location`]
+/// for a device tag, otherwise the tag's own device id and key, as every
+/// other tag kind has always been looked up.
+pub fn cache_ref(ds: &DataSource) -> (String, String) {
+    match cache_location(ds) {
+        Some((device, metric)) => (device, metric.to_string()),
+        None => (
+            ds.device_id.clone(),
+            crate::api::data::metric_name(&ds.key, &ds.device_id).to_string(),
+        ),
+    }
+}
+
+/// The value of a device tag (see [`is_device_source_type`]) from the
+/// cache. `None` when the device or the metric is not in the cache: nothing
+/// was ever read, so there is nothing to show or to judge, and no stand-in
+/// value is made up.
 pub fn resolve(ds: &DataSource, snapshots: &[DeviceSnapshot]) -> Option<TagValue> {
-    let snap = snapshots.iter().find(|s| s.device_id == ds.device_id)?;
+    let (device, metric) = cache_location(ds)?;
+    let snap = snapshots.iter().find(|s| s.device_id == device)?;
     if snap.status != DeviceStatus::Online {
         return Some(TagValue {
             value: f64::NAN,
@@ -42,7 +90,6 @@ pub fn resolve(ds: &DataSource, snapshots: &[DeviceSnapshot]) -> Option<TagValue
     if let Some(expr) = expression_of(&cfg) {
         return Some(evaluate_expression(expr, snap));
     }
-    let metric = crate::api::data::metric_name(&ds.key, &ds.device_id);
     let value = *snap.metrics.get(metric)?;
     Some(TagValue {
         value,
@@ -299,5 +346,75 @@ mod tests {
         )
         .unwrap();
         assert_eq!(broken.quality, Quality::BadConfigError);
+    }
+
+    /// A tag as the S7, OPC UA and EtherNet/IP managers create it: the
+    /// numeric device id and `[s7_]<device name>:<tag name>` as the key.
+    fn protocol_tag(source_type: &str, key: &str, device_id: &str, warn: f64) -> DataSource {
+        let mut tag = ds(key, warn, 0.0, serde_json::json!({}));
+        tag.source_type = source_type.into();
+        tag.device_id = device_id.into();
+        tag
+    }
+
+    /// A cache snapshot as a protocol poller writes it: `<protocol>_<id>`
+    /// as the device and the bare tag name as the metric.
+    fn poller_snap(device_id: &str, metrics: &[(&str, f64)], online: bool) -> DeviceSnapshot {
+        let mut s = snap(metrics, &[], online);
+        s.device_id = device_id.into();
+        s
+    }
+
+    #[test]
+    fn s7_opcua_and_enip_tags_read_their_poller_cache() {
+        for (source_type, key, cache_device) in [
+            ("s7", "s7_Press1:Temp", "s7_3"),
+            ("opcua", "Line1:Temp", "opcua_3"),
+            ("enip", "Line1:Temp", "enip_3"),
+        ] {
+            let tag = protocol_tag(source_type, key, "3", 0.0);
+            assert_eq!(
+                cache_location(&tag),
+                Some((cache_device.to_string(), "Temp")),
+                "{source_type}"
+            );
+            let value = resolve(&tag, &[poller_snap(cache_device, &[("Temp", 42.0)], true)]);
+            assert_eq!(
+                value.map(|v| (v.value, v.quality)),
+                Some((42.0, Quality::Good)),
+                "{source_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_protocol_tag_on_an_offline_device_reads_comm_failure() {
+        let tag = protocol_tag("s7", "s7_Press1:Temp", "3", 0.0);
+        let value = resolve(&tag, &[poller_snap("s7_3", &[("Temp", 42.0)], false)]).unwrap();
+        assert_eq!(value.quality, Quality::BadCommFailure);
+    }
+
+    #[test]
+    fn a_protocol_tag_over_its_limit_is_in_alarm() {
+        let tag = protocol_tag("opcua", "Line1:Temp", "3", 40.0);
+        let value = alarmable(resolve(
+            &tag,
+            &[poller_snap("opcua_3", &[("Temp", 42.0)], true)],
+        ))
+        .unwrap();
+        assert!(is_device_source_type(&tag.source_type));
+        assert_eq!(
+            Thresholds::of(&tag).condition(value),
+            Some(("warning", 40.0, "high"))
+        );
+    }
+
+    #[test]
+    fn simulated_tags_have_no_cache_location() {
+        let mut tag = ds("plc.x", 0.0, 0.0, serde_json::json!({}));
+        tag.source_type = "random_walk".into();
+        assert_eq!(cache_location(&tag), None);
+        assert!(!is_device_source_type("random_walk"));
+        assert_eq!(cache_ref(&tag), ("plc".to_string(), "x".to_string()));
     }
 }

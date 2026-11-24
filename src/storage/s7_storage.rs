@@ -330,7 +330,13 @@ impl Storage {
                         crate::s7::S7Client::parse_tag_address(&tag_row.tag_address)
                     });
                 match resolved {
-                    Ok(s7_tag) => s7_tags.push(s7_tag),
+                    // The poller files a value under the tag's name, the
+                    // metric its data source (`s7_<device>:<name>`) reads.
+                    // Without it the value went under `<area>_<offset>`.
+                    Ok(mut s7_tag) => {
+                        s7_tag.name = Some(tag_row.name.clone());
+                        s7_tags.push(s7_tag)
+                    }
                     Err(e) => {
                         tracing::warn!(
                             "Failed to parse S7 tag '{}' for device '{}': {}",

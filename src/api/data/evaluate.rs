@@ -9,7 +9,7 @@ pub(crate) fn evaluate_data_sources(
     data_sources
         .iter()
         .map(|ds| {
-            let tag = if ds.source_type == "modbus" {
+            let tag = if crate::alarm_eval::is_device_source_type(&ds.source_type) {
                 // Never read (device or metric not in the cache) reads as a
                 // communication failure: there is no value to show.
                 crate::alarm_eval::resolve(ds, cache_data).unwrap_or(crate::alarm_eval::TagValue {

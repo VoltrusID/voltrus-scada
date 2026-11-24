@@ -89,14 +89,17 @@ pub async fn get_history(
     // is an expression, which may name any tag of the device.
     let mut wanted: std::collections::HashMap<String, Option<std::collections::HashSet<String>>> =
         std::collections::HashMap::new();
-    for ds in data_sources.iter().filter(|ds| ds.source_type == "modbus") {
+    for ds in &data_sources {
+        let Some((device, metric)) = crate::alarm_eval::cache_location(ds) else {
+            continue;
+        };
         let entry = wanted
-            .entry(ds.device_id.clone())
+            .entry(device)
             .or_insert_with(|| Some(Default::default()));
         if expression_of(ds).is_some() {
             *entry = None;
         } else if let Some(set) = entry {
-            set.insert(metric_name(&ds.key, &ds.device_id).to_string());
+            set.insert(metric.to_string());
         }
     }
     let mut device_data: std::collections::HashMap<String, Series> =
@@ -136,22 +139,24 @@ pub async fn get_history(
             source_type: data_source.source_type.clone(),
         });
 
-        let (points, band, downsampled) = if data_source.source_type == "modbus" {
+        let (points, band, downsampled) = if let Some((device, metric)) =
+            crate::alarm_eval::cache_location(data_source)
+        {
             // Real data from telemetry DB
             let empty = Series::new();
-            let series = device_data.get(&data_source.device_id).unwrap_or(&empty);
+            let series = device_data.get(&device).unwrap_or(&empty);
 
             let (points, band) = if let Some(expr_str) = expression_of(data_source) {
                 history::expression_points(&expr_str, series, plan.mode)
             } else {
-                match series.get(metric_name(&data_source.key, &data_source.device_id)) {
+                match series.get(metric) {
                     Some(buckets) => history::tag_points(buckets, plan.mode),
                     None => (Vec::new(), None),
                 }
             };
             // Sampling leaves samples out when a bucket held more than one.
             let downsampled = plan.mode == history::Mode::Sampling
-                && match series.get(metric_name(&data_source.key, &data_source.device_id)) {
+                && match series.get(metric) {
                     Some(buckets) => buckets.iter().any(|b| b.count > 1),
                     None => false,
                 };
