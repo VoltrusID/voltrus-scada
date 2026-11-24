@@ -21,7 +21,10 @@ address):
   The user still signs in from any other address.
 * 30 wrong passwords (or unknown usernames) from one address across all
   accounts within 15 minutes lock that address out of sign-in for 15 minutes
-  (429), against password spraying.
+  (429), against password spraying. Failures from this machine (127.0.0.1,
+  ::1) don't count here: the native console and a local reverse proxy
+  connect from it, and a proxy that does not pass the client address on
+  would otherwise make one typo-prone shift lock everyone out.
 * 50 wrong passwords for one account from all addresses within 15 minutes
   make sign-ins to it from addresses the user has not signed in from in the
   last 30 days wait a minute (429), renewed by every further failure in
@@ -37,6 +40,10 @@ address):
 * Wrong electronic-signature passwords are counted for the account apart
   from sign-in: 10 lock signing for 15 minutes and end the user's sessions,
   but no longer lock sign-in.
+
+Behind a reverse proxy, check that `trusted_proxy` matches it (the server
+warns about some mismatches): if every client shows up as the proxy's
+address, the per-address lock behaves like the old account-wide lock.
 
 The upgrade creates the table and lifts any lock of the old kind. The
 `failed_attempts` and `locked_until` columns of `users` are left in place

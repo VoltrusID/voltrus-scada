@@ -139,7 +139,12 @@ pub async fn login(
                 state.login_rate_limiter.record_attempt(&rate_key_user);
                 let _ = state
                     .storage
-                    .record_login_failure(None, &client_ip, true, now_secs)
+                    .record_login_failure(
+                        None,
+                        &client_ip,
+                        counts_per_address(&client_ip),
+                        now_secs,
+                    )
                     .await;
                 let _ = state
                     .storage
@@ -170,6 +175,17 @@ pub async fn login(
     Ok((new_jar, (response_status, Json(response_json))).into_response())
 }
 
+/// Whether failures from `client_ip` count towards the address's own limit
+/// across all accounts. Not for this machine: it is where the native console
+/// and a local reverse proxy connect from, and a proxy that does not pass the
+/// client address on (see `trusted_proxy`) would make every user one address,
+/// so a few typos across the plant would lock everyone out of sign-in.
+fn counts_per_address(client_ip: &str) -> bool {
+    !client_ip
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
 async fn check_password_and_login(
     state: AppState,
     body: LoginRequest,
@@ -191,7 +207,12 @@ async fn check_password_and_login(
         } else {
             state
                 .storage
-                .record_login_failure(Some(&user.username), client_ip, true, now_secs)
+                .record_login_failure(
+                    Some(&user.username),
+                    client_ip,
+                    counts_per_address(client_ip),
+                    now_secs,
+                )
                 .await
                 .unwrap_or_default()
         };

@@ -44,11 +44,9 @@ async fn login(
             json!({"username": username, "password": password}).to_string(),
         ))
         .unwrap();
-    req.extensions_mut().insert(ConnectInfo(
-        format!("{ip}:40000")
-            .parse::<std::net::SocketAddr>()
-            .unwrap(),
-    ));
+    let ip_addr: std::net::IpAddr = ip.parse().unwrap();
+    req.extensions_mut()
+        .insert(ConnectInfo(std::net::SocketAddr::new(ip_addr, 40000)));
     let resp = app.clone().oneshot(req).await.unwrap();
     let status = resp.status();
     let cookie =
@@ -283,4 +281,29 @@ async fn signature_failures_do_not_lock_sign_in() {
     );
     let (status, body, _) = login(&app, "ops", OPS_PW, "10.20.0.12").await;
     assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+#[tokio::test]
+async fn loopback_failures_do_not_count_towards_the_address_lock() {
+    let state = state_with_ops().await;
+    let app = create_router(state.clone());
+    // Behind a local proxy that passes no client address, everyone is
+    // 127.0.0.1: their typos must not add up to a lock of every account.
+    for ip in ["127.0.0.1", "::1", "203.0.113.5"] {
+        let (status, body, _) = login(&app, "ops", "wrong", ip).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        let (status, body, _) = login(&app, "nobody", "wrong", ip).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    }
+    assert_eq!(state.storage.login_failure_count("", "127.0.0.1").await, 0);
+    assert_eq!(state.storage.login_failure_count("", "::1").await, 0);
+    assert_eq!(
+        state.storage.login_failure_count("", "203.0.113.5").await,
+        2
+    );
+    // The account and address pair still counts.
+    assert_eq!(
+        state.storage.login_failure_count("ops", "127.0.0.1").await,
+        1
+    );
 }
