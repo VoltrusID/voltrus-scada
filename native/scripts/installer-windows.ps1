@@ -5,12 +5,15 @@
 # pipeline (everything else goes to the host).
 # Usage: native/scripts/installer-windows.ps1 [-BinDir target/release] [-Out dist]
 #          [-Version x.y.z (default: the server's version in Cargo.toml)]
-#          [-Name voltrus-scada-windows-x86_64-setup]
+#          [-Name voltrus-scada-windows-x86_64-setup] [-ExtraLicense path]
+# -ExtraLicense: a further licence to install as LICENSE-Enterprise.txt (the
+#   official Enterprise build's add-on licence).
 param(
     [string] $BinDir = 'target/release',
     [string] $Out = 'dist',
     [string] $Version = '',
-    [string] $Name = 'voltrus-scada-windows-x86_64-setup'
+    [string] $Name = 'voltrus-scada-windows-x86_64-setup',
+    [string] $ExtraLicense = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
@@ -56,8 +59,13 @@ if (-not $iscc) {
 }
 Write-Host "Inno Setup: $iscc"
 
-& $iscc /Q "/DAppVersion=$Version" "/DAppNumericVersion=$numeric" "/DBinDir=$BinDir" `
-    "/DOutputDir=$Out" "/DOutputBaseFilename=$Name" $script | Out-Host
+$defines = @("/DAppVersion=$Version", "/DAppNumericVersion=$numeric", "/DBinDir=$BinDir",
+    "/DOutputDir=$Out", "/DOutputBaseFilename=$Name")
+if ($ExtraLicense) {
+    if (-not (Test-Path $ExtraLicense)) { throw "$ExtraLicense does not exist" }
+    $defines += "/DExtraLicense=$((Resolve-Path $ExtraLicense).Path)"
+}
+& $iscc /Q @defines $script | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 $installer = Join-Path $Out "$Name.exe"
 if (-not (Test-Path $installer)) { throw "ISCC wrote no $installer" }

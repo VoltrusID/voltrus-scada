@@ -42,10 +42,6 @@ struct ServerUser {
     role: String,
     must_change_password: bool,
     disabled: bool,
-    #[serde(skip_serializing)]
-    failed_attempts: i64,
-    #[serde(skip_serializing)]
-    locked_until: Option<i64>,
 }
 
 /// `models::api_types::CreateUserRequest`.
@@ -228,8 +224,6 @@ fn users_decode_without_secrets() {
             role: "admin".into(),
             must_change_password: false,
             disabled: false,
-            failed_attempts: 0,
-            locked_until: None,
         },
         ServerUser {
             id: 7,
@@ -239,8 +233,6 @@ fn users_decode_without_secrets() {
             role: "demo".into(),
             must_change_password: true,
             disabled: true,
-            failed_attempts: 2,
-            locked_until: Some(1_700_000_000),
         },
     ];
     let wire = serde_json::to_value(&rows).unwrap();

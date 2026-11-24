@@ -426,3 +426,21 @@ async fn guessing_the_current_password_in_a_session_locks_it() {
     let (status, body, _) = login(&app, "ops", OPS_PW, "10.20.0.13").await;
     assert_eq!(status, StatusCode::OK, "{body}");
 }
+
+#[tokio::test]
+async fn a_cancelled_attempt_counts_nothing() {
+    let state = state_with_ops().await;
+    let ip = "203.0.113.9";
+    let now = crate::timeutil::now_secs();
+    let attempt = state
+        .storage
+        .begin_login_attempt(Some("ops"), ip, true, now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.storage.login_failure_count("ops", ip).await, 1);
+    state.storage.cancel_login_attempt(attempt).await.unwrap();
+    assert_eq!(state.storage.login_failure_count("ops", ip).await, 0);
+    assert_eq!(state.storage.login_failure_count("ops", "").await, 0);
+    assert_eq!(state.storage.login_failure_count("", ip).await, 0);
+}

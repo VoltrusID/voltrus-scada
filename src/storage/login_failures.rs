@@ -411,6 +411,28 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// The password could not be checked (an external directory was down,
+    /// say): take the attempt back from every counter it was added to, as if
+    /// it never happened. A backoff it opened stays.
+    pub async fn cancel_login_attempt(&self, attempt: LoginAttempt) -> Result<()> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = conn.lock().unwrap();
+            let tx = conn.transaction()?;
+            if attempt.count_source {
+                uncount(&tx, "", &attempt.source)?;
+            }
+            if let Some(username) = attempt.username.as_deref() {
+                uncount(&tx, username, "")?;
+                uncount(&tx, username, &attempt.source)?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     /// Count a failure outright, without a check first (what
     /// [`Self::begin_login_attempt`] then [`Self::fail_login_attempt`] do
     /// for an attempt that was let through).
