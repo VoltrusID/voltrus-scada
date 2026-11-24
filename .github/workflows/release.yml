@@ -50,7 +50,7 @@ jobs:
         id: version
         run: |
           v="v$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')"
-          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+          if [ "${GITHUB_EVENT_NAME}" = push ] && [ "${GITHUB_REF_TYPE}" = tag ]; then
             [ "$v" = "${GITHUB_REF_NAME}" ] || { echo "Tag ${GITHUB_REF_NAME} does not match Cargo.toml version $v"; exit 1; }
           else
             echo "Dry run (${GITHUB_EVENT_NAME} on ${GITHUB_REF_NAME}): files are named $v, nothing is published"
@@ -270,7 +270,8 @@ jobs:
   release:
     name: Publish release
     needs: [build, native-macos, native-windows]
-    if: github.ref_type == 'tag'
+    # A tag push only: a run started by hand is a dry run, even on a tag.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
       contents: write

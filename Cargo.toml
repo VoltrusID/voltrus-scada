@@ -120,6 +120,8 @@ toml = "0.8"
 # Runs `voltrus service run` under the Windows Service Control Manager.
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8"
+# Who owns the station folder before `station init` takes it over.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]
 # localtime_r for the server's UTC offset (flow schedule triggers); already in the tree.

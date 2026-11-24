@@ -115,12 +115,13 @@ try {
         Write-Host 'the station folder is owned by Administrators; config.yaml and data.db are closed to Users; station.toml is readable'
     }
 
-    # The console's credential signs in to the server as an administrator.
+    # The console's credential signs in to the server as an operator.
     function Assert-SignIn($Credential) {
         $body = @{ username = $Credential.username; password = $Credential.password } | ConvertTo-Json
         $login = Invoke-RestMethod -Method Post -Uri "$url/api/v1/auth/login" -ContentType 'application/json' -Body $body
         if (-not $login.ok) { throw 'the station credential did not sign in' }
-        if ($login.role -ne 'admin') { throw "the station user's role is $($login.role), not admin" }
+        # Not an admin: every local account can read station.toml.
+        if ($login.role -ne 'operator') { throw "the station user's role is $($login.role), not operator" }
         if ($login.must_change_password) { throw 'the station user must change its password' }
         Write-Host "signed in to $url as $($Credential.username)"
     }

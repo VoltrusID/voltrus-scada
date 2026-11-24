@@ -403,10 +403,12 @@ password = "<generated>"
 ```
 
 Every local account that can read `station.toml` (on Windows: every member
-of Users) signs in as that account, which `station init` creates as an
-admin so a new station can be engineered. On a production station give
-`station` a lower role under Users (Data Manager); `station init` keeps the
-role it finds.
+of Users) signs in as that account, so `station init` creates it as an
+operator: it runs the plant but cannot administer the server. To engineer
+the station, sign out and sign in as `admin` (`station init` saves its
+generated password in `initial-admin-password` in the station folder,
+readable by administrators only, and prints where), or give `station`
+another role under Users; `station init` keeps the role it finds.
 
 - **At launch**, without `--sign-in` or `--stress…`, a `station.toml` in the
   station directory puts the console in local station mode. Instead of the
@@ -419,7 +421,15 @@ role it finds.
   itself. A sign-in the server refuses (wrong password, locked or disabled
   account) is not tried again by itself, as each refusal counts towards
   locking the account (10 within 15 minutes): the screen shows the server's
-  reason, and Retry reads `station.toml` again and tries once.
+  reason, and Retry reads `station.toml` again and tries once. A locked
+  account is tried again by itself once its lock has run out (after 16
+  minutes), so an unattended station comes back. A session that ends right
+  after its sign-in (within a minute) is signed in again after the back-off,
+  not at once. When the server asks for a new password for `station` (it
+  expired under an add-on edition's policy, or an administrator reset it),
+  the console signs out and says to run `voltrus station init
+  --new-password` as administrator; it never changes the password itself,
+  as `station.toml` would keep the old one.
   The station's address and account are not remembered as the last sign-in.
   Each attempt is one line on stderr (`voltrus-native: station: …`, and
   `voltrus-native: station: signed in to <url> as <user>`), for scripts.
@@ -435,8 +445,13 @@ role it finds.
   step is idempotent), even when `station init` already wrote
   `station.toml`. On Windows the station needs an administrator
   (`station init` hardens the folder's permissions, `service install`
-  registers the service): the installer does it; from a zip, run the
-  console as administrator once.
+  registers the service): the installer does it. From a zip, put the
+  console and `voltrus.exe` in a folder under Program Files first (the
+  service runs as LocalSystem, so `service install` refuses an executable
+  a standard user could replace) and run the console as administrator once.
+  `station init` also refuses a station folder with anything in it owned by
+  another account (`%ProgramData%` lets standard users create folders, so
+  one could prepare a config or database there before the install).
 - **A station that does not answer** with the server beside the console is
   asked about its service (`voltrus service status --dir <station
   directory>`, off the UI thread). Not installed (a setup that stopped

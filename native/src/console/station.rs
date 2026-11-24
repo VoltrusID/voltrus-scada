@@ -16,6 +16,7 @@
 //! the setup, a stopped one to start it.
 
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use gpui::{Context, Task, Window};
 use serde::de::IgnoredAny;
@@ -27,6 +28,14 @@ use super::{Console, Launch};
 /// The scope of the health checks' keys (`Command::Public`).
 pub const SCOPE: &str = "station";
 const HEALTH: &str = "station.health";
+/// A session that ends sooner than this after its sign-in is signed in
+/// again after the back-off, not at once: a session the server keeps
+/// ending must not turn into a stream of sign-ins.
+const SHORT_SESSION: Duration = Duration::from_secs(60);
+/// A locked account is tried again this long after the refusal, once its
+/// lock has run out (the server locks for 15 minutes); a locked account's
+/// refusal does not count as another failed attempt.
+const LOCKED_RETRY: Duration = Duration::from_secs(16 * 60);
 
 /// The station as the console knows it.
 #[derive(Default)]
@@ -96,6 +105,8 @@ pub struct Local {
     /// Finishing the setup or starting the service, while it runs or once
     /// it failed.
     pub fix: Option<Setup>,
+    /// When the current session signed in.
+    pub(in crate::console) live_since: Option<Instant>,
 }
 
 impl Local {
@@ -145,6 +156,7 @@ pub fn open(console: &mut Console, cx: &mut Context<Console>) {
         service: None,
         querying: false,
         fix: None,
+        live_since: None,
     });
     check(console, cx);
 }
@@ -264,8 +276,10 @@ pub fn on_public_reply(
 /// Signed in: in local mode, the station is live.
 pub fn signed_in(console: &mut Console, server: &str, username: &str) {
     if let Some(local) = &mut console.station.local {
+        // `failures` stays: a session that ends at once keeps backing off
+        // (`session_ended`).
         local.status = Status::Live;
-        local.failures = 0;
+        local.live_since = Some(Instant::now());
         local.retry = None;
         // For whoever started the console (CI greps it).
         eprintln!("voltrus-native: station: signed in to {server} as {username}");
@@ -286,11 +300,23 @@ pub fn sign_in_failed(
     };
     console.busy = false;
     if refused {
-        let reason = format!("The server refused the station's sign-in: {error}");
+        let locked = error.to_lowercase().contains("locked");
+        let mut reason = format!("The server refused the station's sign-in: {error}");
+        if locked {
+            reason.push_str(" It is tried again once the lock has run out.");
+        }
         // For whoever started the console (CI greps it).
         eprintln!("voltrus-native: station: {reason}");
         local.retry = None;
         local.status = Status::Refused(reason);
+        // A wrong password waits for the operator; a lock runs out by
+        // itself, and an unattended station should come back after it.
+        if locked {
+            local.retry = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(LOCKED_RETRY).await;
+                let _ = this.update(cx, retry);
+            }));
+        }
         cx.notify();
     } else {
         wait(
@@ -302,13 +328,49 @@ pub fn sign_in_failed(
     true
 }
 
-/// The session ended (the server refused it): in local mode, sign in again.
+/// The session ended (the server refused it): in local mode, sign in
+/// again; at once after a session that lasted, after the back-off after
+/// one that ended right after its sign-in.
 pub fn session_ended(console: &mut Console, cx: &mut Context<Console>) {
-    if let Some(local) = &mut console.station.local {
+    let Some(local) = &mut console.station.local else {
+        return;
+    };
+    let lasted = local
+        .live_since
+        .take()
+        .is_some_and(|since| since.elapsed() >= SHORT_SESSION);
+    if lasted {
         local.status = Status::Connecting;
         local.failures = 0;
         check(console, cx);
+    } else {
+        wait(
+            console,
+            "The session ended right after signing in".to_owned(),
+            cx,
+        );
     }
+}
+
+/// The server wants the station account's password changed (expired, or
+/// reset by an administrator). In local mode that is not done on the card,
+/// as `station.toml` would keep the old password: the session is closed
+/// and the station screen says how to renew it. `true` when handled so.
+pub fn password_change_asked(console: &mut Console, cx: &mut Context<Console>) -> bool {
+    let Some(local) = &mut console.station.local else {
+        return false;
+    };
+    let reason = "The server asks for a new password for the station's account (it expired, \
+                  or an administrator reset it). An administrator can set one with \
+                  `voltrus station init --new-password`, then press Retry."
+        .to_owned();
+    eprintln!("voltrus-native: station: {reason}");
+    local.retry = None;
+    local.live_since = None;
+    local.status = Status::Refused(reason);
+    console.send(Command::SignOut);
+    cx.notify();
+    true
 }
 
 /// Ask the bundled server whether the station's service is installed and

@@ -146,6 +146,13 @@ fn bootout(domain: &str) -> Result<()> {
 
 pub(super) fn install(station: &Station) -> Result<()> {
     let exe = std::env::current_exe().context("Cannot locate the voltrus executable")?;
+    // An app opened where it was downloaded runs from a randomized, read-only
+    // copy that is gone after a restart, so the agent would start nothing.
+    anyhow::ensure!(
+        !exe.to_string_lossy().contains("/AppTranslocation/"),
+        "Voltrus SCADA runs from a temporary copy macOS made of the downloaded app. \
+         Move Voltrus SCADA.app to Applications, open it from there and set up the station again."
+    );
     let plist = plist_path()?;
     let domain = domain()?;
     bootout(&domain)?;

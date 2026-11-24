@@ -151,6 +151,8 @@ fn run_service() -> Result<()> {
 
     let result = loop {
         match events.recv_timeout(PROGRESS) {
+            // A stop asked for while the server was starting wins.
+            Ok(Event::Ready) if state == ServiceState::StopPending => {}
             Ok(Event::Ready) => {
                 tracing::info!("Service running");
                 state = ServiceState::Running;
@@ -270,16 +272,41 @@ fn settle(service: &Service) -> Result<ServiceState> {
     }
 }
 
+/// Whether `exe` is under a Program Files folder, which only administrators
+/// (and TrustedInstaller) may change: a LocalSystem service started from a
+/// folder a user can write to (Downloads, an unpacked zip) would run their
+/// replaced executable or planted DLL as SYSTEM.
+fn in_program_files(exe: &std::path::Path) -> bool {
+    let exe = exe.to_string_lossy().to_lowercase();
+    ["ProgramFiles", "ProgramW6432", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(|dir| {
+            let dir = dir.to_string_lossy().to_lowercase();
+            format!("{}\\", dir.trim_end_matches('\\'))
+        })
+        .any(|dir| exe.starts_with(&dir))
+}
+
 /// Install the service, or point an installed one at this executable and
 /// station directory.
 pub(super) fn install(station: &Station) -> Result<()> {
+    let exe = std::env::current_exe().context("Cannot locate the voltrus executable")?;
+    anyhow::ensure!(
+        in_program_files(&exe),
+        "{} is not under Program Files. The service runs as LocalSystem, so its \
+         executable must be in a folder only administrators can change: install with \
+         the Windows installer, or copy voltrus.exe into Program Files and run \
+         `service install` from there.",
+        exe.display()
+    );
     let info = ServiceInfo {
         name: OsString::from(SERVICE_NAME),
         display_name: OsString::from(DISPLAY_NAME),
         service_type: SERVICE_TYPE,
         start_type: ServiceStartType::AutoStart,
         error_control: ServiceErrorControl::Normal,
-        executable_path: std::env::current_exe().context("Cannot locate the voltrus executable")?,
+        executable_path: exe,
         launch_arguments: vec![
             OsString::from("service"),
             OsString::from("run"),

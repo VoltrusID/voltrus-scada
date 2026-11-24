@@ -740,6 +740,11 @@ impl Console {
             } => {
                 self.busy = false;
                 self.error = None;
+                // The station's account cannot take a new password here:
+                // `station.toml` would keep the old one.
+                if must_change_password && station::password_change_asked(self, cx) {
+                    return;
+                }
                 // Before the pages show: what an earlier session left must
                 // not reach this one, and what they fetch now must stay.
                 if self.sessions > 0 {

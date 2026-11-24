@@ -86,7 +86,7 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
         && args.get(2).map(String::as_str) == Some("run")
     {
         let dir = crate::station::dir_arg(&args[3..])?;
-        return crate::service::run(ext, &dir).await;
+        return exit_once_stopped(crate::service::run(ext, &dir).await);
     }
 
     init_tracing(None)?;
@@ -102,7 +102,16 @@ pub async fn run(ext: Arc<dyn Extension>) -> anyhow::Result<()> {
 
     let config_path = args.get(1).map(|s| s.as_str()).unwrap_or("config.yaml");
     let shutdown = shutdown_signal();
-    serve(ext, config_path, shutdown, None).await
+    exit_once_stopped(serve(ext, config_path, shutdown, None).await)
+}
+
+/// After a clean stop the data is saved and the connections are closed, but
+/// background work that never ends on its own (the MQTT broker's blocking
+/// task) would keep the runtime, and so the process, from exiting; launchd
+/// would then kill it and count a failed exit. So the process exits here.
+fn exit_once_stopped(result: anyhow::Result<()>) -> anyhow::Result<()> {
+    result?;
+    std::process::exit(0)
 }
 
 /// Install the global tracing subscriber: stderr, or `log_file` (appended,

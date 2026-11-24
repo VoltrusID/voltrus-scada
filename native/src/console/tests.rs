@@ -2,7 +2,7 @@
 //! the keymap and the routing of REST answers.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{Action, AppContext as _, Bounds, Pixels, TestAppContext, px, size};
 use voltrus_scada_native::api::Alarm;
@@ -393,6 +393,90 @@ fn station_status(h: &mut Harness) -> Option<Status> {
     })
 }
 
+/// The station's session signed in two minutes ago.
+fn lasted(h: &mut Harness) {
+    h.update(|console, _, _| {
+        if let Some(local) = console.station.local.as_mut() {
+            local.live_since = Some(Instant::now() - Duration::from_secs(120));
+        }
+    });
+}
+
+/// The station's first health check answered: up, so it signs in.
+fn station_up(h: &mut Harness, seq: i64) {
+    h.event(Event::PublicReply {
+        key: CallKey::new("station.health").with(seq),
+        reply: Reply::ok(()),
+    });
+    assert!(
+        h.commands()
+            .iter()
+            .any(|command| matches!(command, Command::SignIn { .. })),
+        "signs in once the server is up"
+    );
+}
+
+#[gpui::test]
+fn a_session_that_ends_at_once_signs_in_again_after_the_back_off(cx: &mut TestAppContext) {
+    let dir = station_dir("short-session", true);
+    let mut h = at_station(cx, &dir);
+    station_up(&mut h, 1);
+    h.sign_in("operator");
+    h.event(Event::Link(Link::Failed("Not authorised".into())));
+    assert!(health_checks(&mut h).is_empty(), "not at once");
+    h.cx.executor().advance_clock(Duration::from_secs(1));
+    h.cx.run_until_parked();
+    assert_eq!(health_checks(&mut h), [2], "after the back-off");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui::test]
+fn a_locked_station_account_is_tried_again_once_the_lock_runs_out(cx: &mut TestAppContext) {
+    let dir = station_dir("locked", true);
+    let mut h = at_station(cx, &dir);
+    station_up(&mut h, 1);
+    h.event(Event::SignInFailed {
+        message: "Account locked. Please try again later.".into(),
+        refused: true,
+    });
+    assert!(matches!(station_status(&mut h), Some(Status::Refused(_))));
+    h.cx.executor().advance_clock(Duration::from_secs(10 * 60));
+    h.cx.run_until_parked();
+    assert!(health_checks(&mut h).is_empty(), "not while locked");
+    h.cx.executor().advance_clock(Duration::from_secs(10 * 60));
+    h.cx.run_until_parked();
+    assert_eq!(health_checks(&mut h), [2], "once the lock has run out");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[gpui::test]
+fn a_station_account_asked_for_a_new_password_signs_out_and_says_how(cx: &mut TestAppContext) {
+    let dir = station_dir("expired", true);
+    let mut h = at_station(cx, &dir);
+    station_up(&mut h, 1);
+    h.event(Event::SignedIn {
+        username: "station".into(),
+        role: "operator".into(),
+        server: "http://127.0.0.1:3999".into(),
+        must_change_password: true,
+        password_expired: true,
+    });
+    assert!(
+        h.commands()
+            .iter()
+            .any(|command| matches!(command, Command::SignOut))
+    );
+    assert!(matches!(
+        station_status(&mut h),
+        Some(Status::Refused(reason)) if reason.contains("--new-password")
+    ));
+    h.update(|console, _, _| {
+        assert_ne!(console.phase, Phase::ChangePassword);
+        assert!(console.user.is_none());
+    });
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 #[gpui::test]
 fn a_local_station_shows_its_state_and_signs_in_by_itself(cx: &mut TestAppContext) {
     let dir = station_dir("connect", true);
@@ -427,7 +511,8 @@ fn a_local_station_shows_its_state_and_signs_in_by_itself(cx: &mut TestAppContex
     assert_eq!(station_status(&mut h), Some(Status::SigningIn));
     h.sign_in("admin");
     assert_eq!(station_status(&mut h), Some(Status::Live));
-    // The session ends: it signs in again, without the card.
+    // A session that lasted ends: it signs in again at once, without the card.
+    lasted(&mut h);
     h.event(Event::Link(Link::Failed("Not authorised".into())));
     assert_eq!(health_checks(&mut h), [2]);
     assert_eq!(station_status(&mut h), Some(Status::Connecting));

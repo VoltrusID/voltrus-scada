@@ -31,6 +31,9 @@ pub const LOG_DIR: &str = "logs";
 pub const LOG_FILE: &str = "voltrus.log";
 /// The account the console signs in with.
 pub const STATION_USER: &str = "station";
+/// The role a new `station` account gets: operate the plant, not administer
+/// the server (users, settings). An admin can change it under Users.
+pub const STATION_ROLE: &str = "operator";
 pub const DEFAULT_PORT: u16 = 3000;
 /// How far above the requested port `station init` looks for a free one.
 const PORT_SEARCH_RANGE: u16 = 100;
@@ -127,6 +130,13 @@ pub struct Initialized {
 /// SYSTEM and Administrators only, with Users allowed to list the folder and
 /// read `station.toml`. On Windows that needs an elevated prompt.
 pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
+    init_with(dir, port, false).await
+}
+
+/// [`init`]; with `new_password` the `station` account gets a new password
+/// even when the saved one still verifies (`--new-password`: one an add-on
+/// edition's policy let expire).
+pub async fn init_with(dir: &Path, port: Option<u16>, new_password: bool) -> Result<Initialized> {
     let dir = std::path::absolute(dir)
         .with_context(|| format!("Cannot resolve station directory {}", dir.display()))?;
     std::fs::create_dir_all(&dir)
@@ -161,7 +171,8 @@ pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
 
     let credential_path = dir.join(CREDENTIAL_FILE);
     let saved = read_credential(&credential_path);
-    let (password, password_changed) = ensure_station_user(&storage, saved.as_ref()).await?;
+    let keep = saved.as_ref().filter(|_| !new_password);
+    let (password, password_changed) = ensure_station_user(&storage, keep).await?;
 
     let credential = Credential {
         url: format!("http://127.0.0.1:{}", app_config.server_port),
@@ -172,6 +183,7 @@ pub async fn init(dir: &Path, port: Option<u16>) -> Result<Initialized> {
         write_credential(&credential_path, &credential)?;
     }
     allow_users_to_read(&credential_path)?;
+    own_all(&dir)?;
 
     let admin_password_file = crate::storage::initial_admin_password_path(path_str(&db_path)?)
         .unwrap_or_else(|| dir.join(crate::storage::INITIAL_ADMIN_PASSWORD_FILE));
@@ -206,12 +218,29 @@ fn secure_dir(dir: &Path) -> Result<()> {
 /// earlier install leaves its data. So ownership is taken recursively and,
 /// after the folder ACL is set, every existing entry is reset (recursively) to
 /// inherit it, not only what init writes afterwards.
+///
+/// `%ProgramData%` lets standard users create folders, so one could make the
+/// station folder before an administrator installs and leave a `config.yaml`
+/// (its own `auth_secret`), a `data.db` (its own `admin`) or a junction in
+/// it. So before taking anything over, every entry must already belong to
+/// Administrators, SYSTEM or the account running init; otherwise init stops
+/// and asks for the folder to be removed.
 #[cfg(windows)]
 fn secure_dir(dir: &Path) -> Result<()> {
     const ADMINISTRATORS: &str = "*S-1-5-32-544";
     const SYSTEM: &str = "*S-1-5-18";
     const USERS: &str = "*S-1-5-32-545";
     let dir_arg = dir.as_os_str();
+
+    if let Some(foreign) = owner::first_foreign(dir)? {
+        anyhow::bail!(
+            "{} is owned by another account, so the station folder may have been prepared by \
+             someone else. Check it, move the folder {} aside (or delete it) and run \
+             `voltrus station init` again as administrator.",
+            foreign.display(),
+            dir.display()
+        );
+    }
 
     if let Err(e) = icacls(&[dir_arg, "/setowner".as_ref(), ADMINISTRATORS.as_ref()]) {
         return Err(e.context(format!(
@@ -249,6 +278,133 @@ fn secure_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Windows: file owners, read with the Win32 security API.
+#[cfg(windows)]
+mod owner {
+    use anyhow::{Context, Result};
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Path, PathBuf};
+    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_SUCCESS, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows_sys::Win32::Security::{
+        EqualSid, GetTokenInformation, IsWellKnownSid, OWNER_SECURITY_INFORMATION, PSID,
+        TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    /// The first of `dir` and everything under it (junctions and links are
+    /// checked, not followed) whose owner is not Administrators, SYSTEM or
+    /// this process's account. `None` when `dir` does not exist.
+    pub fn first_foreign(dir: &Path) -> Result<Option<PathBuf>> {
+        if std::fs::symlink_metadata(dir).is_err() {
+            return Ok(None);
+        }
+        let me = TokenUserSid::current()?;
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(path) = pending.pop() {
+            if !trusted_owner(&path, &me)? {
+                return Ok(Some(path));
+            }
+            let meta = std::fs::symlink_metadata(&path)
+                .with_context(|| format!("Cannot read {}", path.display()))?;
+            if meta.is_dir() && !meta.file_type().is_symlink() {
+                for entry in std::fs::read_dir(&path)
+                    .with_context(|| format!("Cannot list {}", path.display()))?
+                {
+                    pending.push(entry?.path());
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn trusted_owner(path: &Path, me: &TokenUserSid) -> Result<bool> {
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut owner: PSID = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        // SAFETY: `wide` is NUL-terminated; the descriptor GetNamedSecurityInfoW
+        // allocates holds `owner` and is freed with LocalFree after the checks.
+        unsafe {
+            let status = GetNamedSecurityInfoW(
+                wide.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            );
+            anyhow::ensure!(
+                status == ERROR_SUCCESS,
+                "Cannot read the owner of {} (error {status})",
+                path.display()
+            );
+            let trusted = IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != 0
+                || IsWellKnownSid(owner, WinLocalSystemSid) != 0
+                || EqualSid(owner, me.sid()) != 0;
+            LocalFree(descriptor);
+            Ok(trusted)
+        }
+    }
+
+    /// This process's user SID (a `TOKEN_USER` and the SID it points into).
+    struct TokenUserSid(Vec<u64>);
+
+    impl TokenUserSid {
+        fn current() -> Result<Self> {
+            // SAFETY: the token handle is closed below; the buffer is sized by
+            // the first call and 8-byte aligned for TOKEN_USER.
+            unsafe {
+                let mut token: HANDLE = std::ptr::null_mut();
+                anyhow::ensure!(
+                    OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) != 0,
+                    "Cannot open this process's token: {}",
+                    std::io::Error::last_os_error()
+                );
+                let mut len = 0u32;
+                GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut len);
+                let mut buffer = vec![0u64; (len as usize).div_ceil(8).max(1)];
+                let ok = GetTokenInformation(
+                    token,
+                    TokenUser,
+                    buffer.as_mut_ptr().cast(),
+                    (buffer.len() * 8) as u32,
+                    &mut len,
+                );
+                let error = std::io::Error::last_os_error();
+                CloseHandle(token);
+                anyhow::ensure!(ok != 0, "Cannot read this process's user: {error}");
+                Ok(Self(buffer))
+            }
+        }
+
+        fn sid(&self) -> PSID {
+            // SAFETY: the buffer holds a TOKEN_USER (filled in `current`).
+            unsafe { (*(self.0.as_ptr() as *const TOKEN_USER)).User.Sid }
+        }
+    }
+}
+
+/// Windows: what init wrote belongs to Administrators too (not to the
+/// administrator who ran it), so a later init by another administrator finds
+/// only owners it trusts.
+#[cfg(windows)]
+fn own_all(dir: &Path) -> Result<()> {
+    icacls(&[
+        dir.as_os_str(),
+        "/setowner".as_ref(),
+        "*S-1-5-32-544".as_ref(),
+        "/T".as_ref(),
+        "/C".as_ref(),
+    ])
+}
+
+#[cfg(unix)]
+fn own_all(_dir: &Path) -> Result<()> {
+    Ok(())
+}
+
 /// Windows: the console runs as a standard user and reads `station.toml`.
 /// Rewriting the file replaces it, so the grant is applied after every write.
 #[cfg(windows)]
@@ -269,7 +425,11 @@ fn allow_users_to_read(_path: &Path) -> Result<()> {
 /// Run `icacls` (well-known SIDs keep it independent of the Windows language).
 #[cfg(windows)]
 fn icacls(args: &[&std::ffi::OsStr]) -> Result<()> {
-    let output = std::process::Command::new("icacls")
+    // By full path: the current directory and the folder of voltrus.exe come
+    // before the system folder in the search for a bare name.
+    let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    let icacls = Path::new(&system_root).join("System32").join("icacls.exe");
+    let output = std::process::Command::new(icacls)
         .args(args)
         .output()
         .context("Cannot run icacls")?;
@@ -308,7 +468,9 @@ fn write_credential(path: &Path, credential: &Credential) -> Result<()> {
 
 /// Make sure the `station` user exists and does not have to change its
 /// password, and return the password the console should use. A new account is
-/// an admin; an existing one keeps its role and enabled state. The saved
+/// an operator ([`STATION_ROLE`]): every local account that can read
+/// `station.toml` signs in as it, so it must not administer the server. An
+/// existing one keeps its role and enabled state. The saved
 /// password is kept while it still verifies; otherwise a new random one is set
 /// (and the user's old sessions are revoked).
 async fn ensure_station_user(
@@ -332,7 +494,7 @@ async fn ensure_station_user(
         None => {
             let hash = crate::api::auth::hash_password(&password);
             storage
-                .create_user(STATION_USER, &hash, "", "admin")
+                .create_user(STATION_USER, &hash, "", STATION_ROLE)
                 .await?;
         }
         // An existing account keeps the role and the enabled state an admin
@@ -440,13 +602,19 @@ pub(crate) fn flag_value<'a>(args: &'a [String], flag: &str) -> Result<Option<&'
 /// `voltrus station init [--dir D] [--port N]`.
 pub(crate) async fn handle_cli(args: &[String]) -> bool {
     let usage = || {
-        eprintln!("Usage: voltrus station init [--dir DIR] [--port PORT]");
+        eprintln!("Usage: voltrus station init [--dir DIR] [--port PORT] [--new-password]");
         std::process::exit(1);
     };
     if args.get(2).map(String::as_str) != Some("init") {
         usage();
     }
-    let options = &args[3..];
+    let new_password = args[3..].iter().any(|a| a == "--new-password");
+    let options: Vec<String> = args[3..]
+        .iter()
+        .filter(|a| *a != "--new-password")
+        .cloned()
+        .collect();
+    let options = &options[..];
     let parsed = dir_arg(options).and_then(|dir| {
         let port = flag_value(options, "--port")?
             .map(|p| {
@@ -457,7 +625,7 @@ pub(crate) async fn handle_cli(args: &[String]) -> bool {
         Ok((dir, port))
     });
     let result = match parsed {
-        Ok((dir, port)) => init(&dir, port).await,
+        Ok((dir, port)) => init_with(&dir, port, new_password).await,
         Err(e) => Err(e),
     };
     match result {
@@ -580,7 +748,7 @@ mod tests {
             .await
             .unwrap()
             .expect("station user exists");
-        user.role == "admin"
+        user.role == STATION_ROLE
             && !user.disabled
             && !user.must_change_password
             && crate::api::auth::verify_password(&credential.password, &user.password_hash)
@@ -706,5 +874,19 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(user.role, "viewer");
+    }
+
+    #[tokio::test]
+    async fn init_with_new_password_renews_a_password_that_still_works() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = init(tmp.path(), None).await.unwrap();
+        assert_eq!(first.username, STATION_USER);
+        let before = read_credential(&tmp.path().join(CREDENTIAL_FILE)).unwrap();
+        let again = init_with(tmp.path(), None, true).await.unwrap();
+        assert!(again.password_changed);
+        let after = read_credential(&tmp.path().join(CREDENTIAL_FILE)).unwrap();
+        assert_ne!(before.password, after.password);
+        assert!(station_user_can_sign_in(tmp.path(), &after).await);
+        assert!(!station_user_can_sign_in(tmp.path(), &before).await);
     }
 }

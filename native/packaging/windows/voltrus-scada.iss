@@ -14,7 +14,11 @@
 ; Silent use: setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART [/LOG=<file>]
 ;             unins000.exe /VERYSILENT /SUPPRESSMSGBOXES [/REMOVEDATA]
 ; Setup exits with code 10 when the station could not be set up (the files are
-; installed; the reason is in <station dir>\logs\setup.log).
+; installed; the reason is in Setup's log). The station commands' output goes
+; to a file in Setup's private temporary folder, and is appended to
+; <station dir>\logs\setup.log only once `station init` has secured that
+; folder: %ProgramData% lets standard users create folders, so Setup writes
+; nothing into the station folder before then.
 
 #if Ver < EncodeVer(6, 3, 0)
   #error Inno Setup 6.3 or later is required
@@ -103,6 +107,14 @@ const
 var
   StationFailed: Boolean;
   RemovePlantData: Boolean;
+  { Where the station commands' output goes: Setup's private temporary
+    folder while installing, logs\setup.log in the secured station folder
+    when uninstalling. }
+  CommandLog: String;
+  { The service was running before Setup stopped it for the upgrade. }
+  ServiceWasStopped: Boolean;
+  { The station was set up and its service started by this run. }
+  StationStarted: Boolean;
 
 function StationDir: String;
 begin
@@ -114,20 +126,31 @@ begin
   Result := StationDir + '\logs\setup.log';
 end;
 
-{ Runs Exe with Params hidden and waits, appending its output to the station's
-  logs\setup.log. True when it exited with 0. }
+function InitializeSetup: Boolean;
+begin
+  CommandLog := ExpandConstant('{tmp}\station-setup.log');
+  Result := True;
+end;
+
+function InitializeUninstall: Boolean;
+begin
+  CommandLog := StationLog;
+  Result := True;
+end;
+
+{ Runs Exe with Params hidden and waits, appending its output to CommandLog.
+  True when it exited with 0. }
 function RunLogged(const Exe, Params: String): Boolean;
 var
   Code: Integer;
   Line: String;
 begin
-  ForceDirectories(StationDir + '\logs');
   Line := AddQuotes(Exe) + ' ' + Params;
-  SaveStringToFile(StationLog, '> ' + Line + #13#10, True);
+  SaveStringToFile(CommandLog, '> ' + Line + #13#10, True);
   Log('Running ' + Line);
   { cmd strips the outer quotes and keeps the quoted paths inside. }
-  if not Exec(ExpandConstant('{cmd}'), '/C "' + Line + ' >> ' + AddQuotes(StationLog) + ' 2>&1"',
-    StationDir, SW_HIDE, ewWaitUntilTerminated, Code) then
+  if not Exec(ExpandConstant('{cmd}'), '/C "' + Line + ' >> ' + AddQuotes(CommandLog) + ' 2>&1"',
+    ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
   begin
     Log(Format('Could not run %s: %s', [Exe, SysErrorMessage(Code)]));
     Result := False;
@@ -142,15 +165,44 @@ begin
   Result := RunLogged(Exe, Command + ' --dir ' + AddQuotes(StationDir));
 end;
 
-{ An upgrade replaces voltrus.exe, which the running service holds open. }
+{ An upgrade replaces voltrus.exe, which the running service holds open.
+  `service status` exits 0 while it runs. }
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   Exe: String;
 begin
   Result := '';
   Exe := ExpandConstant('{app}\voltrus.exe');
+  if FileExists(Exe) and RunVoltrus(Exe, 'service status') then
+    ServiceWasStopped := RunVoltrus(Exe, 'service stop');
+end;
+
+{ Appends the commands' output to logs\setup.log in the station folder, once
+  `station init` has secured it. }
+procedure KeepCommandLog;
+var
+  Text: AnsiString;
+begin
+  if LoadStringFromFile(CommandLog, Text) then
+  begin
+    ForceDirectories(StationDir + '\logs');
+    if not SaveStringToFile(StationLog, Text, True) then
+      Log('Could not write ' + StationLog);
+  end;
+end;
+
+{ A cancelled or failed upgrade leaves the old files in place: start the
+  service it stopped again, so the plant is not left unpolled. }
+procedure DeinitializeSetup;
+var
+  Exe: String;
+begin
+  if not ServiceWasStopped or StationStarted then
+    Exit;
+  Exe := ExpandConstant('{app}\voltrus.exe');
   if FileExists(Exe) then
-    RunVoltrus(Exe, 'service stop');
+    if not RunVoltrus(Exe, 'service start') then
+      Log('Could not start the service again after the upgrade stopped');
 end;
 
 procedure ReportStationFailure(const Step: String);
@@ -159,17 +211,17 @@ var
   First, I: Integer;
 begin
   StationFailed := True;
-  if LoadStringsFromFile(StationLog, Lines) then
+  if LoadStringsFromFile(CommandLog, Lines) then
   begin
     First := GetArrayLength(Lines) - StationLogTail;
     if First < 0 then
       First := 0;
-    Log('The end of ' + StationLog + ':');
+    Log('The end of the station commands'' output:');
     for I := First to GetArrayLength(Lines) - 1 do
       Log(Lines[I]);
   end;
   SuppressibleMsgBox('Voltrus SCADA is installed, but this computer could not be set up as a station (' +
-    Step + ' failed).' + #13#10#13#10 + 'Details are in ' + StationLog + '.' + #13#10#13#10 +
+    Step + ' failed).' + #13#10#13#10 + 'Details are in Setup''s log, ' + ExpandConstant('{log}') + '.' + #13#10#13#10 +
     'Fix the cause, then use "Set up this computer as a station" in the console, or run Setup again.',
     mbCriticalError, MB_OK, IDOK);
 end;
@@ -185,11 +237,17 @@ begin
     Exit;
   Exe := ExpandConstant('{app}\voltrus.exe');
   if not RunVoltrus(Exe, 'station init') then
-    ReportStationFailure('voltrus station init')
-  else if not RunVoltrus(Exe, 'service install') then
+  begin
+    ReportStationFailure('voltrus station init');
+    Exit;
+  end;
+  if not RunVoltrus(Exe, 'service install') then
     ReportStationFailure('voltrus service install')
   else if not RunVoltrus(Exe, 'service start') then
-    ReportStationFailure('voltrus service start');
+    ReportStationFailure('voltrus service start')
+  else
+    StationStarted := True;
+  KeepCommandLog;
 end;
 
 function GetCustomSetupExitCode: Integer;

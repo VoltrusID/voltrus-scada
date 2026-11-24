@@ -8371,6 +8371,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "windows-service",
+ "windows-sys 0.61.2",
  "zip",
 ]
 

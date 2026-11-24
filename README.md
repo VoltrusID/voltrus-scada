@@ -282,6 +282,7 @@ the console never stops polling, alarms, history or writes.
 
 ```bash
 voltrus station init            # config.yaml, data.db, logs/, station.toml
+voltrus station init --new-password  # a new password for the station account
 voltrus service install         # Windows service / macOS LaunchAgent
 voltrus service start
 voltrus service status          # exit 0 running, 3 stopped, 4 not installed
@@ -292,8 +293,10 @@ The station directory is `%ProgramData%\Voltrus SCADA` on Windows,
 `~/.local/share/voltrus-scada` elsewhere (override with `--dir` or
 `VOLTRUS_STATION_DIR`). `station init` picks a free port from 3000, keeps an
 existing config and writes `station.toml`, the credential of the `station`
-account the console signs in with (an admin when created; it keeps any role
-you give it later); run it again to repair it. It also
+account the console signs in with (an operator when created, since every
+local account that can read the file signs in as it; it keeps any role you
+give it later; `admin`'s generated password is in `initial-admin-password`
+there, readable by administrators only); run it again to repair it. It also
 locks the directory down: private to your account on macOS and Linux; on
 Windows (run it as administrator) owned by Administrators, with only SYSTEM and
 Administrators allowed in and Users allowed to read `station.toml`. The
