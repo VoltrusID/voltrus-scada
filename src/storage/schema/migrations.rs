@@ -529,6 +529,9 @@ pub(super) fn run_migrations(conn: &Connection) {
     // Migration: the tag's value when a write was queued, on the command's
     // first audit entry (audit trail of setpoint changes: old and new value).
     let _ = conn.execute_batch("ALTER TABLE command_audit_log ADD COLUMN previous_value REAL");
+    // Which front end queued a command (session, api_key, mcp, flow, recipe);
+    // NULL on commands written before, which are classified by `created_by`.
+    let _ = conn.execute_batch("ALTER TABLE commands ADD COLUMN origin TEXT");
 
     // Migration: session limits (idle and absolute timeout). A refresh token
     // carries when its session started and when the user was last active;

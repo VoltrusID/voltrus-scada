@@ -7,6 +7,7 @@ import {
   getCommandAudit,
 } from '../api/commands'
 import type { Command, CommandAuditEntry } from '../api/commands'
+import { SourceBadge } from './SourceBadge'
 
 const PANEL_TABS = ['history', 'active'] as const
 type PanelTab = typeof PANEL_TABS[number]
@@ -60,7 +61,7 @@ function AuditTrail({ commandId }: { commandId: string }) {
           {' -> '}
           <span style={{ color: 'var(--fg)', fontWeight: 600 }}>{entry.new_status}</span>
           {' by '}
-          <span>{entry.changed_by || 'system'}</span>
+          <SourceBadge actor={entry.changed_by} />
           {' at '}
           <span>{fmtTs(entry.created_at * 1000)}</span>
           {entry.reason && <span style={{ marginLeft: 4 }}>({entry.reason})</span>}
@@ -108,7 +109,7 @@ function CommandRow({ cmd, onExpand, expanded, onCancel, showCancel }: {
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 10, color: 'var(--muted)' }}>by {cmd.created_by}</span>
+          <SourceBadge actor={cmd.created_by} source={cmd.source} />
           {showCancel && isActive && (
             <button
               onClick={e => { e.stopPropagation(); onCancel() }}

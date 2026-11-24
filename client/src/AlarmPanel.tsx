@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { SourceBadge } from './components/SourceBadge'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -361,7 +362,7 @@ function AuditTab({ isMobile }: { isMobile: boolean }) {
             <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 2 }}>{entry.details}</div>
           )}
           <div style={{ fontSize: 10, color: 'var(--muted)' }}>
-            {t('alarms.byName', { name: entry.performed_by || t('alarms.system') })}
+            <SourceBadge actor={entry.performed_by} />
           </div>
         </div>
       ))}
@@ -614,7 +615,7 @@ export function AlarmPanel({ onClose }: Props) {
                         {historyTarget === alarm.id && <AlarmHistory alarmId={alarm.id} />}
 
                         {alarm.acknowledged_at && (
-                          <span style={{ fontSize: 11, color: 'var(--ok)' }}>&#10003; {alarm.acknowledged_by ? t('alarms.acknowledgedBy', { name: alarm.acknowledged_by }) : t('alarms.acknowledged')}</span>
+                          <span style={{ fontSize: 11, color: 'var(--ok)' }}>&#10003; {t('alarms.acknowledged')}{alarm.acknowledged_by && <> <SourceBadge actor={alarm.acknowledged_by} /></>}</span>
                         )}
                       </div>
                     )

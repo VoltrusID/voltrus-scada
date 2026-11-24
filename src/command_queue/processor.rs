@@ -473,6 +473,8 @@ mod tests {
             readback_value: None,
             readback_attempts: 0,
             readback_ts: None,
+            origin: None,
+            source: None,
         };
         storage.insert_command(&cmd).await.unwrap();
     }
@@ -583,6 +585,8 @@ mod tests {
             readback_value: None,
             readback_attempts: 0,
             readback_ts: None,
+            origin: None,
+            source: None,
         }
     }
 

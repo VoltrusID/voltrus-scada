@@ -255,6 +255,17 @@ pub enum ActionOrigin {
 }
 
 impl ActionOrigin {
+    /// The name stored with a queued command (`commands.origin`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::ApiKey => "api_key",
+            Self::Mcp => "mcp",
+            Self::Flow => "flow",
+            Self::Recipe => "recipe",
+        }
+    }
+
     /// Whether a person is there who can type a password.
     pub fn can_sign(self) -> bool {
         matches!(self, Self::Session | Self::Recipe)

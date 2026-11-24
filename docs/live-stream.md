@@ -73,6 +73,27 @@ sign-in session changed as above, or whose key is revoked, is closed with code
 1008. An application-level `Ping` message is answered with `Pong`. Clients that are not on the WebSocket (including the event stream) write
 with the REST endpoint.
 
+### Who sent a command
+
+Every queued command records who sent it (`created_by`: the user name,
+`api_key:<id>` or `flow:<id>`) and, from v0.53, through which front end
+(`origin`: `session`, `api_key`, `mcp`, `flow` or `recipe`).
+`GET /api/v1/commands`, `GET /api/v1/commands/{id}` and the MCP
+`get_command_status` tool return both plus a display form,
+`source: {kind, label}`, with the name of the API key or flow looked up:
+
+```json
+{"created_by": "api_key:4", "origin": "mcp",
+ "source": {"kind": "mcp", "label": "MCP (API key line-2 gateway)"}}
+```
+
+The command panel shows it as a badge (`USER`, `API KEY`, `MCP`, `FLOW`, `RECIPE`)
+and the name on every command and on each step of its audit trail; the alarm
+audit tab and acknowledged alarms show who acted the same way. Commands written
+before v0.53 have no `origin` and are classified from `created_by` (so an MCP
+write from then shows as its user or key). The hash-chained security audit log
+(`GET /api/v1/audit`) keeps its own `tag_write` entries with the user and value.
+
 ## The web client
 
 The client uses the WebSocket. When three connection attempts in a row end before the

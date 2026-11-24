@@ -189,7 +189,7 @@ pub async fn submit_tag_write(
 
     let previous = checked.previous;
     let reason = checked.reason.clone();
-    let cmd = insert_write(&state.storage, actor.username, req, checked).await?;
+    let cmd = insert_write(&state.storage, actor.username, actor.origin, req, checked).await?;
 
     let mut details = format!("command={}", cmd.id);
     if let Some(previous) = previous {
@@ -233,7 +233,13 @@ pub async fn enqueue_checked_write(
         let ext = crate::edition::installed();
         unattended_write_allowed(ext.as_ref(), username, &req, &checked).await?;
     }
-    insert_write(storage, username, req, checked).await
+    // Only flows (`flow:<id>`) and recipe loads queue writes through here.
+    let origin = if username.starts_with("flow:") {
+        crate::edition::ActionOrigin::Flow
+    } else {
+        crate::edition::ActionOrigin::Recipe
+    };
+    insert_write(storage, username, origin, req, checked).await
 }
 
 /// Refuse a flow's write the edition wants signed: nobody is there to sign.
@@ -421,6 +427,7 @@ pub async fn check_write(
 async fn insert_write(
     storage: &crate::storage::Storage,
     username: &str,
+    origin: crate::edition::ActionOrigin,
     req: TagWriteSubmission,
     checked: CheckedWrite,
 ) -> Result<Command, WriteError> {
@@ -454,6 +461,8 @@ async fn insert_write(
         readback_value: None,
         readback_attempts: 0,
         readback_ts: None,
+        origin: Some(origin.as_str().to_string()),
+        source: None,
     };
 
     storage
@@ -470,6 +479,7 @@ async fn insert_write(
 pub async fn record_direct_write(
     storage: &crate::storage::Storage,
     username: &str,
+    origin: crate::edition::ActionOrigin,
     req: TagWriteSubmission,
     checked: CheckedWrite,
     result: &crate::models::WriteResult,
@@ -509,6 +519,8 @@ pub async fn record_direct_write(
         readback_value: None,
         readback_attempts: 0,
         readback_ts: None,
+        origin: Some(origin.as_str().to_string()),
+        source: None,
     };
     storage
         .insert_command_audited(&cmd, reason.as_deref(), previous)

@@ -943,6 +943,11 @@ async fn mcp_write_tag_respects_write_policy() {
             .unwrap()
             .starts_with("api_key:")
     );
+    // The command remembers that MCP sent it, with the key's name.
+    assert_eq!(status["command"]["origin"], "mcp");
+    assert_eq!(status["command"]["source"]["kind"], "mcp");
+    let label = status["command"]["source"]["label"].as_str().unwrap();
+    assert!(label.starts_with("MCP (API key "), "{label}");
     let e = tool_err(
         &f.app,
         Auth::Bearer(&f.api_key),
