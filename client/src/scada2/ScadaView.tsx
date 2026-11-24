@@ -6,7 +6,7 @@ import { ScadaPalette, PANEL_WIDTH } from './ScadaPalette'
 import { WidgetInspector, ConnectionInspector, ScreenInspector, INSPECTOR_WIDTH, widgetTitle } from './ScadaInspector'
 import { ConnectionLayer, CONNECTION_TYPES } from './connections/ConnectionLayer'
 import { historyReducer, emptyHistory, createWidget, createConnection, type ScadaLayoutState } from './engine/widgetState'
-import { loadLayoutFromAPI } from './engine/layout'
+import { loadLayoutFromAPI, saveLayoutToAPI } from './engine/layout'
 import { SYMBOL_MAP, SYMBOLS } from './hmi/symbols'
 import { SymbolThumb } from './hmi/SymbolView'
 import { Faceplate } from './hmi/Faceplate'
@@ -81,26 +81,7 @@ const CONTROL_TYPES = new Set<ScadaWidgetType>(['slider', 'number_input', 'toggl
 const opensFaceplate = (w: WidgetInstance) => faceplateOf(w.config) != null || (w.sensorId != null && FACEPLATE_TYPES.has(w.type))
 
 function toAPI(layout: ScadaLayoutState, sensors: SensorConfig[]) {
-  const equipment: ScadaEquipmentItem[] = layout.widgets.map((w, i) => ({
-    equipment_id: w.id,
-    equipment_type: w.type as any,
-    equipment_name: w.config?.label || sensors.find(s => s.id === w.sensorId)?.name || widgetTitle(w),
-    x: w.x,
-    y: w.y,
-    width: w.width,
-    height: w.height,
-    rotation: Number(w.config?.rotation ?? 0),
-    sensor_bindings: JSON.stringify(w.sensorIds ?? (w.sensorId != null ? [w.sensorId] : [])),
-    config: JSON.stringify({ ...w.config, z: i }),
-  }))
-  const connections: ScadaConnectionItem[] = layout.connections.map(c => ({
-    connection_id: c.id,
-    from_equipment: c.fromWidgetId,
-    to_equipment: c.toWidgetId,
-    waypoints: JSON.stringify(c.waypoints),
-    connection_type: c.connectionType,
-  }))
-  return { equipment, connections }
+  return saveLayoutToAPI(layout, w => sensors.find(s => s.id === w.sensorId)?.name || widgetTitle(w))
 }
 
 /** Keep a widget's box on the stage. */

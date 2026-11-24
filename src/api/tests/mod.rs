@@ -35,6 +35,7 @@ mod project;
 mod protocol_routes;
 mod roles;
 mod scan_network;
+mod screen_round_trip;
 mod scripts;
 mod secrets;
 mod security_rules;

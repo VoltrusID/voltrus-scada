@@ -58,7 +58,8 @@ export const WidgetInspector: React.FC<WidgetProps> = ({ widget, sensors, onUpda
   // Show what is rendered: legacy widgets map old keys (showValue → showStatus, showPercentage → showPercent).
   const config = resolved?.config ?? widget.config ?? {}
 
-  const setPrimary = (id: number | null) => onUpdate({ sensorId: id, sensorIds: id != null ? [id] : [] })
+  // A new tag drops a name loaded from the server, so the saved name follows the tag.
+  const setPrimary = (id: number | null) => onUpdate({ sensorId: id, sensorIds: id != null ? [id] : [], name: undefined })
   // Add-on widgets bring their own settings form and take no tag binding.
   const addon = !manifest && isAddonWidgetType(widget.type)
   const AddonEditor = addon ? getScreenWidget(widget.type, 'scada')?.configEditor : undefined

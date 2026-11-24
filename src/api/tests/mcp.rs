@@ -2199,3 +2199,133 @@ async fn mcp_calls_are_rate_limited_per_credential() {
     // Another key has its own budget.
     ok(&f.app, Auth::Bearer(&f.api_key), "list_tags", json!({})).await;
 }
+
+const SCREEN_PROJECT: &str = r#"
+format: voltrus-project/1
+faceplates:
+- id: pump
+  name: Pump
+  kind: pump
+  roles:
+  - {role: run, kind: state, required: true}
+  - {role: cmd, kind: command}
+tags:
+- {key: p301a_run, device: plc_1, name: P-301A run}
+- {key: p301a_cmd, device: plc_1, name: P-301A command}
+screens:
+- id: pumps
+  name: Pumps
+  scada:
+    # In the export's order (by equipment_id), so the text can be compared.
+    equipment:
+    - equipment_id: w_label
+      equipment_type: label
+      config: {text: Pump station, z: 1}
+    - equipment_id: w_pump
+      equipment_type: symbol
+      equipment_name: P-301A
+      x: 120
+      y: 80
+      width: 80
+      height: 80
+      rotation: 90
+      sensors: [plc_1/p301a_run]
+      config: {symbol: pump, rotation: 90, z: 0, faceplate: pump, faceplateMap: {run: plc_1/p301a_run, cmd: plc_1/p301a_cmd}}
+    connections:
+    - {connection_id: c1, from_equipment: w_pump, to_equipment: w_label, connection_type: data, waypoints: [[1, 2]]}
+"#;
+
+/// A screen an agent builds through MCP (project_apply_import) is what the
+/// editor loads over REST, saves back unchanged, and exports as it came in.
+#[tokio::test]
+async fn mcp_screen_from_a_project_import_round_trips() {
+    let f = fixture().await;
+    let cookie = f.admin_cookie();
+    let applied = ok(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_apply_import",
+        json!({"yaml": SCREEN_PROJECT}),
+    )
+    .await;
+    assert_eq!(applied["dry_run"], false, "{applied}");
+
+    let get = |uri: &'static str| {
+        let app = f.app.clone();
+        let cookie = cookie.clone();
+        async move {
+            send_request(&app, "GET", uri, None, Some(&cookie), None)
+                .await
+                .1
+        }
+    };
+    let eq1 = get("/api/v1/screens/pumps/scada-equipment").await;
+    let cn1 = get("/api/v1/screens/pumps/scada-connections").await;
+    let rows = super::screen_round_trip::canonical(&eq1["items"]);
+    assert_eq!(rows.len(), 2, "{eq1}");
+    let run_id = f
+        .storage
+        .list_data_sources(None)
+        .await
+        .unwrap()
+        .iter()
+        .find(|t| t.key == "p301a_run")
+        .unwrap()
+        .id;
+    assert_eq!(rows[1]["sensor_bindings"], json!([run_id as f64]));
+    assert_eq!(
+        rows[1]["config"]["faceplateMap"]["run"],
+        json!(run_id as f64)
+    );
+    assert_eq!(rows[1]["rotation"], json!(90.0));
+
+    // The editor saves what it loaded.
+    for (uri, items) in [
+        ("/api/v1/screens/pumps/scada-equipment", &eq1["items"]),
+        ("/api/v1/screens/pumps/scada-connections", &cn1["items"]),
+    ] {
+        let (status, body) = send_request(
+            &f.app,
+            "PUT",
+            uri,
+            None,
+            Some(&cookie),
+            Some(json!({"items": items})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let eq2 = get("/api/v1/screens/pumps/scada-equipment").await;
+    let cn2 = get("/api/v1/screens/pumps/scada-connections").await;
+    assert_eq!(
+        super::screen_round_trip::canonical(&eq2["items"]),
+        super::screen_round_trip::canonical(&eq1["items"])
+    );
+    assert_eq!(
+        super::screen_round_trip::canonical(&cn2["items"]),
+        super::screen_round_trip::canonical(&cn1["items"])
+    );
+
+    // MCP exports the screen as it was imported.
+    let exported = ok(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_export_yaml",
+        json!({}),
+    )
+    .await;
+    let out = crate::project_yaml::parse_project_yaml(exported["yaml"].as_str().unwrap()).unwrap();
+    let inp = crate::project_yaml::parse_project_yaml(SCREEN_PROJECT).unwrap();
+    for section in ["screens", "faceplates"] {
+        assert_eq!(out.entities(section), inp.entities(section), "{section}");
+    }
+    let plan = ok(
+        &f.app,
+        Auth::Cookie(&cookie),
+        "project_plan_import",
+        json!({"yaml": SCREEN_PROJECT}),
+    )
+    .await;
+    assert_eq!(plan["totals"]["update"], 0, "{plan}");
+    assert_eq!(plan["totals"]["create"], 0, "{plan}");
+}
