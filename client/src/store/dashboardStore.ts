@@ -132,12 +132,23 @@ function useStore() {
 
 // Generic selector hook using useSyncExternalStore
 // CRITICAL: selectors must return stable references when data hasn't changed.
-export function useDashboardSelector<T>(selector: (state: DashboardState) => T): T {
+// `paused` keeps returning the last value (an off-screen card need not follow
+// live data) once there is one; the first render after it clears reads the
+// store again.
+export function useDashboardSelector<T>(selector: (state: DashboardState) => T, paused = false): T {
   const store = useStore()
   const selectorRef = useRef(selector)
   selectorRef.current = selector
+  const pausedRef = useRef(paused)
+  pausedRef.current = paused
+  const lastRef = useRef<{ value: T } | null>(null)
 
-  const getSnapshot = useCallback(() => selectorRef.current(store.getState()), [store])
+  const getSnapshot = useCallback(() => {
+    if (pausedRef.current && lastRef.current && lastRef.current.value !== undefined) return lastRef.current.value
+    const value = selectorRef.current(store.getState())
+    lastRef.current = { value }
+    return value
+  }, [store])
   const getServerSnapshot = useCallback(() => selectorRef.current(initialState), [])
 
   return useSyncExternalStore(store.subscribe, getSnapshot, getServerSnapshot)
@@ -149,9 +160,9 @@ export function useSensorDataPoints(sensorId: number | string): DataPoint[] {
   return useDashboardSelector(s => s.dataMap[k] ?? EMPTY_DATA)
 }
 
-export function useSensorCurrentValue(sensorId: number | string): SensorData | undefined {
+export function useSensorCurrentValue(sensorId: number | string, paused = false): SensorData | undefined {
   const k = String(sensorId)
-  return useDashboardSelector(s => s.currentValues[k])
+  return useDashboardSelector(s => s.currentValues[k], paused)
 }
 
 interface Tracking {
@@ -258,14 +269,14 @@ export function useLiveTransport(): Transport {
   return useDashboardSelector(s => s.liveTransport)
 }
 
-export function useChartData(sensorId: number | string, mode: 'live' | 'history'): DataPoint[] {
+export function useChartData(sensorId: number | string, mode: 'live' | 'history', paused = false): DataPoint[] {
   const k = String(sensorId)
   return useDashboardSelector(s => {
     if (mode === 'history' && s.historyMap && s.historyMap[k]) {
       return s.historyMap[k]
     }
     return s.dataMap[k] ?? EMPTY_DATA
-  })
+  }, paused)
 }
 
 export function useDetailData(sensorId: number | string, mode: 'live' | 'history' | 'flows'): DataPoint[] {
@@ -279,8 +290,8 @@ export function useDetailData(sensorId: number | string, mode: 'live' | 'history
 }
 
 // Convenience hook that maps DataPoint[] → number[] with stable memoization.
-export function useChartValues(sensorId: number | string, mode: 'live' | 'history'): number[] {
-  const raw = useChartData(sensorId, mode)
+export function useChartValues(sensorId: number | string, mode: 'live' | 'history', paused = false): number[] {
+  const raw = useChartData(sensorId, mode, paused)
   return useMemo(() => raw.map(d => d.value), [raw])
 }
 

@@ -4,6 +4,7 @@ import { type TagUpdate, onWsReady } from '../api/websocket'
 import { useDashboardStoreActions } from '../store/dashboardStore'
 import { alarmStatus } from '../utils'
 import { qualityFamily } from '../quality'
+import { isRepeatSample } from '../liveSample'
 
 const LIVE_PTS = 300
 
@@ -48,6 +49,7 @@ export function useWSData(authed: boolean, sensors: SensorConfig[]) {
         quality: u.data_quality,
         ts_ms: u.ts_ms,
       }
+      if (isRepeatSample(dataUpdates.get(k)?.value ?? state.currentValues[k], value)) continue
 
       const prevArr = dataUpdates.has(k) ? dataUpdates.get(k)!.points : (state.dataMap[k] ?? [])
       const appended = fresh ? [...prevArr, { value: u.value, ts }] : prevArr

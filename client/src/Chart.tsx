@@ -1,7 +1,15 @@
 import { useRef, useEffect, lazy, Suspense } from 'react';
 import { safeMinMax, toHexColor, themeColor } from './styles';
 import { useCanvasSize } from './hooks/useCanvasSize';
+import { useInView } from './hooks/useInView';
 import { gaugeBands } from './gaugeMath';
+
+/** Size the backing store only when it changed: assigning width reallocates and clears the canvas. */
+function fitCanvas(cv: HTMLCanvasElement, w: number, h: number, dpr: number) {
+  const bw = Math.round(w * dpr), bh = Math.round(h * dpr);
+  if (cv.width !== bw) cv.width = bw;
+  if (cv.height !== bh) cv.height = bh;
+}
 
 // ── Sparkline ──
 
@@ -10,15 +18,17 @@ function SparklineChart({ data, color: rawColor, warn, crit, simulated }: { data
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const size = useCanvasSize(containerRef)
+  const inView = useInView(containerRef)
 
   useEffect(() => {
     const cv = canvasRef.current;
-    if (!cv || data.length < 2) return;
+    // Off-screen cards skip the redraw; scrolling one into view draws the latest data.
+    if (!cv || data.length < 2 || !inView) return;
     const ctx = cv.getContext('2d')!
     const { width: W, height: H, dpr } = size
     if (W <= 0 || H <= 0) return
 
-    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    fitCanvas(cv, W, H, dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const pL = 40, pR = 10, pT = 10, pB = 24, cW = W - pL - pR, cH = H - pT - pB;
     ctx.clearRect(0, 0, W, H);
     ctx.strokeStyle = '#1a1a1e'; ctx.lineWidth = 1;
@@ -45,7 +55,7 @@ function SparklineChart({ data, color: rawColor, warn, crit, simulated }: { data
     ctx.beginPath(); ctx.arc(lx, cy, 4, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
     ctx.beginPath(); ctx.arc(lx, cy, 7, 0, Math.PI * 2); ctx.strokeStyle = color + '40'; ctx.lineWidth = 2; ctx.stroke();
     ctx.fillStyle = color; ctx.font = "bold 11px 'SF Mono','JetBrains Mono',Menlo,monospace"; ctx.textAlign = 'right'; ctx.fillText(lv.toFixed(1), W - pR - 2, cy - 8);
-  }, [data, color, warn, crit, size, simulated]);
+  }, [data, color, warn, crit, size, simulated, inView]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }}><canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} /></div>;
 }
@@ -82,14 +92,15 @@ function GaugeChart({ value, min, max, warn, crit, color: rawColor, decimals, un
   const containerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const size = useCanvasSize(containerRef)
+  const inView = useInView(containerRef)
 
   useEffect(() => {
-    const cv = canvasRef.current; if (!cv) return;
+    const cv = canvasRef.current; if (!cv || !inView) return;
     const ctx = cv.getContext('2d')!
     const { width: W, height: H, dpr } = size
     if (W <= 0 || H <= 0) return
 
-    cv.width = W * dpr; cv.height = H * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    fitCanvas(cv, W, H, dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const cx = W / 2, cy = H * 0.78;
     const r = Math.min(W, H) * 0.38;
     ctx.clearRect(0, 0, W, H);
@@ -179,7 +190,7 @@ function GaugeChart({ value, min, max, warn, crit, color: rawColor, decimals, un
     ctx.textAlign = 'center';
     ctx.fillText(min.toFixed(0), cx - r - 4, cy + 14);
     ctx.fillText(max.toFixed(0), cx + r + 4, cy + 14);
-  }, [value, min, max, warn, crit, color, decimals, unit, size]);
+  }, [value, min, max, warn, crit, color, decimals, unit, size, inView]);
 
   return <div ref={containerRef} style={{ width: '100%', height: '100%' }}><canvas ref={canvasRef} style={{ display: 'block', width: '100%', height: '100%' }} /></div>;
 }
