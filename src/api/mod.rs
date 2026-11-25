@@ -265,6 +265,17 @@ impl IntoResponse for AppError {
         if let Some(RejectedJson(status, body)) = self.0.downcast_ref::<RejectedJson>() {
             return (*status, Json(body.clone())).into_response();
         }
+        // AI provider failures keep their own status (bad key, rate limit, ...).
+        let err = match self.0.downcast::<crate::ai_copilot::error::AiError>() {
+            Ok(ai) => return ai.into_response(),
+            Err(err) => AppError(err),
+        };
+        err.plain_response()
+    }
+}
+
+impl AppError {
+    fn plain_response(self) -> axum::response::Response {
         let status = if self.0.downcast_ref::<Forbidden>().is_some() {
             StatusCode::FORBIDDEN
         } else if let Some(Rejected(status, _)) = self.0.downcast_ref::<Rejected>() {

@@ -218,6 +218,13 @@ pub(crate) async fn serve(
     let storage =
         Storage::new_with_key(&app_config.db_path, app_config.db_encryption_key.as_deref())?;
     let cache = cache.with_storage(storage.clone());
+    match storage.flag_interrupted_ai_applies().await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(
+            "{n} AI proposal(s) were being applied when the server stopped; marked failed, check them in the AI copilot"
+        ),
+        Err(e) => tracing::error!("Could not check for interrupted AI proposal applies: {e:#}"),
+    }
     let license_status = {
         let status = ext.resolve_license(&storage).await;
         let start = ext

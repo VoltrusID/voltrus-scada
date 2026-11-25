@@ -1,5 +1,5 @@
 mod generation;
-mod helpers;
+pub(in crate::api) mod helpers;
 mod proposals;
 mod settings;
 mod templates;

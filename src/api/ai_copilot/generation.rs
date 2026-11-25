@@ -20,17 +20,16 @@ pub async fn generate_register_map(
     Extension(_auth): Extension<AuthUser>,
     Json(body): Json<models::RegisterMapRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::helpers::reject_pdf(&body.file_type, &body.file_content)?;
     let settings = super::helpers::load_ai_settings(&state).await?;
     let provider = resolve_provider(&settings);
 
-    let user_prompt = ai_copilot::prompts::register_map_user_prompt(
-        &ai_copilot::prompts::scrub_prompt(&body.file_content),
-        &body.device_name,
-    );
+    let user_prompt =
+        ai_copilot::prompts::register_map_user_prompt(&body.file_content, &body.device_name);
 
     let response = provider
         .complete(AiRequest {
-            system_prompt: ai_copilot::prompts::register_map_system_prompt().into(),
+            system_prompt: ai_copilot::prompts::register_map_system_prompt(),
             user_prompt,
             max_tokens: Some(4096),
             temperature: Some(0.2),
@@ -87,14 +86,12 @@ pub async fn generate_dashboard_layout(
         .collect::<Vec<_>>()
         .join("\n");
 
-    let user_prompt = ai_copilot::prompts::dashboard_layout_user_prompt(
-        &ai_copilot::prompts::scrub_prompt(&body.description),
-        &ai_copilot::prompts::scrub_prompt(&tags_str),
-    );
+    let user_prompt =
+        ai_copilot::prompts::dashboard_layout_user_prompt(&body.description, &tags_str);
 
     let response = provider
         .complete(AiRequest {
-            system_prompt: ai_copilot::prompts::dashboard_layout_system_prompt().into(),
+            system_prompt: ai_copilot::prompts::dashboard_layout_system_prompt(),
             user_prompt,
             max_tokens: Some(4096),
             temperature: Some(0.3),
@@ -145,12 +142,15 @@ pub async fn generate_alarm_thresholds(
     let settings = super::helpers::load_ai_settings(&state).await?;
     let provider = resolve_provider(&settings);
 
+    let requested = super::helpers::resolve_threshold_tags(&state, &body.tags).await?;
     let tags_str = body
         .tags
         .iter()
-        .map(|t| {
+        .zip(&requested)
+        .map(|(t, (id, _))| {
             format!(
-                "{}: {} [{}] range {}-{}",
+                "{} | {}: {} [{}] range {}-{}",
+                id,
                 t.source_key,
                 t.name,
                 t.unit.as_deref().unwrap_or(""),
@@ -166,7 +166,7 @@ pub async fn generate_alarm_thresholds(
 
     let response = provider
         .complete(AiRequest {
-            system_prompt: ai_copilot::prompts::alarm_threshold_system_prompt().into(),
+            system_prompt: ai_copilot::prompts::alarm_threshold_system_prompt(),
             user_prompt,
             max_tokens: Some(2048),
             temperature: Some(0.2),
@@ -176,6 +176,8 @@ pub async fn generate_alarm_thresholds(
 
     let json_str = ai_copilot::parser::extract_json(&response.content)?;
     let thresholds = ai_copilot::parser::parse_alarm_thresholds(&json_str)?;
+    let thresholds = super::helpers::bind_thresholds(thresholds, &requested)
+        .map_err(ai_copilot::error::AiError::MalformedResponse)?;
 
     let proposal_id = state
         .storage
@@ -230,7 +232,7 @@ pub async fn generate_tag_rename(
 
     let response = provider
         .complete(AiRequest {
-            system_prompt: ai_copilot::prompts::tag_rename_system_prompt().into(),
+            system_prompt: ai_copilot::prompts::tag_rename_system_prompt(),
             user_prompt,
             max_tokens: Some(4096),
             temperature: Some(0.1),
@@ -285,7 +287,7 @@ pub async fn generate_flow_rule(
 
     let response = provider
         .complete(AiRequest {
-            system_prompt: ai_copilot::prompts::flow_rule_system_prompt().into(),
+            system_prompt: ai_copilot::prompts::flow_rule_system_prompt(),
             user_prompt,
             max_tokens: Some(2048),
             temperature: Some(0.2),

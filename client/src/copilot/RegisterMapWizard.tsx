@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { useGenerateRegisterMap } from '../queries/copilot'
+import { GenerationError } from './GenerationError'
+import { PDF_GUIDANCE, datasheetFileError, looksLikePdf } from './proposalChecks'
 
 export function RegisterMapWizard({ onProposal }: { onProposal: () => void }) {
   const gen = useGenerateRegisterMap()
@@ -8,12 +10,28 @@ export function RegisterMapWizard({ onProposal }: { onProposal: () => void }) {
   const [deviceId, setDeviceId] = useState('')
   const [fileType, setFileType] = useState('csv')
   const [loading, setLoading] = useState(false)
+  const [fileError, setFileError] = useState<string | null>(null)
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
+    setFileContent('')
+    setFileError(null)
     if (!file) return
+    // A PDF read as text is binary garbage; the model would still answer with something plausible.
+    const refused = datasheetFileError(file)
+    if (refused) {
+      setFileError(refused)
+      return
+    }
     const reader = new FileReader()
-    reader.onload = ev => setFileContent(ev.target?.result as string || '')
+    reader.onload = ev => {
+      const text = ev.target?.result as string || ''
+      if (looksLikePdf(text)) {
+        setFileError(PDF_GUIDANCE)
+        return
+      }
+      setFileContent(text)
+    }
     reader.readAsText(file)
   }
 
@@ -28,18 +46,21 @@ export function RegisterMapWizard({ onProposal }: { onProposal: () => void }) {
         device_id: deviceId || undefined,
       })
       onProposal()
+    } catch {
+      // Shown below from gen.error.
     } finally { setLoading(false) }
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16 }}>
       <h3 style={{ margin: 0, fontSize: 15 }}>Register Map Auto-Mapping</h3>
-      <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>Upload a datasheet (CSV/PDF text) to auto-generate Modbus register mappings.</p>
+      <p style={{ margin: 0, fontSize: 13, color: 'var(--muted)' }}>Upload the register table of a datasheet as a CSV or text file to auto-generate Modbus register mappings. PDFs are not read: copy the table out of the PDF first.</p>
 
       <div>
         <label style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Datasheet File</label>
-        <input type="file" accept=".csv,.txt,.pdf" onChange={handleFile}
+        <input type="file" accept=".csv,.txt" onChange={handleFile}
           style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 13 }} />
+        {fileError && <div role="alert" style={{ marginTop: 6, fontSize: 12, color: '#ef4444' }}>{fileError}</div>}
       </div>
 
       <div>
@@ -59,7 +80,6 @@ export function RegisterMapWizard({ onProposal }: { onProposal: () => void }) {
         <select value={fileType} onChange={e => setFileType(e.target.value)}
           style={{ padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)' }}>
           <option value="csv">CSV</option>
-          <option value="pdf">PDF (extracted text)</option>
           <option value="text">Plain text</option>
         </select>
       </div>
@@ -72,6 +92,8 @@ export function RegisterMapWizard({ onProposal }: { onProposal: () => void }) {
           </pre>
         </details>
       )}
+
+      <GenerationError error={gen.error} />
 
       <button onClick={handleGenerate} disabled={!fileContent || !deviceName || loading}
         style={{ padding: '10px', borderRadius: 6, border: 'none', background: 'var(--primary)', color: '#fff', fontWeight: 600, cursor: 'pointer', opacity: (!fileContent || !deviceName) ? 0.5 : 1 }}>

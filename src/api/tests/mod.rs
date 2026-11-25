@@ -1,3 +1,4 @@
+mod ai_copilot;
 mod ai_settings;
 mod alarms;
 mod analytics;

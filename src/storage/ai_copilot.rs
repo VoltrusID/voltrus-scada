@@ -101,7 +101,7 @@ impl Storage {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
                 .prepare(
-                    "SELECT id, proposal_type, title, context, proposed_config, target_entity_id, model, tokens_used, status, reviewed_by, applied_config, created_at, updated_at
+                    "SELECT id, proposal_type, title, context, proposed_config, target_entity_id, model, tokens_used, status, reviewed_by, applied_config, created_at, updated_at, error_message
                      FROM ai_proposals WHERE id = ?1",
                 )
                 .context("Prepare failed")?;
@@ -120,6 +120,7 @@ impl Storage {
                     applied_config: row.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()),
                     created_at: row.get(11)?,
                     updated_at: row.get(12)?,
+                    error_message: row.get(13)?,
                 })
             }).context("Query failed")?;
             match rows.next() {
@@ -144,7 +145,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut sql = String::from(
-                "SELECT id, proposal_type, title, context, proposed_config, target_entity_id, model, tokens_used, status, reviewed_by, applied_config, created_at, updated_at
+                "SELECT id, proposal_type, title, context, proposed_config, target_entity_id, model, tokens_used, status, reviewed_by, applied_config, created_at, updated_at, error_message
                  FROM ai_proposals WHERE 1=1",
             );
             if proposal_type.is_some() {
@@ -187,6 +188,7 @@ impl Storage {
                     applied_config: row.get::<_, Option<String>>(10)?.and_then(|s| serde_json::from_str(&s).ok()),
                     created_at: row.get(11)?,
                     updated_at: row.get(12)?,
+                    error_message: row.get(13)?,
                 })
             }).context("Query failed")?;
 
@@ -221,6 +223,30 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Start applying an approved proposal: `approved` becomes `applying`
+    /// in one statement, so only one caller wins. False when the proposal is
+    /// not (or no longer) approved. A proposal left `applying` was not
+    /// finished (a crash, or its outcome could not be saved) and is never
+    /// applied again; see [`Self::flag_interrupted_ai_applies`].
+    pub async fn begin_ai_proposal_apply(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            let n = conn
+                .execute(
+                    "UPDATE ai_proposals SET status = 'applying', error_message = NULL, updated_at = ?1
+                     WHERE id = ?2 AND status = 'approved'",
+                    rusqlite::params![now, id],
+                )
+                .context("Start applying AI proposal failed")?;
+            Ok(n == 1)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Record that an `applying` proposal was applied.
     pub async fn mark_ai_proposal_applied(
         &self,
         id: i64,
@@ -231,12 +257,66 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let now = time::OffsetDateTime::now_utc().unix_timestamp();
-            conn.execute(
-                "UPDATE ai_proposals SET status = 'applied', applied_config = ?1, updated_at = ?2 WHERE id = ?3",
-                rusqlite::params![applied_config, now, id],
-            )
-            .context("Mark AI proposal applied failed")?;
+            let n = conn
+                .execute(
+                    "UPDATE ai_proposals SET status = 'applied', applied_config = ?1, error_message = NULL, updated_at = ?2
+                     WHERE id = ?3 AND status = 'applying'",
+                    rusqlite::params![applied_config, now, id],
+                )
+                .context("Mark AI proposal applied failed")?;
+            anyhow::ensure!(n == 1, "AI proposal {id} is not being applied");
             Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// End an apply that did not go through: back to `approved` when nothing
+    /// was changed, or `failed` (with what went wrong) when the configuration
+    /// may be left half changed.
+    pub async fn end_ai_proposal_apply(
+        &self,
+        id: i64,
+        status: &str,
+        error_message: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.clone();
+        let status = status.to_string();
+        let error_message = error_message.map(|s| s.to_string());
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            let n = conn
+                .execute(
+                    "UPDATE ai_proposals SET status = ?1, error_message = ?2, updated_at = ?3
+                     WHERE id = ?4 AND status = 'applying'",
+                    rusqlite::params![status, error_message, now, id],
+                )
+                .context("Update AI proposal after a failed apply failed")?;
+            anyhow::ensure!(n == 1, "AI proposal {id} is not being applied");
+            Ok(())
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// At startup, nothing is being applied: a proposal still `applying` was
+    /// cut off by a crash or restart, and the configuration may hold part of
+    /// it. Mark each `failed` with a message, so it needs a person to look at
+    /// it and is not applied again. Returns how many were marked.
+    pub async fn flag_interrupted_ai_applies(&self) -> Result<usize> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let now = time::OffsetDateTime::now_utc().unix_timestamp();
+            conn.execute(
+                "UPDATE ai_proposals SET status = 'failed',
+                     error_message = 'The apply was interrupted (the server stopped while applying it), so part of it may be in the configuration. Check the configuration against the proposal; it will not be applied again.',
+                     updated_at = ?1
+                 WHERE status = 'applying'",
+                rusqlite::params![now],
+            )
+            .context("Flag interrupted AI proposal applies failed")
         })
         .await
         .context("Task join failed")?
