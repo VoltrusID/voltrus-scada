@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  bindInstancePatch, configOf, defaultPrefix, instanceFieldErrors, instanceOf, suggestName, typeInitials, widgetsByInstance,
+  bindInstancePatch, changeLines, configOf, defaultPrefix, instanceFieldErrors, instanceOf, suggestName, typeInitials, widgetsByInstance,
 } from '../src/designer/equipmentModel.ts'
 import { historyReducer, emptyHistory } from '../src/designer/model.ts'
 import { loadLayoutFromAPI, saveLayoutToAPI } from '../src/scada2/engine/layout.ts'
@@ -90,4 +90,34 @@ test('new instance fields are checked before anything is sent', () => {
   assert.deepEqual(instanceFieldErrors({ name: ' ', device: '', base: 'x' }, []),
     ['Name is required', 'Device is required', 'Base must be a whole register address, or empty'])
   assert.match(instanceFieldErrors({ name: 'p-1', device: 'wtp', base: '4' }, [{ name: 'P-1' }])[0], /exists/)
+})
+
+test("the type's symbol config is a default: a widget's own value stays, and its other tags are kept", () => {
+  const r = { ...resolvedWidget, config: { symbol: 'isa_pump_centrifugal', faceplateMap: { run: 12, cmd: 12 } }, defaults: { showStatus: true, writable: true } }
+  const w = { config: { writable: false, faceplateMap: { run: 7 } }, sensorIds: [7, 40] }
+  const p = bindInstancePatch(w, 'P-101A', r)
+  assert.equal(p.config!.writable, undefined, 'not in the patch: the widget keeps writable: false')
+  assert.equal(p.config!.showStatus, true, 'a default the widget lacks is set')
+  // 7 was the instance's old run tag (in its role map): replaced; 40 is the widget's own: kept after the primary.
+  assert.deepEqual(p.sensorIds, [12, 40])
+  const fresh = bindInstancePatch(null, 'P-101A', r)
+  assert.equal(configOf(fresh).writable, true)
+})
+
+test('a preview lists what it changes on existing tags, registers and flows', () => {
+  const lines = changeLines({
+    tags: [
+      { key: 'p1_cmd', ref: 'plc/p1_cmd', action: 'update', diff: [{ field: 'write.max', before: 1, after: 2 }] },
+      { key: 'p1_run', ref: 'plc/p1_run', action: 'create', diff: [{ field: 'name', before: null, after: 'P-1 Running' }] },
+    ],
+    registers_added: [], registers_moved: ['plc/p1_run@100->200'],
+    flows: ['p1-trip'], flows_updated: ['p1-trip'], flows_removed: ['old-trip'], widgets: [],
+  })
+  assert.deepEqual(lines, [
+    'plc/p1_cmd write.max: 1 → 2',
+    'register plc/p1_run@100 → 200 (moved)',
+    'flow p1-trip overwritten',
+    'flow old-trip deleted',
+  ])
+  assert.deepEqual(changeLines(null), [])
 })

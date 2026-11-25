@@ -4,7 +4,7 @@
 // writes exactly what the server writes when it re-binds a saved screen.
 
 import type { WidgetInstance } from '../scada2/widgets/types'
-import type { EquipmentInstance, EquipmentType, ResolvedWidget } from '../queries/equipment'
+import type { EquipmentInstance, EquipmentType, InstanceChanges, ResolvedWidget } from '../queries/equipment'
 import type { Patch } from './model'
 
 /** Config key naming the equipment instance a symbol shows. */
@@ -21,20 +21,58 @@ export function defaultPrefix(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]/g, '')
 }
 
+/** Tag ids a bound widget's config holds for its instance: the faceplate role map and the indicator tags. */
+function instanceHandles(config: Record<string, unknown> | undefined): unknown[] {
+  if (!config) return []
+  const map = config.faceplateMap
+  const out: unknown[] = map && typeof map === 'object' ? Object.values(map as Record<string, unknown>) : []
+  for (const k of ['faultSensorId', 'runSensorId', 'manualSensorId', 'interlockSensorId']) if (config[k] != null) out.push(config[k])
+  return out
+}
+
 /**
  * The patch that binds a widget to an instance: symbol type, primary tag,
- * every config key the server sets (faceplate, its role map, fault/run tags,
- * the type's symbol config), the keys it removes, and a label when there is none.
+ * every config key the server sets (faceplate, its role map, fault/run tags),
+ * the keys it removes, and the defaults (the type's symbol config, a label)
+ * only where the widget has no value of its own. The widget's other tags stay
+ * after the primary one, as the server keeps them.
  */
-export function bindInstancePatch(w: Pick<WidgetInstance, 'config'> | null, name: string, r: ResolvedWidget): Patch {
+export function bindInstancePatch(w: Pick<WidgetInstance, 'config'> & Partial<Pick<WidgetInstance, 'sensorIds'>> | null, name: string, r: ResolvedWidget): Patch {
   // The label is the engineer's: set only when the symbol has none.
   const { label: serverLabel, ...owned } = r.config
   const config: Record<string, any> = { ...owned, [EQUIPMENT_KEY]: name }
   for (const k of r.remove) if (!(k in owned) && k !== 'label') config[k] = undefined
   const label = w?.config?.label
   if (typeof label !== 'string' || !label) config.label = typeof serverLabel === 'string' && serverLabel ? serverLabel : name
+  for (const [k, v] of Object.entries(r.defaults ?? {})) {
+    const cur = w?.config?.[k]
+    if (cur === undefined || cur === null) config[k] = v
+  }
   const tag = r.sensor_id ?? null
-  return { type: 'symbol', sensorId: tag, sensorIds: tag != null ? [tag] : [], name: undefined, config }
+  const ownedTags = [...instanceHandles(w?.config), ...instanceHandles(r.config)]
+  const extras = (w?.sensorIds ?? []).filter(id => id !== tag && !ownedTags.includes(id))
+  const sensorIds = [...(tag != null ? [tag] : []), ...extras.filter((id, i) => extras.indexOf(id) === i)]
+  return { type: 'symbol', sensorId: tag, sensorIds, name: undefined, config }
+}
+
+const shown = (v: unknown) => (v === null || v === undefined ? '-' : typeof v === 'string' ? v : JSON.stringify(v))
+
+/**
+ * What a change does to things that exist, one line each, for the preview:
+ * attributes of existing tags (before -> after), registers moved, flows
+ * overwritten or deleted. New tags, registers and flows are counted elsewhere.
+ */
+export function changeLines(c: InstanceChanges | null | undefined): string[] {
+  if (!c) return []
+  const out: string[] = []
+  for (const t of c.tags) {
+    if (t.action !== 'update') continue
+    for (const d of t.diff ?? []) out.push(`${t.ref} ${d.field}: ${shown(d.before)} → ${shown(d.after)}`)
+  }
+  for (const r of c.registers_moved ?? []) out.push(`register ${r.replace('->', ' → ')} (moved)`)
+  for (const f of c.flows_updated ?? []) out.push(`flow ${f} overwritten`)
+  for (const f of c.flows_removed ?? []) out.push(`flow ${f} deleted`)
+  return out
 }
 
 /** A new widget's config from a patch (undefined keys dropped). */

@@ -8,7 +8,7 @@ import {
   type EquipmentInstance, type EquipmentInstanceInput, type EquipmentType, type ResolvedRole, type RoleOverride,
 } from '../queries/equipment'
 import { DND_EQUIPMENT } from './DesignerCanvas'
-import { defaultPrefix, instanceFieldErrors, suggestName } from './equipmentModel'
+import { changeLines, defaultPrefix, instanceFieldErrors, suggestName } from './equipmentModel'
 import { D, GridSection, Icon, PropRow, SmallBtn, input, mono } from './ui'
 
 // Equipment types in the Designer: the palette section, the instance picker
@@ -241,6 +241,7 @@ export function InstancePicker({ type, instances, onScreen, devices, modbusDevic
                 <div style={{ fontSize: D.small, color: 'var(--text-dim)', marginBottom: 4 }}>
                   {summary(preview)}
                 </div>
+                <ChangeList changes={preview.changes} />
                 <RolesTable roles={preview.resolved.roles} />
               </div>
             )}
@@ -257,6 +258,17 @@ export function InstancePicker({ type, instances, onScreen, devices, modbusDevic
         </div>
       )}
     </Modal>
+  )
+}
+
+/** Changes to existing tags, registers and flows a preview found (write policies included). */
+function ChangeList({ changes }: { changes: EquipmentInstance['changes'] }) {
+  const lines = changeLines(changes)
+  if (lines.length === 0) return null
+  return (
+    <ul data-testid="designer-equipment-change-list" style={{ margin: '2px 0 4px', paddingLeft: 14, fontSize: D.small, color: 'var(--text-dim)' }}>
+      {lines.map(l => <li key={l} style={mono}>{l}</li>)}
+    </ul>
   )
 }
 
@@ -419,6 +431,7 @@ export function InstanceSection({ w, name, instance, type, sensors, onApply, onU
         {preview?.changes && (
           <div data-testid="designer-equipment-preview" style={{ padding: '2px 10px', fontSize: D.small, color: 'var(--text-dim)' }}>
             {preview.changes.tags.filter(t => t.action !== 'unchanged').length} tag changes · {preview.changes.widgets.length} symbols re-bound on all screens
+            <ChangeList changes={preview.changes} />
           </div>
         )}
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', padding: '4px 10px 8px' }}>

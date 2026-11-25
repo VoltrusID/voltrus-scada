@@ -78,6 +78,8 @@ export interface ResolvedWidget {
   equipment_type: 'symbol'
   sensor_id: number | null
   config: Record<string, unknown>
+  /** The type's symbol config: set only where the widget has no value of its own. */
+  defaults?: Record<string, unknown>
   remove: string[]
 }
 
@@ -89,13 +91,18 @@ export interface Resolved {
   widget: ResolvedWidget
 }
 
-export interface TagChange { key: string; ref: string; action: 'create' | 'update' | 'bind' | 'unchanged'; fields?: string[] }
+export interface FieldDiff { field: string; before: unknown; after: unknown }
+
+export interface TagChange { key: string; ref: string; action: 'create' | 'update' | 'bind' | 'unchanged'; fields?: string[]; diff?: FieldDiff[] }
 
 export interface InstanceChanges {
   instance?: string
   tags: TagChange[]
-  registers_added: unknown[]
-  flows: unknown[]
+  registers_added: string[]
+  registers_moved?: string[]
+  flows: string[]
+  flows_updated?: string[]
+  flows_removed?: string[]
   widgets: { screen_id: string; equipment_id: string }[]
 }
 
