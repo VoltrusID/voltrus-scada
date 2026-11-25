@@ -121,8 +121,8 @@ impl<'a> Instantiator<'a> {
                     "#f97316", // Default orange color
                     tag.min_val,
                     tag.max_val,
-                    tag.min_val, // warn_val defaults to min (no alarm by default)
-                    tag.max_val, // crit_val defaults to max (no alarm by default)
+                    0.0, // no high warning limit until one is configured
+                    0.0, // no high critical limit until one is configured
                     (tag.min_val + tag.max_val) / 2.0, // base_val
                     sort_order,
                     if tag.data_type == "bool" { 0 } else { 1 }, // decimals
@@ -197,25 +197,38 @@ impl<'a> Instantiator<'a> {
         // 5. Apply alarm thresholds to created data sources
         let expanded_alarms = self.expand_alarm_patterns(&expanded_tags);
         let all_data_sources = self.storage.list_data_sources(None).await?;
+        let mut low_limits: HashMap<i64, serde_json::Value> = HashMap::new();
         for alarm in &expanded_alarms {
             // Find matching data source
             if let Some(ds) = all_data_sources.iter().find(|ds| {
                 ds.key.ends_with(&alarm.tag_pattern)
                     || ds.key.contains(&format!(":{}", alarm.tag_pattern))
             }) {
+                // Only the limit this alarm sets is written, so two alarms on one
+                // tag (warning and critical) don't overwrite each other.
+                let critical = alarm.severity == "critical";
                 let update = match alarm.comparison.as_str() {
-                    "above" => json!({
-                        "warn_val": if alarm.severity == "warning" { alarm.threshold } else { ds.warn_val },
-                        "crit_val": if alarm.severity == "critical" { alarm.threshold } else { ds.crit_val },
-                    }),
-                    "below" => json!({
-                        "warn_val": if alarm.severity == "warning" { alarm.threshold } else { ds.warn_val },
-                        "crit_val": if alarm.severity == "critical" { alarm.threshold } else { ds.crit_val },
-                    }),
-                    "equal" => json!({
-                        "crit_val": if alarm.severity == "critical" { alarm.threshold } else { ds.crit_val },
-                        "warn_val": if alarm.severity == "warning" { alarm.threshold } else { ds.warn_val },
-                    }),
+                    "above" | "equal" => {
+                        let field = if critical { "crit_val" } else { "warn_val" };
+                        serde_json::Value::Object(
+                            [(field.to_string(), json!(alarm.threshold))]
+                                .into_iter()
+                                .collect(),
+                        )
+                    }
+                    // A low limit lives in source_config; written as warn_val or
+                    // crit_val it would be a high limit, raised in normal operation.
+                    "below" => {
+                        let cfg = low_limits.entry(ds.id).or_insert_with(|| {
+                            serde_json::from_str::<serde_json::Value>(&ds.source_config)
+                                .ok()
+                                .filter(|v| v.is_object())
+                                .unwrap_or_else(|| json!({}))
+                        });
+                        cfg[if critical { "low_crit" } else { "low_warn" }] =
+                            json!(alarm.threshold);
+                        json!({ "source_config": cfg.to_string() })
+                    }
                     _ => json!({}),
                 };
 
@@ -396,5 +409,50 @@ mod tests {
         let max = HashMap::from([("n".to_string(), MAX_INSTANCE_COUNT)]);
         let inst = Instantiator::new(&storage, template_with_n(), "x".into(), max);
         assert!(inst.check_limits().is_ok());
+    }
+
+    #[tokio::test]
+    async fn template_tags_alarm_only_on_the_template_limits() {
+        let storage = storage().await;
+        let template = definitions::all_templates()
+            .into_iter()
+            .find(|t| t.id == "wastewater_treatment")
+            .unwrap();
+        Instantiator::new(
+            &storage,
+            template,
+            "ww".into(),
+            Instantiator::default_instance_counts(),
+        )
+        .instantiate()
+        .await
+        .unwrap();
+        let sources = storage.list_data_sources(None).await.unwrap();
+        let limits = |suffix: &str| {
+            let tag = sources
+                .iter()
+                .find(|ds| ds.key.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no tag {suffix}"));
+            crate::alarm_eval::Thresholds::of(tag)
+        };
+        // pH: critical above 9 and warning below 6, both kept; neutral pH is normal.
+        let ph = limits(":PH-1");
+        assert_eq!((ph.high_crit, ph.high_warn), (Some(9.0), None));
+        assert_eq!((ph.low_warn, ph.low_crit), (Some(6.0), None));
+        assert_eq!(ph.condition(7.0), None);
+        assert_eq!(ph.condition(5.0), Some(("warning", 6.0, "low")));
+        // A low-only alarm is no high limit.
+        let cl = limits(":CLO2_RES");
+        assert_eq!(
+            (cl.high_warn, cl.high_crit, cl.low_warn),
+            (None, None, Some(0.2))
+        );
+        assert_eq!(cl.condition(1.0), None);
+        // A tag without template alarms has no limits at all.
+        let untouched = sources
+            .iter()
+            .filter(|ds| crate::alarm_eval::Thresholds::of(ds) == Default::default())
+            .count();
+        assert!(untouched > 0);
     }
 }

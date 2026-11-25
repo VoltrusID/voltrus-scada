@@ -137,9 +137,54 @@ impl Storage {
         let all_data_sources = self.list_data_sources(None).await?;
         if all_data_sources.is_empty() {
             self.seed_device_data_sources(device_configs).await?;
+        } else {
+            match self.tags_with_old_seeded_limits().await {
+                Ok(keys) if !keys.is_empty() => tracing::warn!(
+                    "{} tag(s) still have the alarm limits earlier versions gave every tag at first start \
+                     (e.g. high warning 80, high critical 90), which nobody configured: {}. \
+                     Set real limits or clear them; see docs/upgrade-notes.md.",
+                    keys.len(),
+                    keys.join(", ")
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!("Could not check for seeded alarm limits: {e:#}"),
+            }
         }
 
         Ok(generated)
+    }
+
+    /// Keys of tags that still carry, unchanged, the alarm limits the first
+    /// start seeded up to v0.52.0: name, colour, range and limits exactly as
+    /// seeded. They are reported, not changed: a limit someone kept on
+    /// purpose looks the same.
+    pub(crate) async fn tags_with_old_seeded_limits(&self) -> Result<Vec<String>> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT key FROM data_sources
+                 WHERE source_config NOT LIKE '%_enabled%'
+                   AND (
+                     (name = key AND color = '#94a3b8' AND min_val = 0 AND max_val = 100
+                      AND base_val = 50 AND warn_val = 80 AND crit_val = 90)
+                     OR (key, color, warn_val, crit_val) IN (VALUES
+                       ('voltage', '#f59e0b', 400, 420),
+                       ('current', '#06b6d4', 85, 95),
+                       ('power', '#a855f7', 40000, 45000),
+                       ('frequency', '#22c55e', 51, 52),
+                       ('power_factor', '#ef4444', 0.95, 0.98),
+                       ('energy_total', '#8b5cf6', 800000, 900000))
+                   )
+                 ORDER BY id",
+            )?;
+            let keys = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(keys)
+        })
+        .await
+        .context("Task join failed")?
     }
 
     /// Seed data sources for the devices defined in config.yaml.
@@ -199,94 +244,25 @@ impl Storage {
             }
         }
 
-        // Default display properties for known register names
-        let default_map: std::collections::HashMap<
-            String,
-            (String, String, String, f64, f64, f64, f64, f64, i64),
-        > = [
+        // Display properties for known register names: name, unit, colour,
+        // range, base value and decimals. No alarm limits: a tag alarms only
+        // on limits someone configured, never on a default made up here.
+        type Display = (&'static str, &'static str, &'static str, f64, f64, f64, i64);
+        let default_map: std::collections::HashMap<&str, Display> = [
+            ("voltage", ("Voltage", "V", "#f59e0b", 0.0, 450.0, 380.0, 1)),
+            ("current", ("Current", "A", "#06b6d4", 0.0, 100.0, 65.0, 2)),
+            ("power", ("Power", "W", "#a855f7", 0.0, 50000.0, 24700.0, 0)),
             (
-                "voltage".to_string(),
-                (
-                    "Voltage".to_string(),
-                    "V".to_string(),
-                    "#f59e0b".to_string(),
-                    0.0,
-                    450.0,
-                    400.0,
-                    420.0,
-                    380.0,
-                    1i64,
-                ),
+                "frequency",
+                ("Frequency", "Hz", "#22c55e", 45.0, 55.0, 50.0, 2),
             ),
             (
-                "current".to_string(),
-                (
-                    "Current".to_string(),
-                    "A".to_string(),
-                    "#06b6d4".to_string(),
-                    0.0,
-                    100.0,
-                    85.0,
-                    95.0,
-                    65.0,
-                    2i64,
-                ),
+                "power_factor",
+                ("Power Factor", "", "#ef4444", 0.0, 1.0, 0.92, 3),
             ),
             (
-                "power".to_string(),
-                (
-                    "Power".to_string(),
-                    "W".to_string(),
-                    "#a855f7".to_string(),
-                    0.0,
-                    50000.0,
-                    40000.0,
-                    45000.0,
-                    24700.0,
-                    0i64,
-                ),
-            ),
-            (
-                "frequency".to_string(),
-                (
-                    "Frequency".to_string(),
-                    "Hz".to_string(),
-                    "#22c55e".to_string(),
-                    45.0,
-                    55.0,
-                    51.0,
-                    52.0,
-                    50.0,
-                    2i64,
-                ),
-            ),
-            (
-                "power_factor".to_string(),
-                (
-                    "Power Factor".to_string(),
-                    String::new(),
-                    "#ef4444".to_string(),
-                    0.0,
-                    1.0,
-                    0.95,
-                    0.98,
-                    0.92,
-                    3i64,
-                ),
-            ),
-            (
-                "energy_total".to_string(),
-                (
-                    "Energy Total".to_string(),
-                    "kWh".to_string(),
-                    "#8b5cf6".to_string(),
-                    0.0,
-                    999999.0,
-                    800000.0,
-                    900000.0,
-                    158732.0,
-                    1i64,
-                ),
+                "energy_total",
+                ("Energy Total", "kWh", "#8b5cf6", 0.0, 999999.0, 158732.0, 1),
             ),
         ]
         .into_iter()
@@ -299,19 +275,10 @@ impl Storage {
         for (device_id, register_names) in &devices_to_seed {
             let mut ids = Vec::new();
             for (sort_idx, reg_name) in register_names.iter().enumerate() {
-                let fallback = (
-                    reg_name.clone(),
-                    String::new(),
-                    "#94a3b8".to_string(),
-                    0.0,
-                    100.0,
-                    80.0,
-                    90.0,
-                    50.0,
-                    1i64,
-                );
-                let (display, unit, color, min, max, warn, crit, base, decimals) =
-                    default_map.get(reg_name).unwrap_or(&fallback);
+                let (display, unit, color, min, max, base, decimals) = default_map
+                    .get(reg_name.as_str())
+                    .copied()
+                    .unwrap_or((reg_name.as_str(), "", "#94a3b8", 0.0, 100.0, 50.0, 1));
 
                 let id = self
                     .create_data_source(
@@ -319,13 +286,13 @@ impl Storage {
                         display,
                         unit,
                         color,
-                        *min,
-                        *max,
-                        *warn,
-                        *crit,
-                        *base,
+                        min,
+                        max,
+                        0.0,
+                        0.0,
+                        base,
                         sort_idx as i64,
-                        *decimals,
+                        decimals,
                         "modbus",
                         "{}",
                         device_id,

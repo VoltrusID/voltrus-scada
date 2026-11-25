@@ -125,6 +125,90 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// Unresolved alarms raised by limit evaluation: warning or critical,
+    /// high or low. Flow alarms are type `event`; ones from before that type
+    /// existed were stored as `high` with value and limit 0 and are left out.
+    pub async fn list_unresolved_limit_alarms(
+        &self,
+    ) -> Result<Vec<crate::alarm_eval::ActiveLimitAlarm>> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT id, source_key, severity, COALESCE(alarm_type, 'high'), threshold
+                 FROM alarms
+                 WHERE resolved_at IS NULL
+                   AND severity IN ('warning', 'critical')
+                   AND COALESCE(alarm_type, 'high') IN ('high', 'low')
+                   AND NOT (COALESCE(alarm_type, 'high') = 'high' AND threshold = 0 AND value = 0)",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok(crate::alarm_eval::ActiveLimitAlarm {
+                    id: row.get(0)?,
+                    source_key: row.get(1)?,
+                    severity: row.get(2)?,
+                    alarm_type: row.get(3)?,
+                    threshold: row.get(4)?,
+                })
+            })?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Resolve alarms whose condition no longer exists because their tag
+    /// changed (see [`crate::alarm_eval::stale_alarms`]), recording why in
+    /// the audit trail. Alarms resolved meanwhile are skipped.
+    pub async fn resolve_stale_alarms(
+        &self,
+        stale: &[crate::alarm_eval::StaleAlarm],
+    ) -> Result<Vec<AlarmTransition>> {
+        if stale.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.conn.clone();
+        let stale = stale.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = conn.lock().unwrap();
+            let now = crate::timeutil::now_secs();
+            let tx = conn.transaction()?;
+            let mut out = Vec::new();
+            for s in &stale {
+                let changed = tx.execute(
+                    "UPDATE alarms SET resolved_at = ?1, state = 'resolved'
+                     WHERE id = ?2 AND resolved_at IS NULL",
+                    rusqlite::params![now, s.alarm_id],
+                )?;
+                if changed == 0 {
+                    continue;
+                }
+                let details = serde_json::json!({
+                    "reason": s.reason,
+                    "message": s.message,
+                    "value": s.value,
+                })
+                .to_string();
+                tx.execute(
+                    "INSERT INTO alarm_audit_log (alarm_id, action, performed_by, details, created_at)
+                     VALUES (?1, 'auto_resolved', 'system', ?2, ?3)",
+                    rusqlite::params![s.alarm_id, details, now],
+                )?;
+                tx.execute(
+                    "INSERT INTO alarm_journal (alarm_id, event, at, actor) VALUES (?1, 'resolved', ?2, NULL)",
+                    rusqlite::params![s.alarm_id, now],
+                )?;
+                if let Some(t) = transition_of(&tx, s.alarm_id) {
+                    out.push(t);
+                }
+            }
+            tx.commit()?;
+            Ok(out)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     pub async fn acknowledge_alarm(
         &self,
         id: i64,

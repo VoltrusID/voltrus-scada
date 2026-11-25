@@ -412,6 +412,11 @@ pub(crate) async fn serve(
 
                 // Evaluate alarm thresholds
                 if let Ok(sources) = sources {
+                    // Alarms whose limit was removed or moved past the value, or
+                    // whose tag was deleted, clear now: normal evaluation below
+                    // only clears an alarm once the value is back inside the
+                    // limit it was raised on, which may never happen.
+                    clear_stale_alarms(&storage, &sources, &snapshots, &alarm_ws_manager).await;
                     for source in &sources {
                         // Only real device tags raise alarms, and only on a good
                         // value: a value that is missing, bad or stale leaves the
@@ -949,6 +954,37 @@ pub(crate) async fn serve(
 
     tracing::info!("Server shutdown complete");
     Ok(())
+}
+
+/// Resolve the active limit alarms whose condition the tag no longer has
+/// (see [`crate::alarm_eval::stale_alarms`]) and push the change to clients.
+async fn clear_stale_alarms(
+    storage: &Storage,
+    sources: &[crate::models::DataSource],
+    snapshots: &[crate::models::DeviceSnapshot],
+    ws_manager: &crate::ws_manager::WsManager,
+) {
+    let active = match storage.list_unresolved_limit_alarms().await {
+        Ok(active) if !active.is_empty() => active,
+        Ok(_) => return,
+        Err(e) => {
+            tracing::warn!("Could not list active limit alarms: {e:#}");
+            return;
+        }
+    };
+    let stale = crate::alarm_eval::stale_alarms(&active, sources, snapshots);
+    if stale.is_empty() {
+        return;
+    }
+    match storage.resolve_stale_alarms(&stale).await {
+        Ok(resolved) => {
+            for s in &stale {
+                tracing::info!("Alarm {} resolved: {}", s.alarm_id, s.message);
+            }
+            ws_manager.broadcast_alarm_updates("resolved", None, &resolved);
+        }
+        Err(e) => tracing::error!("Could not resolve stale alarms: {e:#}"),
+    }
 }
 
 /// Before exiting: one last persistence pass for the samples read since the

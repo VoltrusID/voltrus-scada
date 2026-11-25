@@ -495,3 +495,205 @@ async fn test_lifecycle_calls_report_the_alarms_they_changed() {
     assert_eq!(all[0].source_key, "tag2");
     assert_eq!(all[0].state, "acknowledged");
 }
+
+/// A device snapshot with one good metric, as the Modbus poller caches it.
+fn wtp_snapshot(metric: &str, value: f64) -> crate::models::DeviceSnapshot {
+    crate::models::DeviceSnapshot {
+        device_id: "wtp".into(),
+        status: crate::models::DeviceStatus::Online,
+        timestamp: 1,
+        metrics: [(metric.to_string(), value)].into_iter().collect(),
+        simulated: false,
+        protocol: None,
+        ts_ms: 1000,
+        quality: Default::default(),
+        metric_ts_ms: Default::default(),
+    }
+}
+
+/// One limit-evaluation pass for stale alarms, as the persistence loop runs it.
+async fn clear_stale(storage: &Storage, snaps: &[crate::models::DeviceSnapshot]) -> usize {
+    let active = storage.list_unresolved_limit_alarms().await.unwrap();
+    let sources = storage.list_data_sources(None).await.unwrap();
+    let stale = crate::alarm_eval::stale_alarms(&active, &sources, snaps);
+    storage.resolve_stale_alarms(&stale).await.unwrap().len()
+}
+
+async fn intake_flow_tag(storage: &Storage, warn: f64, crit: f64) -> i64 {
+    storage.create_device("wtp", "WTP", 0).await.unwrap();
+    storage
+        .create_data_source(
+            "intake_flow",
+            "intake_flow",
+            "",
+            "#94a3b8",
+            0.0,
+            100.0,
+            warn,
+            crit,
+            50.0,
+            0,
+            1,
+            "modbus",
+            "{}",
+            "wtp",
+            None,
+            "sparkline",
+        )
+        .await
+        .unwrap()
+}
+
+async fn only_reason(storage: &Storage, alarm_id: i64) -> String {
+    let audit = storage
+        .list_alarm_audit(Some(alarm_id), None, None, 10)
+        .await
+        .unwrap();
+    let resolved: Vec<_> = audit
+        .iter()
+        .filter(|a| a.action == "auto_resolved")
+        .collect();
+    assert_eq!(resolved.len(), 1, "{audit:?}");
+    let details: serde_json::Value = serde_json::from_str(&resolved[0].details).unwrap();
+    details["reason"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn first_start_tags_have_no_alarm_limits() {
+    let storage = Storage::new_in_memory().unwrap();
+    let device: crate::models::DeviceConfig = serde_json::from_value(serde_json::json!({
+        "id": "wtp", "ip": "127.0.0.1",
+        "registers": [{"name": "intake_flow", "address": 0}, {"name": "voltage", "address": 2}],
+    }))
+    .unwrap();
+    storage.seed_database(&[device]).await.unwrap();
+    let sources = storage.list_data_sources(None).await.unwrap();
+    assert_eq!(sources.len(), 2);
+    for tag in &sources {
+        let limits = crate::alarm_eval::Thresholds::of(tag);
+        assert_eq!(limits.condition(1178.0), None, "{}", tag.key);
+        assert_eq!(limits.condition(-1178.0), None, "{}", tag.key);
+    }
+    assert!(
+        storage
+            .tags_with_old_seeded_limits()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn tags_seeded_with_the_old_default_limits_are_found() {
+    let storage = Storage::new_in_memory().unwrap();
+    let id = intake_flow_tag(&storage, 80.0, 90.0).await;
+    assert_eq!(
+        storage.tags_with_old_seeded_limits().await.unwrap(),
+        vec!["intake_flow".to_string()]
+    );
+    storage
+        .update_data_source(id, &serde_json::json!({"name": "Raw Water Intake Flow"}))
+        .await
+        .unwrap();
+    assert!(
+        storage
+            .tags_with_old_seeded_limits()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn removing_the_limit_clears_an_alarm_raised_on_it() {
+    // The wtp-hmi first start: an alarm on the old default limit 90, then the
+    // tag is configured with no high limit while the flow stays at 1178.
+    let storage = Storage::new_in_memory().unwrap();
+    let id = intake_flow_tag(&storage, 80.0, 90.0).await;
+    let alarm = storage
+        .create_alarm_with_type("intake_flow", "critical", 1178.0, 90.0, "high", 0.0, "high")
+        .await
+        .unwrap();
+    let snaps = [wtp_snapshot("intake_flow", 1178.0)];
+    assert_eq!(clear_stale(&storage, &snaps).await, 0, "limit unchanged");
+
+    storage
+        .update_data_source(id, &serde_json::json!({"warn_val": 0, "crit_val": 0}))
+        .await
+        .unwrap();
+    // Normal evaluation alone never clears it: 1178 is not below 90.
+    assert!(
+        storage
+            .resolve_active_alarms("intake_flow", Some(1178.0))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(clear_stale(&storage, &snaps).await, 1);
+    assert!(
+        storage
+            .list_alarms(Some("active"), 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(only_reason(&storage, alarm).await, "limit_removed");
+    assert_eq!(clear_stale(&storage, &snaps).await, 0, "resolved once");
+}
+
+#[tokio::test]
+async fn raising_the_limit_above_the_value_clears_the_alarm() {
+    let storage = Storage::new_in_memory().unwrap();
+    let id = intake_flow_tag(&storage, 0.0, 90.0).await;
+    let alarm = storage
+        .create_alarm_with_type("intake_flow", "critical", 1178.0, 90.0, "high", 0.0, "high")
+        .await
+        .unwrap();
+    let snaps = [wtp_snapshot("intake_flow", 1178.0)];
+    storage
+        .update_data_source(id, &serde_json::json!({"crit_val": 1000}))
+        .await
+        .unwrap();
+    assert_eq!(
+        clear_stale(&storage, &snaps).await,
+        0,
+        "1178 is still over 1000"
+    );
+    storage
+        .update_data_source(id, &serde_json::json!({"crit_val": 3000}))
+        .await
+        .unwrap();
+    assert_eq!(clear_stale(&storage, &snaps).await, 1);
+    assert_eq!(only_reason(&storage, alarm).await, "limit_changed");
+}
+
+#[tokio::test]
+async fn deleting_the_tag_clears_its_alarms_but_not_flow_alarms() {
+    let storage = Storage::new_in_memory().unwrap();
+    let id = intake_flow_tag(&storage, 80.0, 90.0).await;
+    let alarm = storage
+        .create_alarm_with_type("intake_flow", "warning", 85.0, 80.0, "high", 0.0, "high")
+        .await
+        .unwrap();
+    // A flow's alarm on the same key, and one stored before flows had their own type.
+    let flow = storage
+        .create_alarm_with_type("intake_flow", "critical", 0.0, 0.0, "flow", 0.0, "event")
+        .await
+        .unwrap();
+    let legacy_flow = storage
+        .create_alarm("intake_flow", "critical", 0.0, 0.0, "old flow", 0.0)
+        .await
+        .unwrap();
+    storage.delete_data_source(id).await.unwrap();
+    assert_eq!(clear_stale(&storage, &[]).await, 1);
+    assert_eq!(only_reason(&storage, alarm).await, "tag_deleted");
+    let active: Vec<i64> = storage
+        .list_alarms(Some("active"), 10)
+        .await
+        .unwrap()
+        .iter()
+        .map(|a| a.id)
+        .collect();
+    assert_eq!(active.len(), 2);
+    assert!(active.contains(&flow) && active.contains(&legacy_flow));
+}
