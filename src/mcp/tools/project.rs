@@ -27,7 +27,7 @@ pub fn tools() -> Vec<Tool> {
                 signed-in admin.",
             access: Access::AdminRead,
             destructive: false,
-            input_schema: || json!({"type": "object", "properties": {}, "additionalProperties": false}),
+            input_schema: || json!({"type": "object", "properties": {"published": {"type": "boolean", "default": false, "description": "true: each screen's published rows (what operators see) instead of the draft."}}, "additionalProperties": false}),
             call: export,
         },
         Tool {
@@ -68,7 +68,8 @@ fn import_schema() -> Value {
         "type": "object",
         "properties": {
             "yaml": {"type": "string", "minLength": 1, "description": "The project document (YAML, format voltrus-project/1), e.g. from project_export_yaml."},
-            "mode": {"type": "string", "enum": ["merge", "replace"], "default": "merge", "description": "merge: create and update only. replace: also delete listed-kind entities the document omits."}
+            "mode": {"type": "string", "enum": ["merge", "replace"], "default": "merge", "description": "merge: create and update only. replace: also delete listed-kind entities the document omits."},
+            "publish": {"type": "boolean", "default": false, "description": "Apply only: also publish every screen the import touched (operators see it at once). Default false: imported screens change the draft only."}
         },
         "required": ["yaml"],
         "additionalProperties": false
@@ -80,15 +81,18 @@ fn import_schema() -> Value {
 struct ImportArgs {
     yaml: String,
     mode: Option<String>,
+    publish: Option<bool>,
 }
 
 fn export(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
     Box::pin(async move {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct Args {}
-        let Args {} = parse_args(args)?;
-        let yaml = project::export_yaml(&ctx.state).await?;
+        struct Args {
+            published: Option<bool>,
+        }
+        let Args { published } = parse_args(args)?;
+        let yaml = project::export_yaml_with(&ctx.state, published.unwrap_or(false)).await?;
         Ok(json!({"format": crate::project_yaml::FORMAT, "bytes": yaml.len(), "yaml": yaml}))
     })
 }
@@ -104,7 +108,12 @@ fn apply(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
 async fn run(ctx: &Ctx, args: Value, dry_run: bool) -> ToolResult {
     let a: ImportArgs = parse_args(args)?;
     let mode: Mode = project::parse_mode(a.mode.as_deref())?;
-    let plan = project::run_import(&ctx.state, &ctx.user, &a.yaml, mode, dry_run)
+    let opts = project::ImportOptions {
+        origin: crate::edition::ActionOrigin::Mcp,
+        publish: a.publish.unwrap_or(false),
+        signature: None,
+    };
+    let plan = project::run_import(&ctx.state, &ctx.user, &a.yaml, mode, dry_run, opts)
         .await
         .map_err(|e| ToolError::new(e.to_string()))?;
     serde_json::to_value(&plan)

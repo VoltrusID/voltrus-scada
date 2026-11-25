@@ -31,6 +31,8 @@ interface Props {
   scadaEquipment: any[]
   scadaConnections: any[]
   scadaLoaded: boolean
+  /** The 2D view entered or left its Edit mode (which edits the draft; run mode shows the published screen). */
+  onScadaEditModeChange?: (editing: boolean) => void
   twinLayouts: any[]
   twinCamera: any
   twinConnections: any[]
@@ -53,7 +55,7 @@ export function MainContent({
   viewMode, mode, screenSensors, effectiveLayouts, canvasLayouts,
   editMode, activeScreen, gap, editingId, setEditingId, setSelectedSensor,
   onLayoutChange, onCanvasLayoutChange, onSave, onDelete,
-  forcedBreakpoint, shortcuts, scadaEquipment, scadaConnections, scadaLoaded,
+  forcedBreakpoint, shortcuts, scadaEquipment, scadaConnections, scadaLoaded, onScadaEditModeChange,
   twinLayouts, twinCamera, twinConnections, sensors,
   saveScadaEquipmentMut, saveScadaConnectionsMut, saveTwinLayoutMut,
   saveTwinConnectionsMut, updateSensorMut, fetchOk, isAdmin,
@@ -123,6 +125,7 @@ export function MainContent({
           scadaEquipment={scadaEquipment}
           scadaConnections={scadaConnections}
           loaded={scadaLoaded}
+          onEditModeChange={onScadaEditModeChange}
           onSave={async (screenId: string, equipment: any[], connections: any[]) => {
             await Promise.all([
               saveScadaEquipmentMut.mutateAsync({ screenId, items: equipment }),

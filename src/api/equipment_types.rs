@@ -312,11 +312,14 @@ impl Write<'_> {
         {
             tracing::warn!("snapshot before an equipment change: {e:#}");
         }
-        let plan = crate::project_yaml::apply_import_guarded(
+        let actor = super::design_history::actor_for_origin(self.auth, self.origin, "equipment")
+            .with_note(self.resource.clone());
+        let plan = crate::project_yaml::apply_import_guarded_as(
             &state.storage,
             doc,
             Mode::Merge,
             guard(self.must_be_new, (!policy.is_empty()).then_some(policy)),
+            &actor,
         )
         .await
         .map_err(import_error)?;
@@ -596,6 +599,7 @@ pub async fn update_type_as(
 pub async fn delete_type(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     // A rollback point, unless the delete is refused anyway.
@@ -608,7 +612,9 @@ pub async fn delete_type(
     {
         snapshot(&state, &auth, &format!("equipment_type:{id}")).await;
     }
-    match state.storage.delete_equipment_type(&id).await? {
+    let actor = super::design_history::actor(&auth, api_key.is_some(), None, "equipment")
+        .with_note(format!("equipment_type:{id} deleted"));
+    match state.storage.delete_equipment_type(&id, &actor).await? {
         TypeDelete::Deleted => {
             audit(
                 &state,
@@ -933,6 +939,18 @@ pub async fn update_instance(
     Json(body): Json<Value>,
 ) -> Response {
     let origin = super::signature::origin_of(&auth, api_key.is_some());
+    update_instance_as(&state, &auth, origin, &name, q.dry_run, body).await
+}
+
+/// [`update_instance`] for a caller whose origin is known (MCP, revert).
+pub async fn update_instance_as(
+    state: &AppState,
+    auth: &AuthUser,
+    origin: ActionOrigin,
+    name: &str,
+    dry_run: bool,
+    body: Value,
+) -> Response {
     let go = async {
         let mut body = body;
         let signature = take_signature(&mut body).map_err(resp)?;
@@ -945,7 +963,7 @@ pub async fn update_instance(
         }
         if state
             .storage
-            .get_equipment_instance(&name)
+            .get_equipment_instance(name)
             .await
             .map_err(|e| resp(e.into()))?
             .is_none()
@@ -955,10 +973,10 @@ pub async fn update_instance(
             ))));
         }
         let w = Write {
-            state: &state,
-            auth: &auth,
+            state,
+            auth,
             origin,
-            dry_run: q.dry_run,
+            dry_run,
             signature,
             resource: format!("equipment_instance:{name}"),
             must_be_new: None,
@@ -986,6 +1004,7 @@ pub async fn update_instance(
 pub async fn delete_instance(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(name): Path<String>,
     Query(q): Query<DryRunQuery>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -1000,7 +1019,12 @@ pub async fn delete_instance(
     }
     let Some(out) = state
         .storage
-        .delete_equipment_instance(&name, q.dry_run)
+        .delete_equipment_instance(
+            &name,
+            q.dry_run,
+            &super::design_history::actor(&auth, api_key.is_some(), None, "equipment")
+                .with_note(format!("equipment_instance:{name} deleted")),
+        )
         .await?
     else {
         return Err(AppError::not_found(format!(

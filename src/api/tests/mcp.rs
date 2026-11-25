@@ -25,6 +25,8 @@ const WRITE_TOOLS: &[&str] = &[
     "create_equipment_type",
     "update_equipment_type",
     "instantiate_equipment",
+    "create_version",
+    "revert_screen",
 ];
 
 const READ_TOOLS: &[&str] = &[
@@ -44,6 +46,9 @@ const READ_TOOLS: &[&str] = &[
     "list_template_catalog",
     "list_equipment_types",
     "list_equipment_instances",
+    "list_changes",
+    "list_versions",
+    "diff_versions",
 ];
 
 /// Admin sessions only; API and integration keys are refused.
@@ -52,10 +57,15 @@ const ADMIN_TOOLS: &[&str] = &[
     "project_export_yaml",
     "project_plan_import",
     "project_apply_import",
+    "publish_screen",
 ];
 
 /// Admin-only tools that change state (the others only read).
-const ADMIN_WRITE_TOOLS: &[&str] = &["import_catalog_template", "project_apply_import"];
+const ADMIN_WRITE_TOOLS: &[&str] = &[
+    "import_catalog_template",
+    "project_apply_import",
+    "publish_screen",
+];
 
 #[derive(Clone, Copy)]
 enum Auth<'a> {
@@ -2569,4 +2579,149 @@ async fn mcp_equipment_writes_are_guarded() {
         1
     );
     assert_eq!(f.storage.list_equipment_types().await.unwrap().len(), 1);
+}
+
+/// Version history through MCP: an agent lists changes, records a version,
+/// diffs, reverts and publishes (propose, then apply); keys follow the
+/// configure tier and publishing is for an admin session.
+#[tokio::test]
+async fn mcp_version_history_tools() {
+    let f = fixture().await;
+    let cookie = f.admin_cookie();
+    let admin = Auth::Cookie(&cookie);
+    ok(
+        &f.app,
+        admin,
+        "project_apply_import",
+        json!({"yaml": SCREEN_PROJECT}),
+    )
+    .await;
+
+    let changes = ok(&f.app, admin, "list_changes", json!({"screen_id": "pumps"})).await;
+    let rows = changes["changes"].as_array().unwrap();
+    assert_eq!(rows.len(), 3, "{changes}");
+    assert!(
+        rows.iter()
+            .all(|c| c["source"] == "mcp" && c["operation"] == "import")
+    );
+    assert!(rows[0].get("before").is_none(), "rows only on request");
+    let first_seq = rows
+        .iter()
+        .map(|c| c["seq"].as_i64().unwrap())
+        .max()
+        .unwrap();
+
+    let v = ok(
+        &f.app,
+        admin,
+        "create_version",
+        json!({"screen_id": "pumps", "message": "as imported"}),
+    )
+    .await;
+    assert_eq!(v["version"]["name"], "v1");
+    // An integration key edits the draft; a read-only key cannot read history.
+    let (status, _) = send_request(
+        &f.app,
+        "PUT",
+        "/api/v1/screens/pumps/scada-connections",
+        Some(&f.integration_key),
+        None,
+        Some(json!({"items": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let e = tool_err(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "list_changes",
+        json!({"screen_id": "pumps"}),
+    )
+    .await;
+    assert!(e.contains("configure"), "{e}");
+
+    let d = ok(
+        &f.app,
+        admin,
+        "diff_versions",
+        json!({"screen_id": "pumps", "from": "v1", "to": "draft"}),
+    )
+    .await;
+    assert_eq!(
+        d["diff"]["connections"]["removed"][0]["connection_id"],
+        "c1"
+    );
+    assert!(
+        d["yaml"]["from"]
+            .as_str()
+            .unwrap()
+            .contains("plc_1/p301a_run")
+    );
+    assert!(d.get("rows").is_none());
+
+    let r = ok(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "revert_screen",
+        json!({"screen_id": "pumps", "object": "c1", "object_type": "connection", "to_seq": first_seq}),
+    )
+    .await;
+    assert_eq!(r["ok"], true, "{r}");
+    let changes = ok(
+        &f.app,
+        admin,
+        "list_changes",
+        json!({"screen_id": "pumps", "limit": 1}),
+    )
+    .await;
+    assert_eq!(changes["changes"][0]["operation"], "revert");
+    assert_eq!(changes["changes"][0]["source"], "mcp");
+
+    // publish_screen: admin only; a proposal first.
+    let resp = call(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "publish_screen",
+        json!({"screen_id": "pumps"}),
+    )
+    .await;
+    assert!(resp["error"]["code"].is_number(), "{resp}");
+    let proposal = ok(
+        &f.app,
+        admin,
+        "publish_screen",
+        json!({"screen_id": "pumps"}),
+    )
+    .await;
+    assert_eq!(proposal["proposal"], true);
+    assert_eq!(proposal["needs_approval"], false);
+    let (_, st) = send_request(
+        &f.app,
+        "GET",
+        "/api/v1/screens/pumps/design-status",
+        None,
+        Some(&cookie),
+        None,
+    )
+    .await;
+    assert!(st["published"].is_null(), "a proposal publishes nothing");
+    let done = ok(
+        &f.app,
+        admin,
+        "publish_screen",
+        json!({"screen_id": "pumps", "message": "via MCP", "apply": true}),
+    )
+    .await;
+    assert_eq!(done["status"], "published", "{done}");
+    let listed = ok(
+        &f.app,
+        admin,
+        "list_versions",
+        json!({"screen_id": "pumps"}),
+    )
+    .await;
+    assert_eq!(listed["versions"][0]["current"], true);
+    assert_eq!(
+        listed["status"]["published"]["name"],
+        done["version"]["name"]
+    );
 }

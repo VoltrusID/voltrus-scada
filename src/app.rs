@@ -649,6 +649,13 @@ pub(crate) async fn serve(
         });
     }
 
+    // A deploy key a crashed git sync left behind goes now.
+    crate::design_git::cleanup_stale_keys(&crate::design_git::data_dir(&storage));
+    // Designer version history: squash and prune the change log daily.
+    tokio::spawn(crate::storage::design_history::run_maintenance_task(
+        storage.clone(),
+    ));
+
     // Spawn retention task
     {
         let storage = storage.clone();

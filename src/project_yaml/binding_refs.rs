@@ -206,26 +206,94 @@ pub fn rewrite_after_rename(
     if renamed.is_empty() {
         return Ok(0);
     }
-    let rows: Vec<(String, String, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT screen_id, equipment_id, config FROM scada_equipment WHERE config LIKE '%\"bindings\"%'",
-        )?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<Result<_, _>>()?
-    };
     let f = |r: &str| renamed.get(r).map(|n| n.to_string());
-    let mut n = 0;
-    for (screen, equipment, config) in rows {
-        let Ok(mut v) = serde_json::from_str::<Value>(&config) else {
-            continue;
+    use crate::storage::design_history as h;
+    // The draft is logged in the design history; the published copy and the
+    // saved versions follow too (a rename is a ref fix-up, not a design
+    // change), so operators' screens keep their bindings and an older
+    // version published or restored later binds the renamed tags.
+    let mut updates: Vec<(&str, String, String, String)> = Vec::new();
+    for table in ["scada_equipment", "scada_equipment_published"] {
+        let rows: Vec<(String, String, String)> = {
+            let Ok(mut stmt) = conn.prepare(&format!(
+                "SELECT screen_id, equipment_id, config FROM {table} WHERE config LIKE '%\"bindings\"%'"
+            )) else {
+                continue;
+            };
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?
         };
-        if rewrite_config(&mut v, &f) {
-            conn.execute(
-                "UPDATE scada_equipment SET config = ?1 WHERE screen_id = ?2 AND equipment_id = ?3",
-                rusqlite::params![v.to_string(), screen, equipment],
-            )?;
+        for (screen, equipment, config) in rows {
+            let Ok(mut v) = serde_json::from_str::<Value>(&config) else {
+                continue;
+            };
+            if rewrite_config(&mut v, &f) {
+                updates.push((table, screen, equipment, v.to_string()));
+            }
+        }
+    }
+    // Only the screens whose draft changes are read for the history.
+    let screens: std::collections::BTreeSet<String> = updates
+        .iter()
+        .filter(|u| u.0 == "scada_equipment")
+        .map(|u| u.1.clone())
+        .collect();
+    let mut before_objects = h::Objects::new();
+    for screen in &screens {
+        before_objects.extend(h::read_objects(conn, h::Scope::Screen(screen))?);
+    }
+    let mut n = 0;
+    for (table, screen, equipment, config) in &updates {
+        conn.execute(
+            &format!("UPDATE {table} SET config = ?1 WHERE screen_id = ?2 AND equipment_id = ?3"),
+            rusqlite::params![config, screen, equipment],
+        )?;
+        if *table == "scada_equipment" {
             n += 1;
         }
+    }
+    let versions: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare("SELECT id, snapshot FROM design_versions WHERE snapshot LIKE '%bindings%'")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?
+    };
+    for (id, text) in versions {
+        let Ok(mut snap) = serde_json::from_str::<h::LayoutSnapshot>(&text) else {
+            continue;
+        };
+        let mut changed = false;
+        for e in &mut snap.equipment {
+            let Ok(mut v) = serde_json::from_str::<Value>(&e.config) else {
+                continue;
+            };
+            if rewrite_config(&mut v, &f) {
+                e.config = v.to_string();
+                changed = true;
+            }
+        }
+        if changed {
+            conn.execute(
+                "UPDATE design_versions SET snapshot = ?2 WHERE id = ?1",
+                rusqlite::params![id, serde_json::to_string(&snap)?],
+            )?;
+        }
+    }
+    if n > 0 {
+        let mut after_objects = h::Objects::new();
+        for screen in &screens {
+            after_objects.extend(h::read_objects(conn, h::Scope::Screen(screen))?);
+        }
+        let note = renamed
+            .iter()
+            .map(|(a, b)| format!("{a} → {b}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        h::append(
+            conn,
+            h::diff_objects(&before_objects, &after_objects),
+            &h::DesignActor::system("tag_rename").with_note(note),
+        )?;
     }
     Ok(n)
 }

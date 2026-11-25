@@ -1313,3 +1313,241 @@ async fn equipment_changes_to_write_policies_need_the_signature() {
             .is_none()
     );
 }
+
+/// Publishing a Designer screen is the `design_publish` signed action: the
+/// author signs the request and a second admin signs the approval (21 CFR
+/// Part 11), and MCP cannot sign (docs/version-history.md).
+#[tokio::test]
+async fn a_screen_publish_and_its_approval_are_signed() {
+    let mut f = fixture(TestEdition::default()).await;
+    add_user(&f.state.storage, "reviewer", "reviewer-pass-1", "admin").await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let reviewer = cookie(&f.app, "reviewer", "reviewer-pass-1").await;
+    let rows = json!({"equipment": [{"equipment_id": "a", "equipment_type": "label", "equipment_name": "",
+        "x": 0, "y": 0, "width": 10, "height": 10, "rotation": 0, "sensor_bindings": "[]", "config": "{}"}],
+        "connections": []});
+    let (status, _) = send_request(
+        &f.app,
+        "PUT",
+        "/api/v1/screens/s1/scada-layout",
+        None,
+        Some(&admin),
+        Some(rows),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Direct publish: 428, then published once signed.
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/publish",
+        None,
+        Some(&admin),
+        Some(json!({"message": "m"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body["signature_required"]["action"], "design_publish");
+    drain(&mut f.audit);
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/publish",
+        None,
+        Some(&admin),
+        Some(json!({"message": "m", "signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"]["signature"], "sig-1");
+    let record = f.edition.records.lock().unwrap()[0].clone();
+    assert_eq!(record.action, SignedAction::DesignPublish);
+    assert_eq!(record.resource, "screen:s1:publish");
+    assert_eq!(record.details["stage"], "publish");
+    let entries = drain(&mut f.audit);
+    let e = entries
+        .iter()
+        .find(|e| e.action == "design_publish")
+        .unwrap();
+    assert!(e.details.as_deref().unwrap().contains("signature=sig-1"));
+
+    // With approval required: the request and the approval each signed.
+    let (status, _) = send_request(
+        &f.app,
+        "PUT",
+        "/api/v1/settings/design-history",
+        None,
+        Some(&admin),
+        Some(json!({"approval": "required", "signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/publish",
+        None,
+        Some(&admin),
+        Some(json!({"name": "r2", "signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "pending");
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/versions/r2/approve",
+        None,
+        Some(&reviewer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/versions/r2/approve",
+        None,
+        Some(&reviewer),
+        Some(json!({"signature": signature("reviewer-pass-1")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stages: Vec<String> = f
+        .edition
+        .records
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| format!("{}:{}", r.username, r.details["stage"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        stages,
+        [
+            "admin:publish",
+            "admin:settings",
+            "admin:request",
+            "reviewer:approve"
+        ]
+    );
+    assert_eq!(body["version"]["signature"], "sig-4");
+}
+
+/// "Publish after import" is the `design_publish` action too: without the
+/// signature (the `X-Voltrus-Signature` header) the import writes nothing;
+/// with approval required it files publish requests; settings changes that
+/// touch publishing are signed.
+#[tokio::test]
+async fn an_import_that_publishes_is_signed() {
+    let f = fixture(TestEdition::default()).await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let yaml = "format: voltrus-project/1\nscreens:\n- id: s9\n  name: Nine\n  scada:\n    equipment:\n    - {equipment_id: a, equipment_type: label, x: 4, config: {text: A}}\n";
+    let import = |sig: Option<serde_json::Value>| {
+        let app = f.app.clone();
+        let admin = admin.clone();
+        async move {
+            let mut req = http::Request::builder()
+                .method("POST")
+                .uri("/api/v1/project/import?publish=1")
+                .header("cookie", &admin)
+                .header("content-type", "application/yaml");
+            if let Some(s) = sig {
+                req = req.header("x-voltrus-signature", s.to_string());
+            }
+            let resp = tower::ServiceExt::oneshot(
+                app,
+                req.body(axum::body::Body::from(yaml.to_string())).unwrap(),
+            )
+            .await
+            .unwrap();
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_default(),
+            )
+        }
+    };
+    let (status, body) = import(None).await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body["signature_required"]["action"], "design_publish");
+    let (status, _) = send_request(
+        &f.app,
+        "GET",
+        "/api/v1/screens/s9/scada-layout",
+        None,
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert!(status.is_success());
+    let (_, h) = send_request(
+        &f.app,
+        "GET",
+        "/api/v1/screens/s9/history",
+        None,
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert!(
+        h["changes"].as_array().unwrap().is_empty(),
+        "nothing written: {h}"
+    );
+
+    let (status, plan) = import(Some(signature("admin"))).await;
+    assert_eq!(status, StatusCode::OK, "{plan}");
+    assert_eq!(plan["published"], json!(["s9"]));
+    let record = f.edition.records.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(record.resource, "project:import:publish");
+    assert_eq!(record.details["stage"], "publish");
+    assert_eq!(
+        record.details["document_sha256"].as_str().unwrap().len(),
+        64
+    );
+
+    // Requiring approval is signed; the import then files a request.
+    let (status, _) = send_request(
+        &f.app,
+        "PUT",
+        "/api/v1/settings/design-history",
+        None,
+        Some(&admin),
+        Some(json!({"approval": "required"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+    let (status, _) = send_request(
+        &f.app,
+        "PUT",
+        "/api/v1/settings/design-history",
+        None,
+        Some(&admin),
+        Some(json!({"approval": "required", "signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let changed = yaml.replace("x: 4", "x: 8");
+    let req = http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/project/import?publish=1")
+        .header("cookie", &admin)
+        .header("content-type", "application/yaml")
+        .header("x-voltrus-signature", signature("admin").to_string())
+        .body(axum::body::Body::from(changed))
+        .unwrap();
+    let resp = tower::ServiceExt::oneshot(f.app.clone(), req)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let plan: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(plan["publish_requested"], json!(["s9"]), "{plan}");
+    let record = f.edition.records.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(record.details["stage"], "request");
+}

@@ -230,6 +230,11 @@ pub enum SignedAction {
     /// and its rollback, starting or stopping a flow, changing a tag's
     /// write policy.
     ModeSwitch,
+    /// Publishing a Designer screen (what operators see changes), requesting
+    /// a publish, or approving one: `details.stage` is `publish`, `request` or
+    /// `approve` (docs/version-history.md). 21 CFR Part 11 editions sign the
+    /// request as the author and the approval as the reviewer.
+    DesignPublish,
 }
 
 impl SignedAction {
@@ -240,6 +245,7 @@ impl SignedAction {
             Self::AlarmShelve => "alarm_shelve",
             Self::RecipeLoad => "recipe_load",
             Self::ModeSwitch => "mode_switch",
+            Self::DesignPublish => "design_publish",
         }
     }
 }
@@ -291,7 +297,7 @@ pub struct ActionContext {
     /// What is acted on: `data_source:<id>`, `alarm:<id>` (`alarm:*` for
     /// acknowledge-all), `recipe:<id>`, `device:<id>:simulation`,
     /// `device:<id>:go_live`, `device:<id>:go_live_rollback`, `flow:<id>`,
-    /// `data_source:<id>:write_policy`.
+    /// `data_source:<id>:write_policy`, `screen:<id>:publish`.
     pub resource: String,
     /// Details per action, listed in docs/edition-hooks.md (a tag write has
     /// `tag_id` (the same id as in `resource`), `key`, `device_id`, `value`

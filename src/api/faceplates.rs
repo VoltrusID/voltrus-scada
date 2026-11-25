@@ -94,10 +94,19 @@ pub async fn get_faceplate(
 pub async fn create_faceplate(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
     let f = parse(body)?;
-    if !state.storage.save_faceplate(&f, true).await? {
+    if !state
+        .storage
+        .save_faceplate_as(
+            &f,
+            true,
+            &super::design_history::actor(&auth, api_key.is_some(), None, "faceplate"),
+        )
+        .await?
+    {
         return Err(AppError(anyhow::Error::new(Rejected(
             StatusCode::CONFLICT,
             format!("A faceplate '{}' already exists", f.id),
@@ -120,6 +129,7 @@ pub async fn create_faceplate(
 pub async fn update_faceplate(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -130,7 +140,15 @@ pub async fn update_faceplate(
             f.id
         )));
     }
-    if !state.storage.save_faceplate(&f, false).await? {
+    if !state
+        .storage
+        .save_faceplate_as(
+            &f,
+            false,
+            &super::design_history::actor(&auth, api_key.is_some(), None, "faceplate"),
+        )
+        .await?
+    {
         return Err(AppError::not_found(format!("No faceplate '{id}'")));
     }
     audit(&state, &auth, "update_faceplate", &id);
@@ -153,6 +171,7 @@ pub async fn update_faceplate(
 pub async fn delete_faceplate(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let users = state.storage.faceplate_users(&id).await?;
@@ -177,7 +196,14 @@ pub async fn delete_faceplate(
             ),
         ))));
     }
-    if !state.storage.delete_faceplate(&id).await? {
+    if !state
+        .storage
+        .delete_faceplate_as(
+            &id,
+            &super::design_history::actor(&auth, api_key.is_some(), None, "faceplate"),
+        )
+        .await?
+    {
         return Err(AppError::not_found(format!("No faceplate '{id}'")));
     }
     audit(&state, &auth, "delete_faceplate", &id);

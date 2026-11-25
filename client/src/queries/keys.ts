@@ -21,9 +21,13 @@ export const queryKeys = {
   modbusDevice:   (id: string) => ['modbusDevice', id] as const,
   modbusRegisters: (id: string) => ['modbusRegisters', id] as const,
   modbusStatus:   ['modbusStatus'] as const,
-  scadaEquipment:  (screenId: string) => ['scadaEquipment', screenId] as const,
-  scadaConnections: (screenId: string) => ['scadaConnections', screenId] as const,
+  // With `view`, the draft or the published rows (operators' view); without, every view (for invalidation).
+  scadaEquipment:  (screenId: string, view?: 'draft' | 'published') => (view ? ['scadaEquipment', screenId, view] : ['scadaEquipment', screenId]) as readonly string[],
+  scadaConnections: (screenId: string, view?: 'draft' | 'published') => (view ? ['scadaConnections', screenId, view] : ['scadaConnections', screenId]) as readonly string[],
   scadaLayout:      (screenId: string) => ['scadaLayout', screenId] as const,
+  /** Version history of a screen (designHistory.ts); every key of a screen starts with this. */
+  design:           (screenId: string) => ['design', screenId] as const,
+  designSettings:   ['designSettings'] as const,
   users: ['users'] as const,
   authMe: ['auth', 'me'] as const,
   flows: ['flows'] as const,

@@ -20,6 +20,7 @@ use super::secrets;
 use super::spec::{self, Child, Field, Kind, Pk, Plain, Section, Stamp, Ty};
 use super::validate;
 use crate::storage::Storage;
+use crate::storage::design_history::{self, DesignActor};
 
 /// Where `${ENV}` references are resolved from.
 pub type Env = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -53,7 +54,16 @@ pub async fn plan_import_guarded(
     mode: Mode,
     guard: Guard,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, false, process_env(), Some(guard)).await
+    run_async(
+        storage,
+        doc,
+        mode,
+        false,
+        process_env(),
+        Some(guard),
+        &default_actor(),
+    )
+    .await
 }
 
 /// [`apply_import`] with a [`Guard`].
@@ -63,7 +73,64 @@ pub async fn apply_import_guarded(
     mode: Mode,
     guard: Guard,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, true, process_env(), Some(guard)).await
+    apply_import_guarded_as(storage, doc, mode, guard, &default_actor()).await
+}
+
+/// [`apply_import_guarded`], logged in the design history as `actor`.
+pub async fn apply_import_guarded_as(
+    storage: &Storage,
+    doc: &ProjectDoc,
+    mode: Mode,
+    guard: Guard,
+    actor: &DesignActor,
+) -> Result<ImportPlan> {
+    run_async(storage, doc, mode, true, process_env(), Some(guard), actor).await
+}
+
+/// "Publish after import" (docs/version-history.md): the caller checked who
+/// may do it and got the signature the edition wants; the import follows the
+/// site's switches inside its transaction (publishing off refuses the whole
+/// import, approval required files publish requests instead).
+#[derive(Debug, Clone, Default)]
+pub struct ImportPublish {
+    /// The electronic signature recorded for it, if any.
+    pub signature: Option<String>,
+}
+
+/// An import asked to publish while publishing is off.
+#[derive(Debug)]
+pub struct PublishingOff;
+
+impl std::fmt::Display for PublishingOff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("publishing is turned off for this site: import without publishing (operators see the draft)")
+    }
+}
+
+impl std::error::Error for PublishingOff {}
+
+/// [`apply_import`]; the design objects it changes (screens' widgets and
+/// connections, equipment types and instances, faceplates) are logged in the
+/// design history as one batch by `actor`. With `publish`, every screen the
+/// import touched is published (or a publish request filed) in the same
+/// transaction.
+pub async fn apply_import_as(
+    storage: &Storage,
+    doc: &ProjectDoc,
+    mode: Mode,
+    actor: &DesignActor,
+    publish: Option<ImportPublish>,
+) -> Result<ImportPlan> {
+    let doc = doc.clone();
+    let actor = actor.clone();
+    let env = process_env();
+    storage
+        .with_conn(move |conn| run(conn, &doc, mode, true, &*env, None, &actor, publish))
+        .await
+}
+
+fn default_actor() -> DesignActor {
+    DesignActor::system("import")
 }
 
 pub async fn plan_import_with_env(
@@ -72,7 +139,7 @@ pub async fn plan_import_with_env(
     mode: Mode,
     env: Env,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, false, env, None).await
+    run_async(storage, doc, mode, false, env, None, &default_actor()).await
 }
 
 pub async fn apply_import_with_env(
@@ -81,7 +148,7 @@ pub async fn apply_import_with_env(
     mode: Mode,
     env: Env,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, true, env, None).await
+    run_async(storage, doc, mode, true, env, None, &default_actor()).await
 }
 
 async fn run_async(
@@ -91,10 +158,12 @@ async fn run_async(
     write: bool,
     env: Env,
     guard: Option<Guard>,
+    actor: &DesignActor,
 ) -> Result<ImportPlan> {
     let doc = doc.clone();
+    let actor = actor.clone();
     storage
-        .with_conn(move |conn| run(conn, &doc, mode, write, &*env, guard))
+        .with_conn(move |conn| run(conn, &doc, mode, write, &*env, guard, &actor, None))
         .await
 }
 
@@ -105,6 +174,7 @@ struct Work {
     existing: Option<Row>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     conn: &mut Connection,
     doc: &ProjectDoc,
@@ -112,8 +182,20 @@ fn run(
     write: bool,
     env: &(dyn Fn(&str) -> Option<String> + Send + Sync),
     guard: Option<Guard>,
+    actor: &DesignActor,
+    publish: Option<ImportPublish>,
 ) -> Result<ImportPlan> {
     let tx = conn.transaction().context("begin transaction")?;
+    let publish_settings = match &publish {
+        Some(_) if write => {
+            let s = design_history::read_settings(&tx)?;
+            if !s.publishing {
+                return Err(PublishingOff.into());
+            }
+            Some(s)
+        }
+        _ => None,
+    };
     let (snap, mut ctx) = export::read_all(&tx)?;
 
     // Equipment instances become tags, registers, flows and widget bindings
@@ -147,6 +229,9 @@ fn run(
         changes: Vec::new(),
         warnings,
         expanded,
+        design_batch: None,
+        published: Vec::new(),
+        publish_requested: Vec::new(),
     };
     let mut work: Vec<Work> = Vec::new();
     let mut secret_errors: Vec<Issue> = Vec::new();
@@ -266,6 +351,7 @@ fn run(
     }
 
     if write {
+        let design_before = design_history::read_objects(&tx, design_history::Scope::Project)?;
         // Deletes first (children before parents), then creates and updates in
         // dependency order.
         for w in work.iter().rev().filter(|w| w.action == Action::Delete) {
@@ -288,6 +374,45 @@ fn run(
                 || format!("writing {} {}", w.sec.label, entity_key(w.sec, &w.entity)),
             )?;
         }
+        let design_after = design_history::read_objects(&tx, design_history::Scope::Project)?;
+        let batch = design_history::append(
+            &tx,
+            design_history::diff_objects(&design_before, &design_after),
+            actor,
+        )?;
+        if let (Some(p), Some(settings)) = (&publish, &publish_settings) {
+            // "Publish after import": every screen the import touched, in the
+            // same transaction. A screen whose draft is what operators see
+            // already gets no new version; with approval required each gets
+            // a publish request instead.
+            let request = settings.approval == design_history::Approval::Required;
+            let mut screens: Vec<String> = plan
+                .changes_in("screens")
+                .filter(|c| c.action != Action::Delete)
+                .map(|c| c.key.clone())
+                .collect();
+            if let Some(b) = &batch {
+                screens.extend(b.screens.iter().filter(|s| !s.is_empty()).cloned());
+            }
+            screens.sort();
+            screens.dedup();
+            for screen in screens {
+                let (done, _) = design_history::publish_draft(
+                    &tx,
+                    &screen,
+                    "Published by a project import",
+                    &actor.username,
+                    request,
+                    p.signature.as_deref(),
+                )?;
+                match done {
+                    design_history::DraftPublish::Requested => plan.publish_requested.push(screen),
+                    design_history::DraftPublish::Unchanged => {}
+                    _ => plan.published.push(screen),
+                }
+            }
+        }
+        plan.design_batch = batch.map(|b| b.batch);
         tx.commit().context("commit import")?;
     }
     Ok(plan)
@@ -332,7 +457,12 @@ fn delete_entity(tx: &Transaction<'_>, sec: &Section, row: &Row, ctx: &mut Ctx) 
     match &sec.kind {
         Kind::Plain(p) => delete_plain(tx, p, row, ctx),
         Kind::Tags => delete_tag(tx, row, ctx),
-        Kind::Screens => delete_screen(tx, &row.key),
+        Kind::Screens => {
+            delete_screen(tx, &row.key)?;
+            // Operators no longer see a screen the import removed (a written
+            // screen is cleared and rewritten, its published copy stays).
+            design_history::forget_published(tx, &row.key)
+        }
         Kind::Settings => write_settings(tx, &Mapping::new(), true),
     }
 }

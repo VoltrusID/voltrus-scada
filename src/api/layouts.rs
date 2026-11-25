@@ -1,9 +1,10 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use serde_json::json;
 
-use super::{AppError, AppState};
+use super::{AppError, AppState, AuthUser};
 use crate::models::*;
 
 /// GET /api/screens/{id}/layouts — get layouts for a screen, returned as {lg:[], md:[], sm:[]}
@@ -316,50 +317,127 @@ fn items_array<'a>(
         .ok_or_else(|| AppError::bad_request(format!("Expected {{\"{key}\": [...]}}")))
 }
 
-/// `base_revision` of a save body: a string, or absent/null for no check.
-fn base_revision(body: &serde_json::Value) -> Result<Option<String>, AppError> {
-    match body.get("base_revision") {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
-        Some(_) => Err(AppError::bad_request("base_revision must be a string")),
+/// `base_revision` and `base_seq` of a save body: absent/null for no check.
+pub(crate) fn layout_base(
+    body: &serde_json::Value,
+) -> Result<crate::storage::LayoutBase, AppError> {
+    let revision = match body.get("base_revision") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(_) => return Err(AppError::bad_request("base_revision must be a string")),
+    };
+    let seq = match body.get("base_seq") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => Some(
+            v.as_i64()
+                .filter(|n| *n >= 0)
+                .ok_or_else(|| AppError::bad_request("base_seq must be a whole number"))?,
+        ),
+    };
+    Ok(crate::storage::LayoutBase { revision, seq })
+}
+
+/// The 409 of a stale save: the current revision and seq, and the batches
+/// since the base (who changed what).
+pub(crate) fn conflict_error(
+    revision: String,
+    seq: i64,
+    since: Vec<serde_json::Value>,
+) -> AppError {
+    AppError(
+        super::RejectedJson(
+            axum::http::StatusCode::CONFLICT,
+            json!({
+                "error": "This screen was changed by someone else since you opened it",
+                "code": "conflict",
+                "revision": revision,
+                "seq": seq,
+                "changes_since": since,
+            }),
+        )
+        .into(),
+    )
+}
+
+/// Answer of a checked save: 200 with the new revision and seq (and the
+/// change-log batch), or 409 with the current ones.
+fn layout_saved(outcome: crate::storage::LayoutSave) -> Result<impl IntoResponse, AppError> {
+    match outcome {
+        crate::storage::LayoutSave::Saved {
+            revision,
+            seq,
+            batch,
+        } => {
+            let mut resp =
+                Json(json!({"ok": true, "revision": revision, "seq": seq, "batch": batch}))
+                    .into_response();
+            if let Some(b) = batch {
+                resp.extensions_mut()
+                    .insert(super::design_history::AuditBatch(b));
+            }
+            Ok(resp)
+        }
+        crate::storage::LayoutSave::Conflict {
+            revision,
+            seq,
+            since,
+        } => Err(conflict_error(revision, seq, since)),
     }
 }
 
-/// Answer of a revision-checked save: 200 with the new revision, or 409 with the current one.
-fn layout_saved(outcome: crate::storage::LayoutSave) -> Result<Json<serde_json::Value>, AppError> {
-    match outcome {
-        crate::storage::LayoutSave::Saved { revision } => {
-            Ok(Json(json!({"ok": true, "revision": revision})))
-        }
-        crate::storage::LayoutSave::Conflict { revision } => Err(AppError(
-            super::RejectedJson(
-                axum::http::StatusCode::CONFLICT,
-                json!({
-                    "error": "This screen was changed by someone else since you opened it",
-                    "code": "conflict",
-                    "revision": revision,
-                }),
-            )
-            .into(),
-        )),
+/// `?published=1` / `?draft=1` on the layout GETs.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ViewQuery {
+    pub published: Option<String>,
+    pub draft: Option<String>,
+}
+
+fn flag(v: &Option<String>) -> bool {
+    matches!(
+        v.as_deref().map(str::to_ascii_lowercase).as_deref(),
+        Some("1" | "true" | "yes")
+    )
+}
+
+/// Whether a read gets the published rows (docs/version-history.md):
+/// `?published=1` asks for them, `?draft=1` for the draft (roles that
+/// configure only). Without either, roles that do not configure get the
+/// published rows and roles that configure (sessions and integration keys
+/// alike) the draft, as before phase 3; a runtime reader that configures
+/// passes `?published=1`.
+fn wants_published(auth: Option<&AuthUser>, q: &ViewQuery) -> bool {
+    let configures =
+        auth.is_none_or(|a| super::auth_middleware::role_allows_configuration(&a.role));
+    if !configures || flag(&q.published) {
+        return true;
     }
+    // `?draft=1`, or nothing: the draft.
+    let _explicit_draft = flag(&q.draft);
+    false
 }
 
 /// GET /api/screens/{id}/scada-equipment
 #[utoipa::path(
     get,
     path = "/api/v1/screens/{id}/scada-equipment",
-    params(("id" = String, Path, description = "Screen ID")),
+    params(
+        ("id" = String, Path, description = "Screen ID"),
+        ("published" = Option<String>, Query, description = "1: the rows operators see (the published copy, or the draft of a screen never published). Roles that do not configure always get these"),
+        ("draft" = Option<String>, Query, description = "1: the draft (the default for roles that configure, API keys included)"),
+    ),
     responses((status = 200, body = Vec<crate::models::ScadaEquipment>)),
     tag = "Layouts",
     security(("api_key" = []), ("cookie_auth" = []))
 )]
 pub async fn get_scada_equipment(
     State(state): State<AppState>,
+    auth: Option<Extension<AuthUser>>,
     Path(id): Path<String>,
+    Query(q): Query<ViewQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let items = state.storage.get_scada_equipment(&id).await?;
-    Ok(Json(json!({"items": items})))
+    let published = wants_published(auth.as_ref().map(|a| &a.0), &q);
+    let view = state.storage.get_scada_layout_view(&id, published).await?;
+    Ok(Json(json!({"items": view.equipment, "view": view.view})))
 }
 
 /// PUT /api/screens/{id}/scada-equipment
@@ -379,14 +457,18 @@ pub async fn get_scada_equipment(
 )]
 pub async fn save_scada_equipment(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     let items = parse_equipment(&id, items_array(&body, "items")?);
-    let base = base_revision(&body)?;
+    let base = layout_base(&body)?;
+    let actor = super::design_history::request_actor(&auth, api_key.is_some(), &headers, "save");
     let outcome = state
         .storage
-        .save_scada_layout(&id, Some(items), None, base)
+        .save_scada_layout(&id, Some(items), None, base, &actor)
         .await?;
     layout_saved(outcome)
 }
@@ -395,17 +477,24 @@ pub async fn save_scada_equipment(
 #[utoipa::path(
     get,
     path = "/api/v1/screens/{id}/scada-connections",
-    params(("id" = String, Path, description = "Screen ID")),
+    params(
+        ("id" = String, Path, description = "Screen ID"),
+        ("published" = Option<String>, Query, description = "1: the rows operators see (the published copy, or the draft of a screen never published). Roles that do not configure always get these"),
+        ("draft" = Option<String>, Query, description = "1: the draft (the default for roles that configure, API keys included)"),
+    ),
     responses((status = 200, body = Vec<crate::models::ScadaConnection>)),
     tag = "Layouts",
     security(("api_key" = []), ("cookie_auth" = []))
 )]
 pub async fn get_scada_connections(
     State(state): State<AppState>,
+    auth: Option<Extension<AuthUser>>,
     Path(id): Path<String>,
+    Query(q): Query<ViewQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let connections = state.storage.get_scada_connections(&id).await?;
-    Ok(Json(json!({"items": connections})))
+    let published = wants_published(auth.as_ref().map(|a| &a.0), &q);
+    let view = state.storage.get_scada_layout_view(&id, published).await?;
+    Ok(Json(json!({"items": view.connections, "view": view.view})))
 }
 
 /// PUT /api/screens/{id}/scada-connections
@@ -424,14 +513,18 @@ pub async fn get_scada_connections(
 )]
 pub async fn save_scada_connections(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     let connections = parse_connections(&id, items_array(&body, "items")?);
-    let base = base_revision(&body)?;
+    let base = layout_base(&body)?;
+    let actor = super::design_history::request_actor(&auth, api_key.is_some(), &headers, "save");
     let outcome = state
         .storage
-        .save_scada_layout(&id, None, Some(connections), base)
+        .save_scada_layout(&id, None, Some(connections), base, &actor)
         .await?;
     layout_saved(outcome)
 }
@@ -441,19 +534,31 @@ pub async fn save_scada_connections(
 #[utoipa::path(
     get,
     path = "/api/v1/screens/{id}/scada-layout",
-    params(("id" = String, Path, description = "Screen ID")),
-    responses((status = 200, description = "{equipment, connections, revision}")),
+    params(
+        ("id" = String, Path, description = "Screen ID"),
+        ("published" = Option<String>, Query, description = "1: the rows operators see (the published copy, or the draft of a screen never published). Roles that do not configure always get these"),
+        ("draft" = Option<String>, Query, description = "1: the draft (the default for roles that configure, API keys included)"),
+    ),
+    responses((status = 200, description = "{equipment, connections, revision, seq, view: draft|published, draft_differs}")),
     tag = "Layouts",
     security(("api_key" = []), ("cookie_auth" = []))
 )]
 pub async fn get_scada_layout(
     State(state): State<AppState>,
+    auth: Option<Extension<AuthUser>>,
     Path(id): Path<String>,
+    Query(q): Query<ViewQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let (equipment, connections, revision) = state.storage.get_scada_layout(&id).await?;
-    Ok(Json(
-        json!({"equipment": equipment, "connections": connections, "revision": revision}),
-    ))
+    let published = wants_published(auth.as_ref().map(|a| &a.0), &q);
+    let view = state.storage.get_scada_layout_view(&id, published).await?;
+    Ok(Json(json!({
+        "equipment": view.equipment,
+        "connections": view.connections,
+        "revision": view.revision,
+        "seq": view.seq,
+        "view": view.view,
+        "draft_differs": view.draft_differs,
+    })))
 }
 
 /// PUT /api/screens/{id}/scada-layout — replace equipment and connections in
@@ -473,15 +578,19 @@ pub async fn get_scada_layout(
 )]
 pub async fn save_scada_layout(
     State(state): State<AppState>,
+    Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     let equipment = parse_equipment(&id, items_array(&body, "equipment")?);
     let connections = parse_connections(&id, items_array(&body, "connections")?);
-    let base = base_revision(&body)?;
+    let base = layout_base(&body)?;
+    let actor = super::design_history::request_actor(&auth, api_key.is_some(), &headers, "save");
     let outcome = state
         .storage
-        .save_scada_layout(&id, Some(equipment), Some(connections), base)
+        .save_scada_layout(&id, Some(equipment), Some(connections), base, &actor)
         .await?;
     layout_saved(outcome)
 }

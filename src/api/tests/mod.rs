@@ -14,6 +14,7 @@ mod config_snapshots;
 mod cookie_secure;
 mod csv_import;
 mod data_sources;
+mod design_history;
 mod device_templates;
 mod equipment_safety;
 mod equipment_types;

@@ -10,7 +10,14 @@
 //! |---|---|---|
 //! | A screen's equipment | `GET /screens/{id}/scada-equipment` → `{items: [EquipmentRow]}` | any |
 //! | Its connections | `GET /screens/{id}/scada-connections` → `{items: [ConnectionRow]}` | any |
+//! | Both, as operators see them | `GET /screens/{id}/scada-layout?published=1` (run mode) | any |
 //! | Save them | `PUT` the same paths with `{items}`; each replaces the screen's rows | operator |
+//!
+//! With version history (docs/version-history.md) a screen has a draft
+//! (what editors change) and a published copy (what operators see). Roles
+//! that do not configure always get the published rows; a configurer gets
+//! the draft unless it asks for `?published=1`, so the console's run mode
+//! asks for it and its editor does not.
 //!
 //! The overview keeps its mimic under `__overview`, like its card layouts.
 //! `sensor_bindings`, `config` and `waypoints` are JSON **text** inside the

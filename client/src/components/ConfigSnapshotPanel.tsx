@@ -166,6 +166,9 @@ function ConfirmRollbackDialog({
             <> Snapshot: <span style={{ color: 'var(--fg)' }}>"{snapshot.label}"</span></>
           )}
           <br />
+          Screens go back as drafts and as operators saw them (their published copies), so a rollback
+          changes what operators see at once. Version history is kept.
+          <br />
           <span style={{ color: 'var(--crit)', fontWeight: 600 }}>
             This will overwrite the current configuration. Make sure you have a backup snapshot.
           </span>
