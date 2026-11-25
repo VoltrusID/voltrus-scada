@@ -41,7 +41,7 @@ Linux x86_64 (use `aarch64` on a Raspberry Pi; Windows and macOS builds are
 on the [releases page](https://github.com/VoltrusID/voltrus-scada/releases/latest)):
 
 ```bash
-V=v0.52.0
+V=v0.53.0
 curl -L https://github.com/VoltrusID/voltrus-scada/releases/download/$V/voltrus-core-$V-linux-x86_64.tar.gz | tar xz
 cd voltrus-core-$V-linux-x86_64 && cp config.yaml.example config.yaml
 ./modbus-sim &          # a simulated Schneider PM5560 power meter on port 5020
@@ -221,7 +221,7 @@ client is inside the executable. On Linux x86_64 (use the file name of the
 latest release, and `aarch64` on a Pi):
 
 ```bash
-V=v0.52.0
+V=v0.53.0
 curl -LO https://github.com/VoltrusID/voltrus-scada/releases/download/$V/voltrus-core-$V-linux-x86_64.tar.gz
 tar xzf voltrus-core-$V-linux-x86_64.tar.gz && cd voltrus-core-$V-linux-x86_64
 cp config.yaml.example config.yaml   # set auth_secret and your devices
