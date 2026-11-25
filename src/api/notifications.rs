@@ -30,9 +30,9 @@ pub async fn list_notification_settings(
 
 fn validate_channel_type(channel_type: &str) -> Result<(), AppError> {
     match channel_type {
-        "email" | "webhook" | "push" | "telegram" | "whatsapp" => Ok(()),
+        "email" | "webhook" | "telegram" | "whatsapp" => Ok(()),
         _ => Err(AppError::bad_request(
-            "channel_type must be 'email', 'webhook', 'push', 'telegram', or 'whatsapp'",
+            "channel_type must be 'email', 'webhook', 'telegram', or 'whatsapp' (phone alarms go to every paired phone of the Voltrus SCADA app, with no rule per tag)",
         )),
     }
 }
@@ -47,7 +47,7 @@ fn ensure_chat_allowed(state: &AppState, channel_type: &str) -> Result<(), AppEr
     Ok(())
 }
 
-/// The targets of an email, webhook or push setting: a non-empty JSON array of strings.
+/// The targets of an email or webhook setting: a non-empty JSON array of strings.
 fn string_targets(config: &str) -> Result<Vec<String>, AppError> {
     let targets: Vec<String> = serde_json::from_str(config).map_err(|_| {
         AppError::bad_request(
@@ -249,7 +249,7 @@ pub async fn test_notification(
         && !chat::is_chat_channel(&req.channel_type)
     {
         return Err(AppError::bad_request(
-            "channel_type must be 'email', 'webhook', 'telegram', or 'whatsapp' (push is tested via browser subscription)",
+            "channel_type must be 'email', 'webhook', 'telegram', or 'whatsapp'",
         ));
     }
 

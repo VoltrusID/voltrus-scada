@@ -921,7 +921,15 @@ pub(crate) async fn serve(
 
     api::stream::spawn_data_broadcaster(cache.clone(), storage.clone(), Some(ws_manager.clone()));
     let state_for_shutdown = state.clone();
+    // Alarm pushes to paired phones, through the relay the edition registers.
+    crate::mobile::spawn_dispatcher(
+        storage.clone(),
+        ws_manager.clone(),
+        state.license_status.clone(),
+    );
     let app = api::create_router(state);
+    // The push relay connector (an add-on) forwards phone requests through it.
+    crate::edition::set_app_router(app.clone());
     api::ui::log_source().await;
 
     let addr = format!("{}:{}", app_config.server_host, app_config.server_port);

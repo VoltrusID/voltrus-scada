@@ -18,6 +18,7 @@ export const FEATURE_FLAG_KEYS = [
   'theme_full',
   'pdf_reporting',
   'chat_notifications',
+  'mobile_push',
   'multi_site',
   'sso',
   'sso_saml',

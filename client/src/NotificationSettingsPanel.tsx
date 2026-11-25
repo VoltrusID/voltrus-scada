@@ -13,7 +13,7 @@ import { summarizeTestOutcome } from './notificationTest'
 import type { NotificationSetting } from './types'
 
 const CHANNELS = edition.notificationChannels ?? []
-const CORE_CHANNEL_TYPES = ['email', 'webhook', 'push']
+const CORE_CHANNEL_TYPES = ['email', 'webhook']
 
 function parseConfigTargets(config: string): string[] {
   try {
@@ -295,7 +295,6 @@ function NotificationDialog({ setting, onSave, onClose, error }: {
             <select value={channelType} onChange={e => selectChannel(e.target.value)} style={inputStyle}>
               <option value="email">Email</option>
               <option value="webhook">Webhook</option>
-              <option value="push">Push Notification</option>
               {CHANNELS.map(c => {
                 const ok = c.available(license)
                 return (

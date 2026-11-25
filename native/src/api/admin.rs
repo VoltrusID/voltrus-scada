@@ -458,33 +458,22 @@ pub struct Channel {
     /// What one line of the targets is.
     pub target: &'static str,
     pub placeholder: &'static str,
-    /// `POST /notifications/test` takes it (push is tested from a browser).
-    pub testable: bool,
 }
 
 /// The core's channels, as the web client offers them; Telegram, WhatsApp and
 /// other edition channels are listed but edited in the web client.
-pub const CHANNELS: [Channel; 3] = [
+pub const CHANNELS: [Channel; 2] = [
     Channel {
         id: "email",
         label: "Email",
         target: "one address per line",
         placeholder: "ops@example.com\nshift-lead@example.com",
-        testable: true,
     },
     Channel {
         id: "webhook",
         label: "Webhook",
         target: "one URL per line",
         placeholder: "https://hooks.example.com/voltrus",
-        testable: true,
-    },
-    Channel {
-        id: "push",
-        label: "Push",
-        target: "one user name per line",
-        placeholder: "admin\noperator",
-        testable: false,
     },
 ];
 
@@ -795,8 +784,8 @@ mod tests {
         assert!(rule_body("", "email", "not-an-address", true).is_err());
         assert!(rule_body("", "webhook", "hooks.example.com", true).is_err());
         assert!(rule_body("", "webhook", "https://hooks.example.com", false).is_ok());
-        assert!(rule_body("", "push", "admin", true).is_ok());
-        assert!(rule_body("", "push", "  \n ", true).is_err());
+        assert!(rule_body("", "webhook", "  \n ", true).is_err());
+        assert!(rule_body("", "push", "admin", true).is_err());
         assert!(rule_body("", "telegram", "42", true).is_err());
     }
 

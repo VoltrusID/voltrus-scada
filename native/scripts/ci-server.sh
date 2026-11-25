@@ -164,7 +164,7 @@ curl -fsS -b cookies.txt -H "$json" \
 for rule in \
   '{"source_key": "", "channel_type": "email", "config": "[\"control-room@solar.example\"]", "enabled": true}' \
   '{"source_key": "ac_current_l1", "channel_type": "webhook", "config": "[\"http://127.0.0.1:9/voltrus\"]", "enabled": false}' \
-  '{"source_key": "irradiance", "channel_type": "push", "config": "[\"admin\"]", "enabled": true}'; do
+  '{"source_key": "irradiance", "channel_type": "email", "config": "[\"shift-lead@solar.example\"]", "enabled": true}'; do
   curl -fsS -b cookies.txt -H "$json" -d "$rule" "$url/api/v1/notifications/settings" > /dev/null
 done
 # A command target for the mimic's faceplate: the inverter's run register,

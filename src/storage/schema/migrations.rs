@@ -770,6 +770,40 @@ pub(super) fn run_migrations(conn: &Connection) {
            AND COALESCE(deadband, 0) = 0
            AND message NOT LIKE '% reached % (%: %)'",
     );
+
+    // Migration: the browser Web Push groundwork never had routes, so no
+    // subscription or `push` rule ever delivered anything. Phone alarms go to
+    // paired phones instead (mobile.rs).
+    let _ = conn.execute_batch(
+        "DROP TABLE IF EXISTS push_subscriptions;
+         DELETE FROM notification_settings WHERE channel_type = 'push';",
+    );
+
+    // Migration: phones paired with the Voltrus SCADA app (storage/mobile.rs).
+    // A device acts as the user who paired it; only the SHA-256 of its token
+    // and of a pairing code is stored.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS mobile_devices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            platform TEXT NOT NULL DEFAULT '',
+            token_hash TEXT NOT NULL UNIQUE,
+            push_token TEXT,
+            min_priority TEXT NOT NULL DEFAULT 'warning',
+            lang TEXT NOT NULL DEFAULT 'id',
+            created_at INTEGER NOT NULL,
+            last_seen_at INTEGER,
+            expires_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_mobile_devices_user ON mobile_devices(username);
+        CREATE TABLE IF NOT EXISTS mobile_pairings (
+            code_hash TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER NOT NULL
+        );",
+    );
 }
 
 /// Migration: failed sign-ins counted per (account, client address) instead

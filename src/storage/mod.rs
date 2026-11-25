@@ -26,6 +26,7 @@ mod historian;
 mod hub;
 mod license_storage;
 mod login_failures;
+mod mobile;
 #[cfg(feature = "modbus")]
 mod modbus_storage;
 mod notifications;
@@ -60,6 +61,10 @@ pub use login_failures::{
     ACCOUNT_BACKOFF_SECS, ACCOUNT_MAX_FAILURES, FAILURE_WINDOW_SECS, FailureOutcome,
     KNOWN_SOURCE_SECS, LoginAttempt, LoginBlock, PAIR_LOCK_SECS, PAIR_MAX_FAILURES, SESSION_SOURCE,
     SOURCE_LOCK_SECS, SOURCE_MAX_FAILURES,
+};
+pub use mobile::{
+    DEVICE_TOKEN_PREFIX, MOBILE_DEVICE_LIMIT, MobileDevice, MobileDeviceUpdate, NewMobileDevice,
+    PairError,
 };
 pub use settings_audit::AuditChainReport;
 pub(crate) use settings_scada::write_some_rows;

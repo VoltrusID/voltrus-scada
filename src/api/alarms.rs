@@ -150,10 +150,15 @@ pub async fn acknowledge_alarm(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
     api_key: Option<Extension<super::ApiKeyAuth>>,
+    device: Option<Extension<super::MobileDeviceAuth>>,
     Path(id): Path<i64>,
     super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
 ) -> Result<axum::response::Response, AppError> {
-    let origin = signature::origin_of(&user, api_key.is_some());
+    let origin = if device.is_some() {
+        crate::edition::ActionOrigin::Mobile
+    } else {
+        signature::origin_of(&user, api_key.is_some())
+    };
     acknowledge_alarm_as(&state, &user, origin, id, signature.as_ref()).await
 }
 
@@ -210,12 +215,18 @@ pub async fn acknowledge_all(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
     api_key: Option<Extension<super::ApiKeyAuth>>,
+    device: Option<Extension<super::MobileDeviceAuth>>,
     super::signature::MaybeSigned(signature): super::signature::MaybeSigned,
 ) -> Result<axum::response::Response, AppError> {
+    let origin = if device.is_some() {
+        crate::edition::ActionOrigin::Mobile
+    } else {
+        signature::origin_of(&user, api_key.is_some())
+    };
     let signed = match signature::authorize_action(
         &state,
         &user,
-        signature::origin_of(&user, api_key.is_some()),
+        origin,
         SignedAction::AlarmAck,
         "alarm:*".to_string(),
         json!({"all": true}),

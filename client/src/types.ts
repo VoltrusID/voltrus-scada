@@ -432,7 +432,7 @@ export interface FlowCatalogue {
 export interface NotificationSetting {
   id: number
   source_key: string
-  channel_type: 'email' | 'webhook' | 'push' | 'telegram' | 'whatsapp'
+  channel_type: 'email' | 'webhook' | 'telegram' | 'whatsapp'
   // JSON string: email/webhook/push use string arrays; telegram and whatsapp use an object. The server
   // masks their token as '********' in responses.
   config: string
