@@ -293,7 +293,9 @@ impl Storage {
         .context("Task join failed")?
     }
 
-    pub async fn update_data_source(&self, id: i64, fields: &serde_json::Value) -> Result<()> {
+    /// Update the given fields of a data source. False when there is no data
+    /// source `id` (nothing was changed).
+    pub async fn update_data_source(&self, id: i64, fields: &serde_json::Value) -> Result<bool> {
         let conn = self.conn.clone();
         let fields = fields.clone();
         tokio::task::spawn_blocking(move || {
@@ -353,15 +355,23 @@ impl Storage {
                 }
             }
             if parts.is_empty() {
-                return Ok(());
+                let found: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM data_sources WHERE id = ?1",
+                        rusqlite::params![id],
+                        |row| row.get(0),
+                    )
+                    .context("Find data source failed")?;
+                return Ok(found > 0);
             }
             params.push(Box::new(id));
             let sql = format!("UPDATE data_sources SET {} WHERE id = ?", parts.join(", "));
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 params.iter().map(|p| p.as_ref()).collect();
-            conn.execute(&sql, param_refs.as_slice())
+            let changed = conn
+                .execute(&sql, param_refs.as_slice())
                 .context("Update data source failed")?;
-            Ok(())
+            Ok(changed > 0)
         })
         .await
         .context("Task join failed")?
