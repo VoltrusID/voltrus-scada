@@ -15,13 +15,15 @@ import { DataPoint } from './types'
 import { toHexColor } from './styles'
 import { bandPoints } from './historyQuery'
 import { MinMaxBand } from './minMaxBand'
-import { axisLabel, overlayScales } from './trend/overlayAxes'
+import { axisDecimals, axisLabel, overlayScales } from './trend/overlayAxes'
 
 export interface OverlaySeries {
   data: DataPoint[]
   color: string
   name: string
   unit: string
+  /** The tag's decimals, for its axis labels. */
+  decimals?: number
 }
 
 export interface AnnotationMarker {
@@ -88,9 +90,9 @@ export function planChartUpdate(o: {
   return planSeriesUpdate(o.drawn, o.next)
 }
 
-/** A series' axis and crosshair labels: two decimals and its own unit. */
-function unitPriceFormat(unit: string) {
-  return { type: 'custom' as const, minMove: 0.01, formatter: (p: number) => axisLabel(p, unit) }
+/** A series' axis and crosshair labels: its tag's decimals and its own unit. */
+function unitPriceFormat(unit: string, decimals?: number) {
+  return { type: 'custom' as const, minMove: 10 ** -axisDecimals(decimals), formatter: (p: number) => axisLabel(p, unit, decimals) }
 }
 
 interface Props {
@@ -102,7 +104,10 @@ interface Props {
   color: string
   warn: number
   crit: number
+  /** Read once when the chart is made: key the chart by tag so it is remade for another tag. */
   unit: string
+  /** The tag's decimals, for axis labels (two when unset). Read once, like `unit`. */
+  decimals?: number
   overlays?: OverlaySeries[]
   annotations?: AnnotationMarker[]
   onAnnotationClick?: (time: number) => void
@@ -116,6 +121,7 @@ export function TvDetailChart({
   warn,
   crit,
   unit,
+  decimals,
   overlays = [],
   annotations = [],
   onAnnotationClick,
@@ -180,7 +186,7 @@ export function TvDetailChart({
       lastValueVisible: true,
       priceLineVisible: false,
       title: unit || undefined,
-      priceFormat: unitPriceFormat(unit),
+      priceFormat: unitPriceFormat(unit, decimals),
     })
     seriesRef.current = series
 
@@ -315,7 +321,7 @@ export function TvDetailChart({
         priceLineVisible: false,
         title: scale.side === 'own' ? '' : ov.name,
         priceScaleId: scale.id,
-        priceFormat: unitPriceFormat(ov.unit),
+        priceFormat: unitPriceFormat(ov.unit, ov.decimals),
       })
       if (scale.side === 'own') chart.priceScale(scale.id).applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } })
       s.setData(toTvData(ov.data))

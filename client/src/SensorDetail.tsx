@@ -108,7 +108,7 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
   }, [allSensors, overlayIds, sensor.color]);
 
   const overlays: OverlaySeries[] = useMemo(() =>
-    overlayTags.map(({ sensor: s, color }) => ({ data: overlayPoints[String(s.id)] ?? [], color, name: s.name, unit: s.unit })),
+    overlayTags.map(({ sensor: s, color }) => ({ data: overlayPoints[String(s.id)] ?? [], color, name: s.name, unit: s.unit, decimals: s.decimals })),
     [overlayTags, overlayPoints]);
 
   // Which axis each overlay is drawn on (the chart assigns them the same way).
@@ -245,7 +245,7 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
           </div>
         </div>
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          <TvDetailChart data={data} live={mode !== 'history'} resetKey={mode === 'history' ? `history|${historyRange}|${historyDetail ?? 'auto'}|${historyAutoAgg ?? ''}` : 'live'} color={sensor.color} warn={sensor.warn_val} crit={sensor.crit_val} unit={sensor.unit} overlays={overlays} annotations={chartAnnotations} onAnnotationClick={isAdmin ? handleAnnotationClick : undefined} />
+          <TvDetailChart key={sensor.id} data={data} live={mode !== 'history'} resetKey={mode === 'history' ? `history|${historyRange}|${historyDetail ?? 'auto'}|${historyAutoAgg ?? ''}` : 'live'} color={sensor.color} warn={sensor.warn_val} crit={sensor.crit_val} unit={sensor.unit} decimals={sensor.decimals} overlays={overlays} annotations={chartAnnotations} onAnnotationClick={isAdmin ? handleAnnotationClick : undefined} />
 
           {/* Top-left toolbar: hint + notes toggle */}
           <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', alignItems: 'center', gap: 6, zIndex: 5 }}>

@@ -6,7 +6,8 @@ import { SourceConfigFields } from './SourceConfigFields';
 import { HistoryDeadbandFields } from './components/HistoryDeadbandFields';
 import { HistoryDeadbandBulk } from './components/HistoryDeadbandBulk';
 import { applyHistoryDeadband, describeHistoryDeadband, type HistoryDeadbandForm } from './historyDeadband';
-import { useUpdateSensor, useReorderSensors } from './queries';
+import { useUpdateSensor, useReorderSensors, useSaveShortcuts } from './queries';
+import { isSharedAccount } from './sharedAccount';
 import { useRole } from './RoleContext';
 
 const CELL: React.CSSProperties = {
@@ -97,6 +98,13 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
 }) {
   // Viewers and operators see the tag list; changing it is configuration.
   const readOnly = !useRole().canConfigure;
+  // Hotkeys are per user (PUT /api/v1/shortcuts), so anyone but a shared
+  // login (the demo guest, refused by the server) may record their own.
+  const canRecordShortcuts = !isSharedAccount();
+  const saveShortcutsMut = useSaveShortcuts();
+  const saveShortcut = (id: number, sc: string | null) => {
+    if ((shortcuts[id] ?? null) !== sc) saveShortcutsMut.mutate({ ...shortcuts, [id]: sc });
+  };
   const [filter, setFilter] = useState('');
   const [newRow, setNewRow] = useState<Partial<SensorConfig> & { source_config_obj?: Record<string, any> } | null>(null);
   const [configPopover, setConfigPopover] = useState<{ id: number; srcType: string; config: Record<string, any>; rect: DOMRect } | null>(null);
@@ -315,9 +323,9 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
         <td style={tdStyle}>
           <ShortcutCell
             shortcut={shortcuts[s.id] ?? null}
-            onSet={sc => onSave(s, sc)}
-            onClear={() => onSave(s, null)}
-            readOnly={readOnly}
+            onSet={sc => saveShortcut(s.id, sc)}
+            onClear={() => saveShortcut(s.id, null)}
+            readOnly={!canRecordShortcuts}
           />
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>

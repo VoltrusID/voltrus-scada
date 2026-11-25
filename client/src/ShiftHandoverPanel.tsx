@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
-import { useShiftHandovers, useCreateShiftHandover, useShiftAutoReport } from './queries'
+import { useShiftHandovers, useCreateShiftHandover, useShiftAutoReport, useSensors } from './queries'
+import { tidyAlarmMessage } from './alarmFormat'
 import type { ShiftHandover as ShiftHandoverType } from './queries'
 import { btnStyle, inputStyle, labelStyle, labelTextStyle, tabStyle } from './styles'
 import { authorLabel } from './authorLabel'
@@ -235,6 +236,9 @@ function HandoverLogTab({ showCreate, onCreateToggle }: { showCreate: boolean; o
 }
 
 function ReportSection({ title, items, color, type }: { title: string; items: any[]; color: string; type?: 'alarm' | 'annotation' | 'handover' | 'security' }) {
+  // Tag decimals by key, so alarm messages read as they do in the alarm list.
+  const { data: tags } = useSensors(type === 'alarm')
+  const decimalsByKey = useMemo(() => new Map((tags ?? []).map(s => [s.key, s.decimals])), [tags])
   if (items.length === 0) return null
 
   const renderItem = (item: any, i: number) => {
@@ -251,7 +255,7 @@ function ReportSection({ title, items, color, type }: { title: string; items: an
             fontSize: 10, fontWeight: 600, background: `${sevColor}20`, color: sevColor,
             textTransform: 'uppercase', flexShrink: 0,
           }}>{item.severity || 'info'}</span>
-          <span style={{ flex: 1 }}>{item.message || item.source_name || 'Alarm'}</span>
+          <span style={{ flex: 1 }}>{item.message ? tidyAlarmMessage(item.message, decimalsByKey.get(item.source_key)) : item.source_name || 'Alarm'}</span>
           <span style={{ fontSize: 11, color: 'var(--muted)', fontFamily: 'var(--font-mono)', flexShrink: 0 }}>
             {formatTimestamp(item.triggered_at)}
           </span>

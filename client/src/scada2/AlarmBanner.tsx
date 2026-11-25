@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import type { Alarm } from '../types'
 import { useAcknowledgeAlarm, useSensors, fetchJson } from '../queries'
-import { formatAlarmReading } from '../alarmFormat'
+import { formatAlarmLimit, formatAlarmReading } from '../alarmFormat'
 import { useRole } from '../RoleContext'
 
 export const ALARM_BANNER_ROWS = 3
@@ -68,7 +68,7 @@ export const AlarmBanner: React.FC = () => {
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{clock(a.triggered_at)}</span>
             <span style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.source_name || a.source_key}</span>
             <span style={{ color: 'var(--text-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {a.alarm_type === 'low' ? 'Low' : 'High'} {a.severity === 'critical' ? 'critical' : 'warning'}: {fmt(a.value)} (limit {fmt(a.threshold)})
+              {a.alarm_type === 'low' ? 'Low' : 'High'} {a.severity === 'critical' ? 'critical' : 'warning'}: {fmt(a.value)} (limit {formatAlarmLimit(a.threshold, tag?.decimals, tag?.unit)})
             </span>
             <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', color: unacked ? color : 'var(--text-muted)' }}>
               {unacked ? 'UNACKED' : `ACK · ${a.acknowledged_by ?? ''}`}
