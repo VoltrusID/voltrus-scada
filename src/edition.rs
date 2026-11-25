@@ -135,6 +135,95 @@ pub fn chat_sender() -> Option<&'static Arc<dyn ChatSender>> {
     CHAT_SENDER.get()
 }
 
+/// One alarm event for the phones paired with the Voltrus SCADA app.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MobileAlarmPush {
+    /// `raised`, or the state change: `acknowledged`, `resolved`, `shelved`,
+    /// `unshelved`. `summary` stands for alarms held back during a burst
+    /// (`held_back` says how many).
+    pub event: String,
+    pub alarm_id: i64,
+    /// The site's display name (white-label product name or site name).
+    pub site_name: String,
+    pub source_key: String,
+    pub source_name: String,
+    pub severity: String,
+    pub priority: String,
+    pub message: String,
+    pub value: f64,
+    pub unit: String,
+    /// Who changed the state, `None` for the system.
+    pub actor: Option<String>,
+    /// Unix seconds.
+    pub ts: i64,
+    /// `false` when the site wants notifications without alarm details: the
+    /// phone shows only that the site has a new alarm and fetches the rest.
+    pub details: bool,
+    /// Alarms held back by the burst limit, for a `summary` event.
+    pub held_back: u32,
+    pub targets: Vec<MobilePushTarget>,
+}
+
+/// A phone a [`MobileAlarmPush`] goes to.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MobilePushTarget {
+    pub device_id: i64,
+    /// `android` or `ios`.
+    pub platform: String,
+    pub push_token: String,
+    /// `id` or `en`.
+    pub lang: String,
+}
+
+/// What happened to one phone of a [`MobileAlarmPush`].
+#[derive(Debug, Clone)]
+pub struct MobilePushDelivery {
+    pub device_id: i64,
+    /// `None` when the push service accepted the message.
+    pub error: Option<String>,
+    /// The push service no longer knows the token (the app was removed): core
+    /// forgets it, and the phone gets no more pushes until the app registers
+    /// a new one.
+    pub unregistered: bool,
+}
+
+/// The push relay a site is connected to, put in the pairing QR code so the
+/// phone can reach the site from outside its network.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MobileRelay {
+    pub url: String,
+    pub site_id: String,
+    /// Whether the site's connection to the relay is up right now.
+    pub connected: bool,
+}
+
+/// Sends alarm pushes to paired phones through the Voltrus push relay.
+/// Registered by an extension; core has no relay connection of its own and
+/// never calls Voltrus servers.
+pub trait MobilePushSender: Send + Sync {
+    /// The relay the site uses, `None` when it is not set up.
+    fn relay(&self) -> Option<MobileRelay>;
+
+    /// Send `push` to its targets. An `Err` means nothing could be sent (the
+    /// relay is unreachable); per-phone results come back otherwise.
+    fn send<'a>(
+        &'a self,
+        push: &'a MobileAlarmPush,
+    ) -> BoxFuture<'a, anyhow::Result<Vec<MobilePushDelivery>>>;
+}
+
+static MOBILE_PUSH_SENDER: OnceLock<Arc<dyn MobilePushSender>> = OnceLock::new();
+
+/// Register the mobile push sender (first registration wins).
+pub fn register_mobile_push_sender(sender: Arc<dyn MobilePushSender>) {
+    let _ = MOBILE_PUSH_SENDER.set(sender);
+}
+
+/// The registered mobile push sender, if an extension provides one.
+pub fn mobile_push_sender() -> Option<&'static Arc<dyn MobilePushSender>> {
+    MOBILE_PUSH_SENDER.get()
+}
+
 /// A hosted AI completion service for the `voltrus_ai` copilot provider.
 /// Registered by an add-on edition; Core only talks to the AI providers the
 /// operator configures with their own key (`byok_openai`, `byok_anthropic`).
@@ -260,6 +349,9 @@ pub enum ActionOrigin {
     /// A tag write queued by a recipe load. Asked once per tag before the
     /// load starts, so one signature on the load covers it.
     Recipe,
+    /// A person using a phone paired with the Voltrus SCADA app. Cannot sign
+    /// (yet): an action that must be signed is done at the HMI.
+    Mobile,
 }
 
 impl ActionOrigin {
@@ -271,6 +363,7 @@ impl ActionOrigin {
             Self::Mcp => "mcp",
             Self::Flow => "flow",
             Self::Recipe => "recipe",
+            Self::Mobile => "mobile",
         }
     }
 

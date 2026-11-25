@@ -53,6 +53,7 @@ pub mod integration;
 pub mod license;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+pub mod mobile;
 #[cfg(feature = "modbus")]
 pub mod modbus;
 pub mod models;

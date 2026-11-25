@@ -92,15 +92,6 @@ pub(super) fn create_tables(conn: &Connection) -> Result<()> {
             ON alarms(source_key, severity, acknowledged_at);
         CREATE INDEX IF NOT EXISTS idx_alarms_triggered
             ON alarms(triggered_at DESC);
-        CREATE TABLE IF NOT EXISTS push_subscriptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user TEXT NOT NULL,
-            endpoint TEXT NOT NULL,
-            p256dh TEXT NOT NULL,
-            auth_key TEXT NOT NULL,
-            created_at INTEGER NOT NULL,
-            UNIQUE(user, endpoint)
-        );
         CREATE TABLE IF NOT EXISTS canvas_layouts (
             screen_id TEXT NOT NULL,
             data_source_id INTEGER NOT NULL,

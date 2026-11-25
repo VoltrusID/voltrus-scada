@@ -170,6 +170,52 @@ pub enum AuthCredential {
     ApiKey,
     Bearer,
     Session,
+    /// A phone's device token ([`MobileDeviceAuth`]).
+    Device,
+}
+
+/// The paired phone behind a request authenticated with a device token.
+#[derive(Clone, Debug)]
+pub struct MobileDeviceAuth {
+    pub id: i64,
+}
+
+fn bearer_token(req: &Request) -> Option<&str> {
+    req.headers()
+        .get("authorization")?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+/// Look a device token up and build the principal it authenticates as: the
+/// user who paired the phone, if that user still exists and is not disabled.
+/// A user who must change their password first cannot use a phone either.
+/// Fails closed on a storage error.
+pub(crate) async fn authenticate_device(
+    state: &AppState,
+    token: &str,
+) -> Option<(AuthUser, MobileDeviceAuth)> {
+    let device = state
+        .storage
+        .authenticate_mobile_device(token)
+        .await
+        .ok()??;
+    let user = state
+        .storage
+        .get_user_by_username(&device.username)
+        .await
+        .ok()??;
+    if user.disabled || password_change_pending(state, &user) {
+        return None;
+    }
+    Some((
+        AuthUser {
+            username: user.username,
+            role: user.role,
+        },
+        MobileDeviceAuth { id: device.id },
+    ))
 }
 
 #[derive(Clone)]
@@ -220,7 +266,33 @@ pub async fn cookie_auth_middleware(
         }
     }
 
-    // 2. Try a Bearer token from an external identity provider (add-on editions only;
+    // 2. A phone paired with the Voltrus SCADA app: `Authorization: Bearer vdt_…`.
+    //    It acts as the user who paired it, with the user's current role.
+    if let Some(token) = bearer_token(&req)
+        && token.starts_with(crate::storage::DEVICE_TOKEN_PREFIX)
+    {
+        match authenticate_device(&state, token).await {
+            Some((user, device)) => {
+                req.extensions_mut().insert(user);
+                req.extensions_mut().insert(device);
+                req.extensions_mut().insert(AuthCredential::Device);
+                return next.run(req).await;
+            }
+            None => {
+                state
+                    .intrusion_detector
+                    .record_401_with_storage(&client_ip, &state.storage)
+                    .await;
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({"error": "unauthorized", "code": "device_revoked"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
+    // 3. Try a Bearer token from an external identity provider (add-on editions only;
     //    the open core has none and skips straight to local cookie auth).
     if let Some(auth_header) = req.headers().get("authorization")
         && let Some(token) = auth_header
@@ -254,7 +326,7 @@ pub async fn cookie_auth_middleware(
         return next.run(req).await;
     }
 
-    // 3. Fall back to local cookie auth
+    // 4. Fall back to local cookie auth
     let jar = CookieJar::from_headers(req.headers());
     let token = jar.get("voltrus_token").map(|c| c.value()).unwrap_or("");
     if token.is_empty() {

@@ -35,6 +35,7 @@ Unlocked by a licence key bound to one site. Two plans:
 |---|:-:|:-:|
 | White-label branding and theme editor | yes | yes |
 | Scheduled PDF reports and Telegram alarm notifications (WhatsApp is no longer supported) | yes | yes |
+| Alarm push to the Voltrus SCADA phone app, with acknowledge and live view from outside the site network ([docs/mobile.md](mobile.md)) | yes | yes |
 | Multi-site hub | yes | yes |
 | Single sign-on (Active Directory, Azure AD, Okta, SAML 2.0, OIDC, LDAP) | | yes |
 | 21 CFR Part 11 mode (electronic signatures, record checksums, policy) | | yes |
@@ -111,8 +112,8 @@ Things worth knowing:
   electronic signatures, security events). The behaviour built on them
   (handlers, rendering, signing, failover) lives in the add-on.
 * `GET /api/license/status` is served by Core and always reports a tier and
-  11 boolean flags (`white_label`, `theme_full`, `pdf_reporting`,
-  `chat_notifications`, `multi_site`, `sso`, `sso_saml`, `cfr_part_11`,
+  12 boolean flags (`white_label`, `theme_full`, `pdf_reporting`,
+  `chat_notifications`, `mobile_push`, `multi_site`, `sso`, `sso_saml`, `cfr_part_11`,
   `iec_62443`, `ha`, `rtsp_video`). In Core all are `false`.
 * The web client has the same seam: `client/src/edition/` loads an optional
   enterprise module (Vite alias `@voltrus/enterprise-client`) and falls back to a

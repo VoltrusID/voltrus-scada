@@ -204,22 +204,3 @@ pub struct TestNotificationRequest {
     /// A stored rule whose masked secrets a chat channel's config refers to.
     pub setting_id: Option<i64>,
 }
-
-// ── Push subscription (groundwork for Web Push) ──
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PushSubscription {
-    pub id: i64,
-    pub user: String,
-    pub endpoint: String,
-    pub p256dh: String,
-    pub auth_key: String,
-    pub created_at: i64,
-}
-
-#[derive(Debug, serde::Deserialize)]
-pub struct PushSubscribeRequest {
-    pub endpoint: String,
-    pub p256dh: String,
-    pub auth_key: String,
-}

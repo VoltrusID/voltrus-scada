@@ -13,9 +13,9 @@ import { mergeTabs } from '../src/edition/tabs.ts'
 import { ENTERPRISE_NS, registerLocales } from '../src/edition/locales.ts'
 import community from '../src/edition/community.ts'
 
-test('the licence model has exactly the 11 contract flags', () => {
+test('the licence model has exactly the 12 contract flags', () => {
   assert.deepEqual([...FEATURE_FLAG_KEYS].sort(), [
-    'cfr_part_11', 'chat_notifications', 'ha', 'iec_62443', 'multi_site', 'pdf_reporting', 'rtsp_video',
+    'cfr_part_11', 'chat_notifications', 'ha', 'iec_62443', 'mobile_push', 'multi_site', 'pdf_reporting', 'rtsp_video',
     'sso', 'sso_saml', 'theme_full', 'white_label',
   ])
 })

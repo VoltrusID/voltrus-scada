@@ -1,6 +1,5 @@
 pub mod chat;
 pub mod email;
-pub mod push;
 pub mod webhook;
 
 use crate::models::Alarm;
@@ -10,7 +9,8 @@ use webhook::{WebhookPayload, format_triggered_at, send_webhook_alarm};
 
 /// Dispatch alarm notifications to all configured channels for the given source_key.
 ///
-/// Loads notification settings from the database and sends via email, webhook, push, and/or the chat channels of the edition.
+/// Loads notification settings from the database and sends via email, webhook and/or the chat channels of the edition.
+/// Phone pushes do not use these rules: see [`crate::mobile`].
 /// This is spawned as an async task so it never blocks the alarm creation flow.
 pub async fn dispatch_alarm_notifications(
     storage: Storage,

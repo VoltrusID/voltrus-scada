@@ -74,9 +74,10 @@ from source.
 * **Alarms:** warning and critical thresholds (zero and negative limits too),
   priorities, shelving, deadband, on and off delay, acknowledgement, alarm
   analytics with a chatter count per tag, a suggested on-delay and deadband
-  from each tag's recent noise ([docs/alarms.md](docs/alarms.md)), email,
-  webhook and push notifications. Alarms are evaluated only on values of good
-  quality.
+  from each tag's recent noise ([docs/alarms.md](docs/alarms.md)), email
+  and webhook notifications, and pairing of phones for the Voltrus SCADA
+  app ([docs/mobile.md](docs/mobile.md)). Alarms are evaluated only on values
+  of good quality.
 * **Historian:** a sample of every tag each persistence interval
   (`persist_interval_secs`, default 5 s) packed into compressed blocks
   (delta-of-delta timestamps, XOR floats, run-length digitals), per-tag

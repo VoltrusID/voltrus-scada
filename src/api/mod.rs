@@ -33,6 +33,7 @@ mod integration;
 mod layouts;
 mod license;
 mod maintenance;
+mod mobile;
 #[cfg(feature = "modbus")]
 pub(crate) mod modbus_devices;
 #[cfg(feature = "mqtt-broker")]
@@ -777,6 +778,15 @@ pub fn create_router(state: AppState) -> Router {
                 crate::security::login_ip_rate_limit_middleware,
             )),
         )
+        // A phone trades a pairing QR code for a device token. Failed codes
+        // count against the address like failed sign-ins.
+        .route(
+            "/api/v1/mobile/pair",
+            post(mobile::pair_with_code).route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::security::login_ip_rate_limit_middleware,
+            )),
+        )
         .route("/api/v1/auth/refresh", post(auth::refresh_token))
         // User activity for the idle timeout; finds the session by its
         // refresh cookie, like refresh.
@@ -894,6 +904,21 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/shortcuts", get(shortcuts::get_shortcuts))
         .route("/api/v1/nav-shortcuts", get(shortcuts::get_nav_shortcuts))
         .route("/api/v1/alarms", get(alarms::list_alarms))
+        // The phone app (api/mobile.rs): pairing, the paired phones, and the
+        // phone's site screen.
+        .route("/api/v1/mobile/pairings", post(mobile::create_pairing))
+        .route(
+            "/api/v1/mobile/devices",
+            get(mobile::list_devices).post(mobile::create_device),
+        )
+        .route("/api/v1/mobile/devices/{id}", delete(mobile::delete_device))
+        .route(
+            "/api/v1/mobile/device",
+            get(mobile::get_this_device)
+                .patch(mobile::update_this_device)
+                .delete(mobile::delete_this_device),
+        )
+        .route("/api/v1/mobile/summary", get(mobile::summary))
         .route(
             "/api/v1/alarms/active/count",
             get(alarms::active_alarm_count),
@@ -1133,6 +1158,10 @@ pub fn create_router(state: AppState) -> Router {
         .route(
             "/api/v1/settings/smtp",
             get(smtp_settings::get_smtp_config).put(smtp_settings::update_smtp_config),
+        )
+        .route(
+            "/api/v1/mobile/settings",
+            get(mobile::get_settings).put(mobile::put_settings),
         )
         .route(
             "/api/v1/settings/smtp/test",
@@ -1632,9 +1661,10 @@ pub fn create_router(state: AppState) -> Router {
 
 // Middleware types re-exported from middleware module
 pub use auth_middleware::{
-    ApiKeyAuth, AuthCredential, AuthUser, admin_only_middleware, cookie_auth_middleware,
-    demo_allowed_middleware, effective_key_role, operator_allowed_middleware,
-    role_allows_configuration, role_allows_operation, role_allows_operational_writes,
+    ApiKeyAuth, AuthCredential, AuthUser, MobileDeviceAuth, admin_only_middleware,
+    cookie_auth_middleware, demo_allowed_middleware, effective_key_role,
+    operator_allowed_middleware, role_allows_configuration, role_allows_operation,
+    role_allows_operational_writes,
 };
 
 #[cfg(test)]
