@@ -3065,3 +3065,162 @@ async fn live_data_manager_insights() {
         "the recipe is gone"
     );
 }
+
+/// The Designer's save through the live server, as the web Designer saves:
+/// the WTP fixture rows with Designer edits (a move, a label, a primary tag
+/// rebind that drops the stored name, a label expression, a group, a lock
+/// and an align) put with one `PUT scada-layout` based on the revision
+/// loaded, read back the same; a save based on a stale revision is refused
+/// (409) and writes nothing; the screen deleted.
+#[tokio::test]
+async fn live_designer_save() {
+    use serde::de::IgnoredAny;
+    use voltrus_scada_native::api::Method;
+    use voltrus_scada_native::designer::arrange::{self, Align};
+    use voltrus_scada_native::designer::{self, Binding, Saved};
+    use voltrus_scada_native::mimic::edit::{Edit, History};
+    use voltrus_scada_native::mimic::{self, ConnectionRow, EquipmentRow};
+    use voltrus_scada_native::screens::Screen;
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    let mut api = VoltrusApi::new(&url);
+    api.login(&user, &pass).await.expect("sign in");
+
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        equipment: Vec<EquipmentRow>,
+        connections: Vec<ConnectionRow>,
+    }
+    let fixture: Fixture =
+        serde_json::from_str(include_str!("fixtures/designer/wtp-rows.json")).expect("fixture");
+    let mut history = History::new(mimic::parse(&fixture.equipment, &fixture.connections));
+    let widget = |h: &History, id: &str| h.present().widget(id).expect(id).clone();
+    let ids = |list: &[&str]| list.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+    let edits = [
+        Edit::Move(vec![("e012".into(), 200.0, 180.0)]),
+        designer::set_label(&widget(&history, "e011"), "XV-101 Intake"),
+        designer::bind_primary(&widget(&history, "e003"), Some(7)),
+    ];
+    for edit in &edits {
+        assert!(history.apply(edit, None));
+    }
+    let expr = Binding::Expr {
+        expr: "text({wtp/raw_tank_level}, 1) + \" %\"".into(),
+    };
+    let bound = designer::set_binding(&widget(&history, "e016"), "label", Some(&expr));
+    assert!(history.apply(&bound, None));
+    for edit in [
+        arrange::group(history.present(), &ids(&["e012", "e013"]), "g_e2e"),
+        arrange::lock(history.present(), &ids(&["e016"]), true),
+        arrange::align(
+            history.present(),
+            &ids(&["e011", "e012", "e013"]),
+            Align::Left,
+        ),
+    ] {
+        assert!(history.apply(&edit.expect("an arrange edit"), None));
+    }
+    let name = |_: i64| Some("Tag seven".to_owned());
+    let (rows, lines) = designer::rows(history.present(), &name);
+
+    let created: Screen = api
+        .send_json(
+            Method::POST,
+            "/api/v1/screens",
+            &serde_json::json!({ "name": format!("Native designer e2e {}", std::process::id()) }),
+        )
+        .await
+        .expect("POST /screens");
+    // Deletes the screen however the test ends, a failed assertion too.
+    struct DeleteScreen {
+        base: String,
+        token: Option<String>,
+        id: String,
+    }
+    impl Drop for DeleteScreen {
+        fn drop(&mut self) {
+            let mut api = VoltrusApi::new(&self.base);
+            api.token = self.token.clone();
+            let path = format!("/api/v1/screens/{}", self.id);
+            // Its own thread and runtime: the test's may be unwinding.
+            let deleted = std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?
+                    .block_on(api.send_empty::<IgnoredAny>(Method::DELETE, &path))
+                    .ok()
+            })
+            .join();
+            if !matches!(deleted, Ok(Some(_))) {
+                eprintln!("could not delete screen {}", self.id);
+            }
+        }
+    }
+    let cleanup = DeleteScreen {
+        base: api.base.clone(),
+        token: api.token.clone(),
+        id: created.id.clone(),
+    };
+    let (empty, base) = designer::load(&api, &created.id)
+        .await
+        .expect("GET scada-layout");
+    assert!(empty.widgets.is_empty());
+    let base = base.expect("the server gives the layout's revision");
+    let saved = designer::save(
+        &api,
+        &created.id,
+        rows.clone(),
+        lines.clone(),
+        Some(base.clone()),
+    )
+    .await
+    .expect("PUT scada-layout");
+    let Saved::Done {
+        revision: Some(revision),
+    } = saved
+    else {
+        panic!("saved with a new revision: {saved:?}");
+    };
+    assert_ne!(revision, base);
+    // A second editor still on the first revision is refused.
+    let stale = designer::save(&api, &created.id, Vec::new(), Vec::new(), Some(base))
+        .await
+        .expect("an answer");
+    let Saved::Conflict {
+        revision: current, ..
+    } = stale
+    else {
+        panic!("a stale save is refused: {stale:?}");
+    };
+    assert_eq!(current, revision, "the conflict names the current revision");
+    let (back, read_revision) = designer::load(&api, &created.id)
+        .await
+        .expect("the saved layout");
+    drop(cleanup);
+    assert_eq!(read_revision.as_deref(), Some(revision.as_str()));
+    assert_eq!(
+        back,
+        designer::named(history.present(), &name),
+        "the Designer's save reads back unchanged; the refused one wrote nothing"
+    );
+    let kpi = back.widget("e003").expect("e003");
+    assert_eq!(kpi.name, "Tag seven", "the name follows the new tag");
+    assert!(
+        designer::bindings::binding_of(&back.widget("e016").expect("e016").config, "label")
+            .is_some()
+    );
+    assert!(arrange::is_locked(back.widget("e016").expect("e016")));
+    assert_eq!(
+        arrange::group_of(back.widget("e013").expect("e013")),
+        Some("g_e2e")
+    );
+    println!(
+        "designer save: {} rows read back unchanged",
+        back.widgets.len()
+    );
+}

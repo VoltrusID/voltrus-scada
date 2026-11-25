@@ -317,7 +317,9 @@ fn every_type_and_symbol_is_known() {
         assert_eq!(WidgetKind::parse(name), kind);
         assert_eq!(kind.as_str(), name);
     }
-    assert_eq!(SYMBOLS.len(), 31);
+    // The 31 of the shaded library and every ISA-101 symbol file.
+    assert_eq!(SYMBOLS.len(), 31 + library::files().len());
+    assert!(library::files().len() >= 38);
     let mut keys: Vec<&str> = SYMBOLS.iter().map(|def| def.key).collect();
     keys.sort_unstable();
     keys.dedup();
@@ -672,4 +674,216 @@ fn the_keyboard_visits_equipment_in_reading_order() {
     assert_eq!(neighbor(&layout, 1, Direction::Down, &candidates), Some(2));
     assert_eq!(neighbor(&layout, 1, Direction::Up, &candidates), None);
     assert_eq!(neighbor(&layout, 3, Direction::Left, &candidates), Some(2));
+}
+
+/// The phase-1 ISA-101 keys draw from their symbol files with the sizes,
+/// bindings and ports saved screens were laid out with.
+#[test]
+#[allow(clippy::type_complexity)]
+fn the_phase_1_isa_keys_keep_their_boxes_and_ports() {
+    type Port = Option<(f64, f64)>;
+    let kept: [(&str, (f64, f64), (f64, f64), Binding, bool, [Port; 4]); 8] = [
+        (
+            "isa_pump",
+            (100.0, 100.0),
+            (90.0, 104.0),
+            Binding::State,
+            false,
+            [Some((12.0, 54.0)), Some((94.0, 18.0)), None, None],
+        ),
+        (
+            "isa_motor",
+            (100.0, 100.0),
+            (80.0, 96.0),
+            Binding::State,
+            false,
+            [None, Some((96.0, 50.0)), Some((50.0, 4.0)), None],
+        ),
+        (
+            "isa_valve",
+            (100.0, 70.0),
+            (90.0, 92.0),
+            Binding::State,
+            false,
+            [Some((4.0, 45.0)), Some((96.0, 45.0)), None, None],
+        ),
+        (
+            "isa_control_valve",
+            (100.0, 100.0),
+            (80.0, 100.0),
+            Binding::Value,
+            false,
+            [Some((4.0, 75.0)), Some((96.0, 75.0)), None, None],
+        ),
+        (
+            "isa_tank",
+            (100.0, 160.0),
+            (90.0, 144.0),
+            Binding::Level,
+            false,
+            [
+                Some((4.0, 130.0)),
+                Some((96.0, 130.0)),
+                Some((50.0, 4.0)),
+                Some((50.0, 156.0)),
+            ],
+        ),
+        (
+            "isa_heat_exchanger",
+            (100.0, 100.0),
+            (80.0, 80.0),
+            Binding::None,
+            false,
+            [
+                Some((4.0, 50.0)),
+                Some((96.0, 50.0)),
+                Some((50.0, 4.0)),
+                Some((50.0, 96.0)),
+            ],
+        ),
+        (
+            "isa_line",
+            (200.0, 10.0),
+            (200.0, 10.0),
+            Binding::None,
+            true,
+            [None; 4],
+        ),
+        (
+            "isa_line_vertical",
+            (10.0, 200.0),
+            (10.0, 200.0),
+            Binding::None,
+            true,
+            [None; 4],
+        ),
+    ];
+    for (key, view_box, size, binding, stretch, [left, right, top, bottom]) in kept {
+        let def = symbol_def(key).unwrap_or_else(|| panic!("{key} is in the library"));
+        assert!(def.data.is_some(), "{key} is drawn from its file");
+        assert_eq!(def.library, Library::Isa, "{key}");
+        assert_eq!(def.view_box, view_box, "{key}");
+        assert_eq!(def.size, size, "{key}");
+        assert_eq!(def.binding, binding, "{key}");
+        assert_eq!(def.stretch, stretch, "{key}");
+        assert_eq!(
+            (
+                def.ports.left,
+                def.ports.right,
+                def.ports.top,
+                def.ports.bottom
+            ),
+            (left, right, top, bottom),
+            "{key}"
+        );
+    }
+    // Valves open and close, whatever their library.
+    let valve = symbol_def("isa_valve").unwrap();
+    assert_eq!(state_text(valve, EquipState::Running), "OPEN");
+    assert_eq!(state_text(valve, EquipState::Stopped), "CLOSED");
+    let pump = symbol_def("isa_pump").unwrap();
+    assert_eq!(state_text(pump, EquipState::Running), "RUNNING");
+}
+
+/// Mirrored top to bottom, the ports follow: the pump's discharge (top
+/// right) is at the bottom right.
+#[test]
+fn flip_y_moves_the_ports() {
+    let pump = |config: Value| {
+        let mut w = widget("symbol", config, &[]);
+        w.width = 100.0;
+        w.height = 100.0;
+        w
+    };
+    let plain = pump(json!({ "symbol": "isa_pump" }));
+    let flipped = pump(json!({ "symbol": "isa_pump", "flipY": true }));
+    let (_, y) = port_point(&plain, Side::Right);
+    let (_, flipped_y) = port_point(&flipped, Side::Right);
+    assert!((y + flipped_y - 100.0).abs() < 0.2, "{y} {flipped_y}");
+    // A nozzle-less side follows too: top is the drawing's bottom edge.
+    let tank = |flip: bool| {
+        let mut w = widget(
+            "symbol",
+            json!({ "symbol": "isa_tank", "flipY": flip }),
+            &[],
+        );
+        w.width = 100.0;
+        w.height = 160.0;
+        w
+    };
+    assert_eq!(
+        port_point(&tank(true), Side::Top).1,
+        160.0 - port_point(&tank(false), Side::Bottom).1
+    );
+}
+
+/// Manual mode and interlock tags drive the M and I badges, and the screen
+/// subscribes to them.
+#[test]
+fn manual_and_interlock_tags_are_live() {
+    let w = widget(
+        "symbol",
+        json!({ "symbol": "isa_pump_centrifugal", "manualSensorId": 7, "interlockSensorId": "8" }),
+        &[1],
+    );
+    let def = symbol_def("isa_pump_centrifugal").unwrap();
+    let on = [
+        (1, Some(1.0), Level::Normal),
+        (7, Some(1.0), Level::Normal),
+        (8, Some(0.0), Level::Normal),
+    ];
+    let live = symbol_live(&w, def, &values(&on));
+    assert!(live.manual && !live.interlocked);
+    let layout = Layout {
+        widgets: vec![w],
+        connections: Vec::new(),
+    };
+    assert_eq!(layout.tags(), [1, 7, 8]);
+}
+
+/// The palette lists the ISA-101 categories first, hides the symbols kept
+/// for saved screens (but finds one by its exact key), and the symbol
+/// files' options are fields.
+#[test]
+fn the_palette_lists_isa_101_first() {
+    use edit::{category_heading, palette_categories, palette_symbols, schema};
+    let groups = palette_categories();
+    assert_eq!(groups[0], Category::Isa("Rotating equipment"));
+    assert_eq!(category_heading(groups[1]), "ISA-101 · Valves");
+    assert_eq!(category_heading(Category::Valves), "Shaded · Valves");
+    let listed: Vec<&str> = palette_symbols("").iter().map(|def| def.key).collect();
+    assert!(!listed.contains(&"isa_pump"), "phase 1 keys are hidden");
+    assert!(listed.contains(&"isa_pump_centrifugal"));
+    let exact: Vec<&str> = palette_symbols("isa_pump")
+        .iter()
+        .map(|def| def.key)
+        .collect();
+    assert!(exact.contains(&"isa_pump"), "found by its exact key");
+    assert!(
+        !palette_symbols("isa_pum")
+            .iter()
+            .any(|def| def.key == "isa_pump")
+    );
+    let isa: Vec<&str> = palette_symbols("isa-101 valve")
+        .iter()
+        .map(|def| def.key)
+        .collect();
+    assert!(
+        isa.iter().all(|key| key.starts_with("isa_valve")),
+        "{isa:?}"
+    );
+    let keys = |key: &str| -> Vec<&'static str> {
+        schema(&widget("symbol", json!({ "symbol": key }), &[]))
+            .iter()
+            .map(|field| field.key)
+            .collect()
+    };
+    assert!(keys("isa_tank").contains(&"showPercent"));
+    assert!(keys("isa_line").contains(&"runSensorId"));
+    assert!(!keys("isa_line").contains(&"rotation"), "lines stretch");
+    assert!(keys("isa_pump").contains(&"faultSensorId"));
+    assert!(keys("isa_pump").contains(&"manualSensorId"));
+    assert!(keys("isa_pump").contains(&"flipY"));
+    let valve = keys("isa_valve_gate");
+    assert!(valve.contains(&"actuator"), "{valve:?}");
 }

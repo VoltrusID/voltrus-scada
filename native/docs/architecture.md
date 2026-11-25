@@ -624,8 +624,12 @@ let (equipment, connections) = mimic::to_rows(&layout);   // the PUT bodies: Ite
   scaling or hairline strokes with caps and moving dashes, convex clips
   for level fills, and text. Tessellations are cached per shape, transform
   (without translation) and stroke, so a pan re-uses them. The palette
-  (`Hmi`) derives the web's `--hmi-*` colours from the theme.
-  `symbols.rs` draws the library, `widgets.rs` the other widget types,
+  (`Hmi`) derives the web's `--hmi-*` colours from the theme and takes
+  the ISA-101 colours from `symbols/_styles.json`. `symbols.rs` draws the
+  library: the ISA-101 symbol files (`mimic::library`, `symbols/*.json`
+  embedded by `build.rs`) layer by layer in their state's style, and the
+  shaded symbols in code; `svg_path.rs` (in `mimic`) parses the path data
+  for both; `widgets.rs` the other widget types,
   `faceplate.rs` and `banner.rs` the side panel and the alarm banner.
 - **Frames.** A frame prepares only the widgets and connections in view
   (`Item`: the widget, its `TagView`s from the store by id, its symbol's

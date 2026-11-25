@@ -103,17 +103,35 @@ fn manifests_follow_the_web_registry() {
 
 #[test]
 fn the_palette_searches_names_and_categories() {
-    let valves: Vec<&str> = palette_symbols("VALV").map(|def| def.key).collect();
-    assert_eq!(valves, ["valve", "control_valve", "check_valve"]);
-    let piping: Vec<&str> = palette_symbols("piping").map(|def| def.key).collect();
-    assert_eq!(piping, ["pipe", "pipe_vertical", "pipe_elbow", "pipe_tee"]);
-    assert_eq!(palette_symbols("  ").count(), SYMBOLS.len());
+    let keys =
+        |query: &str| -> Vec<&str> { palette_symbols(query).iter().map(|def| def.key).collect() };
+    let valves = keys("VALV");
+    // ISA-101 first (the files, by name), then the shaded ones.
+    assert!(valves[0].starts_with("isa_valve"), "{valves:?}");
+    assert_eq!(
+        valves[valves.len() - 3..],
+        ["valve", "control_valve", "check_valve"]
+    );
+    assert!(
+        !valves.contains(&"isa_valve"),
+        "kept for saved screens only"
+    );
+    let piping = keys("piping");
+    assert!(piping.ends_with(&["pipe", "pipe_vertical", "pipe_elbow", "pipe_tee"]));
+    assert!(piping.contains(&"isa_pipe"));
+    // Every word must match: name, key, category or keywords.
+    assert!(keys("pump dosing").contains(&"isa_pump_dosing"));
+    assert!(keys("pump dosing").iter().all(|key| key.contains("dosing")));
+    let offered = SYMBOLS.iter().filter(|def| def.palette).count();
+    assert_eq!(palette_symbols("  ").len(), offered);
+    assert!(offered < SYMBOLS.len(), "some are kept for saved screens");
     assert!(matches("", &["anything"]));
     assert!(matches("gau", &["Half Gauge"]));
     assert!(!matches("pump", &["Gauge"]));
     // Every symbol sits in one of the palette's categories.
-    for def in SYMBOLS {
-        assert!(CATEGORIES.contains(&def.category), "{}", def.key);
+    let groups = palette_categories();
+    for def in SYMBOLS.iter().filter(|def| def.palette) {
+        assert!(groups.contains(&def.category), "{}", def.key);
     }
 }
 
@@ -130,7 +148,8 @@ fn symbol_schemas_follow_symbol_schema() {
             "faultSensorId",
             "writable",
             "rotation",
-            "flipX"
+            "flipX",
+            "flipY"
         ]
     );
     let fields = schema(&pump);
@@ -149,7 +168,14 @@ fn symbol_schemas_follow_symbol_schema() {
     let tank = symbol("t", "tank", json!({}));
     assert_eq!(
         keys(&schema(&tank)),
-        ["label", "showValue", "showPercent", "rotation", "flipX"]
+        [
+            "label",
+            "showValue",
+            "showPercent",
+            "rotation",
+            "flipX",
+            "flipY"
+        ]
     );
     // A busbar stretches: no rotation.
     let busbar = symbol("b", "busbar", json!({}));
@@ -354,7 +380,7 @@ fn z_order_keeps_the_picked_widgets_order() {
     };
     let front = |ids: &[&str]| Edit::Reorder {
         ids: ids.iter().map(|id| (*id).to_owned()).collect(),
-        front: true,
+        to: Order::Front,
     };
     assert!(front(&["a"]).apply(&mut layout));
     assert_eq!(ids(&layout), ["b", "c", "a"]);
@@ -362,7 +388,7 @@ fn z_order_keeps_the_picked_widgets_order() {
     assert!(
         Edit::Reorder {
             ids: vec!["a".into(), "c".into()],
-            front: false
+            to: Order::Back
         }
         .apply(&mut layout)
     );
@@ -751,4 +777,38 @@ fn an_edited_layout_saves_and_reads_back() {
     let (equipment, connections) = super::super::to_rows(&layout);
     assert_eq!(super::super::parse(&equipment, &connections), layout);
     assert_eq!(LINE_TYPES[0], ("flow", "Process pipe"));
+}
+
+#[test]
+fn a_pause_starts_a_new_step_even_for_the_same_key() {
+    use std::time::{Duration, Instant};
+    let mut history = History::new(two_and_a_line());
+    let label = |text: &str| Edit::Config {
+        id: "a".into(),
+        key: "label".into(),
+        value: json!(text),
+    };
+    let start = Instant::now();
+    assert!(history.apply_at(&label("P"), Some("a:label"), Some(start)));
+    assert!(history.apply_at(
+        &label("P-"),
+        Some("a:label"),
+        Some(start + Duration::from_millis(400))
+    ));
+    // Within COALESCE of the last edit, not of the first: still one step.
+    assert!(history.apply_at(
+        &label("P-1"),
+        Some("a:label"),
+        Some(start + Duration::from_millis(1300))
+    ));
+    // A pause longer than COALESCE: a new step.
+    assert!(history.apply_at(
+        &label("P-10"),
+        Some("a:label"),
+        Some(start + Duration::from_millis(1300) + COALESCE + Duration::from_millis(1))
+    ));
+    assert!(history.undo());
+    assert_eq!(history.present().widgets[0].text("label"), Some("P-1"));
+    assert!(history.undo());
+    assert_eq!(history.present().widgets[0].text("label"), None);
 }

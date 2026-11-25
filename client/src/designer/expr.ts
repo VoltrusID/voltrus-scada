@@ -149,7 +149,8 @@ export function parse(src: string): Node {
       case 'id': {
         if (t.v === 'true' || t.v === 'false') return mk({ k: 'lit', v: t.v === 'true' }, t.pos)
         if (t.v === 'null') return mk({ k: 'lit', v: null }, t.pos)
-        const fn = FUNCTIONS[t.v]
+        // Own names only: `toString`, `constructor`, `__proto__`... are not functions here.
+        const fn = Object.prototype.hasOwnProperty.call(FUNCTIONS, t.v) ? FUNCTIONS[t.v] : undefined
         if (!fn) throw new ExprError(`unknown name "${t.v}"`, t.pos)
         expect('(')
         const args: Node[] = []

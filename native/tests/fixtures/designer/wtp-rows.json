@@ -1,0 +1,155 @@
+{
+ "_comment": "Rows of the WTP showcase Plant Overview (scenarios/wtp-hmi, seed.py) as GET returns them, a subset; and the tags they name.",
+ "equipment": [
+  {
+   "config": "{\"text\": \"WTP-01 \\u00b7 Process Overview\", \"fontSize\": 26, \"align\": \"left\", \"bold\": true, \"z\": 1}",
+   "equipment_id": "e001",
+   "equipment_name": "label",
+   "equipment_type": "label",
+   "height": 40.0,
+   "rotation": 0.0,
+   "sensor_bindings": "[]",
+   "width": 900.0,
+   "x": 24.0,
+   "y": 14.0
+  },
+  {
+   "config": "{\"fontSize\": 30, \"showName\": true, \"decimals\": 0, \"z\": 3}",
+   "equipment_id": "e003",
+   "equipment_name": "big_number",
+   "equipment_type": "big_number",
+   "height": 78.0,
+   "rotation": 0.0,
+   "sensor_bindings": "[1]",
+   "width": 216.0,
+   "x": 1000.0,
+   "y": 12.0
+  },
+  {
+   "config": "{\"symbol\": \"valve\", \"label\": \"XV-101\", \"showStatus\": true, \"writable\": true, \"z\": 11}",
+   "equipment_id": "e011",
+   "equipment_name": "XV-101",
+   "equipment_type": "symbol",
+   "height": 106.0,
+   "rotation": 0.0,
+   "sensor_bindings": "[6]",
+   "width": 90.0,
+   "x": 36.0,
+   "y": 300.0
+  },
+  {
+   "config": "{\"symbol\": \"pump\", \"label\": \"P-101A\", \"showStatus\": true, \"writable\": true, \"z\": 12}",
+   "equipment_id": "e012",
+   "equipment_name": "P-101A",
+   "equipment_type": "symbol",
+   "height": 124.0,
+   "rotation": 0.0,
+   "sensor_bindings": "[3]",
+   "width": 90.0,
+   "x": 176.0,
+   "y": 170.0
+  },
+  {
+   "config": "{\"symbol\": \"pump\", \"label\": \"P-101B\", \"showStatus\": true, \"writable\": true, \"faultSensorId\": 5, \"z\": 13}",
+   "equipment_id": "e013",
+   "equipment_name": "P-101B",
+   "equipment_type": "symbol",
+   "height": 124.0,
+   "rotation": 0.0,
+   "sensor_bindings": "[4]",
+   "width": 90.0,
+   "x": 176.0,
+   "y": 400.0
+  },
+  {
+   "config": "{\"symbol\": \"tank\", \"label\": \"T-101 Raw\", \"z\": 16}",
+   "equipment_id": "e016",
+   "equipment_name": "T-101 Raw",
+   "equipment_type": "symbol",
+   "height": 220.0,
+   "rotation": 0.0,
+   "sensor_bindings": "[2]",
+   "width": 110.0,
+   "x": 448.0,
+   "y": 250.0
+  },
+  {
+   "config": "{\"lineColor\": \"var(--cyan)\", \"z\": 33}",
+   "equipment_id": "e033",
+   "equipment_name": "trend",
+   "equipment_type": "trend",
+   "height": 164.0,
+   "rotation": 0.0,
+   "sensor_bindings": "[7]",
+   "width": 374.0,
+   "x": 32.0,
+   "y": 708.0
+  }
+ ],
+ "connections": [
+  {
+   "connection_id": "c001",
+   "connection_type": "flow",
+   "from_equipment": "e011",
+   "to_equipment": "e012",
+   "waypoints": "[]"
+  },
+  {
+   "connection_id": "c002",
+   "connection_type": "flow",
+   "from_equipment": "e011",
+   "to_equipment": "e013",
+   "waypoints": "[]"
+  }
+ ],
+ "tags": [
+  {
+   "id": 1,
+   "device_id": "wtp",
+   "key": "intake_flow",
+   "name": "Raw Water Intake Flow FT-101"
+  },
+  {
+   "id": 2,
+   "device_id": "wtp",
+   "key": "raw_tank_level",
+   "name": "Raw Water Tank T-101 Level"
+  },
+  {
+   "id": 3,
+   "device_id": "wtp",
+   "key": "p101a_run",
+   "name": "Intake Pump P-101A"
+  },
+  {
+   "id": 4,
+   "device_id": "wtp",
+   "key": "p101b_run",
+   "name": "Intake Pump P-101B"
+  },
+  {
+   "id": 5,
+   "device_id": "wtp",
+   "key": "p101b_fault",
+   "name": "Intake Pump P-101B Trip"
+  },
+  {
+   "id": 6,
+   "device_id": "wtp",
+   "key": "xv101_open",
+   "name": "Intake Valve XV-101"
+  },
+  {
+   "id": 7,
+   "device_id": "wtp",
+   "key": "raw_turbidity",
+   "name": "Raw Water Turbidity AT-102"
+  },
+  {
+   "id": 40,
+   "device_id": "wtp",
+   "key": "output_flow",
+   "name": "Treated Water Output FT-501"
+  }
+ ]
+}

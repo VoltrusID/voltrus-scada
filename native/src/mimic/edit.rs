@@ -19,14 +19,16 @@
 //! - **Saving**: [`named`] fills `equipment_name` as the web's `toAPI`
 //!   does; [`super::to_rows`] makes the `PUT` bodies.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
+use super::library::{self, FileBinding, ISA_CATEGORIES, OptionKind, Scalar, SymbolFile};
 use super::{
-    Binding, Category, Connection, Layout, STAGE_H, STAGE_W, SYMBOLS, SymbolDef, Widget,
+    Binding, Category, Connection, Layout, Library, STAGE_H, STAGE_W, SYMBOLS, SymbolDef, Widget,
     WidgetKind, quarter_turns, resolve, route, symbol_def,
 };
 
@@ -602,8 +604,9 @@ pub fn palette_widgets() -> impl Iterator<Item = &'static Manifest> {
         .filter(|manifest| !WidgetKind::parse(manifest.kind).is_equipment())
 }
 
-/// The library's categories in the palette's order (`SYMBOL_CATEGORIES`).
-pub const CATEGORIES: [Category; 7] = [
+/// The shaded library's categories in the palette's order
+/// (`SYMBOL_CATEGORIES`).
+pub const SHADED_CATEGORIES: [Category; 7] = [
     Category::Rotating,
     Category::Valves,
     Category::Vessels,
@@ -613,8 +616,44 @@ pub const CATEGORIES: [Category; 7] = [
     Category::Piping,
 ];
 
+/// The palette's groups (`paletteGroups`): the ISA-101 categories that
+/// have a symbol to offer, in [`ISA_CATEGORIES`] order (others after
+/// them), then the shaded library's.
+pub fn palette_categories() -> Vec<Category> {
+    let mut isa: Vec<&'static str> = Vec::new();
+    for def in SYMBOLS.iter() {
+        if let Category::Isa(name) = def.category
+            && def.palette
+            && !isa.contains(&name)
+        {
+            isa.push(name);
+        }
+    }
+    let rank = |name: &str| ISA_CATEGORIES.iter().position(|c| *c == name).unwrap_or(99);
+    isa.sort_by_key(|name| rank(name));
+    isa.into_iter()
+        .map(Category::Isa)
+        .chain(SHADED_CATEGORIES)
+        .collect()
+}
+
+/// A palette group's heading: `ISA-101 · Valves`, `Shaded · Valves`.
+pub fn category_heading(category: Category) -> String {
+    let library = if matches!(category, Category::Isa(_)) {
+        "ISA-101"
+    } else {
+        "Shaded"
+    };
+    let name = SYMBOLS
+        .iter()
+        .find(|def| def.category == category)
+        .map_or_else(|| category_name(category), SymbolDef::category_name);
+    format!("{library} · {name}")
+}
+
 pub fn category_name(category: Category) -> &'static str {
     match category {
+        Category::Isa(name) => name,
         Category::Rotating => "Rotating",
         Category::Valves => "Valves",
         Category::Vessels => "Vessels",
@@ -635,11 +674,47 @@ pub fn matches(query: &str, texts: &[&str]) -> bool {
             .any(|text| text.to_lowercase().contains(&query))
 }
 
-/// The symbols the palette lists for `query`: by name or category.
-pub fn palette_symbols(query: &str) -> impl Iterator<Item = &'static SymbolDef> + '_ {
-    SYMBOLS
+/// The symbols the palette lists for `query` (`filterSymbols`): with no
+/// query every symbol offered in the palette; with one, those whose name,
+/// key, category and keywords hold every word of it, ISA-101 first. A
+/// symbol kept for saved screens only (`palette: false`) is listed only
+/// when the query is its exact key.
+pub fn palette_symbols(query: &str) -> Vec<&'static SymbolDef> {
+    let query = query.trim().to_lowercase();
+    let all: &'static [SymbolDef] = &SYMBOLS;
+    if query.is_empty() {
+        return all.iter().filter(|def| def.palette).collect();
+    }
+    let words: Vec<&str> = query.split_whitespace().collect();
+    let hits: Vec<&'static SymbolDef> = all
         .iter()
-        .filter(move |def| matches(query, &[def.name, category_name(def.category)]))
+        .filter(|def| {
+            if !def.palette {
+                return def.key == query;
+            }
+            let keywords = def
+                .data
+                .map(|file| file.keywords.join(" "))
+                .unwrap_or_default();
+            let isa = if def.library == Library::Isa {
+                "isa-101 isa101"
+            } else {
+                ""
+            };
+            let hay = format!(
+                "{} {} {} {keywords} {isa}",
+                def.name,
+                def.key,
+                def.category_name()
+            )
+            .to_lowercase();
+            words.iter().all(|word| hay.contains(word))
+        })
+        .collect();
+    let (isa, shaded): (Vec<_>, Vec<_>) = hits
+        .into_iter()
+        .partition(|def| def.library == Library::Isa);
+    isa.into_iter().chain(shaded).collect()
 }
 
 // ── The symbols' fields (`symbolSchema`, `hmi/symbols.tsx`) ──────────────
@@ -669,8 +744,11 @@ const PIPE: &[Field] = &[tag("runSensorId", "Flow Tag (animates)")];
 const ROTATIONS: &[(&str, &str)] = &[("0", "0°"), ("90", "90°"), ("180", "180°"), ("270", "270°")];
 
 /// A symbol's own fields (`SymbolDef.fields`).
-fn own_fields(key: &str) -> &'static [Field] {
-    match key {
+fn own_fields(def: &SymbolDef) -> &'static [Field] {
+    if def.data.is_some() {
+        return DATA_FIELDS.get(def.key).map_or(&[], Vec::as_slice);
+    }
+    match def.key {
         "tank" | "tank_horizontal" | "silo" => VESSEL,
         "mixer" => MIXER,
         "clarifier" => CLARIFIER,
@@ -679,6 +757,59 @@ fn own_fields(key: &str) -> &'static [Field] {
         "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee" => PIPE,
         _ => &[],
     }
+}
+
+/// The fields of the symbol files (`fieldsOf`), made once: their options,
+/// their run tag, and for state symbols the manual mode and interlock tags.
+static DATA_FIELDS: LazyLock<HashMap<&'static str, Vec<Field>>> = LazyLock::new(|| {
+    library::files()
+        .iter()
+        .map(|file| (file.key.as_str(), data_fields(file)))
+        .collect()
+});
+
+fn data_fields(file: &'static SymbolFile) -> Vec<Field> {
+    let mut out = Vec::new();
+    for option in &file.options {
+        let (key, label) = (option.key.as_str(), option.label.as_str());
+        out.push(match (option.kind, &option.default) {
+            (OptionKind::Select, default) => {
+                // Made once per file, for the life of the program.
+                let values: &'static [(&'static str, &'static str)] = Box::leak(
+                    option
+                        .values
+                        .iter()
+                        .map(|value| (value.as_str(), value.as_str()))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                );
+                let init = match default {
+                    Scalar::Text(text) => text.as_str(),
+                    Scalar::Flag(true) => "true",
+                    Scalar::Flag(false) => "false",
+                };
+                select(key, label, init, values)
+            }
+            (OptionKind::Boolean, Scalar::Flag(init)) => flag(key, label, *init),
+            (OptionKind::Boolean, Scalar::Text(text)) => flag(key, label, !text.is_empty()),
+            (OptionKind::String, Scalar::Text(text)) => text_field(key, label, text),
+            (OptionKind::String, Scalar::Flag(init)) => {
+                text_field(key, label, if *init { "true" } else { "false" })
+            }
+        });
+    }
+    if let Some(label) = &file.run_tag {
+        out.push(tag("runSensorId", label));
+    }
+    if file.binding == FileBinding::State {
+        out.push(tag("manualSensorId", "Manual Mode Tag"));
+        out.push(tag("interlockSensorId", "Interlock Tag"));
+    }
+    out
+}
+
+const fn text_field(key: &'static str, label: &'static str, init: &'static str) -> Field {
+    text(key, label, init)
 }
 
 /// The inspector's fields for a symbol: the label, the binding's, the
@@ -702,11 +833,12 @@ pub fn symbol_fields(def: &SymbolDef, legacy: bool, default_writable: bool) -> V
             flag("writable", "Operator Start/Stop", default_writable),
         ]);
     }
-    fields.extend_from_slice(own_fields(def.key));
+    fields.extend_from_slice(own_fields(def));
     if !def.stretch {
         fields.extend([
             select("rotation", "Rotation", "0", ROTATIONS),
             flag("flipX", "Mirror", false),
+            flag("flipY", "Flip Vertical", false),
         ]);
     }
     fields
@@ -991,6 +1123,112 @@ pub fn connection(id: String, from: &str, to: &str, kind: &str) -> Connection {
     }
 }
 
+// ── Groups and locks (the Designer's `config.group`, `config.locked`) ─────
+
+/// The config key of a widget's group id.
+pub const GROUP_KEY: &str = "group";
+/// The config key that locks a widget (`true`; absent when unlocked).
+pub const LOCKED_KEY: &str = "locked";
+
+/// A widget's group id (`groupOf`): a non-empty `config.group`.
+pub fn group_of(widget: &Widget) -> Option<&str> {
+    widget
+        .get(GROUP_KEY)
+        .and_then(Value::as_str)
+        .filter(|group| !group.is_empty())
+}
+
+/// Whether a widget is locked (`isLocked`): `config.locked` is `true`.
+pub fn is_locked(widget: &Widget) -> bool {
+    widget.get(LOCKED_KEY) == Some(&Value::Bool(true))
+}
+
+/// A group left with one member is no group: that member is ungrouped
+/// (`dissolveSingleGroups`).
+fn dissolve_single_groups(widgets: &mut [Widget]) {
+    let mut count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for widget in widgets.iter() {
+        if let Some(group) = group_of(widget) {
+            *count.entry(group.to_owned()).or_default() += 1;
+        }
+    }
+    for widget in widgets.iter_mut() {
+        if group_of(widget).is_some_and(|group| count.get(group) == Some(&1)) {
+            widget.config.remove(GROUP_KEY);
+        }
+    }
+}
+
+/// Where [`Edit::Reorder`] moves the picked widgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    Front,
+    Back,
+    /// One unit up, past the nearest unpicked neighbour.
+    Forward,
+    /// One unit down.
+    Backward,
+}
+
+/// The stacking order with `ids` (and their groups) moved `to`
+/// (`reorder` in the web Designer's model).
+fn reorder(widgets: Vec<Widget>, ids: &[String], to: Order) -> Vec<Widget> {
+    let picked_groups: HashSet<String> = widgets
+        .iter()
+        .filter(|w| ids.contains(&w.id))
+        .filter_map(|w| group_of(w).map(str::to_owned))
+        .collect();
+    let picked = |w: &Widget| {
+        ids.contains(&w.id) || group_of(w).is_some_and(|group| picked_groups.contains(group))
+    };
+    // Units in stacking order: a lone widget, or a group's members together
+    // (at its back-most member, members keeping their order).
+    let mut units: Vec<Vec<Widget>> = Vec::new();
+    let mut unit_of_group: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for widget in widgets {
+        match group_of(&widget).map(str::to_owned) {
+            None => units.push(vec![widget]),
+            Some(group) => {
+                if let Some(&at) = unit_of_group.get(&group) {
+                    units[at].push(widget);
+                } else {
+                    unit_of_group.insert(group, units.len());
+                    units.push(vec![widget]);
+                }
+            }
+        }
+    }
+    let is_picked = |unit: &Vec<Widget>| unit.iter().any(&picked);
+    match to {
+        Order::Front | Order::Back => {
+            let (moved, rest): (Vec<_>, Vec<_>) = units.into_iter().partition(|u| is_picked(u));
+            units = if to == Order::Front {
+                rest.into_iter().chain(moved).collect()
+            } else {
+                moved.into_iter().chain(rest).collect()
+            };
+        }
+        Order::Forward => {
+            let at: Vec<usize> = (0..units.len()).filter(|i| is_picked(&units[*i])).collect();
+            for i in at.into_iter().rev() {
+                if i + 1 < units.len() && !is_picked(&units[i + 1]) {
+                    units.swap(i, i + 1);
+                }
+            }
+        }
+        Order::Backward => {
+            let at: Vec<usize> = (0..units.len()).filter(|i| is_picked(&units[*i])).collect();
+            for i in at {
+                if i > 0 && !is_picked(&units[i - 1]) {
+                    units.swap(i, i - 1);
+                }
+            }
+        }
+    }
+    units.into_iter().flatten().collect()
+}
+
 // ── Edits (`layoutReducer`) ───────────────────────────────────────────────
 
 /// One change to a layout.
@@ -1023,11 +1261,16 @@ pub enum Edit {
     },
     /// Rebind a widget's tags; the first is the primary one.
     Bind { id: String, tags: Vec<i64> },
+    /// Set the stored `equipment_name` (empty: the save names it). The
+    /// Designer clears it when the primary tag changes, as the web
+    /// Designer's `bindPrimaryPatch` does, so the saved name follows the tag.
+    Name { id: String, name: String },
     /// Change a connection's type.
     Line { id: String, kind: String },
-    /// Bring widgets to the front or send them to the back, keeping their
-    /// order among themselves (`REORDER_WIDGET`).
-    Reorder { ids: Vec<String>, front: bool },
+    /// Restack widgets (the Designer's `order` edit): a group moves as one
+    /// unit and is never split by another widget, and the picked widgets
+    /// keep their order among themselves.
+    Reorder { ids: Vec<String>, to: Order },
     /// Several edits as one step.
     Many(Vec<Edit>),
 }
@@ -1055,6 +1298,9 @@ impl Edit {
                 layout
                     .widgets
                     .retain(|widget| !gone.contains(widget.id.as_str()));
+                if layout.widgets.len() != before.0 {
+                    dissolve_single_groups(&mut layout.widgets);
+                }
                 layout.connections.retain(|connection| {
                     !gone.contains(connection.from.as_str())
                         && !gone.contains(connection.to.as_str())
@@ -1119,6 +1365,16 @@ impl Edit {
                 widget.tags.clone_from(tags);
                 true
             }
+            Self::Name { id, name } => {
+                let Some(widget) = layout.widgets.iter_mut().find(|w| w.id == *id) else {
+                    return false;
+                };
+                if widget.name == *name {
+                    return false;
+                }
+                widget.name.clone_from(name);
+                true
+            }
             Self::Line { id, kind } => {
                 let Some(line) = layout.connections.iter_mut().find(|c| c.id == *id) else {
                     return false;
@@ -1129,17 +1385,9 @@ impl Edit {
                 line.kind.clone_from(kind);
                 true
             }
-            Self::Reorder { ids, front } => {
+            Self::Reorder { ids, to } => {
                 let before: Vec<String> = layout.widgets.iter().map(|w| w.id.clone()).collect();
-                let (picked, rest): (Vec<Widget>, Vec<Widget>) =
-                    std::mem::take(&mut layout.widgets)
-                        .into_iter()
-                        .partition(|widget| ids.contains(&widget.id));
-                layout.widgets = if *front {
-                    rest.into_iter().chain(picked).collect()
-                } else {
-                    picked.into_iter().chain(rest).collect()
-                };
+                layout.widgets = reorder(std::mem::take(&mut layout.widgets), ids, *to);
                 layout
                     .widgets
                     .iter()
@@ -1170,8 +1418,15 @@ pub struct History {
     /// Consecutive edits with this key (typing in one field, one drag, one
     /// nudge run) are one step.
     last_key: Option<String>,
+    /// When the last keyed edit came, when it said: a pause longer than
+    /// [`COALESCE`] starts a new step even for the same key.
+    last_at: Option<std::time::Instant>,
     saved: Layout,
 }
+
+/// A pause between edits with the same key longer than this starts a new
+/// undo step (the web Designer's `COALESCE_MS`).
+pub const COALESCE: std::time::Duration = std::time::Duration::from_millis(1000);
 
 impl History {
     /// Start from the server's copy.
@@ -1179,6 +1434,23 @@ impl History {
         Self {
             saved: layout.clone(),
             present: layout,
+            ..Self::default()
+        }
+    }
+
+    /// Edits brought back (unsaved work kept across a sign-in): `saved`
+    /// is the server's copy they started from, `present` the edits, one
+    /// undo step apart.
+    pub fn restored(saved: Layout, present: Layout) -> Self {
+        let past = if present == saved {
+            Vec::new()
+        } else {
+            vec![saved.clone()]
+        };
+        Self {
+            past,
+            present,
+            saved,
             ..Self::default()
         }
     }
@@ -1194,9 +1466,23 @@ impl History {
     /// Apply `edit`; with the key of the edit before it, it joins that
     /// step. Whether it changed anything.
     pub fn apply(&mut self, edit: &Edit, coalesce: Option<&str>) -> bool {
-        if coalesce.is_some() && coalesce == self.last_key.as_deref() {
+        self.apply_at(edit, coalesce, None)
+    }
+
+    /// [`Self::apply`] at time `at`: an edit after a pause longer than
+    /// [`COALESCE`] since the last one starts a new step even with the
+    /// same key (edits without a time always join).
+    pub fn apply_at(
+        &mut self,
+        edit: &Edit,
+        coalesce: Option<&str>,
+        at: Option<std::time::Instant>,
+    ) -> bool {
+        let paused = matches!((at, self.last_at), (Some(at), Some(last)) if at.saturating_duration_since(last) > COALESCE);
+        if coalesce.is_some() && coalesce == self.last_key.as_deref() && !paused {
             if edit.apply(&mut self.present) {
                 self.future.clear();
+                self.last_at = at;
                 return true;
             }
             return false;
@@ -1211,6 +1497,7 @@ impl History {
         }
         self.future.clear();
         self.last_key = coalesce.map(str::to_owned);
+        self.last_at = at;
         true
     }
 
@@ -1859,15 +2146,33 @@ pub fn paste(
     };
     let mut renamed: Vec<(String, String)> = Vec::with_capacity(clip.widgets.len());
     let mut widgets: Vec<Widget> = Vec::with_capacity(clip.widgets.len());
+    // A pasted group is a group of its own: new group ids (`duplicate`).
+    let mut groups: Vec<(String, String)> = Vec::new();
     for widget in &clip.widgets {
         let id = unique("w");
         renamed.push((widget.id.clone(), id.clone()));
-        widgets.push(Widget {
+        let mut copy = Widget {
             id,
             x: widget.x + dx,
             y: widget.y + dy,
+            // The copy is named by the save (the web drops the name too).
+            name: String::new(),
             ..widget.clone()
-        });
+        };
+        copy.config.remove(LOCKED_KEY);
+        if let Some(group) = group_of(widget).map(str::to_owned) {
+            let new_group = match groups.iter().find(|(old, _)| *old == group) {
+                Some((_, new)) => new.clone(),
+                None => {
+                    let new = unique("g");
+                    groups.push((group, new.clone()));
+                    new
+                }
+            };
+            copy.config
+                .insert(GROUP_KEY.to_owned(), Value::String(new_group));
+        }
+        widgets.push(copy);
     }
     let new_id = |old: &str| {
         renamed

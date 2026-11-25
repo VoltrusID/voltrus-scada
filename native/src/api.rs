@@ -48,6 +48,9 @@ pub struct ServerError {
     pub signature_required: Option<SignatureRequired>,
     /// The node a refused flow's error is about (`{"error", "node_id"}`).
     pub node_id: Option<String>,
+    /// The current revision a refused revision-checked save names (409
+    /// `{"error", "code": "conflict", "revision"}`).
+    pub revision: Option<String>,
 }
 
 impl ServerError {
@@ -62,6 +65,7 @@ impl ServerError {
         let message = field("error").unwrap_or_else(|| format!("HTTP {status}: {body}"));
         let code = field("code");
         let node_id = field("node_id");
+        let revision = field("revision");
         let signature_required = value
             .as_ref()
             .and_then(|value| value.get("signature_required"))
@@ -72,6 +76,7 @@ impl ServerError {
             code,
             signature_required,
             node_id,
+            revision,
         }
     }
 

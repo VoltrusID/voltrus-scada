@@ -1,0 +1,7159 @@
+{
+ "keys": [
+  "isa_agitator",
+  "isa_blower",
+  "isa_clarifier",
+  "isa_compressor",
+  "isa_control_valve",
+  "isa_cyclone",
+  "isa_fan",
+  "isa_filter",
+  "isa_flow_arrow",
+  "isa_heat_exchanger",
+  "isa_hx_plate",
+  "isa_hx_shell_tube",
+  "isa_instrument",
+  "isa_junction",
+  "isa_line",
+  "isa_line_vertical",
+  "isa_motor",
+  "isa_offpage",
+  "isa_pipe",
+  "isa_pipe_vertical",
+  "isa_pump",
+  "isa_pump_centrifugal",
+  "isa_pump_dosing",
+  "isa_pump_pd",
+  "isa_reducer",
+  "isa_silo",
+  "isa_tank",
+  "isa_tank_cone",
+  "isa_tank_horizontal",
+  "isa_tank_vertical",
+  "isa_valve",
+  "isa_valve_3way",
+  "isa_valve_ball",
+  "isa_valve_butterfly",
+  "isa_valve_check",
+  "isa_valve_control",
+  "isa_valve_gate",
+  "isa_valve_solenoid"
+ ],
+ "order": [
+  "isa_agitator",
+  "isa_blower",
+  "isa_pump_centrifugal",
+  "isa_compressor",
+  "isa_pump_dosing",
+  "isa_fan",
+  "isa_motor",
+  "isa_pump_pd",
+  "isa_pump",
+  "isa_valve_ball",
+  "isa_valve_butterfly",
+  "isa_valve_check",
+  "isa_valve_control",
+  "isa_control_valve",
+  "isa_valve_gate",
+  "isa_valve_solenoid",
+  "isa_valve_3way",
+  "isa_valve",
+  "isa_clarifier",
+  "isa_tank_cone",
+  "isa_tank_horizontal",
+  "isa_silo",
+  "isa_tank",
+  "isa_tank_vertical",
+  "isa_heat_exchanger",
+  "isa_hx_plate",
+  "isa_hx_shell_tube",
+  "isa_cyclone",
+  "isa_filter",
+  "isa_instrument",
+  "isa_flow_arrow",
+  "isa_junction",
+  "isa_offpage",
+  "isa_pipe",
+  "isa_pipe_vertical",
+  "isa_line",
+  "isa_line_vertical",
+  "isa_reducer"
+ ],
+ "groups": [
+  "ISA-101: all",
+  "ISA-101 · Rotating equipment",
+  "ISA-101 · Valves",
+  "ISA-101 · Vessels",
+  "ISA-101 · Heat transfer",
+  "ISA-101 · Separation",
+  "ISA-101 · Instruments",
+  "ISA-101 · Piping"
+ ],
+ "searches": [
+  {
+   "query": "",
+   "keys": [
+    "isa_agitator",
+    "isa_blower",
+    "isa_pump_centrifugal",
+    "isa_compressor",
+    "isa_pump_dosing",
+    "isa_fan",
+    "isa_motor",
+    "isa_pump_pd",
+    "isa_valve_ball",
+    "isa_valve_butterfly",
+    "isa_valve_check",
+    "isa_valve_control",
+    "isa_valve_gate",
+    "isa_valve_solenoid",
+    "isa_valve_3way",
+    "isa_clarifier",
+    "isa_tank_cone",
+    "isa_tank_horizontal",
+    "isa_silo",
+    "isa_tank_vertical",
+    "isa_heat_exchanger",
+    "isa_hx_plate",
+    "isa_hx_shell_tube",
+    "isa_cyclone",
+    "isa_filter",
+    "isa_instrument",
+    "isa_flow_arrow",
+    "isa_junction",
+    "isa_offpage",
+    "isa_pipe",
+    "isa_pipe_vertical",
+    "isa_reducer"
+   ]
+  },
+  {
+   "query": "valve",
+   "keys": [
+    "isa_valve_ball",
+    "isa_valve_butterfly",
+    "isa_valve_check",
+    "isa_valve_control",
+    "isa_valve_gate",
+    "isa_valve_solenoid",
+    "isa_valve_3way"
+   ]
+  },
+  {
+   "query": "pump",
+   "keys": [
+    "isa_pump_centrifugal",
+    "isa_pump_dosing",
+    "isa_pump_pd"
+   ]
+  },
+  {
+   "query": "isa_pump",
+   "keys": [
+    "isa_pump_centrifugal",
+    "isa_pump_dosing",
+    "isa_pump_pd",
+    "isa_pump"
+   ]
+  },
+  {
+   "query": "isa_pum",
+   "keys": [
+    "isa_pump_centrifugal",
+    "isa_pump_dosing",
+    "isa_pump_pd"
+   ]
+  },
+  {
+   "query": "tank cone",
+   "keys": [
+    "isa_tank_cone"
+   ]
+  },
+  {
+   "query": "isa-101 heat",
+   "keys": [
+    "isa_heat_exchanger",
+    "isa_hx_plate",
+    "isa_hx_shell_tube"
+   ]
+  },
+  {
+   "query": "piping",
+   "keys": [
+    "isa_flow_arrow",
+    "isa_junction",
+    "isa_offpage",
+    "isa_pipe",
+    "isa_pipe_vertical",
+    "isa_reducer"
+   ]
+  },
+  {
+   "query": "nothing matches this",
+   "keys": []
+  }
+ ],
+ "symbols": [
+  {
+   "key": "isa_agitator",
+   "file": "isa_agitator",
+   "name": "Agitator",
+   "category": "Rotating equipment",
+   "viewBox": [
+    60,
+    120
+   ],
+   "size": [
+    48,
+    96
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "top": [
+     30,
+     4
+    ],
+    "bottom": [
+     30,
+     108
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2
+     ],
+     "text": [
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "key": "isa_blower",
+   "file": "isa_blower",
+   "name": "Blower",
+   "category": "Rotating equipment",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     4,
+     54
+    ],
+    "right": [
+     92,
+     34
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      4
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_clarifier",
+   "file": "isa_clarifier",
+   "name": "Clarifier",
+   "category": "Vessels",
+   "viewBox": [
+    220,
+    110
+   ],
+   "size": [
+    220,
+    110
+   ],
+   "binding": "value",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     34
+    ],
+    "right": [
+     218,
+     34
+    ],
+    "bottom": [
+     110,
+     106
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_compressor",
+   "file": "isa_compressor",
+   "name": "Compressor",
+   "category": "Rotating equipment",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     4,
+     50
+    ],
+    "right": [
+     96,
+     50
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_control_valve",
+   "file": "isa_control_valve",
+   "name": "Control valve (ISA-101, phase 1)",
+   "category": "Valves",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    100
+   ],
+   "binding": "value",
+   "stretch": false,
+   "palette": false,
+   "ports": {
+    "left": [
+     4,
+     75
+    ],
+    "right": [
+     96,
+     75
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_cyclone",
+   "file": "isa_cyclone",
+   "name": "Cyclone",
+   "category": "Separation",
+   "viewBox": [
+    100,
+    132
+   ],
+   "size": [
+    80,
+    106
+   ],
+   "binding": "none",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     24
+    ],
+    "top": [
+     50,
+     2
+    ],
+    "bottom": [
+     50,
+     130
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      4
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_fan",
+   "file": "isa_fan",
+   "name": "Fan (axial)",
+   "category": "Rotating equipment",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    76,
+    76
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     50
+    ],
+    "right": [
+     98,
+     50
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_filter",
+   "file": "isa_filter",
+   "name": "Filter",
+   "category": "Separation",
+   "viewBox": [
+    100,
+    132
+   ],
+   "size": [
+    84,
+    110
+   ],
+   "binding": "value",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "top": [
+     50,
+     2
+    ],
+    "bottom": [
+     50,
+     130
+    ],
+    "left": [
+     2,
+     40
+    ],
+    "right": [
+     98,
+     92
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_flow_arrow",
+   "file": "isa_flow_arrow",
+   "name": "Flow arrow",
+   "category": "Piping",
+   "viewBox": [
+    40,
+    20
+   ],
+   "size": [
+    32,
+    16
+   ],
+   "binding": "none",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     0,
+     10
+    ],
+    "right": [
+     38,
+     10
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_heat_exchanger",
+   "file": "isa_heat_exchanger",
+   "name": "Heat exchanger",
+   "category": "Heat transfer",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "none",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     4,
+     50
+    ],
+    "right": [
+     96,
+     50
+    ],
+    "top": [
+     50,
+     4
+    ],
+    "bottom": [
+     50,
+     96
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_hx_plate",
+   "file": "isa_hx_plate",
+   "name": "Plate exchanger",
+   "category": "Heat transfer",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "none",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     24
+    ],
+    "right": [
+     98,
+     76
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_hx_shell_tube",
+   "file": "isa_hx_shell_tube",
+   "name": "Shell & tube exchanger",
+   "category": "Heat transfer",
+   "viewBox": [
+    160,
+    84
+   ],
+   "size": [
+    160,
+    84
+   ],
+   "binding": "none",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     42
+    ],
+    "right": [
+     158,
+     42
+    ],
+    "top": [
+     50,
+     4
+    ],
+    "bottom": [
+     112,
+     80
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_instrument",
+   "file": "isa_instrument",
+   "name": "Instrument bubble",
+   "category": "Instruments",
+   "viewBox": [
+    80,
+    80
+   ],
+   "size": [
+    72,
+    72
+   ],
+   "binding": "value",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     10,
+     40
+    ],
+    "right": [
+     70,
+     40
+    ],
+    "top": [
+     40,
+     10
+    ],
+    "bottom": [
+     40,
+     70
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      1
+     ],
+     "text": [
+      0,
+      1
+     ]
+    },
+    {
+     "config": {
+      "mounting": "field"
+     },
+     "layers": [
+      1
+     ],
+     "text": [
+      0,
+      1
+     ]
+    },
+    {
+     "config": {
+      "mounting": "panel"
+     },
+     "layers": [
+      1,
+      3
+     ],
+     "text": [
+      0,
+      1
+     ]
+    },
+    {
+     "config": {
+      "mounting": "dcs"
+     },
+     "layers": [
+      0,
+      1
+     ],
+     "text": [
+      0,
+      1
+     ]
+    },
+    {
+     "config": {
+      "mounting": "plc"
+     },
+     "layers": [
+      0,
+      2
+     ],
+     "text": [
+      0,
+      1
+     ]
+    },
+    {
+     "config": {
+      "tagFunction": ""
+     },
+     "layers": [
+      1
+     ],
+     "text": [
+      0,
+      1
+     ]
+    },
+    {
+     "config": {
+      "tagFunction": "X1"
+     },
+     "layers": [
+      1
+     ],
+     "text": [
+      0,
+      1
+     ]
+    },
+    {
+     "config": {
+      "loopNumber": ""
+     },
+     "layers": [
+      1
+     ],
+     "text": [
+      0,
+      1
+     ]
+    },
+    {
+     "config": {
+      "loopNumber": "X1"
+     },
+     "layers": [
+      1
+     ],
+     "text": [
+      0,
+      1
+     ]
+    }
+   ]
+  },
+  {
+   "key": "isa_junction",
+   "file": "isa_junction",
+   "name": "Junction",
+   "category": "Piping",
+   "viewBox": [
+    20,
+    20
+   ],
+   "size": [
+    14,
+    14
+   ],
+   "binding": "none",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     10,
+     10
+    ],
+    "right": [
+     10,
+     10
+    ],
+    "top": [
+     10,
+     10
+    ],
+    "bottom": [
+     10,
+     10
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_line",
+   "file": "isa_line",
+   "name": "Process line (ISA-101, phase 1)",
+   "category": "Piping",
+   "viewBox": [
+    200,
+    10
+   ],
+   "size": [
+    200,
+    10
+   ],
+   "binding": "none",
+   "stretch": true,
+   "palette": false,
+   "ports": {},
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_line_vertical",
+   "file": "isa_line_vertical",
+   "name": "Process line, vertical (ISA-101, phase 1)",
+   "category": "Piping",
+   "viewBox": [
+    10,
+    200
+   ],
+   "size": [
+    10,
+    200
+   ],
+   "binding": "none",
+   "stretch": true,
+   "palette": false,
+   "ports": {},
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_motor",
+   "file": "isa_motor",
+   "name": "Motor",
+   "category": "Rotating equipment",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    96
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "right": [
+     96,
+     50
+    ],
+    "top": [
+     50,
+     4
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1
+     ],
+     "text": [
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "key": "isa_offpage",
+   "file": "isa_offpage",
+   "name": "Off-page connector",
+   "category": "Piping",
+   "viewBox": [
+    120,
+    40
+   ],
+   "size": [
+    120,
+    40
+   ],
+   "binding": "none",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     4,
+     20
+    ],
+    "right": [
+     116,
+     20
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "text": ""
+     },
+     "layers": [
+      0
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "text": "X1"
+     },
+     "layers": [
+      0
+     ],
+     "text": [
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "key": "isa_pipe",
+   "file": "isa_pipe",
+   "name": "Pipe",
+   "category": "Piping",
+   "viewBox": [
+    200,
+    12
+   ],
+   "size": [
+    200,
+    12
+   ],
+   "binding": "none",
+   "stretch": true,
+   "palette": true,
+   "ports": {},
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "arrow": "none"
+     },
+     "layers": [
+      0,
+      1
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "arrow": "forward"
+     },
+     "layers": [
+      0,
+      1,
+      2
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "arrow": "reverse"
+     },
+     "layers": [
+      0,
+      1,
+      3
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "arrow": "both"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      4
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_pipe_vertical",
+   "file": "isa_pipe_vertical",
+   "name": "Pipe (vertical)",
+   "category": "Piping",
+   "viewBox": [
+    12,
+    200
+   ],
+   "size": [
+    12,
+    200
+   ],
+   "binding": "none",
+   "stretch": true,
+   "palette": true,
+   "ports": {},
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "arrow": "none"
+     },
+     "layers": [
+      0,
+      1
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "arrow": "forward"
+     },
+     "layers": [
+      0,
+      1,
+      2
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "arrow": "reverse"
+     },
+     "layers": [
+      0,
+      1,
+      3
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "arrow": "both"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      4
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_pump",
+   "file": "isa_pump",
+   "name": "Pump (ISA-101, phase 1)",
+   "category": "Rotating equipment",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    90,
+    104
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": false,
+   "ports": {
+    "left": [
+     12,
+     54
+    ],
+    "right": [
+     94,
+     18
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_pump_centrifugal",
+   "file": "isa_pump_centrifugal",
+   "name": "Centrifugal pump",
+   "category": "Rotating equipment",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     4,
+     50
+    ],
+    "right": [
+     90,
+     26
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_pump_dosing",
+   "file": "isa_pump_dosing",
+   "name": "Dosing pump",
+   "category": "Rotating equipment",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    76,
+    76
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     4,
+     54
+    ],
+    "right": [
+     96,
+     54
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_pump_pd",
+   "file": "isa_pump_pd",
+   "name": "Positive displacement pump",
+   "category": "Rotating equipment",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     4,
+     50
+    ],
+    "right": [
+     96,
+     50
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_reducer",
+   "file": "isa_reducer",
+   "name": "Reducer",
+   "category": "Piping",
+   "viewBox": [
+    60,
+    40
+   ],
+   "size": [
+    48,
+    32
+   ],
+   "binding": "none",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     0,
+     20
+    ],
+    "right": [
+     60,
+     20
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_silo",
+   "file": "isa_silo",
+   "name": "Silo",
+   "category": "Vessels",
+   "viewBox": [
+    100,
+    160
+   ],
+   "size": [
+    84,
+    134
+   ],
+   "binding": "level",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "top": [
+     50,
+     2
+    ],
+    "bottom": [
+     50,
+     158
+    ],
+    "left": [
+     14,
+     70
+    ],
+    "right": [
+     86,
+     70
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": true
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": false
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "key": "isa_tank",
+   "file": "isa_tank",
+   "name": "Tank (ISA-101, phase 1)",
+   "category": "Vessels",
+   "viewBox": [
+    100,
+    160
+   ],
+   "size": [
+    90,
+    144
+   ],
+   "binding": "level",
+   "stretch": false,
+   "palette": false,
+   "ports": {
+    "top": [
+     50,
+     4
+    ],
+    "bottom": [
+     50,
+     156
+    ],
+    "left": [
+     4,
+     130
+    ],
+    "right": [
+     96,
+     130
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": true
+     },
+     "layers": [
+      0,
+      1
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": false
+     },
+     "layers": [
+      0,
+      1
+     ],
+     "text": [
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "key": "isa_tank_cone",
+   "file": "isa_tank_cone",
+   "name": "Cone-bottom tank",
+   "category": "Vessels",
+   "viewBox": [
+    100,
+    156
+   ],
+   "size": [
+    86,
+    134
+   ],
+   "binding": "level",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "top": [
+     50,
+     4
+    ],
+    "bottom": [
+     50,
+     152
+    ],
+    "left": [
+     10,
+     60
+    ],
+    "right": [
+     90,
+     60
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": true
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": false
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "key": "isa_tank_horizontal",
+   "file": "isa_tank_horizontal",
+   "name": "Horizontal tank",
+   "category": "Vessels",
+   "viewBox": [
+    180,
+    104
+   ],
+   "size": [
+    180,
+    104
+   ],
+   "binding": "level",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     50
+    ],
+    "right": [
+     178,
+     50
+    ],
+    "top": [
+     90,
+     14
+    ],
+    "bottom": [
+     90,
+     86
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": true
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": false
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "key": "isa_tank_vertical",
+   "file": "isa_tank_vertical",
+   "name": "Vertical tank",
+   "category": "Vessels",
+   "viewBox": [
+    100,
+    164
+   ],
+   "size": [
+    90,
+    148
+   ],
+   "binding": "level",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "top": [
+     50,
+     2
+    ],
+    "bottom": [
+     50,
+     162
+    ],
+    "left": [
+     6,
+     120
+    ],
+    "right": [
+     94,
+     120
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": true
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "showPercent": false
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": [
+      0
+     ]
+    }
+   ]
+  },
+  {
+   "key": "isa_valve",
+   "file": "isa_valve",
+   "name": "Valve (ISA-101, phase 1)",
+   "category": "Valves",
+   "viewBox": [
+    100,
+    70
+   ],
+   "size": [
+    90,
+    92
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": false,
+   "ports": {
+    "left": [
+     4,
+     45
+    ],
+    "right": [
+     96,
+     45
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_valve_3way",
+   "file": "isa_valve_3way",
+   "name": "Three-way valve",
+   "category": "Valves",
+   "viewBox": [
+    100,
+    120
+   ],
+   "size": [
+    80,
+    96
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     74
+    ],
+    "right": [
+     98,
+     74
+    ],
+    "bottom": [
+     50,
+     118
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      10
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "none"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      10
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "manual"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      10
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "diaphragm"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      5,
+      10
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "motor"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      6,
+      10
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "actuator": "solenoid"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      7,
+      10
+     ],
+     "text": [
+      1
+     ]
+    },
+    {
+     "config": {
+      "actuator": "piston"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      8,
+      9,
+      10
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_valve_ball",
+   "file": "isa_valve_ball",
+   "name": "Ball valve",
+   "category": "Valves",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     74
+    ],
+    "right": [
+     98,
+     74
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      9,
+      10
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "none"
+     },
+     "layers": [
+      0,
+      1,
+      9,
+      10
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "manual"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      9,
+      10
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "diaphragm"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      4,
+      9,
+      10
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "motor"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      5,
+      9,
+      10
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "actuator": "solenoid"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      6,
+      9,
+      10
+     ],
+     "text": [
+      1
+     ]
+    },
+    {
+     "config": {
+      "actuator": "piston"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      7,
+      8,
+      9,
+      10
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_valve_butterfly",
+   "file": "isa_valve_butterfly",
+   "name": "Butterfly valve",
+   "category": "Valves",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     74
+    ],
+    "right": [
+     98,
+     74
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      9,
+      10,
+      11
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "none"
+     },
+     "layers": [
+      0,
+      1,
+      9,
+      10,
+      11
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "manual"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      9,
+      10,
+      11
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "diaphragm"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      4,
+      9,
+      10,
+      11
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "motor"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      5,
+      9,
+      10,
+      11
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "actuator": "solenoid"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      6,
+      9,
+      10,
+      11
+     ],
+     "text": [
+      1
+     ]
+    },
+    {
+     "config": {
+      "actuator": "piston"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      7,
+      8,
+      9,
+      10,
+      11
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_valve_check",
+   "file": "isa_valve_check",
+   "name": "Check valve",
+   "category": "Valves",
+   "viewBox": [
+    100,
+    50
+   ],
+   "size": [
+    80,
+    40
+   ],
+   "binding": "none",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     25
+    ],
+    "right": [
+     98,
+     25
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_valve_control",
+   "file": "isa_valve_control",
+   "name": "Control valve",
+   "category": "Valves",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "value",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     74
+    ],
+    "right": [
+     98,
+     74
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      4,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "none"
+     },
+     "layers": [
+      0,
+      1,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "manual"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "diaphragm"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      4,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "motor"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      5,
+      9
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "actuator": "solenoid"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      6,
+      9
+     ],
+     "text": [
+      1
+     ]
+    },
+    {
+     "config": {
+      "actuator": "piston"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      7,
+      8,
+      9
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_valve_gate",
+   "file": "isa_valve_gate",
+   "name": "Gate valve",
+   "category": "Valves",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     74
+    ],
+    "right": [
+     98,
+     74
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "none"
+     },
+     "layers": [
+      0,
+      1,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "manual"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "diaphragm"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      4,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "motor"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      5,
+      9
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "actuator": "solenoid"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      6,
+      9
+     ],
+     "text": [
+      1
+     ]
+    },
+    {
+     "config": {
+      "actuator": "piston"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      7,
+      8,
+      9
+     ],
+     "text": []
+    }
+   ]
+  },
+  {
+   "key": "isa_valve_solenoid",
+   "file": "isa_valve_solenoid",
+   "name": "Solenoid valve",
+   "category": "Valves",
+   "viewBox": [
+    100,
+    100
+   ],
+   "size": [
+    80,
+    80
+   ],
+   "binding": "state",
+   "stretch": false,
+   "palette": true,
+   "ports": {
+    "left": [
+     2,
+     74
+    ],
+    "right": [
+     98,
+     74
+    ]
+   },
+   "problems": [],
+   "shown": [
+    {
+     "config": {},
+     "layers": [
+      0,
+      1,
+      2,
+      6,
+      9
+     ],
+     "text": [
+      1
+     ]
+    },
+    {
+     "config": {
+      "actuator": "none"
+     },
+     "layers": [
+      0,
+      1,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "manual"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      3,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "diaphragm"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      4,
+      9
+     ],
+     "text": []
+    },
+    {
+     "config": {
+      "actuator": "motor"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      5,
+      9
+     ],
+     "text": [
+      0
+     ]
+    },
+    {
+     "config": {
+      "actuator": "solenoid"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      6,
+      9
+     ],
+     "text": [
+      1
+     ]
+    },
+    {
+     "config": {
+      "actuator": "piston"
+     },
+     "layers": [
+      0,
+      1,
+      2,
+      7,
+      8,
+      9
+     ],
+     "text": []
+    }
+   ]
+  }
+ ],
+ "styles": [
+  {
+   "state": "idle",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": []
+  },
+  {
+   "state": "idle",
+   "runOn": false,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "idle",
+   "runOn": false,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "idle",
+   "runOn": false,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "idle",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "idle",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": []
+  },
+  {
+   "state": "idle",
+   "runOn": true,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "idle",
+   "runOn": true,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "idle",
+   "runOn": true,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "idle",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "running",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": []
+  },
+  {
+   "state": "running",
+   "runOn": false,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "running",
+   "runOn": false,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "running",
+   "runOn": false,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "running",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "running",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": []
+  },
+  {
+   "state": "running",
+   "runOn": true,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "running",
+   "runOn": true,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "running",
+   "runOn": true,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "running",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-on",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stopped",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": []
+  },
+  {
+   "state": "stopped",
+   "runOn": false,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stopped",
+   "runOn": false,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stopped",
+   "runOn": false,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stopped",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stopped",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": []
+  },
+  {
+   "state": "stopped",
+   "runOn": true,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stopped",
+   "runOn": true,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stopped",
+   "runOn": true,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stopped",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "isa-line",
+     "width": 1,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "isa-line",
+     "width": 1.25,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "isa-line",
+     "width": 1.75,
+     "fill": "isa-line",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "isa-line",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "fault",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": []
+  },
+  {
+   "state": "fault",
+   "runOn": false,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "fault",
+   "runOn": false,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "fault",
+   "runOn": false,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "fault",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "fault",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": []
+  },
+  {
+   "state": "fault",
+   "runOn": true,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "fault",
+   "runOn": true,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "fault",
+   "runOn": true,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "fault",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "isa-off",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-fault",
+     "width": 1.75,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stage",
+     "width": 2,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "hmi-fault",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-fault",
+     "width": 2.5,
+     "fill": "none",
+     "dash": null,
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": true,
+   "text": "isa-text",
+   "textOnBody": "hmi-stage",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stale",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": []
+  },
+  {
+   "state": "stale",
+   "runOn": false,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stale",
+   "runOn": false,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stale",
+   "runOn": false,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stale",
+   "runOn": false,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": false,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stale",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": []
+  },
+  {
+   "state": "stale",
+   "runOn": true,
+   "manual": true,
+   "interlocked": false,
+   "alarmPriority": null,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stale",
+   "runOn": true,
+   "manual": false,
+   "interlocked": true,
+   "alarmPriority": 2,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "2",
+     "shape": "triangle",
+     "fill": "isa-alarm-2",
+     "stroke": "isa-alarm-2",
+     "color": "isa-alarm-2-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stale",
+   "runOn": true,
+   "manual": true,
+   "interlocked": true,
+   "alarmPriority": 1,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "1",
+     "shape": "square",
+     "fill": "isa-alarm-1",
+     "stroke": "isa-alarm-1",
+     "color": "isa-alarm-1-text",
+     "blink": true
+    },
+    {
+     "kind": "manual",
+     "text": "M",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    },
+    {
+     "kind": "interlock",
+     "text": "I",
+     "shape": "box",
+     "fill": "isa-off",
+     "stroke": "isa-line",
+     "color": "isa-text",
+     "blink": false
+    }
+   ]
+  },
+  {
+   "state": "stale",
+   "runOn": true,
+   "manual": false,
+   "interlocked": false,
+   "alarmPriority": 3,
+   "paints": {
+    "body": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "shell": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "isa-off",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "line": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "detail": {
+     "stroke": "hmi-stale",
+     "width": 1,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "inner": {
+     "stroke": "hmi-stale",
+     "width": 1.25,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "solid": {
+     "stroke": "hmi-stale",
+     "width": 1.75,
+     "fill": "hmi-stale",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    },
+    "flow": {
+     "stroke": "isa-on",
+     "width": 1.75,
+     "fill": "none",
+     "dash": "6 18",
+     "visible": true,
+     "animate": true
+    },
+    "run": {
+     "stroke": "hmi-stale",
+     "width": 2.5,
+     "fill": "none",
+     "dash": "4 3",
+     "visible": true,
+     "animate": false
+    }
+   },
+   "blink": false,
+   "text": "isa-text",
+   "textOnBody": "isa-line",
+   "badges": [
+    {
+     "kind": "alarm",
+     "text": "3",
+     "shape": "diamond",
+     "fill": "isa-alarm-3",
+     "stroke": "isa-alarm-3",
+     "color": "isa-alarm-3-text",
+     "blink": false
+    }
+   ]
+  }
+ ]
+}

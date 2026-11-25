@@ -1,8 +1,15 @@
-//! The symbol library (`hmi/symbols.tsx`) and the symbol view
-//! (`hmi/SymbolView.tsx`): ISA-101 equipment drawn in its view box, fitted
-//! (or stretched) into the widget's box above its footer, turned and
-//! mirrored as set, with its live state, level and value; then the footer
-//! rows (label, value badge, state text) under the drawing.
+//! The symbol library (`hmi/symbols.tsx`, `symbols/*.json`) and the symbol
+//! view (`hmi/SymbolView.tsx`): equipment drawn in its view box, fitted (or
+//! stretched) into the widget's box above its footer, turned and mirrored
+//! as set, with its live state, level and value; the ISA-101 state badges
+//! beside it; then the footer rows (label, value badge, state text) under
+//! the drawing.
+//!
+//! The ISA-101 symbols are the shared symbol files (`dataSymbols.tsx`): each
+//! layer's SVG path data tessellated with lyon (cached per shape, size and
+//! style), drawn by its paint role in the live state's style from
+//! `symbols/_styles.json` ([`library::style_of`]), with the theme's colours
+//! from the same file. The shaded symbols are drawn in code below.
 //!
 //! Text inside a turned symbol stays upright at its mapped anchor (GPUI
 //! cannot turn glyphs), where the web turns it with the drawing; text a
@@ -11,7 +18,12 @@
 
 use std::borrow::Cow;
 
-use gpui::Hsla;
+use std::hash::{DefaultHasher, Hash, Hasher};
+
+use gpui::{FontWeight, Hsla};
+use voltrus_scada_native::mimic::library::{
+    self, BadgeShape, Fill, Font, Modifiers, PaintRole, SymbolFile, SymbolStyle,
+};
 use voltrus_scada_native::mimic::{
     EquipState, FooterRows, Level, Placement, Widget, footer, footer_height, footer_rows,
     state_text,
@@ -37,10 +49,22 @@ pub(crate) fn paint(canvas: &mut Canvas<'_>, item: &Item, xf: &Xf, t: f32) {
     if place.flip {
         area = area.then(&Xf::scale_x_about(-1.0, w / 2.0));
     }
+    if place.flip_y {
+        area = area.then(&Xf::scale_y_about(-1.0, h / 2.0));
+    }
     let (sx, sy) = (place.scale_x as f32, place.scale_y as f32);
     let (ox, oy) = (place.offset_x as f32, place.offset_y as f32);
     let primary = item.primary.as_ref();
     let value = primary.and_then(TagView::text);
+    let style = library::style_of(
+        live.state,
+        Modifiers {
+            run_on: live.run_state == EquipState::Running,
+            manual: live.manual,
+            interlocked: live.interlocked,
+            alarm_priority: library::alarm_priority(live.alarm),
+        },
+    );
     let sym = Sym {
         key: resolved.def.key,
         xf: area.then(&Xf::translate(ox, oy)).then(&Xf::scale(sx, sy)),
@@ -55,13 +79,16 @@ pub(crate) fn paint(canvas: &mut Canvas<'_>, item: &Item, xf: &Xf, t: f32) {
         unit: primary.map_or("", |tag| tag.unit.as_str()),
         widget,
         t,
+        data: resolved.def.data,
+        style,
     };
-    let alpha = if live.state == EquipState::Fault {
+    let alpha = if live.state == EquipState::Fault || style.blink {
         motion::blink(t)
     } else {
         1.0
     };
     canvas.faded(alpha, |c| draw(c, &sym));
+    badges(canvas, xf, style, w, t);
 
     let rows = footer_rows(widget, resolved);
     let [label, badge, status] = footer_centres(rows, widget.height as f32);
@@ -249,6 +276,10 @@ struct Sym<'a> {
     unit: &'a str,
     widget: &'a Widget,
     t: f32,
+    /// The symbol file it is drawn from (ISA-101).
+    data: Option<&'static SymbolFile>,
+    /// Its look in the live state (symbol files).
+    style: &'static SymbolStyle,
 }
 
 /// The outline of a symbol's parts: grey, red and heavier on a fault,
@@ -451,6 +482,10 @@ impl Sym<'_> {
 // ── The symbols ───────────────────────────────────────────────────────────
 
 fn draw(c: &mut Canvas<'_>, s: &Sym<'_>) {
+    if let Some(file) = s.data {
+        data_symbol(c, s, file);
+        return;
+    }
     match s.key {
         "dosing_pump" => dosing_pump(c, s),
         "fan" => fan(c, s),
@@ -1095,6 +1130,179 @@ fn pipe_path(c: &mut Canvas<'_>, s: &Sym<'_>, shape: Shape) {
     pipe_stroke(c, &s.xf, &shape, 1.0, 1.0, flowing, s.t);
 }
 
+// ── Symbol files (`symbols/*.json`, `dataSymbols.tsx`) ─────────────────
+//
+// Flat and grey with thin outlines that never scale; colour only for an
+// abnormal state (fault red and blinking, no data magenta and dashed).
+// Running or open is a filled body, stopped a hollow one, so the state
+// reads in greyscale too.
+
+/// Which part of a layer to draw: a level-bound symbol fills its shells
+/// before the level and strokes them after it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    All,
+    Fill,
+    Stroke,
+}
+
+fn data_symbol(c: &mut Canvas<'_>, s: &Sym<'_>, file: &'static SymbolFile) {
+    let config = &s.widget.config;
+    let shown = |layer: &&'static library::Layer| file.matches(layer.when.as_ref(), config);
+    if let Some(area) = &file.level {
+        for layer in file.layers.iter().filter(shown) {
+            if layer.paint == PaintRole::Shell {
+                data_layer(c, s, layer, Part::Fill);
+            }
+        }
+        if let Some(level) = s.level {
+            level_area(c, s, file, area, level);
+        }
+    }
+    for layer in file.layers.iter().filter(shown) {
+        let part = if file.level.is_some() && layer.paint == PaintRole::Shell {
+            Part::Stroke
+        } else {
+            Part::All
+        };
+        data_layer(c, s, layer, part);
+    }
+    for spec in &file.text {
+        if !file.matches(spec.when.as_ref(), config) {
+            continue;
+        }
+        let Some(text) = file.text_of(spec, config, s.level.map(f64::from)) else {
+            continue;
+        };
+        let color = c.hmi.isa(if spec.on_body {
+            s.style.text_on_body
+        } else {
+            s.style.text
+        });
+        #[allow(clippy::cast_possible_truncation)]
+        let mut style = Text::new(spec.size as f32, color);
+        if spec.font == Some(Font::Mono) {
+            style = style.mono();
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let weight = spec.weight.unwrap_or(600.0) as f32;
+        style.weight = FontWeight(weight);
+        #[allow(clippy::cast_possible_truncation)]
+        s.text(c, (spec.x as f32, spec.y as f32), &text, style);
+    }
+}
+
+/// One layer in its paint's style; a paint that is off in this state (flow
+/// without the run tag) draws nothing.
+fn data_layer(c: &mut Canvas<'_>, s: &Sym<'_>, layer: &'static library::Layer, part: Part) {
+    let paint = s.style.paint(layer.paint);
+    if !paint.visible {
+        return;
+    }
+    let shape = Shape::svg(&layer.d);
+    if part != Part::Stroke
+        && let Fill::Color(name) = paint.fill
+    {
+        c.fill(&s.xf, &shape, c.hmi.isa(name));
+    }
+    if part != Part::Fill {
+        #[allow(clippy::cast_possible_truncation)]
+        let width = library::layer_width(layer, &paint, s.state) as f32;
+        let mut line = Line::hairline(width);
+        if layer.paint != PaintRole::Flow {
+            line = line.round();
+        }
+        if let Some((on, off)) = paint.dash {
+            let offset = if paint.animate {
+                motion::flow(s.t)
+            } else {
+                0.0
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                line = line.dashed(on as f32, off as f32, offset);
+            }
+        }
+        c.stroke(&s.xf, &shape, c.hmi.isa(paint.stroke), line);
+    }
+}
+
+/// The level fill: from the area's floor up to `level`, clipped to the
+/// vessel (`level.clip`, convex in every file). Kept by the symbol and the
+/// level in tenths of a percent, so a steady level re-uses its
+/// tessellation.
+fn level_area(
+    c: &mut Canvas<'_>,
+    s: &Sym<'_>,
+    file: &'static SymbolFile,
+    area: &'static library::LevelArea,
+    level: f32,
+) {
+    let (x, y, w, h) = area.filled(f64::from(level));
+    if h <= 0.0 {
+        return;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let shape = match &area.clip {
+        Some(clip) => {
+            let mut hasher = DefaultHasher::new();
+            #[allow(clippy::cast_possible_truncation)]
+            let step = (f64::from(level.clamp(0.0, 1.0)) * 1000.0).round() as u32;
+            ("level", file.key.as_str(), step).hash(&mut hasher);
+            Shape::kept(hasher.finish(), || {
+                Shape::rect(x as f32, y as f32, w as f32, h as f32).within(&Shape::svg(clip))
+            })
+        }
+        None => Shape::rect(x as f32, y as f32, w as f32, h as f32),
+    };
+    c.fill(&s.xf, &shape, c.hmi.isa("isa-level"));
+}
+
+/// `StateBadge`s: the alarm priority (shape, colour and number), then the
+/// grey M and I boxes, in a column at the drawing's top right, upright and
+/// unscaled (16 stage pixels each).
+fn badges(c: &mut Canvas<'_>, xf: &Xf, style: &SymbolStyle, width: f32, t: f32) {
+    const SIZE: f32 = 16.0;
+    const GAP: f32 = 2.0;
+    for (i, badge) in style.badges.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let top = -4.0 + i as f32 * (SIZE + GAP);
+        let at = xf.then(&Xf::translate(width + 6.0 - SIZE, top));
+        let h = c.hmi;
+        let (fill, stroke, color) = (h.isa(badge.fill), h.isa(badge.stroke), h.isa(badge.color));
+        let alpha = if badge.blink { motion::blink(t) } else { 1.0 };
+        c.faded(alpha, |c| {
+            let line = Line::hairline(1.0);
+            match badge.shape {
+                BadgeShape::Triangle => {
+                    let shape = Shape::svg("M8 0.8 L15.2 14.4 H0.8 Z");
+                    c.fill(&at, &shape, fill);
+                    c.stroke(&at, &shape, stroke, line);
+                }
+                BadgeShape::Diamond => {
+                    let shape = Shape::svg("M8 0.5 L15.5 8 L8 15.5 L0.5 8 Z");
+                    c.fill(&at, &shape, fill);
+                    c.stroke(&at, &shape, stroke, line);
+                }
+                BadgeShape::Box => {
+                    c.rect(&at, (1.5, 1.5, 13.0, 13.0), 1.0, fill, Some((stroke, 1.0)));
+                }
+                BadgeShape::Square => {
+                    c.rect(&at, (1.0, 1.0, 14.0, 14.0), 0.0, fill, Some((stroke, 1.0)));
+                }
+            }
+            let triangle = badge.shape == BadgeShape::Triangle;
+            let style = Text::new(if triangle { 8.5 } else { 10.0 }, color).bold();
+            c.text(
+                &at,
+                (8.0, if triangle { 10.0 } else { 8.5 }),
+                badge.text,
+                style,
+            );
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1153,6 +1361,67 @@ mod tests {
             status: false,
         };
         assert_eq!(footer_centres(none, 50.0), [None; 3]);
+    }
+
+    /// Every symbol file parses, reads to the end of every path and
+    /// clip, and tessellates into something to fill and to stroke with the
+    /// console's own tessellators: what the painter does with each layer.
+    #[test]
+    fn every_symbol_file_tessellates() {
+        use lyon::tessellation::{
+            BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions,
+            StrokeTessellator, StrokeVertex, VertexBuffers,
+        };
+        use voltrus_scada_native::mimic::svg_path::parse_svg_strict;
+
+        let files = library::files();
+        assert_eq!(files.len(), library::embedded_keys().count());
+        for file in files {
+            let mut paths: Vec<&str> = file.layers.iter().map(|l| l.d.as_str()).collect();
+            paths.extend(file.level.iter().filter_map(|l| l.clip.as_deref()));
+            for d in paths {
+                let path = parse_svg_strict(d)
+                    .unwrap_or_else(|at| panic!("{}: '{d}' unreadable at {at}", file.key));
+                let mut fill: VertexBuffers<lyon::math::Point, u16> = VertexBuffers::new();
+                FillTessellator::new()
+                    .tessellate_path(
+                        &path,
+                        &FillOptions::tolerance(0.15),
+                        &mut BuffersBuilder::new(&mut fill, |v: FillVertex| v.position()),
+                    )
+                    .unwrap_or_else(|e| panic!("{}: fill of '{d}': {e:?}", file.key));
+                let mut stroke: VertexBuffers<lyon::math::Point, u16> = VertexBuffers::new();
+                StrokeTessellator::new()
+                    .tessellate_path(
+                        &path,
+                        &StrokeOptions::tolerance(0.1).with_line_width(1.75),
+                        &mut BuffersBuilder::new(&mut stroke, |v: StrokeVertex| v.position()),
+                    )
+                    .unwrap_or_else(|e| panic!("{}: stroke of '{d}': {e:?}", file.key));
+                assert!(
+                    !stroke.indices.is_empty(),
+                    "{}: '{d}' strokes nothing",
+                    file.key
+                );
+            }
+        }
+    }
+
+    /// The level fill stays inside the vessel: clipped to `level.clip`.
+    #[test]
+    fn level_fills_stay_in_their_vessel() {
+        for file in library::files() {
+            let Some(area) = &file.level else { continue };
+            let (x, y, w, h) = area.filled(0.5);
+            assert!((y - (area.y + area.h / 2.0)).abs() < 1e-9, "{}", file.key);
+            #[allow(clippy::cast_possible_truncation)]
+            let fill = Shape::rect(x as f32, y as f32, w as f32, h as f32);
+            let shape = match &area.clip {
+                Some(clip) => fill.within(&Shape::svg_owned(clip)),
+                None => fill,
+            };
+            assert!(!shape.is_empty(), "{}", file.key);
+        }
     }
 
     #[test]

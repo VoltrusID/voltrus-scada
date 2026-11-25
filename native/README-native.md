@@ -160,8 +160,10 @@ JetBrains Mono for values.
   the layout. Only the cards in view are drawn.
 - **Mimic** (⌘7): a screen's HMI mimic, as the web client's SCADA view
   draws it (`scada-equipment` and `scada-connections`): all 31 widget
-  types and 31 library symbols (pumps, valves, vessels, the electrical
-  kit, instruments, pipes) with their live values and states, process
+  types, the ISA-101 symbol library (`symbols/*.json`, the files the web
+  draws: pumps, valves with their actuators, vessels, heat exchangers,
+  instruments, pipes; manual, interlock and alarm priority badges) and the
+  31 shaded library symbols, with their live values and states, process
   areas, and the connections between them, pipes flowing while their
   equipment runs. Drag or scroll to pan; pinch, ⌘-scroll, ⌘+/⌘− zoom
   about the pointer and ⌘0 fits, all at the display's rate. Tab and the
@@ -174,8 +176,9 @@ JetBrains Mono for values.
   under the stage lists the newest active alarms, acknowledged in place.
   Screen tabs and [ / ] as on the Dashboard.
 - **Mimic editor** (E on the mimic, or Edit; operators), as the web
-  client's SCADA editor: a palette of the 31 library symbols by category
-  (drawn by the stage's painter) and the widget types, searchable (/),
+  client's SCADA editor: a palette of the library symbols by category,
+  ISA-101 first (drawn by the stage's painter), and the widget types,
+  searchable (/),
   click to add at the centre or drag onto the stage; click, ⇧-click, a
   rubber band (⌥ anywhere) or ⌘A select; drags move the selection and the
   eight handles resize, snapping to the 10-pixel grid (dots every 20) and

@@ -10,6 +10,8 @@ use gpui::{
     AnyElement, Context, ElementId, Focusable, FontWeight, Hsla, SharedString, Window, div, px,
 };
 use serde_json::Value;
+use voltrus_scada_native::designer;
+use voltrus_scada_native::designer::arrange::{self, Align, Axis};
 use voltrus_scada_native::mimic::edit::{self, Edit, Field, FieldKind};
 use voltrus_scada_native::mimic::{self, Widget, WidgetKind};
 use vt_ui::Icon;
@@ -17,7 +19,7 @@ use vt_ui::components::{Button, kbd, section_label};
 use vt_ui::text_input::{InputEvent, InputKind, TextInput};
 use vt_ui::theme::*;
 
-use super::{Cmd, Pick, Slot, Tool, apply, edits, edits_ref, focus_stage, run};
+use super::{Cmd, Pick, Slot, Tool, apply, binding, edits, edits_ref, focus_stage, run};
 use crate::console::Console;
 use crate::console::keys::display;
 
@@ -37,6 +39,8 @@ fn text_of(widget: &Widget, slot: Slot) -> String {
         Slot::Config(key) => field_of(widget, key)
             .map(|field| edit::value_text(&edit::field_value(widget, &field)))
             .unwrap_or_default(),
+        Slot::Label => widget.text("label").unwrap_or_default().to_owned(),
+        Slot::Opacity => widget.number("opacity").map_or_else(String::new, number),
     }
 }
 
@@ -56,13 +60,14 @@ pub(super) fn sync(console: &mut Console, window: &mut Window, cx: &mut Context<
     let made_for = editor.fields_for.clone();
     match widget {
         None => {
-            if made_for.is_some()
-                && let Some(editor) = edits(console)
-            {
-                editor.fields.clear();
-                editor._field_subscriptions.clear();
-                editor.fields_for = None;
-                editor.picking = None;
+            if let Some(editor) = edits(console) {
+                editor.bind = None;
+                if made_for.is_some() {
+                    editor.fields.clear();
+                    editor._field_subscriptions.clear();
+                    editor.fields_for = None;
+                    editor.picking = None;
+                }
             }
         }
         Some(widget) if made_for.as_deref() != Some(widget.id.as_str()) => {
@@ -101,6 +106,12 @@ fn make_fields(
             })
             .map(|field| Slot::Config(field.key)),
     );
+    // The Designer lists a label for every component (bound in the
+    // property list), and its opacity.
+    if field_of(widget, "label").is_none() {
+        slots.push(Slot::Label);
+    }
+    slots.push(Slot::Opacity);
     let mut fields = Vec::with_capacity(slots.len());
     let mut subscriptions = Vec::with_capacity(slots.len());
     for slot in slots {
@@ -128,6 +139,13 @@ fn make_fields(
         editor._field_subscriptions = subscriptions;
         editor.fields_for = Some(widget.id.clone());
         editor.picking = None;
+        if editor
+            .bind
+            .as_ref()
+            .is_some_and(|bind| bind.widget != widget.id)
+        {
+            editor.bind = None;
+        }
     }
 }
 
@@ -137,7 +155,8 @@ fn is_numeric(widget: &Widget, slot: Slot) -> bool {
     match slot {
         Slot::Config(key) => field_of(widget, key)
             .is_some_and(|field| matches!(field.kind, FieldKind::Number { .. })),
-        _ => true,
+        Slot::Label => false,
+        Slot::X | Slot::Y | Slot::Width | Slot::Height | Slot::Opacity => true,
     }
 }
 
@@ -193,15 +212,20 @@ fn on_field(
     let text = field.read(cx).value().to_owned();
     match event {
         InputEvent::Changed if !numeric => {
-            if let Slot::Config(key) = slot {
-                let typed = Edit::Config {
-                    id: widget.id.clone(),
-                    key: key.to_owned(),
-                    value: Value::from(text),
-                };
-                let coalesce = format!("{}:{key}", widget.id);
-                apply(console, &typed, Some(coalesce.as_str()), window, cx);
-            }
+            let (typed, key) = match slot {
+                Slot::Config(key) => (
+                    Edit::Config {
+                        id: widget.id.clone(),
+                        key: key.to_owned(),
+                        value: Value::from(text),
+                    },
+                    key,
+                ),
+                Slot::Label => (designer::set_label(&widget, &text), "label"),
+                _ => return,
+            };
+            let coalesce = format!("{}:{key}", widget.id);
+            apply(console, &typed, Some(coalesce.as_str()), window, cx);
         }
         InputEvent::Submitted | InputEvent::Blurred if numeric => {
             match commit_number(&widget, slot, &text) {
@@ -228,6 +252,7 @@ fn on_field(
 fn commit_number(widget: &Widget, slot: Slot, text: &str) -> Option<Edit> {
     let kind = match slot {
         Slot::Config(key) => field_of(widget, key)?.kind,
+        Slot::Label => return None,
         _ => FieldKind::Number {
             min: None,
             max: None,
@@ -252,6 +277,12 @@ fn commit_number(widget: &Widget, slot: Slot, text: &str) -> Option<Edit> {
             key: key.to_owned(),
             value: edit::number_value(value),
         },
+        Slot::Opacity => Edit::Config {
+            id: widget.id.clone(),
+            key: "opacity".to_owned(),
+            value: edit::number_value(value),
+        },
+        Slot::Label => return None,
     })
 }
 
@@ -272,7 +303,7 @@ fn found(console: &Console, cx: &Context<Console>) -> Vec<usize> {
         .collect()
 }
 
-fn start_picking(
+pub(super) fn start_picking(
     console: &mut Console,
     pick: Pick,
     window: &mut Window,
@@ -296,14 +327,24 @@ fn pick(console: &mut Console, tag: i64, window: &mut Window, cx: &mut Context<C
     let Some(pick) = editor.picking.take() else {
         return;
     };
+    if matches!(pick, Pick::BindTag | Pick::Insert) {
+        super::binding::picked(console, pick, tag, cx);
+        let expr = edits_ref(console)
+            .and_then(|editor| editor.bind.as_ref())
+            .filter(|_| pick == Pick::Insert)
+            .map(|bind| bind.expr.clone());
+        match expr {
+            Some(expr) => expr.read(cx).focus(window),
+            None => focus_stage(console, window, cx),
+        }
+        return;
+    }
     let Some(widget) = editor.single().cloned() else {
         return;
     };
     let bound = match pick {
-        Pick::Primary => Edit::Bind {
-            id: widget.id,
-            tags: vec![tag],
-        },
+        // The saved name follows the new tag, as in the web Designer.
+        Pick::Primary => designer::bind_primary(&widget, Some(tag)),
         Pick::Add => {
             let mut tags = widget.tags.clone();
             if !tags.contains(&tag) {
@@ -319,6 +360,7 @@ fn pick(console: &mut Console, tag: i64, window: &mut Window, cx: &mut Context<C
             key: key.to_owned(),
             value: Value::from(tag),
         },
+        Pick::BindTag | Pick::Insert => return,
     };
     apply(console, &bound, None, window, cx);
     focus_stage(console, window, cx);
@@ -357,7 +399,7 @@ pub(super) fn render(
     let content: Vec<AnyElement> = if let Some(widget) = editor.single() {
         widget_panel(console, widget, &theme, cx)
     } else if editor.selection.len() > 1 {
-        many_panel(editor.selection.len(), &theme, cx)
+        many_panel(layout, &editor.selection, &theme, cx)
     } else if let Some(line) = editor
         .line
         .as_ref()
@@ -470,7 +512,7 @@ fn button(
     }
 }
 
-fn arrange(turns: bool, cx: &mut Context<Console>) -> Vec<AnyElement> {
+fn arrange_buttons(turns: bool, many: bool, cx: &mut Context<Console>) -> Vec<AnyElement> {
     let mut buttons = vec![
         button(
             "mimic-insp-duplicate",
@@ -480,8 +522,45 @@ fn arrange(turns: bool, cx: &mut Context<Console>) -> Vec<AnyElement> {
             cx,
         ),
         button("mimic-insp-front", "To front", "]", Cmd::Front, cx),
+        button(
+            "mimic-insp-forward",
+            "Forward",
+            "alt-]",
+            Cmd::Order(edit::Order::Forward),
+            cx,
+        ),
+        button(
+            "mimic-insp-backward",
+            "Backward",
+            "alt-[",
+            Cmd::Order(edit::Order::Backward),
+            cx,
+        ),
         button("mimic-insp-back", "To back", "[", Cmd::Back, cx),
     ];
+    if many {
+        buttons.push(button(
+            "designer-group",
+            "Group",
+            "secondary-g",
+            Cmd::Group,
+            cx,
+        ));
+    }
+    buttons.push(button(
+        "designer-ungroup",
+        "Ungroup",
+        "secondary-shift-g",
+        Cmd::Ungroup,
+        cx,
+    ));
+    buttons.push(button(
+        "designer-lock",
+        "Lock / unlock",
+        "secondary-l",
+        Cmd::Lock,
+        cx,
+    ));
     if turns {
         buttons.push(button(
             "mimic-insp-rotate",
@@ -812,6 +891,35 @@ fn swatch(setting: &str, theme: &Theme) -> Hsla {
     }
 }
 
+/// A labelled switch that applies `flip` when clicked.
+fn flag_row(
+    id: &'static str,
+    label: &'static str,
+    on: bool,
+    flip: Edit,
+    theme: &Theme,
+    cx: &mut Context<Console>,
+) -> AnyElement {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(SPACE_4)
+        .cursor_pointer()
+        .on_click(cx.listener(move |console, _, window, cx| {
+            apply(console, &flip, None, window, cx);
+        }))
+        .child(
+            div()
+                .text_size(FONT_SMALL)
+                .text_color(theme.fg_muted)
+                .child(label),
+        )
+        .child(switch(on, theme.accent, theme))
+        .into_any_element()
+}
+
 fn switch(on: bool, accent: Hsla, theme: &Theme) -> AnyElement {
     div()
         .flex_none()
@@ -854,10 +962,7 @@ fn widget_panel(
                 empty,
                 "primary",
                 Pick::Primary,
-                Some(Edit::Bind {
-                    id: widget.id.clone(),
-                    tags: Vec::new(),
-                }),
+                Some(designer::bind_primary(widget, None)),
                 theme,
                 cx,
             ));
@@ -961,7 +1066,9 @@ fn widget_panel(
             .child(div().flex_1().min_w_0().children(input))
             .into_any_element()
     };
-    let position = vec![
+    let locked = edit::is_locked(widget);
+    let lock_flip = arrange::lock(editor.layout(), std::slice::from_ref(&widget.id), !locked);
+    let mut position = vec![
         div()
             .flex()
             .gap(SPACE_4)
@@ -975,22 +1082,75 @@ fn widget_panel(
             .child(box_field(Slot::Height, "H"))
             .into_any_element(),
     ];
+    if let Some(lock_flip) = lock_flip {
+        position.push(flag_row(
+            "mimic-insp-locked",
+            "Locked",
+            locked,
+            lock_flip,
+            theme,
+            cx,
+        ));
+    }
+    if let Some(group) = edit::group_of(widget) {
+        let members = editor
+            .layout()
+            .widgets
+            .iter()
+            .filter(|w| edit::group_of(w) == Some(group))
+            .count();
+        position.push(caption(format!("In a group of {members}"), theme));
+    }
 
     let schema = edit::schema(widget);
-    let mut settings: Vec<AnyElement> = Vec::with_capacity(schema.len());
+    let mut settings: Vec<AnyElement> = Vec::with_capacity(schema.len() + 3);
+    // The label of a type whose settings have none (every component has one).
+    if let Some(label) = editor
+        .fields
+        .iter()
+        .find(|(at, _)| *at == Slot::Label)
+        .map(|(_, field)| field.clone())
+    {
+        settings.push(labelled("Label", label, theme));
+    }
     for field in &schema {
         settings.push(control(console, widget, field, theme, cx));
+    }
+    // The properties every component has (`COMMON_PROPS`), fixed values.
+    let shown = designer::visible(widget);
+    let shown_flip = set(&widget.id, "visible", Value::Bool(!shown));
+    settings.push(flag_row(
+        "mimic-insp-visible",
+        "Visible",
+        shown,
+        shown_flip,
+        theme,
+        cx,
+    ));
+    if let Some(opacity) = editor
+        .fields
+        .iter()
+        .find(|(at, _)| *at == Slot::Opacity)
+        .map(|(_, field)| field.clone())
+    {
+        settings.push(labelled("Opacity (0–1)", opacity, theme));
     }
 
     let mut panel = vec![
         header(edit::title(widget), widget.id.clone(), theme),
         section("Tag binding", binding, theme, cx),
         section("Position & size", position, theme, cx),
+        section(
+            "Properties",
+            properties_panel(console, widget, theme, cx),
+            theme,
+            cx,
+        ),
     ];
     if !settings.is_empty() {
         panel.push(section("Appearance & behaviour", settings, theme, cx));
     }
-    let buttons = arrange(edit::turns(widget), cx);
+    let buttons = arrange_buttons(edit::turns(widget), false, cx);
     panel.push(section("Arrange", buttons, theme, cx));
     if matches!(widget.kind, WidgetKind::Other(_)) {
         panel.push(section(
@@ -1006,15 +1166,88 @@ fn widget_panel(
     panel
 }
 
-fn many_panel(count: usize, theme: &Theme, cx: &mut Context<Console>) -> Vec<AnyElement> {
-    let buttons = arrange(true, cx);
+fn many_panel(
+    layout: &mimic::Layout,
+    selection: &[String],
+    theme: &Theme,
+    cx: &mut Context<Console>,
+) -> Vec<AnyElement> {
+    let picked: Vec<&Widget> = edit::picked(layout, selection).collect();
+    let count = picked.len();
+    let group = picked.first().and_then(|w| edit::group_of(w));
+    let one_group = group.is_some() && picked.iter().all(|w| edit::group_of(w) == group);
+    let locked = picked.iter().filter(|w| edit::is_locked(w)).count();
+    let area = edit::bounds(picked.iter().copied()).unwrap_or_default();
+    let facts = vec![
+        caption(
+            format!(
+                "Bounds {} × {} at {}, {}",
+                area.width, area.height, area.x, area.y
+            ),
+            theme,
+        ),
+        caption(format!("Locked: {locked}"), theme),
+    ];
     vec![
         header(
-            format!("{count} widgets"),
+            format!(
+                "{count} components{}",
+                if one_group { " · group" } else { "" }
+            ),
             "⇧-click adds or removes one".to_owned(),
             theme,
         ),
-        section("Arrange", buttons, theme, cx),
+        section("Selection", facts, theme, cx),
+        section("Align & distribute", align_buttons(count, cx), theme, cx),
+        section("Arrange", arrange_buttons(true, true, cx), theme, cx),
+    ]
+}
+
+/// Align (two or more) and distribute (three or more).
+fn align_buttons(count: usize, cx: &mut Context<Console>) -> Vec<AnyElement> {
+    let align = [
+        ("designer-align-left", "Left", Align::Left),
+        ("designer-align-center", "Centre", Align::Center),
+        ("designer-align-right", "Right", Align::Right),
+        ("designer-align-top", "Top", Align::Top),
+        ("designer-align-middle", "Middle", Align::Middle),
+        ("designer-align-bottom", "Bottom", Align::Bottom),
+    ];
+    let mut buttons: Vec<AnyElement> = align
+        .into_iter()
+        .map(|(id, label, mode)| {
+            Button::new(id, label)
+                .compact()
+                .tooltip(mode.label())
+                .disabled(count < 2)
+                .on_click(cx.listener(move |console, _, window, cx| {
+                    run(console, Cmd::Align(mode), window, cx);
+                }))
+                .into_any_element()
+        })
+        .collect();
+    for (id, label, axis) in [
+        ("designer-distribute-h", "Distribute ↔", Axis::Horizontal),
+        ("designer-distribute-v", "Distribute ↕", Axis::Vertical),
+    ] {
+        buttons.push(
+            Button::new(id, label)
+                .compact()
+                .tooltip("Equal gaps; the first and last stay")
+                .disabled(count < 3)
+                .on_click(cx.listener(move |console, _, window, cx| {
+                    run(console, Cmd::Distribute(axis), window, cx);
+                }))
+                .into_any_element(),
+        );
+    }
+    vec![
+        div()
+            .flex()
+            .flex_wrap()
+            .gap(SPACE_2)
+            .children(buttons)
+            .into_any_element(),
     ]
 }
 
@@ -1108,17 +1341,21 @@ fn line_panel(
 }
 
 /// The editor's keys, as the screen inspector lists them (`SHORTCUTS`).
-const SHORTCUTS: [(&str, &str); 10] = [
-    ("V · C", "Select / connect tool"),
-    ("⌘Z · ⇧⌘Z", "Undo / redo"),
-    ("⌘C · ⌘V · ⌘D", "Copy / paste / duplicate"),
-    ("Arrows · ⇧Arrows", "Nudge 1 / 10 px"),
-    ("[ · ]", "Send to back / front"),
-    ("R · ⇧R · H", "Turn / turn back / mirror"),
-    ("⌫", "Delete the selection"),
-    ("⌘A · Tab", "Select all / the next"),
-    ("⌘+ · ⌘− · ⌘0", "Zoom in / out / fit"),
+const SHORTCUTS: [(&str, &str); 14] = [
     ("⌘S · E", "Save / done"),
+    ("⌘Z · ⇧⌘Z", "Undo / redo"),
+    ("⌘C · ⌘X · ⌘V", "Copy, cut, paste"),
+    ("⌘D", "Duplicate"),
+    ("⌘A · Tab", "Select all / the next"),
+    ("⇧-click, drag", "Add to selection, marquee"),
+    ("⌘G · ⇧⌘G", "Group / ungroup"),
+    ("⌘L", "Lock / unlock"),
+    ("] · [", "To front / back (⌥: one step)"),
+    ("Arrows · ⇧Arrows", "Nudge 1 / 10 px"),
+    ("R · ⇧R · H", "Turn / turn back / mirror"),
+    ("V · C", "Select / connect tool"),
+    ("⌘+ · ⌘− · ⌘0", "Zoom in / out / fit"),
+    ("⌫ · Esc", "Delete, clear the selection"),
 ];
 
 fn screen_panel(
@@ -1160,4 +1397,98 @@ fn screen_panel(
         section("Build", vec![caption(build, theme)], theme, cx),
         section("Shortcuts", keys, theme, cx),
     ]
+}
+
+// ── The Designer's properties and bindings ─────────────────────────────────
+
+/// Every bindable property (`PropertyEditor`'s list): its value now, bound
+/// or fixed, and a button that opens the binding editor under it. Fixed
+/// values are set in Appearance & behaviour.
+fn properties_panel(
+    console: &Console,
+    widget: &Widget,
+    theme: &Theme,
+    cx: &mut Context<Console>,
+) -> Vec<AnyElement> {
+    let Some(editor) = edits_ref(console) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let open = editor
+        .bind
+        .as_ref()
+        .filter(|bind| bind.widget == widget.id)
+        .map(|bind| bind.prop);
+    let picking = editor.picking;
+    let Some(exprs) = console
+        .state_ref::<super::super::State>()
+        .map(|state| &state.exprs)
+    else {
+        return Vec::new();
+    };
+    let mut cache = exprs.borrow_mut();
+    for prop in designer::properties(widget) {
+        // A tag picker holds a tag id: pick the tag itself, nothing to bind.
+        if !prop.bindable() {
+            continue;
+        }
+        let (value, bound) = binding::value_line(console, widget, &prop, &mut cache);
+        let key = prop.key;
+        let opened = open == Some(key);
+        let prop_for_click = prop.clone();
+        out.push(
+            div()
+                .flex()
+                .items_center()
+                .gap(SPACE_3)
+                .child(
+                    div()
+                        .w(px(100.0))
+                        .flex_none()
+                        .text_size(FONT_SMALL)
+                        .text_color(if bound { theme.accent } else { theme.fg_muted })
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(prop.label),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(FONT_CAPTION)
+                        .font_family(MONO)
+                        .text_color(if bound { theme.accent } else { theme.fg_dim })
+                        .overflow_hidden()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .child(value),
+                )
+                .child(
+                    Button::new(
+                        SharedString::from(format!("designer-bind-{key}")),
+                        if bound { "ƒ Edit" } else { "ƒ Bind" },
+                    )
+                    .compact()
+                    .ghost()
+                    .tooltip(if bound {
+                        "Edit the binding"
+                    } else {
+                        "Bind to a tag, an expression or a map"
+                    })
+                    .on_click(cx.listener(move |console, _, window, cx| {
+                        binding::open(console, &prop_for_click, window, cx);
+                    })),
+                )
+                .into_any_element(),
+        );
+        if opened {
+            let search = matches!(picking, Some(Pick::BindTag | Pick::Insert))
+                .then(|| picker(console, theme, cx));
+            if let Some(panel) = binding::render(console, widget, search, theme, cx) {
+                out.push(panel);
+            }
+        }
+    }
+    out
 }

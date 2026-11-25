@@ -1,0 +1,86 @@
+{
+ "undo_depth": 16,
+ "equipment": [
+  {
+   "equipment_id": "e001",
+   "equipment_type": "label",
+   "equipment_name": "label",
+   "x": 24,
+   "y": 14,
+   "width": 900,
+   "height": 40,
+   "rotation": 0,
+   "sensor_bindings": "[]",
+   "config": "{\"text\":\"WTP-01 · Process Overview\",\"fontSize\":26,\"align\":\"left\",\"bold\":true,\"z\":0}"
+  },
+  {
+   "equipment_id": "e003",
+   "equipment_type": "big_number",
+   "equipment_name": "Treated Water Output FT-501",
+   "x": 448,
+   "y": 12,
+   "width": 216,
+   "height": 78,
+   "rotation": 0,
+   "sensor_bindings": "[40]",
+   "config": "{\"fontSize\":30,\"showName\":true,\"decimals\":0,\"z\":1}"
+  },
+  {
+   "equipment_id": "e016",
+   "equipment_type": "symbol",
+   "equipment_name": "T-101 Raw",
+   "x": 448,
+   "y": 250,
+   "width": 120,
+   "height": 230,
+   "rotation": 0,
+   "sensor_bindings": "[2]",
+   "config": "{\"symbol\":\"tank\",\"label\":\"T-101 Raw\",\"bindings\":{\"label\":{\"kind\":\"expr\",\"expr\":\"{wtp/raw_tank_level} > 85 ? \\\"HIGH\\\" : \\\"T-101 \\\" + text({wtp/raw_tank_level}, 1) + \\\" %\\\"\"}},\"locked\":true,\"z\":2}"
+  },
+  {
+   "equipment_id": "e011",
+   "equipment_type": "symbol",
+   "equipment_name": "XV-101 Intake",
+   "x": 36,
+   "y": 299,
+   "width": 90,
+   "height": 106,
+   "rotation": 0,
+   "sensor_bindings": "[6]",
+   "config": "{\"symbol\":\"valve\",\"label\":\"XV-101 Intake\",\"showStatus\":true,\"writable\":true,\"group\":\"g_intake\",\"z\":3}"
+  },
+  {
+   "equipment_id": "e012",
+   "equipment_type": "symbol",
+   "equipment_name": "P-101A",
+   "x": 36,
+   "y": 180,
+   "width": 90,
+   "height": 124,
+   "rotation": 0,
+   "sensor_bindings": "[3]",
+   "config": "{\"symbol\":\"pump\",\"label\":\"P-101A\",\"showStatus\":true,\"writable\":true,\"group\":\"g_intake\",\"z\":4}"
+  },
+  {
+   "equipment_id": "e033",
+   "equipment_type": "trend",
+   "equipment_name": "trend",
+   "x": 32,
+   "y": 708,
+   "width": 374,
+   "height": 164,
+   "rotation": 0,
+   "sensor_bindings": "[7]",
+   "config": "{\"lineColor\":\"var(--cyan)\",\"bindings\":{\"lineColor\":{\"kind\":\"map\",\"expr\":\"{wtp/raw_turbidity}\",\"cases\":[{\"op\":\">=\",\"v\":32,\"out\":\"#f04646\"},{\"op\":\">=\",\"v\":25,\"out\":\"#f5b21b\"}],\"else\":\"var(--cyan)\"},\"opacity\":{\"kind\":\"expr\",\"expr\":\"{wtp/raw_turbidity} > 30 ? 1 : 0.5\"}},\"z\":5}"
+  }
+ ],
+ "connections": [
+  {
+   "connection_id": "c001",
+   "from_equipment": "e011",
+   "to_equipment": "e012",
+   "waypoints": "[]",
+   "connection_type": "flow"
+  }
+ ]
+}

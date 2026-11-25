@@ -65,7 +65,10 @@ pub(super) struct Marks {
     hmi: Hmi,
     cache: Rc<Tessellations>,
     drawn: Rc<Cell<Option<Drawn>>>,
-    selected: Vec<Rect>,
+    /// The selected boxes, and whether each is locked (drawn dashed).
+    selected: Vec<(Rect, bool)>,
+    /// A selection that is exactly one group: the group's frame.
+    group: Option<Rect>,
     /// The single selection: its box, and whether it turns (the knob).
     single: Option<(Rect, bool)>,
     hover: Option<Rect>,
@@ -95,11 +98,21 @@ pub(super) fn marks(
         cache,
         drawn,
         selected: edit::picked(layout, &editor.selection)
-            .map(Rect::of)
+            .map(|widget| (Rect::of(widget), edit::is_locked(widget)))
             .collect(),
+        group: {
+            let picked: Vec<&mimic::Widget> = edit::picked(layout, &editor.selection).collect();
+            let group = picked.first().and_then(|w| edit::group_of(w));
+            (picked.len() > 1
+                && group.is_some()
+                && picked.iter().all(|w| edit::group_of(w) == group))
+            .then(|| edit::bounds(picked.iter().copied()))
+            .flatten()
+        },
+        // Locked widgets have no handles.
         single: editor
             .single()
-            .filter(|_| !connecting)
+            .filter(|widget| !connecting && !edit::is_locked(widget))
             .map(|widget| (Rect::of(widget), edit::turns(widget))),
         hover: editor
             .hover
@@ -181,8 +194,16 @@ pub(super) fn paint(marks: &Marks, window: &mut Window, cx: &mut App) {
     if let Some(hover) = &marks.hover {
         dashed(&mut canvas, rect(hover), fade(accent, 0.6));
     }
-    for selected in &marks.selected {
-        outline(&mut canvas, rect(selected), accent, 1.5);
+    for (selected, locked) in &marks.selected {
+        if *locked {
+            dashed(&mut canvas, rect(selected), hmi.fg_dim);
+        } else {
+            outline(&mut canvas, rect(selected), accent, 1.5);
+        }
+    }
+    if let Some(group) = &marks.group {
+        let (x, y, w, h) = rect(group);
+        dashed(&mut canvas, (x - 4.0, y - 4.0, w + 8.0, h + 8.0), accent);
     }
     if let Some(source) = &marks.source {
         outline(&mut canvas, rect(source), accent, 2.0);

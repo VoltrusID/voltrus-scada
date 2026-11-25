@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{AnyElement, Context, Render, SharedString, Window, canvas, div, px};
-use voltrus_scada_native::mimic::edit::{self, CATEGORIES, Manifest, Placing};
+use voltrus_scada_native::mimic::edit::{self, Manifest, Placing};
 use voltrus_scada_native::mimic::{self, Reading, SymbolDef};
 use vt_ui::components::section_label;
 use vt_ui::theme::*;
@@ -62,14 +62,25 @@ pub(super) fn render(
     };
 
     let mut sections: Vec<AnyElement> = Vec::new();
-    for category in CATEGORIES {
-        let defs: Vec<&'static SymbolDef> = edit::palette_symbols(&query)
+    let symbols = edit::palette_symbols(&query);
+    // ISA-101 by category, then the shaded library; a symbol found by its
+    // exact key in a category the palette does not list comes last.
+    let mut categories = edit::palette_categories();
+    for def in &symbols {
+        if !categories.contains(&def.category) {
+            categories.push(def.category);
+        }
+    }
+    for category in categories {
+        let defs: Vec<&'static SymbolDef> = symbols
+            .iter()
+            .copied()
             .filter(|def| def.category == category)
             .collect();
         if defs.is_empty() {
             continue;
         }
-        sections.push(heading(edit::category_name(category), cx));
+        sections.push(heading(edit::category_heading(category), cx));
         let tiles: Vec<AnyElement> = defs
             .into_iter()
             .map(|def| tile(def, hmi, cache.clone(), &theme, cx))
@@ -141,7 +152,7 @@ pub(super) fn render(
         .into_any_element()
 }
 
-fn heading(text: &'static str, cx: &Context<Console>) -> AnyElement {
+fn heading(text: impl Into<SharedString>, cx: &Context<Console>) -> AnyElement {
     div()
         .pb(SPACE_3)
         .child(section_label(text, cx))
@@ -276,7 +287,7 @@ pub(super) fn add_first(console: &mut Console, window: &mut Window, cx: &mut Con
     };
     let query = editor.query.read(cx).value().to_owned();
     let first = edit::palette_symbols(&query)
-        .next()
+        .first()
         .map(|def| Placing::Symbol(def.key))
         .or_else(|| {
             edit::palette_widgets()

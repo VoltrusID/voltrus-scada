@@ -34,7 +34,7 @@ mod scene;
 mod symbols;
 mod widgets;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
@@ -46,9 +46,9 @@ use gpui::{
     Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollDelta,
     ScrollWheelEvent, SharedString, WeakEntity, Window, actions, canvas, div, px,
 };
+use voltrus_scada_native::designer::{self, bindings, expr};
 use voltrus_scada_native::mimic::{
-    self, Armed, Camera, ConnectionRow, Direction, EquipmentRow, Items, Layout, LineKind, Widget,
-    WidgetKind, connections_path, equipment_path,
+    self, Armed, Camera, Direction, Layout, LineKind, Widget, WidgetKind,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Command, Reply};
 use voltrus_scada_native::screens::OVERVIEW;
@@ -142,6 +142,9 @@ struct Glide {
 
 pub(crate) struct State {
     layouts: HashMap<String, Loaded>,
+    /// Each loaded layout's revision (`scada-layout`), which a Designer
+    /// save is based on; `None` from a server without revisions.
+    revisions: HashMap<String, Option<String>>,
     /// Calls in flight, by their key's argument: the screen they fetch.
     asks: HashMap<i64, String>,
     next_ask: i64,
@@ -185,12 +188,18 @@ pub(crate) struct State {
     pending: Option<Pending>,
     /// The editor, in edit mode.
     edit: Option<Box<editor::Editor>>,
+    /// Parsed binding expressions, by text (the inspector's).
+    exprs: RefCell<expr::Cache>,
+    /// Bound widgets as drawn, evaluated again when their config or a tag
+    /// they read changes.
+    bound: RefCell<designer::BoundCache>,
 }
 
 impl Default for State {
     fn default() -> Self {
         Self {
             layouts: HashMap::new(),
+            revisions: HashMap::new(),
             asks: HashMap::new(),
             next_ask: 0,
             fetching: HashSet::new(),
@@ -217,6 +226,8 @@ impl Default for State {
             window_height: 0.0,
             pending: None,
             edit: None,
+            exprs: RefCell::new(expr::Cache::default()),
+            bound: RefCell::new(designer::BoundCache::default()),
         }
     }
 }
@@ -288,13 +299,21 @@ fn sync(console: &mut Console) {
     state.layouts.insert(screen.clone(), Loaded::Loading);
     console.call(
         CallKey::new("mimic.layout").with(ask),
-        Call::new(move |api| async move {
-            let equipment: Items<EquipmentRow> = api.get_json(&equipment_path(&screen)).await?;
-            let connections: Items<ConnectionRow> =
-                api.get_json(&connections_path(&screen)).await?;
-            Ok(mimic::parse(&equipment.items, &connections.items))
-        }),
+        Call::new(move |api| async move { designer::load(&api, &screen).await }),
     );
+}
+
+/// Note a screen's revision; a known one is kept when an answer names
+/// none, so a save is never sent without the check once it had one.
+fn remember_revision(state: &mut State, screen: &str, revision: Option<String>) {
+    match revision {
+        Some(revision) => {
+            state.revisions.insert(screen.to_owned(), Some(revision));
+        }
+        None => {
+            state.revisions.entry(screen.to_owned()).or_insert(None);
+        }
+    }
 }
 
 /// Forget the active screen's mimic and fetch it again.
@@ -431,13 +450,16 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 return;
             };
             state.fetching.remove(&screen);
-            let loaded = match reply.take::<Layout>() {
-                Ok(layout) => Loaded::Ready(Rc::new(layout)),
+            let loaded = match reply.take::<(Layout, Option<String>)>() {
+                Ok((layout, revision)) => {
+                    remember_revision(state, &screen, revision);
+                    Loaded::Ready(Rc::new(layout))
+                }
                 Err(error) => Loaded::Failed(error),
             };
             state.layouts.insert(screen, loaded);
         }
-        "mimic.save" => editor::on_reply(console, key, reply, cx),
+        "mimic.save" | "mimic.reload" | editor::REMOTE => editor::on_reply(console, key, reply, cx),
         "mimic.write" => {
             let state = console.state::<State>();
             state.sending = None;
@@ -1030,9 +1052,13 @@ fn on_scroll(console: &mut Console, event: &ScrollWheelEvent, cx: &mut Context<C
 // ── Rendering ─────────────────────────────────────────────────────────────
 
 /// Whether a symbol has a part that moves in this state.
-fn animates(key: &str, live: &mimic::Live) -> bool {
+fn animates(def: &mimic::SymbolDef, live: &mimic::Live) -> bool {
     use mimic::EquipState::Running;
-    match key {
+    if let Some(file) = def.data {
+        // A symbol file moves only its flow layers, while the run tag is on.
+        return live.run_state == Running && file.has_flow();
+    }
+    match def.key {
         "pump" | "fan" | "conveyor" => live.state == Running,
         "mixer" | "clarifier" | "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee" => {
             live.run_state == Running
@@ -1088,6 +1114,15 @@ fn shown_multi(store: &crate::console::store::Store, widget: &Widget) -> Vec<i64
 /// A widget prepared for drawing.
 fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
     let store = &console.store;
+    // Designer bindings (`config.bindings`): the widget as its live values
+    // draw it, as the web's `applyBindings`.
+    let bound = if bindings::has_bindings(&widget.config) {
+        let read = |reference: &str| store.read_ref(reference);
+        state.bound.borrow_mut().bound(widget, &read).cloned()
+    } else {
+        None
+    };
+    let widget = bound.as_ref().unwrap_or(widget);
     let samples = samples_for(widget);
     let primary = widget
         .tag()
@@ -1145,6 +1180,8 @@ struct Frame {
     focused: bool,
     /// The editor's grid under the widgets.
     grid: bool,
+    /// Drawn in the Designer: hidden widgets faded, none fully transparent.
+    designing: bool,
 }
 
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
@@ -1222,6 +1259,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let (items, wires, faceplate_item) = match &loaded {
         Some(Loaded::Ready(layout)) => {
             let state = console.state_ref::<State>().expect("made above");
+            state.bound.borrow_mut().frame();
             let items: Vec<Item> = layout
                 .widgets
                 .iter()
@@ -1230,6 +1268,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                         || state.cursor.as_deref() == Some(w.id.as_str())
                 })
                 .map(|w| prepare(console, w, state))
+                // Hidden by the Designer's `visible` (fixed or bound).
+                .filter(|item| designer::visible(&item.widget))
                 .collect();
             let values = StoreValues(&console.store);
             let wires: Vec<Wire> = layout
@@ -1276,7 +1316,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         || items.iter().any(|item| {
             item.symbol
                 .as_ref()
-                .is_some_and(|(resolved, live)| animates(resolved.def.key, live))
+                .is_some_and(|(resolved, live)| animates(resolved.def, live))
         });
     let banner_blinks = banner::blinking(&console.alarms);
     let blinking = banner_blinks
@@ -1366,6 +1406,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 drawn,
                 focused,
                 grid: false,
+                designing: false,
             };
             stage(frame, pressing, cx)
         }
@@ -1563,7 +1604,12 @@ fn paint_frame(frame: Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &m
         paint_wire(&mut canvas, &stage, wire, frame.t);
     }
     for item in &frame.items {
-        paint_item(&mut canvas, &stage, item, frame.t, frame.focused);
+        match designer::opacity(&item.widget, frame.designing) {
+            Some(alpha) => canvas.faded(alpha, |canvas| {
+                paint_item(canvas, &stage, item, frame.t, frame.focused);
+            }),
+            None => paint_item(&mut canvas, &stage, item, frame.t, frame.focused),
+        }
     }
 }
 
@@ -1939,12 +1985,27 @@ mod tests {
             run_state,
             running: false,
             alarm: None,
+            manual: false,
+            interlocked: false,
         };
         use mimic::EquipState::{Idle, Running, Stopped};
-        assert!(animates("pump", &live(Running, Idle)));
-        assert!(!animates("pump", &live(Stopped, Idle)));
-        assert!(!animates("inverter", &live(Running, Idle)), "nothing turns");
-        assert!(animates("pipe", &live(Idle, Running)));
-        assert!(animates("mixer", &live(Idle, Running)));
+        let def = |key| mimic::symbol_def(key).expect("a library symbol");
+        assert!(animates(def("pump"), &live(Running, Idle)));
+        assert!(!animates(def("pump"), &live(Stopped, Idle)));
+        assert!(
+            !animates(def("inverter"), &live(Running, Idle)),
+            "nothing turns"
+        );
+        assert!(animates(def("pipe"), &live(Idle, Running)));
+        assert!(animates(def("mixer"), &live(Idle, Running)));
+        assert!(
+            animates(def("isa_line"), &live(Idle, Running)),
+            "its flow layer"
+        );
+        assert!(!animates(def("isa_line"), &live(Idle, Idle)));
+        assert!(
+            !animates(def("isa_tank"), &live(Idle, Running)),
+            "no flow layer"
+        );
     }
 }

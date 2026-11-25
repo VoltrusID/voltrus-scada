@@ -29,8 +29,10 @@
 //!   never writes a plant screen by accident. A screen loading meanwhile
 //!   never replaces the edits.
 
+mod binding;
 mod inspector;
 mod palette;
+mod panes;
 mod stage;
 
 use std::rc::Rc;
@@ -42,12 +44,12 @@ use gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point, ScrollWheelEvent, Stateful,
     Subscription, WeakEntity, Window, actions, canvas, div, px,
 };
-use serde::de::IgnoredAny;
-use voltrus_scada_native::api::Method;
+use voltrus_scada_native::designer::arrange::{self, Align, Axis};
+use voltrus_scada_native::designer::{self, Saved};
 use voltrus_scada_native::mimic::edit::{
     self, Clip, Edit, Guide, Handle, History, PASTE_OFFSET, Placing, Rect, Snapping,
 };
-use voltrus_scada_native::mimic::{self, Items, Layout, connections_path, equipment_path};
+use voltrus_scada_native::mimic::{self, Layout};
 use voltrus_scada_native::runtime::{Call, CallKey, Reply};
 use vt_ui::Icon;
 use vt_ui::components::{Button, IconButton, Segment, empty_state, segmented};
@@ -57,7 +59,7 @@ use vt_ui::theme::*;
 pub(super) use self::stage::paint_grid;
 use super::paint::{Hmi, Tessellations};
 use super::scene::StoreValues;
-use super::{Drawn, Frame, Loaded, State, Wire, active, focus_handle, redraw};
+use super::{Drawn, Frame, Loaded, State, Wire, active, focus_handle, redraw, remember_revision};
 use crate::console::keys::Dismiss;
 use crate::console::overlay::Overlay;
 use crate::console::screens::Screens;
@@ -94,6 +96,24 @@ actions!(
         MimicEditFind,
         MimicEditNext,
         MimicEditPrevious,
+        MimicEditCut,
+        MimicEditForward,
+        MimicEditBackward,
+        DesignerGroup,
+        DesignerUngroup,
+        DesignerLock,
+        DesignerAlignLeft,
+        DesignerAlignCenter,
+        DesignerAlignRight,
+        DesignerAlignTop,
+        DesignerAlignMiddle,
+        DesignerAlignBottom,
+        DesignerDistributeHorizontally,
+        DesignerDistributeVertically,
+        DesignerEditBinding,
+        DesignerProject,
+        DesignerTags,
+        DesignerComponents,
     ]
 );
 
@@ -103,7 +123,7 @@ actions!(
 pub struct MimicEditNudge(pub i32, pub i32);
 
 /// The palette's width (`PANEL_WIDTH`).
-const PALETTE_WIDTH: Pixels = px(252.0);
+const PALETTE_WIDTH: Pixels = px(288.0);
 /// The inspector's width (`INSPECTOR_WIDTH`).
 pub(crate) const INSPECTOR_WIDTH: Pixels = px(288.0);
 /// Window pixels around a handle that grab it.
@@ -116,8 +136,15 @@ const LINE_HIT: f64 = 6.0;
 const GUIDE_SNAP: f64 = 6.0;
 /// The save's call key.
 const SAVE: &str = "mimic.save";
+/// Loading the server's copy after a conflict ("Load theirs").
+const RELOAD: &str = "mimic.reload";
+/// The server's copy read again when the window comes back to the front,
+/// to learn of a save made elsewhere.
+pub(super) const REMOTE: &str = "mimic.remote";
 /// The unsaved-changes dialog.
 const DIALOG: &str = "mimic-unsaved";
+/// The dialog when a save found the screen changed elsewhere.
+const CONFLICT: &str = "mimic-conflict";
 
 /// What a press on the stage does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +161,11 @@ enum Slot {
     Width,
     Height,
     Config(&'static str),
+    /// `config.label`, for a type whose settings have none (the Designer
+    /// lists a label for every component).
+    Label,
+    /// `config.opacity`, a property every component has.
+    Opacity,
 }
 
 /// What the inspector's tag search binds.
@@ -145,6 +177,10 @@ enum Pick {
     Add,
     /// A tag setting (`faultSensorId`, `runSensorId`).
     Config(&'static str),
+    /// The tag of the binding being edited.
+    BindTag,
+    /// A `{ref}` inserted into the binding's expression.
+    Insert,
 }
 
 /// A drag on the stage in progress.
@@ -159,10 +195,8 @@ enum Gesture {
         starts: Vec<(f64, f64)>,
         area: Rect,
         key: String,
-        /// Select only this widget on a click.
+        /// Select only this widget (and its group) on a click.
         click: Option<String>,
-        /// Drop this widget from the selection on a click (⇧).
-        toggle: Option<String>,
     },
     Resize {
         at: Point<Pixels>,
@@ -200,6 +234,8 @@ pub(crate) enum Leave {
     /// ⌘[ or ⌘]: back or forward through the pages.
     History(bool),
     SignOut,
+    /// ⌘Q or the window closing.
+    Quit,
 }
 
 /// What a command does; the actions and the toolbar run them.
@@ -223,6 +259,30 @@ enum Cmd {
     Grid,
     Find,
     Step(bool),
+    Pane(panes::Pane),
+    Cut,
+    Order(edit::Order),
+    Group,
+    Ungroup,
+    Lock,
+    Align(Align),
+    Distribute(Axis),
+    /// Open the binding editor on the selection's first bound property
+    /// (or its label).
+    EditBinding,
+}
+
+/// The placement menu of a tag dropped on the empty stage (`DropMenu`):
+/// what it can become, the highlighted choice, where it was dropped.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct DropMenu {
+    tag: i64,
+    /// The drop point on the stage.
+    at: (f64, f64),
+    /// The drop point in the window, where the menu opens.
+    shown_at: Point<Pixels>,
+    choices: Vec<arrange::Choice>,
+    index: usize,
 }
 
 /// The edit mode asked for before the screen was in (`--edit`, E, the
@@ -230,13 +290,154 @@ enum Cmd {
 #[derive(Default)]
 pub(crate) struct Launch {
     edit: bool,
+    /// `--screen` with `--page mimic`: its id or position (1 is the
+    /// overview), shown before editing.
+    screen: Option<String>,
     queued: Vec<Cmd>,
+}
+
+/// A save the server refused because the screen changed since it was
+/// loaded (409): its current revision, the server's words, and the leave
+/// that waited on the save.
+#[derive(Debug, Clone, PartialEq)]
+struct Conflict {
+    revision: String,
+    message: String,
+    after: Option<Leave>,
+}
+
+/// Unsaved edits kept when the session ended under them (the link
+/// failed, the token expired): restored when the same user signs in to
+/// the same server and opens the screen again.
+#[derive(Debug, Clone)]
+pub(crate) struct Draft {
+    /// The server and user they belong to.
+    session: (String, String),
+    screen: String,
+    /// The server's copy the edits started from, and the edits.
+    saved: Layout,
+    present: Layout,
+    /// The revision they were based on: a save after the restore still
+    /// conflicts when the screen changed meanwhile.
+    base: Option<String>,
+    /// The Designer was asked to switch to its screen after the sign-in.
+    launched: bool,
+}
+
+/// The kept draft; one of the states that outlive a session
+/// (`kept_across_sessions`).
+#[derive(Debug, Default)]
+pub(crate) struct Drafts {
+    draft: Option<Draft>,
+}
+
+/// The session is ending: keep the editor's unsaved edits.
+pub(crate) fn stash(console: &mut Console) {
+    let Some(state) = console.state_ref::<State>() else {
+        return;
+    };
+    let (Some(session), Some(editor)) = (state.session.clone(), state.edit.as_deref()) else {
+        return;
+    };
+    if !editor.history.dirty() {
+        return;
+    }
+    let draft = Draft {
+        session,
+        screen: editor.screen.clone(),
+        saved: editor.history.saved().clone(),
+        present: editor.layout().clone(),
+        base: editor.base.clone(),
+        launched: false,
+    };
+    console.state::<Drafts>().draft = Some(draft);
+}
+
+/// The signed-in server and user.
+fn session_of(console: &Console) -> Option<(String, String)> {
+    console
+        .user
+        .as_ref()
+        .map(|(user, _)| (console.server.clone(), user.clone()))
+}
+
+/// A draft of this session waits: open the Designer on its screen once.
+fn launch_draft(console: &mut Console) {
+    if editing(console) || !console.may_configure() {
+        return;
+    }
+    let session = session_of(console);
+    let Some(draft) = console
+        .state_ref::<Drafts>()
+        .and_then(|drafts| drafts.draft.as_ref())
+        .filter(|draft| !draft.launched && Some(&draft.session) == session.as_ref())
+    else {
+        return;
+    };
+    let screen = draft.screen.clone();
+    // Another screen: wait for the list, so the launch can switch to it.
+    let here = active(console) == screen;
+    let listed = console
+        .state_ref::<Screens>()
+        .is_some_and(|screens| screens.listed);
+    if !here && !listed {
+        return;
+    }
+    if console
+        .state_ref::<Launch>()
+        .is_some_and(|launch| launch.edit)
+    {
+        return;
+    }
+    // Switching screens is asked once; on its own screen the draft waits
+    // for the layout (the editor takes it when it opens).
+    if !here && let Some(draft) = console.state::<Drafts>().draft.as_mut() {
+        draft.launched = true;
+    }
+    let launch = console.state::<Launch>();
+    launch.edit = true;
+    if !here {
+        launch.screen = Some(screen);
+    }
+}
+
+/// The draft for `screen` in this session, taken.
+fn take_draft(console: &mut Console, screen: &str) -> Option<Draft> {
+    let session = session_of(console)?;
+    let drafts = console.state::<Drafts>();
+    if drafts
+        .draft
+        .as_ref()
+        .is_some_and(|draft| draft.session == session && draft.screen == screen)
+    {
+        drafts.draft.take()
+    } else {
+        None
+    }
 }
 
 /// The editor of the active screen.
 pub(crate) struct Editor {
     screen: String,
     history: History,
+    /// The revision the edits are based on (the save sends it, the server
+    /// refuses the save when the screen changed since); `None` from a
+    /// server without revisions.
+    base: Option<String>,
+    /// A refused save waiting for the user's answer.
+    conflict: Option<Conflict>,
+    /// The server's copy being loaded after "Load theirs", and the leave
+    /// to run once it is in.
+    reloading: Option<Option<Leave>>,
+    /// The screen was saved elsewhere while this one has unsaved edits
+    /// (the web's `remoteChanged`): the banner offers their copy.
+    remote_changed: bool,
+    /// The check for a save made elsewhere, in flight.
+    checking: Option<i64>,
+    /// The placement menu, open.
+    menu: Option<DropMenu>,
+    /// The inspector's binding editor, open on one property.
+    bind: Option<binding::BindEditor>,
     /// Selected widgets, in the order they were picked.
     selection: Vec<String>,
     /// The selected connection.
@@ -269,6 +470,9 @@ pub(crate) struct Editor {
     window: Option<AnyWindowHandle>,
     query: Entity<TextInput>,
     tag_query: Entity<TextInput>,
+    /// The Designer's left column: its tab and the tag browser's search.
+    pane: panes::Pane,
+    tag_filter: Entity<TextInput>,
     picking: Option<Pick>,
     /// The inspector's fields and the widget they were made for.
     fields: Vec<(Slot, Entity<TextInput>)>,
@@ -323,17 +527,56 @@ pub(crate) fn editing(console: &Console) -> bool {
 }
 
 /// `--edit` with `--page mimic`: edit once the screen is in.
-pub(crate) fn launch(console: &mut Console, edit: bool) {
-    console.state::<Launch>().edit = edit;
+pub(crate) fn launch(console: &mut Console, edit: bool, screen: Option<String>) {
+    let launch = console.state::<Launch>();
+    launch.edit = edit;
+    launch.screen = screen;
+}
+
+/// Show the `--screen` asked for, once the screen list is in.
+fn launch_screen(console: &mut Console) {
+    let Some(screens) = console
+        .state_ref::<Screens>()
+        .filter(|screens| screens.listed)
+    else {
+        return;
+    };
+    let ids = screens.ids();
+    let Some(wanted) = console.state::<Launch>().screen.take() else {
+        return;
+    };
+    let target = wanted
+        .parse::<usize>()
+        .ok()
+        .and_then(|position| ids.get(position.checked_sub(1)?).cloned())
+        .or_else(|| ids.contains(&wanted).then_some(wanted));
+    if let Some(id) = target {
+        crate::console::screens::select(console, &id);
+        super::sync(console);
+    }
 }
 
 /// Enter the edit mode asked for, once the active screen's mimic is in
 /// (called by the viewer's render; the entering itself runs after it).
 pub(super) fn launch_ready(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    if console.page == Page::Mimic && console.phase == Phase::Console {
+        launch_draft(console);
+    }
     let wanted = console
         .state_ref::<Launch>()
         .is_some_and(|launch| launch.edit);
     if !wanted || console.page != Page::Mimic || console.phase != Phase::Console {
+        return;
+    }
+    if console
+        .state_ref::<Launch>()
+        .is_some_and(|launch| launch.screen.is_some())
+    {
+        // No REST from render: switch (and fetch) after this frame.
+        cx.defer_in(window, |console, _, cx| {
+            launch_screen(console);
+            cx.notify();
+        });
         return;
     }
     let screen = active(console);
@@ -357,13 +600,39 @@ pub(super) fn launch_ready(console: &mut Console, window: &mut Window, cx: &mut 
 /// Start editing the active screen's mimic as loaded.
 fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
     let screen = active(console);
-    let layout = match console.state::<State>().layouts.get(&screen) {
+    let ready = matches!(
+        console.state::<State>().layouts.get(&screen),
+        Some(Loaded::Ready(_))
+    );
+    let draft = if ready {
+        take_draft(console, &screen)
+    } else {
+        None
+    };
+    let state = console.state::<State>();
+    let layout = match state.layouts.get(&screen) {
         Some(Loaded::Ready(layout)) => Layout::clone(layout),
         _ => return,
     };
+    let mut base = state.revisions.get(&screen).cloned().flatten();
+    let history = match draft {
+        Some(draft) => {
+            base = draft.base.or(base);
+            History::restored(draft.saved, draft.present)
+        }
+        None => History::new(layout),
+    };
+    let restored = history.dirty();
     let query = cx.new(|cx| TextInput::new(cx).placeholder("Search symbols and widgets"));
     let tag_query = cx.new(|cx| TextInput::new(cx).placeholder("Find a tag by name or key"));
+    let tag_filter = cx.new(|cx| TextInput::new(cx).placeholder("Search tags"));
     let subscriptions = vec![
+        // Back to the front: has the screen been saved elsewhere?
+        cx.observe_window_activation(window, |console, window, _| {
+            if window.is_window_active() {
+                check_remote(console);
+            }
+        }),
         cx.subscribe_in(
             &query,
             window,
@@ -395,10 +664,28 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
                 InputEvent::Blurred => {}
             },
         ),
+        cx.subscribe_in(
+            &tag_filter,
+            window,
+            |console, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Cancelled => focus_stage(console, window, cx),
+                // Enter: the first match binds the selected component, or
+                // opens the placement menu (a drop from the keyboard).
+                InputEvent::Submitted => panes::submit_tag(console, window, cx),
+                _ => cx.notify(),
+            },
+        ),
     ];
     let editor = Editor {
         screen,
-        history: History::new(layout),
+        history,
+        base,
+        conflict: None,
+        reloading: None,
+        remote_changed: false,
+        checking: None,
+        menu: None,
+        bind: None,
         selection: Vec::new(),
         line: None,
         tool: Tool::Select,
@@ -422,6 +709,8 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
         window: Some(window.window_handle()),
         query,
         tag_query,
+        pane: panes::Pane::default(),
+        tag_filter,
         picking: None,
         fields: Vec::new(),
         fields_for: None,
@@ -438,6 +727,13 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
     state.press = None;
     state.edit = Some(Box::new(editor));
     focus_stage(console, window, cx);
+    if restored {
+        console.show_toast(
+            "Your unsaved edits from before the sign-in are back; save to keep them",
+            false,
+            cx,
+        );
+    }
     cx.notify();
 }
 
@@ -523,6 +819,11 @@ fn proceed(console: &mut Console, leave: Leave, window: &mut Window, cx: &mut Co
             exit(console, window, cx);
             console.sign_out(window, cx);
         }
+        Leave::Quit => {
+            exit(console, window, cx);
+            console.shutdown();
+            cx.quit();
+        }
     }
 }
 
@@ -575,6 +876,7 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
         Some(Leave::Screen(_)) => "switching screens",
         Some(Leave::Page(_) | Leave::History(_)) => "leaving the mimic",
         Some(Leave::SignOut) => "signing out",
+        Some(Leave::Quit) => "quitting",
         _ => "leaving edit mode",
     };
     let name = screen_name(console, &editor.screen);
@@ -661,8 +963,21 @@ fn screen_name(console: &Console, id: &str) -> String {
 
 // ── Saving ────────────────────────────────────────────────────────────────
 
-/// ⌘S: `PUT` the layout's rows; `after` runs once the server has them.
+/// ⌘S: `PUT` the layout's rows, based on the revision the edits started
+/// from; `after` runs once the server has them.
 fn save(console: &mut Console, after: Option<Leave>, cx: &mut Context<Console>) {
+    let base = edits_ref(console).and_then(|editor| editor.base.clone());
+    save_on(console, after, base, cx);
+}
+
+/// The save, based on revision `base` (the loaded one, or after a
+/// conflict the one the user chose to overwrite).
+fn save_on(
+    console: &mut Console,
+    after: Option<Leave>,
+    base: Option<String>,
+    cx: &mut Context<Console>,
+) {
     if !console.may_configure() {
         console.show_toast(
             "Saving a screen needs the admin, demo or integration role",
@@ -679,7 +994,9 @@ fn save(console: &mut Console, after: Option<Leave>, cx: &mut Context<Console>) 
     }
     let screen = editor.screen.clone();
     let snapshot = editor.layout().clone();
-    let named = edit::named(&snapshot, |tag| {
+    // Named as the web Designer saves (`saveLayoutToAPI`): the label, the
+    // stored name, the primary tag's name, the type.
+    let named = designer::named(&snapshot, &|tag| {
         console.store.get(tag).map(|tag| tag.info.name.clone())
     });
     let (rows, lines) = mimic::to_rows(&named);
@@ -693,41 +1010,33 @@ fn save(console: &mut Console, after: Option<Leave>, cx: &mut Context<Console>) 
     editor.sent = Some((screen.clone(), snapshot, named));
     console.call(
         CallKey::new(SAVE).with(seq),
-        Call::new(move |api| async move {
-            api.send_json::<_, IgnoredAny>(
-                Method::PUT,
-                &equipment_path(&screen),
-                &Items { items: rows },
-            )
-            .await?;
-            // The equipment is in by now: a failure here leaves the
-            // server half-saved, which the answer says.
-            let lines = api
-                .send_json::<_, IgnoredAny>(
-                    Method::PUT,
-                    &connections_path(&screen),
-                    &Items { items: lines },
-                )
-                .await;
-            Ok(lines.err().map(|error| error.to_string()))
-        }),
+        Call::new(move |api| async move { designer::save(&api, &screen, rows, lines, base).await }),
     );
     cx.notify();
 }
 
 /// The save's answer: marked saved (the viewer shows the saved layout),
-/// or a toast and the edits kept. A leave waiting on it runs only when
-/// nothing was edited while the save was on its way.
+/// a conflict to resolve, or a toast and the edits kept. A leave waiting
+/// on it runs only when nothing was edited while the save was on its way.
+/// Also the server's copy loaded after "Load theirs".
 pub(super) fn on_reply(
     console: &mut Console,
     key: CallKey,
     reply: Reply,
     cx: &mut Context<Console>,
 ) {
+    if key.name == RELOAD {
+        reloaded(console, reply, cx);
+        return;
+    }
+    if key.name == REMOTE {
+        remote_checked(console, key.arg, reply, cx);
+        return;
+    }
     if key.name != SAVE {
         return;
     }
-    let result = reply.take::<Option<String>>();
+    let result = reply.take::<Saved>();
     let state = console.state::<State>();
     let Some(editor) = state.edit.as_deref_mut() else {
         return;
@@ -739,11 +1048,18 @@ pub(super) fn on_reply(
     let after = editor.after.take();
     let sent = editor.sent.take();
     match result {
-        Ok(None) => {
+        Ok(Saved::Done { revision }) => {
             if let Some((screen, snapshot, named)) = sent {
                 if editor.screen == screen {
                     editor.history.mark_saved(snapshot);
+                    // A revision once known is never dropped: a save
+                    // whose answer named none stays based on the last.
+                    if revision.is_some() {
+                        editor.base.clone_from(&revision);
+                    }
+                    editor.remote_changed = false;
                 }
+                remember_revision(state, &screen, revision);
                 state.layouts.insert(screen, Loaded::Ready(Rc::new(named)));
             }
             let clean = edits_ref(console).is_none_or(|editor| !editor.history.dirty());
@@ -758,7 +1074,15 @@ pub(super) fn on_reply(
                 None => console.show_toast("Screen saved", false, cx),
             }
         }
-        Ok(Some(error)) => {
+        Ok(Saved::Conflict { revision, message }) => {
+            editor.conflict = Some(Conflict {
+                revision,
+                message,
+                after,
+            });
+            ask_conflict_later(console, cx);
+        }
+        Ok(Saved::Half(error)) => {
             console.show_toast(
                 format!(
                     "Screen half saved: the equipment is in, the connections are not \
@@ -777,6 +1101,298 @@ pub(super) fn on_reply(
         }
     }
     cx.notify();
+}
+
+/// Open the conflict dialog.
+fn ask_conflict(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    let Some(editor) = edits_ref(console) else {
+        return;
+    };
+    let focus = editor.dialog_focus.clone();
+    let overlay = Overlay::modal(CONFLICT, px(480.0), conflict_dialog, cx);
+    console.open_overlay(overlay, window, cx);
+    window.focus(&focus);
+}
+
+/// [`ask_conflict`] from a REST answer, which has no window.
+fn ask_conflict_later(console: &mut Console, cx: &mut Context<Console>) {
+    let Some(handle) = edits_ref(console).and_then(|editor| editor.window) else {
+        return;
+    };
+    cx.spawn(async move |this, cx| {
+        let _ = handle.update(cx, |_, window, cx| {
+            let _ = this.update(cx, |console, cx| ask_conflict(console, window, cx));
+        });
+    })
+    .detach();
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resolve {
+    /// Load the server's copy; the edits here are lost.
+    Theirs,
+    /// Save again over the revision the conflict named.
+    Mine,
+    Cancel,
+}
+
+fn resolve(console: &mut Console, answer: Resolve, window: &mut Window, cx: &mut Context<Console>) {
+    let conflict = edits(console).and_then(|editor| editor.conflict.take());
+    console.close_overlay(window, cx);
+    let Some(conflict) = conflict else {
+        return;
+    };
+    match answer {
+        Resolve::Cancel => focus_stage(console, window, cx),
+        Resolve::Mine => save_on(console, conflict.after, Some(conflict.revision), cx),
+        Resolve::Theirs => load_theirs(console, conflict.after),
+    }
+    cx.notify();
+}
+
+/// Load the server's copy over the edits ("Load theirs"); `after` runs
+/// once it is in.
+fn load_theirs(console: &mut Console, after: Option<Leave>) {
+    let Some(editor) = edits(console) else {
+        return;
+    };
+    if editor.reloading.is_some() {
+        return;
+    }
+    editor.reloading = Some(after);
+    let screen = editor.screen.clone();
+    console.call(
+        CallKey::new(RELOAD),
+        Call::new(move |api| async move {
+            let (layout, revision) = designer::load(&api, &screen).await?;
+            Ok((screen, layout, revision))
+        }),
+    );
+}
+
+/// Read the screen's revision again (the window came to the front), to
+/// learn of a save made elsewhere, as the web Designer refetches on focus.
+fn check_remote(console: &mut Console) {
+    let Some(editor) = edits(console) else {
+        return;
+    };
+    if editor.base.is_none()
+        || editor.saving.is_some()
+        || editor.reloading.is_some()
+        || editor.checking.is_some()
+        || editor.conflict.is_some()
+    {
+        return;
+    }
+    editor.next_save += 1;
+    let seq = editor.next_save;
+    editor.checking = Some(seq);
+    let screen = editor.screen.clone();
+    console.call(
+        CallKey::new(REMOTE).with(seq),
+        Call::new(move |api| async move {
+            let (layout, revision) = designer::load(&api, &screen).await?;
+            Ok((screen, layout, revision))
+        }),
+    );
+}
+
+/// The server's copy, read on focus: a clean editor takes it; one with
+/// unsaved edits shows the banner (the save would conflict anyway).
+fn remote_checked(console: &mut Console, seq: i64, reply: Reply, cx: &mut Context<Console>) {
+    let state = console.state::<State>();
+    let Some(editor) = state.edit.as_deref_mut() else {
+        return;
+    };
+    if editor.checking != Some(seq) {
+        return;
+    }
+    editor.checking = None;
+    // A save or a reload since: their answer wins.
+    if editor.saving.is_some() || editor.reloading.is_some() {
+        return;
+    }
+    let Ok((screen, layout, Some(revision))) = reply.take::<(String, Layout, Option<String>)>()
+    else {
+        return;
+    };
+    if screen != editor.screen || editor.base.as_deref() == Some(revision.as_str()) {
+        return;
+    }
+    if editor.history.dirty() {
+        editor.remote_changed = true;
+    } else {
+        editor.history = History::new(layout.clone());
+        editor.base = Some(revision.clone());
+        editor.remote_changed = false;
+        editor.prune();
+        remember_revision(state, &screen, Some(revision));
+        state.layouts.insert(screen, Loaded::Ready(Rc::new(layout)));
+    }
+    cx.notify();
+}
+
+/// The banner over the stage: the screen was saved elsewhere.
+fn remote_banner(theme: &Theme, cx: &mut Context<Console>) -> AnyElement {
+    div()
+        .absolute()
+        .top(SPACE_5)
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .id("designer-remote-changed")
+                .flex()
+                .items_center()
+                .gap(SPACE_3)
+                .pl(SPACE_5)
+                .pr(SPACE_2)
+                .py(SPACE_2)
+                .rounded(RADIUS_XL)
+                .bg(theme.elevated)
+                .border_1()
+                .border_color(theme.warning)
+                .text_size(FONT_SMALL)
+                .text_color(theme.fg)
+                .child("This screen was saved elsewhere while you were editing.")
+                .child(
+                    Button::new("designer-remote-reload", "Load theirs")
+                        .compact()
+                        .on_click(cx.listener(|console, _, _, cx| {
+                            load_theirs(console, None);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("designer-remote-keep", "Keep editing")
+                        .compact()
+                        .on_click(cx.listener(|console, _, _, cx| {
+                            if let Some(editor) = edits(console) {
+                                editor.remote_changed = false;
+                            }
+                            cx.notify();
+                        })),
+                ),
+        )
+        .into_any_element()
+}
+
+/// The server's copy is in: the editor starts over from it, and the leave
+/// that waited runs.
+fn reloaded(console: &mut Console, reply: Reply, cx: &mut Context<Console>) {
+    let state = console.state::<State>();
+    let Some(editor) = state.edit.as_deref_mut() else {
+        return;
+    };
+    let Some(after) = editor.reloading.take() else {
+        return;
+    };
+    match reply.take::<(String, Layout, Option<String>)>() {
+        Ok((screen, layout, revision)) if screen == editor.screen => {
+            editor.history = History::new(layout.clone());
+            if revision.is_some() {
+                editor.base.clone_from(&revision);
+            }
+            editor.remote_changed = false;
+            editor.prune();
+            remember_revision(state, &screen, revision);
+            state.layouts.insert(screen, Loaded::Ready(Rc::new(layout)));
+            console.show_toast("Loaded the screen as saved elsewhere", false, cx);
+            if let Some(leave) = after {
+                proceed_later(console, leave, cx);
+            }
+        }
+        Ok(_) => {}
+        Err(error) => {
+            console.show_toast(
+                format!("The screen did not load: {error}. Your edits are kept."),
+                true,
+                cx,
+            );
+        }
+    }
+    cx.notify();
+}
+
+fn conflict_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> AnyElement {
+    let theme = theme(cx).clone();
+    let Some(editor) = edits_ref(console) else {
+        return div().into_any_element();
+    };
+    let message = editor
+        .conflict
+        .as_ref()
+        .map(|conflict| conflict.message.clone())
+        .unwrap_or_default();
+    let name = screen_name(console, &editor.screen);
+    let focus = editor.dialog_focus.clone();
+    div()
+        .track_focus(&focus)
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .px(SPACE_8)
+                .h(px(48.0))
+                .border_b_1()
+                .border_color(theme.border)
+                .text_size(FONT_TITLE)
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("Screen changed elsewhere"),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(SPACE_4)
+                .p(SPACE_8)
+                .child(format!("{message}.").replace("..", "."))
+                .child(
+                    div()
+                        .text_size(FONT_SMALL)
+                        .text_color(theme.fg_dim)
+                        .child(format!(
+                            "Load their version of “{name}” (your changes here are lost), \
+                             or overwrite it with yours?"
+                        )),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .justify_end()
+                .gap(SPACE_4)
+                .px(SPACE_8)
+                .py(SPACE_6)
+                .border_t_1()
+                .border_color(theme.border)
+                .child(
+                    Button::new("mimic-conflict-cancel", "Cancel")
+                        .ghost()
+                        .on_click(cx.listener(|console, _, window, cx| {
+                            resolve(console, Resolve::Cancel, window, cx);
+                        })),
+                )
+                .child(
+                    Button::new("mimic-conflict-theirs", "Load theirs").on_click(cx.listener(
+                        |console, _, window, cx| {
+                            resolve(console, Resolve::Theirs, window, cx);
+                        },
+                    )),
+                )
+                .child(
+                    Button::new("mimic-conflict-mine", "Overwrite with mine")
+                        .danger()
+                        .on_click(cx.listener(|console, _, window, cx| {
+                            resolve(console, Resolve::Mine, window, cx);
+                        })),
+                ),
+        )
+        .into_any_element()
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────
@@ -849,6 +1465,64 @@ pub(crate) fn actions(root: Stateful<Div>, cx: &Context<Console>) -> Stateful<Di
     .on_action(cx.listener(|console, nudge: &MimicEditNudge, window, cx| {
         run(console, Cmd::Nudge(nudge.0, nudge.1), window, cx);
     }))
+    .on_action(cx.listener(|console, _: &MimicEditCut, window, cx| {
+        run(console, Cmd::Cut, window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &MimicEditForward, window, cx| {
+        run(console, Cmd::Order(edit::Order::Forward), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &MimicEditBackward, window, cx| {
+        run(console, Cmd::Order(edit::Order::Backward), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerGroup, window, cx| {
+        run(console, Cmd::Group, window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerUngroup, window, cx| {
+        run(console, Cmd::Ungroup, window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerLock, window, cx| {
+        run(console, Cmd::Lock, window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerAlignLeft, window, cx| {
+        run(console, Cmd::Align(Align::Left), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerAlignCenter, window, cx| {
+        run(console, Cmd::Align(Align::Center), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerAlignRight, window, cx| {
+        run(console, Cmd::Align(Align::Right), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerAlignTop, window, cx| {
+        run(console, Cmd::Align(Align::Top), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerAlignMiddle, window, cx| {
+        run(console, Cmd::Align(Align::Middle), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerAlignBottom, window, cx| {
+        run(console, Cmd::Align(Align::Bottom), window, cx);
+    }))
+    .on_action(
+        cx.listener(|console, _: &DesignerDistributeHorizontally, window, cx| {
+            run(console, Cmd::Distribute(Axis::Horizontal), window, cx);
+        }),
+    )
+    .on_action(
+        cx.listener(|console, _: &DesignerDistributeVertically, window, cx| {
+            run(console, Cmd::Distribute(Axis::Vertical), window, cx);
+        }),
+    )
+    .on_action(cx.listener(|console, _: &DesignerEditBinding, window, cx| {
+        run(console, Cmd::EditBinding, window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerProject, window, cx| {
+        run(console, Cmd::Pane(panes::Pane::Project), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerTags, window, cx| {
+        run(console, Cmd::Pane(panes::Pane::Tags), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerComponents, window, cx| {
+        run(console, Cmd::Pane(panes::Pane::Components), window, cx);
+    }))
 }
 
 fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Console>) {
@@ -870,6 +1544,38 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
     }
     match cmd {
         Cmd::Save => save(console, None, cx),
+        Cmd::Pane(pane) => {
+            if let Some(editor) = edits(console) {
+                editor.pane = pane;
+                // The tags pane is for searching: its field takes the keys.
+                if pane == panes::Pane::Tags {
+                    let filter = editor.tag_filter.clone();
+                    filter.read(cx).focus(window);
+                }
+            }
+            cx.notify();
+        }
+        Cmd::EditBinding => {
+            let prop = edits_ref(console)
+                .and_then(Editor::single)
+                .and_then(|widget| {
+                    let props = designer::properties(widget);
+                    let bound = designer::bindings::bindings_of(&widget.config);
+                    props
+                        .iter()
+                        .find(|prop| {
+                            prop.bindable() && bound.iter().any(|(key, _)| key == prop.key)
+                        })
+                        .or_else(|| props.iter().find(|prop| prop.key == "label"))
+                        .cloned()
+                });
+            match prop {
+                Some(prop) => binding::open(console, &prop, window, cx),
+                None => {
+                    console.show_toast("Select one component to bind its properties", false, cx)
+                }
+            }
+        }
         Cmd::Find => {
             if let Some(editor) = edits(console) {
                 let query = editor.query.clone();
@@ -913,13 +1619,8 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
         }
         Cmd::SelectAll => {
             if let Some(editor) = edits(console) {
-                editor.selection = editor
-                    .history
-                    .present()
-                    .widgets
-                    .iter()
-                    .map(|widget| widget.id.clone())
-                    .collect();
+                // Unlocked widgets, groups whole (as the web's ⌘A).
+                editor.selection = arrange::select_all(editor.history.present());
                 editor.line = None;
                 editor.tool = Tool::Select;
             }
@@ -932,7 +1633,16 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
                     editor.selection.last().map(String::as_str),
                     forward,
                 );
-                editor.selection = next.into_iter().collect();
+                // A group member brings its group (`expandToGroups`); the
+                // stepped one stays last, so the next Tab goes on from it.
+                let picked: Vec<String> = next.into_iter().collect();
+                let mut selection: Vec<String> =
+                    arrange::expand_to_groups(editor.history.present(), &picked)
+                        .into_iter()
+                        .filter(|id| !picked.contains(id))
+                        .collect();
+                selection.extend(picked);
+                editor.selection = selection;
                 editor.line = None;
             }
             changed(console, window, cx);
@@ -971,26 +1681,69 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
         Cmd::Delete => {
             let gone = edits(console).and_then(|editor| {
                 if let Some(line) = editor.line.take() {
-                    return Some(Edit::Remove {
+                    let gone = Edit::Remove {
                         widgets: Vec::new(),
                         connections: vec![line],
-                    });
+                    };
+                    return Some((gone, false));
                 }
                 if editor.selection.is_empty() {
                     return None;
                 }
-                Some(Edit::Remove {
-                    widgets: std::mem::take(&mut editor.selection),
+                let widgets = arrange::deletable(editor.history.present(), &editor.selection);
+                let kept = widgets.len() < editor.selection.len();
+                editor.selection.retain(|id| !widgets.contains(id));
+                let gone = Edit::Remove {
+                    widgets,
                     connections: Vec::new(),
-                })
+                };
+                Some((gone, kept))
             });
-            if let Some(gone) = gone {
+            if let Some((gone, kept)) = gone {
                 apply(console, &gone, None, window, cx);
+                if kept {
+                    console.show_toast(
+                        "Locked components were kept; unlock them to delete",
+                        false,
+                        cx,
+                    );
+                }
             }
+        }
+        Cmd::Cut => {
+            // Only what the cut removes is copied: locked components stay
+            // on the stage and out of the clipboard, as Delete keeps them.
+            if let Some(editor) = edits(console)
+                && editor.line.is_none()
+                && !editor.selection.is_empty()
+            {
+                let cut = arrange::deletable(editor.history.present(), &editor.selection);
+                if cut.is_empty() {
+                    console.show_toast(
+                        "Locked components were kept; unlock them to cut",
+                        false,
+                        cx,
+                    );
+                    return;
+                }
+                editor.clip = edit::copy(editor.history.present(), &cut);
+            }
+            run(console, Cmd::Delete, window, cx);
+        }
+        Cmd::Nudge(_, dy) if menu_open(console) => {
+            // The placement menu's cursor.
+            if let Some(menu) = edits(console).and_then(|editor| editor.menu.as_mut()) {
+                if dy > 0 {
+                    menu.index = (menu.index + 1).min(menu.choices.len().saturating_sub(1));
+                } else if dy < 0 {
+                    menu.index = menu.index.saturating_sub(1);
+                }
+            }
+            cx.notify();
         }
         Cmd::Nudge(dx, dy) => {
             let nudged = edits_ref(console).and_then(|editor| {
-                let moved = edit::nudge(
+                let moved = arrange::nudge(
                     editor.layout(),
                     &editor.selection,
                     f64::from(dx),
@@ -1002,16 +1755,21 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
                 apply(console, &moved, Some(key.as_str()), window, cx);
             }
         }
-        Cmd::Front | Cmd::Back => {
+        Cmd::Front => run(console, Cmd::Order(edit::Order::Front), window, cx),
+        Cmd::Back => run(console, Cmd::Order(edit::Order::Back), window, cx),
+        Cmd::Order(to) => {
             let reorder = edits_ref(console)
                 .filter(|editor| !editor.selection.is_empty())
                 .map(|editor| Edit::Reorder {
                     ids: editor.selection.clone(),
-                    front: cmd == Cmd::Front,
+                    to,
                 });
             if let Some(reorder) = reorder {
                 apply(console, &reorder, None, window, cx);
             }
+        }
+        Cmd::Group | Cmd::Ungroup | Cmd::Lock | Cmd::Align(_) | Cmd::Distribute(_) => {
+            arrange_selection(console, cmd, window, cx);
         }
         Cmd::Rotate(quarters) => {
             let turned = edits_ref(console)
@@ -1031,6 +1789,48 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
     }
 }
 
+/// Whether the placement menu is open.
+fn menu_open(console: &Console) -> bool {
+    edits_ref(console).is_some_and(|editor| editor.menu.is_some())
+}
+
+/// Group, ungroup, lock, align and distribute the selection: one undo
+/// step each, nothing when there is nothing to change.
+fn arrange_selection(
+    console: &mut Console,
+    cmd: Cmd,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) {
+    let Some(editor) = edits_ref(console) else {
+        return;
+    };
+    let layout = editor.layout();
+    let ids = &editor.selection;
+    let changed = match cmd {
+        Cmd::Group => arrange::group(layout, ids, &edit::fresh_id("g")),
+        Cmd::Ungroup => arrange::ungroup(layout, ids),
+        Cmd::Lock => arrange::toggle_lock(layout, ids),
+        Cmd::Align(mode) => arrange::align(layout, ids, mode),
+        Cmd::Distribute(axis) => arrange::distribute(layout, ids, axis),
+        _ => None,
+    };
+    match changed {
+        Some(changed) => apply(console, &changed, None, window, cx),
+        None => {
+            let why = match cmd {
+                Cmd::Group => "Select two or more components to group them",
+                Cmd::Align(_) => "Select two or more components to align them",
+                Cmd::Distribute(_) => "Select three or more components to distribute them",
+                _ => return,
+            };
+            if editor.selection.len() < 3 {
+                console.show_toast(why, false, cx);
+            }
+        }
+    }
+}
+
 /// Apply an edit (joining the step with key `key`), then redraw.
 fn apply(
     console: &mut Console,
@@ -1040,7 +1840,9 @@ fn apply(
     cx: &mut Context<Console>,
 ) {
     if let Some(editor) = edits(console)
-        && editor.history.apply(edit, key)
+        && editor
+            .history
+            .apply_at(edit, key, Some(std::time::Instant::now()))
     {
         editor.prune();
     }
@@ -1124,6 +1926,8 @@ fn on_press(
     let Some(editor) = state.edit.as_deref_mut() else {
         return;
     };
+    // A press elsewhere closes the placement menu.
+    editor.menu = None;
     if editor.tool == Tool::Connect {
         let layout = editor.history.present();
         let hit = edit::hit_widget(layout, x, y).map(|index| layout.widgets[index].id.clone());
@@ -1147,8 +1951,8 @@ fn on_press(
         changed(console, window, cx);
         return;
     }
-    // The single selection's handles and knob.
-    if let Some(widget) = editor.single() {
+    // The single selection's handles and knob (a locked one has none).
+    if let Some(widget) = editor.single().filter(|widget| !edit::is_locked(widget)) {
         let rect = Rect::of(widget);
         let id = widget.id.clone();
         let knob = edit::turns(widget) && near((x, y), knob_at(rect, zoom), HANDLE_HIT / zoom);
@@ -1184,22 +1988,24 @@ fn on_press(
             .map(|index| layout.connections[index].id.clone())
     };
     if let Some(id) = widget {
-        let selected = editor.selection.contains(&id);
-        let (mut click, mut toggle) = (None, None);
-        if shift {
-            if selected {
-                toggle = Some(id);
-            } else {
-                editor.selection.push(id);
-            }
-        } else if selected {
-            click = Some(id);
-        } else {
-            editor.selection = vec![id];
-        }
-        editor.line = None;
         let layout = editor.history.present();
-        let picked: Vec<&mimic::Widget> = edit::picked(layout, &editor.selection).collect();
+        let selected = editor.selection.contains(&id);
+        // A member of a group picks the whole group (`expandToGroups`);
+        // ⇧ adds the group, or takes it out when it is all selected.
+        editor.selection = arrange::press_selection(layout, &editor.selection, &id, shift);
+        editor.line = None;
+        if shift {
+            changed(console, window, cx);
+            return;
+        }
+        let click = selected.then(|| id.clone());
+        // Locked widgets stay where they are: pressing one only selects.
+        if edit::is_locked(layout.widget(&id).expect("hit")) {
+            changed(console, window, cx);
+            return;
+        }
+        let movable = arrange::movable(layout, &editor.selection);
+        let picked: Vec<&mimic::Widget> = edit::picked(layout, &movable).collect();
         let ids: Vec<String> = picked.iter().map(|w| w.id.clone()).collect();
         let starts: Vec<(f64, f64)> = picked.iter().map(|w| (w.x, w.y)).collect();
         let area = edit::bounds(picked.iter().copied()).unwrap_or_default();
@@ -1212,7 +2018,6 @@ fn on_press(
             starts,
             area,
             click,
-            toggle,
         });
     } else if let Some(line) = line {
         editor.selection.clear();
@@ -1302,7 +2107,9 @@ fn on_drag(console: &mut Console, event: &MouseMoveEvent, cx: &mut App) {
         Some(Gesture::Band { from, base }) => {
             let band = Rect::between(*from, (x, y));
             let mut selection = base.clone();
-            for id in edit::enclosed(editor.history.present(), band) {
+            // What the band touches, groups whole, locked ones not
+            // (`marqueeSelect`).
+            for id in arrange::marquee(editor.history.present(), band) {
                 if !selection.contains(&id) {
                     selection.push(id);
                 }
@@ -1330,14 +2137,10 @@ fn on_release(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         Gesture::Move {
             moved: false,
             click,
-            toggle,
             ..
         } => {
             if let Some(id) = click {
-                editor.selection = vec![id];
-            }
-            if let Some(id) = toggle {
-                editor.selection.retain(|selected| *selected != id);
+                editor.selection = arrange::expand_to_groups(editor.history.present(), &[id]);
             }
         }
         Gesture::Knob => {
@@ -1389,6 +2192,140 @@ fn on_hover(console: &mut Console, event: &MouseMoveEvent, cx: &mut Context<Cons
     if different {
         redraw(console, cx);
     }
+}
+
+// ── The placement menu ────────────────────────────────────────────────────
+
+/// Open the placement menu for `tag` dropped at stage point `at`.
+pub(super) fn open_menu(
+    console: &mut Console,
+    tag: i64,
+    at: (f64, f64),
+    shown_at: Point<Pixels>,
+    cx: &mut Context<Console>,
+) {
+    let shape = console.store.get(tag).map(|tag| arrange::TagShape {
+        key: &tag.info.key,
+        name: &tag.info.name,
+        unit: &tag.info.unit,
+        min: tag.info.min_val,
+        max: tag.info.max_val,
+    });
+    let choices = arrange::drop_choices(shape.as_ref());
+    if let Some(editor) = edits(console) {
+        editor.menu = Some(DropMenu {
+            tag,
+            at,
+            shown_at,
+            choices,
+            index: 0,
+        });
+    }
+    cx.notify();
+}
+
+/// A choice of the placement menu picked: the component, bound to the
+/// tag, placed where the tag was dropped (one undo step) and selected.
+fn pick_menu(console: &mut Console, index: usize, window: &mut Window, cx: &mut Context<Console>) {
+    let Some(menu) = edits(console).and_then(|editor| editor.menu.take()) else {
+        return;
+    };
+    let Some(choice) = menu.choices.get(index).copied() else {
+        return;
+    };
+    let name = console.store.get(menu.tag).map(|tag| tag.info.name.clone());
+    let widget = arrange::place_tag(
+        choice,
+        menu.tag,
+        name.as_deref(),
+        menu.at,
+        edit::fresh_id("w"),
+    );
+    let id = widget.id.clone();
+    let added = Edit::Add {
+        widgets: vec![widget],
+        connections: Vec::new(),
+    };
+    if let Some(editor) = edits(console) {
+        editor.tool = Tool::Select;
+        editor.from = None;
+    }
+    apply(console, &added, None, window, cx);
+    if let Some(editor) = edits(console) {
+        editor.selection = vec![id];
+        editor.line = None;
+    }
+    changed(console, window, cx);
+    focus_stage(console, window, cx);
+}
+
+/// The placement menu over the stage, at the drop point.
+fn menu_view(
+    menu: &DropMenu,
+    tag_name: String,
+    origin: Point<Pixels>,
+    theme: &Theme,
+    cx: &mut Context<Console>,
+) -> AnyElement {
+    let hover = theme.hover;
+    let rows: Vec<AnyElement> = menu
+        .choices
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| {
+            let active = index == menu.index;
+            div()
+                .id(ElementId::NamedInteger(
+                    "designer-drop-choice".into(),
+                    u64::try_from(index).unwrap_or(0),
+                ))
+                .flex()
+                .items_center()
+                .h(px(26.0))
+                .px(SPACE_4)
+                .rounded(RADIUS_SM)
+                .cursor_pointer()
+                .text_size(FONT_SMALL)
+                .text_color(if active { theme.fg } else { theme.fg_muted })
+                .when(active, |this| this.bg(theme.selected))
+                .when(!active, |this| this.hover(move |style| style.bg(hover)))
+                .on_click(cx.listener(move |console, _, window, cx| {
+                    pick_menu(console, index, window, cx);
+                }))
+                .child(choice.label)
+                .into_any_element()
+        })
+        .collect();
+    div()
+        .id("designer-drop-menu")
+        .absolute()
+        .left(menu.shown_at.x - origin.x)
+        .top(menu.shown_at.y - origin.y)
+        .w(px(220.0))
+        .flex()
+        .flex_col()
+        .p(SPACE_2)
+        .gap(px(1.0))
+        .rounded(RADIUS_MD)
+        .bg(theme.elevated)
+        .border_1()
+        .border_color(theme.border)
+        .shadow_lg()
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .px(SPACE_4)
+                .py(SPACE_2)
+                .text_size(FONT_CAPTION)
+                .text_color(theme.fg_dim)
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .child(format!("Show {tag_name} as")),
+        )
+        .children(rows)
+        .into_any_element()
 }
 
 /// A palette item dragged over the stage: where it would land.
@@ -1494,6 +2431,7 @@ pub(super) fn render(
         return div().into_any_element();
     };
     let layout = editor.layout();
+    state.bound.borrow_mut().frame();
     let items: Vec<_> = layout
         .widgets
         .iter()
@@ -1538,6 +2476,15 @@ pub(super) fn render(
         }
     });
     let empty = layout.widgets.is_empty();
+    let remote_changed = editor.remote_changed && editor.conflict.is_none();
+    let menu = editor.menu.clone().map(|menu| {
+        let name = console
+            .store
+            .get(menu.tag)
+            .map_or_else(|| format!("tag #{}", menu.tag), |tag| tag.info.name.clone());
+        (menu, name)
+    });
+    let menu_origin = drawn.get().map(|drawn| drawn.bounds.origin);
     let palette_view = editor.palette_view.clone();
     let inspector_view = editor.inspector_view.clone();
 
@@ -1552,6 +2499,7 @@ pub(super) fn render(
         drawn,
         focused: false,
         grid,
+        designing: true,
     };
     let weak = cx.entity().downgrade();
     let stage_canvas = canvas(
@@ -1567,6 +2515,7 @@ pub(super) fn render(
     .size_full();
 
     let bar = toolbar(&theme, &screen, bar, console, cx);
+    let left = panes::render(console, AnyView::from(palette_view), window, cx);
     let stage_bg = anim::mix(theme.bg, hmi.stage, 0.35);
     let body = if loaded || !stale {
         div()
@@ -1605,6 +2554,9 @@ pub(super) fn render(
             .on_drop(cx.listener(|console, placing: &Placing, window, cx| {
                 on_drop(console, *placing, window, cx);
             }))
+            .on_drop(cx.listener(|console, tag: &panes::TagDrag, window, cx| {
+                panes::drop_tag(console, tag, window, cx);
+            }))
             .child(stage_canvas)
             .when_some(connect_hint, |this, hint| {
                 this.child(
@@ -1628,6 +2580,10 @@ pub(super) fn render(
                                 .child(hint),
                         ),
                 )
+            })
+            .when(remote_changed, |this| this.child(remote_banner(&theme, cx)))
+            .when_some(menu.zip(menu_origin), |this, ((menu, name), origin)| {
+                this.child(menu_view(&menu, name, origin, &theme, cx))
             })
             .when(empty, |this| {
                 this.child(
@@ -1660,6 +2616,17 @@ pub(super) fn render(
         .id("mimic-edit")
         .track_focus(&focus)
         .key_context(EDIT)
+        // Enter picks the placement menu's highlighted choice.
+        .on_key_down(cx.listener(|console, event: &KeyDownEvent, window, cx| {
+            if event.keystroke.key == "enter"
+                && let Some(index) = edits_ref(console)
+                    .and_then(|editor| editor.menu.as_ref())
+                    .map(|menu| menu.index)
+            {
+                pick_menu(console, index, window, cx);
+                cx.stop_propagation();
+            }
+        }))
         .on_action(cx.listener(|console, _: &Dismiss, window, cx| {
             if !escape(console, window, cx) {
                 cx.propagate();
@@ -1683,10 +2650,7 @@ pub(super) fn render(
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(
-                    AnyView::from(palette_view)
-                        .cached(div().flex_none().w(PALETTE_WIDTH).h_full().style().clone()),
-                )
+                .child(div().flex_none().w(PALETTE_WIDTH).h_full().child(left))
                 .child(body)
                 .child(
                     AnyView::from(inspector_view).cached(
@@ -1717,7 +2681,11 @@ fn escape(console: &mut Console, window: &mut Window, cx: &mut Context<Console>)
     let Some(editor) = edits(console) else {
         return false;
     };
-    if editor.from.is_some() {
+    if editor.menu.is_some() {
+        editor.menu = None;
+    } else if editor.bind.is_some() {
+        editor.bind = None;
+    } else if editor.from.is_some() {
         editor.from = None;
     } else if editor.tool == Tool::Connect {
         editor.tool = Tool::Select;
@@ -1745,6 +2713,7 @@ fn follow_screen(console: &mut Console, window: &mut Window, cx: &mut Context<Co
     if editor.screen == screen || editor.history.dirty() {
         return;
     }
+    editor.base = state.revisions.get(&screen).cloned().flatten();
     editor.screen = screen;
     editor.history = History::new(layout);
     editor.selection.clear();
@@ -1878,7 +2847,7 @@ fn toolbar(
                 .text_size(FONT_CAPTION)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.accent)
-                .child("EDITING"),
+                .child("DESIGNER"),
         )
         .child(
             div()
@@ -1961,7 +2930,7 @@ fn toolbar(
             Button::new("mimic-edit-done", "Done")
                 .icon(Icon::Check)
                 .compact()
-                .tooltip("Leave edit mode  E")
+                .tooltip("Close the Designer  E")
                 .on_click(
                     cx.listener(|console, _, window, cx| run(console, Cmd::Toggle, window, cx)),
                 ),
@@ -1971,17 +2940,17 @@ fn toolbar(
 
 /// The bar's Edit button in the viewer (operators).
 pub(super) fn edit_button(cx: &mut Context<Console>) -> AnyElement {
-    Button::new("mimic-edit", "Edit")
+    Button::new("mimic-edit", "Designer")
         .icon(Icon::Pencil)
         .compact()
-        .tooltip("Edit the screen  E")
+        .tooltip("Open the screen in the Designer  E")
         .on_click(cx.listener(|console, _, window, cx| run(console, Cmd::Toggle, window, cx)))
         .into_any_element()
 }
 
 #[cfg(test)]
 mod tests {
-    use gpui::{KeyUpEvent, Keystroke, Modifiers, TestAppContext, point};
+    use gpui::{Focusable, KeyUpEvent, Keystroke, Modifiers, TestAppContext, point};
     use voltrus_scada_native::mimic::{Widget, WidgetKind};
 
     use super::*;
@@ -2159,7 +3128,7 @@ mod tests {
         h.keys("enter");
         let save = saves(&mut h).pop().expect("the save");
         move_a(&mut h, 400.0);
-        h.reply(save, Reply::ok(None::<String>));
+        h.reply(save, Reply::ok(Saved::Done { revision: None }));
         h.draw();
         assert!(h.update(|console, _, _| editing(console)), "not left");
         assert!(dirty(&mut h), "the later edit is unsaved");
@@ -2172,7 +3141,7 @@ mod tests {
         move_a(&mut h, 300.0);
         h.update(|console, _, cx| save(console, None, cx));
         let save = saves(&mut h).pop().expect("the save");
-        h.reply(save, Reply::ok(Some("500 connections".to_owned())));
+        h.reply(save, Reply::ok(Saved::Half("500 connections".to_owned())));
         assert!(dirty(&mut h), "not marked saved");
         let toast = last_toast(&mut h);
         assert!(toast.contains("half saved"), "{toast}");
@@ -2224,5 +3193,456 @@ mod tests {
         let selected =
             h.update(|console, _, _| edits_ref(console).map(|editor| editor.selection.clone()));
         assert_eq!(selected, Some(vec!["b".to_owned()]));
+    }
+
+    fn selection(h: &mut Harness) -> Vec<String> {
+        h.update(|console, _, _| {
+            edits_ref(console)
+                .map(|editor| editor.selection.clone())
+                .unwrap_or_default()
+        })
+    }
+
+    fn undo_depth(h: &mut Harness) -> usize {
+        h.update(|console, window, cx| {
+            let mut depth = 0;
+            let start = edits_ref(console).map(|editor| editor.layout().clone());
+            while edits(console).is_some_and(|editor| editor.history.undo()) {
+                depth += 1;
+            }
+            while edits(console).is_some_and(|editor| editor.history.redo()) {}
+            changed(console, window, cx);
+            assert_eq!(start, edits_ref(console).map(|e| e.layout().clone()));
+            depth
+        })
+    }
+
+    #[gpui::test]
+    fn a_tag_dropped_on_the_empty_stage_offers_components_and_places_one(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        let mut level = Harness::tag(42, "raw_tank_level");
+        level.device_id = "wtp".into();
+        level.unit = "%".into();
+        h.event(crate::console::Event::Tags(vec![level]));
+        let at = on_window(&mut h, (1000.0, 600.0));
+        h.update(|console, _, cx| open_menu(console, 42, (1000.0, 600.0), at, cx));
+        h.draw();
+        let first = h.update(|console, _, _| {
+            edits_ref(console)
+                .and_then(|editor| editor.menu.as_ref())
+                .map(|menu| menu.choices[0].label)
+        });
+        assert_eq!(first, Some("Tank (ISA-101)"), "a level tag: the tank first");
+        // Down, then Enter: the second choice.
+        h.update(|console, window, cx| run(console, Cmd::Nudge(0, 1), window, cx));
+        h.keys("enter");
+        let placed = selection(&mut h);
+        assert_eq!(placed.len(), 1);
+        let widget = widget(&mut h, &placed[0]);
+        assert_eq!(widget.kind.as_str(), "big_number");
+        assert_eq!(widget.tags, [42]);
+        assert_eq!(widget.x, 1000.0 - widget.width / 2.0);
+        assert!(h.update(|console, _, _| edits_ref(console).is_some_and(|e| e.menu.is_none())));
+        assert_eq!(undo_depth(&mut h), 1, "one undo step");
+        // Esc closes the menu without placing anything.
+        h.update(|console, _, cx| open_menu(console, 42, (100.0, 100.0), at, cx));
+        h.keys("escape");
+        assert!(h.update(|console, _, _| edits_ref(console).is_some_and(|e| e.menu.is_none())));
+        assert_eq!(undo_depth(&mut h), 1);
+    }
+
+    #[gpui::test]
+    fn a_group_is_picked_and_dragged_whole_and_a_locked_widget_stays(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        h.update(|console, window, cx| {
+            if let Some(editor) = edits(console) {
+                editor.selection = vec!["a".into(), "b".into()];
+            }
+            run(console, Cmd::Group, window, cx);
+            if let Some(editor) = edits(console) {
+                editor.selection.clear();
+            }
+            changed(console, window, cx);
+        });
+        h.draw();
+        // A click on b picks a too.
+        let on_b = on_window(&mut h, (650.0, 250.0));
+        click(&mut h, on_b);
+        assert_eq!(selection(&mut h), ["a", "b"]);
+        // A drag on b moves both.
+        let to = point(on_b.x + px(60.0), on_b.y);
+        h.cx.simulate_mouse_down(on_b, MouseButton::Left, Modifiers::none());
+        h.cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+        h.cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+        let (ax, bx) = (widget(&mut h, "a").x, widget(&mut h, "b").x);
+        assert!(ax > 200.0 && bx > 600.0, "both moved: {ax} {bx}");
+        assert_eq!(bx - ax, 400.0, "together");
+        // ⌘L locks both: a drag no longer moves them, ⌫ keeps them.
+        h.update(|console, window, cx| run(console, Cmd::Lock, window, cx));
+        assert!(edit::is_locked(&widget(&mut h, "a")));
+        h.draw();
+        let on_a = on_window(&mut h, (ax + 50.0, 250.0));
+        let to = point(on_a.x + px(80.0), on_a.y + px(40.0));
+        h.cx.simulate_mouse_down(on_a, MouseButton::Left, Modifiers::none());
+        h.cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+        h.cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+        assert_eq!(widget(&mut h, "a").x, ax, "locked: not moved");
+        h.update(|console, window, cx| run(console, Cmd::Delete, window, cx));
+        assert_eq!(widget(&mut h, "b").x, bx, "locked: not deleted");
+        assert_eq!(
+            last_toast(&mut h),
+            "Locked components were kept; unlock them to delete"
+        );
+    }
+
+    #[gpui::test]
+    fn cut_leaves_locked_components_out_of_the_clipboard(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        h.update(|console, window, cx| {
+            if let Some(editor) = edits(console) {
+                editor.selection = vec!["b".into()];
+            }
+            run(console, Cmd::Lock, window, cx);
+            if let Some(editor) = edits(console) {
+                editor.selection = vec!["a".into(), "b".into()];
+            }
+            run(console, Cmd::Cut, window, cx);
+        });
+        let ids = |h: &mut Harness| {
+            h.update(|console, _, _| {
+                edits_ref(console)
+                    .map(|editor| {
+                        editor
+                            .layout()
+                            .widgets
+                            .iter()
+                            .map(|w| w.id.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        assert_eq!(ids(&mut h), ["b"], "a cut, the locked b kept");
+        assert_eq!(
+            last_toast(&mut h),
+            "Locked components were kept; unlock them to delete"
+        );
+        h.update(|console, window, cx| run(console, Cmd::Paste, window, cx));
+        assert_eq!(ids(&mut h).len(), 2, "only a was copied");
+        // Only locked ones selected: nothing is cut or copied.
+        h.update(|console, window, cx| {
+            if let Some(editor) = edits(console) {
+                editor.selection = vec!["b".into()];
+                editor.clip = edit::Clip::default();
+            }
+            run(console, Cmd::Cut, window, cx);
+            run(console, Cmd::Paste, window, cx);
+        });
+        assert_eq!(ids(&mut h).len(), 2);
+        assert_eq!(
+            last_toast(&mut h),
+            "Locked components were kept; unlock them to cut"
+        );
+    }
+
+    #[gpui::test]
+    fn align_and_distribute_are_one_undo_step_each(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        h.update(|console, window, cx| {
+            let added = Edit::Add {
+                widgets: vec![Widget {
+                    y: 500.0,
+                    ..tank("c", 1500.0)
+                }],
+                connections: Vec::new(),
+            };
+            apply(console, &added, None, window, cx);
+            if let Some(editor) = edits(console) {
+                editor.selection = vec!["a".into(), "b".into(), "c".into()];
+            }
+            run(console, Cmd::Align(Align::Top), window, cx);
+        });
+        assert_eq!(widget(&mut h, "c").y, 200.0);
+        h.update(|console, window, cx| {
+            run(console, Cmd::Distribute(Axis::Horizontal), window, cx);
+        });
+        assert_eq!(widget(&mut h, "b").x, 850.0);
+        h.update(|console, window, cx| run(console, Cmd::Undo, window, cx));
+        assert_eq!(widget(&mut h, "b").x, 600.0, "distribute undone");
+        assert_eq!(widget(&mut h, "c").y, 200.0, "align kept");
+        h.update(|console, window, cx| run(console, Cmd::Undo, window, cx));
+        assert_eq!(widget(&mut h, "c").y, 500.0, "align undone in one step");
+    }
+
+    #[gpui::test]
+    fn any_property_binds_to_an_expression_with_a_live_preview(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        let mut run_tag = Harness::tag(5, "p101a_run");
+        run_tag.device_id = "wtp".into();
+        h.event(crate::console::Event::Tags(vec![run_tag]));
+        h.update(|console, window, cx| {
+            let prop = designer::properties(edits_ref(console).unwrap().single().unwrap())
+                .into_iter()
+                .find(|prop| prop.key == "visible")
+                .expect("visible");
+            binding::open(console, &prop, window, cx);
+            let bind = edits(console)
+                .and_then(|editor| editor.bind.as_mut())
+                .unwrap();
+            bind.mode = binding::Mode::Expr;
+            let expr = bind.expr.clone();
+            expr.update(cx, |field, cx| field.set_text("{wtp/p101a_run} > 0", cx));
+        });
+        h.draw();
+        let draft = h.update(|console, _, cx| {
+            edits_ref(console)
+                .and_then(|editor| editor.bind.as_ref())
+                .map(|bind| bind.draft(cx))
+        });
+        assert_eq!(
+            draft,
+            Some(designer::Binding::Expr {
+                expr: "{wtp/p101a_run} > 0".into()
+            })
+        );
+        // Apply is a button: press it through its handler.
+        h.update(|console, window, cx| {
+            let a = edits_ref(console).unwrap().single().unwrap().clone();
+            let draft = edits_ref(console).unwrap().bind.as_ref().unwrap().draft(cx);
+            let edit = designer::set_binding(&a, "visible", Some(&draft));
+            apply(console, &edit, None, window, cx);
+            binding::close(console, window, cx);
+        });
+        let bound = designer::bindings::binding_of(&widget(&mut h, "a").config, "visible");
+        assert!(matches!(bound, Some(designer::Binding::Expr { .. })));
+        // A tag picker field offers no binding.
+        let props = designer::properties(&Widget {
+            config: serde_json::json!({ "symbol": "pipe" })
+                .as_object()
+                .unwrap()
+                .clone(),
+            kind: WidgetKind::Symbol,
+            ..tank("p", 0.0)
+        });
+        assert!(
+            props
+                .iter()
+                .any(|p| p.key == "runSensorId" && !p.bindable())
+        );
+    }
+
+    #[gpui::test]
+    fn quitting_with_unsaved_edits_asks_first(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        assert!(!h.update(|console, window, cx| console.holds_quit(window, cx)));
+        move_a(&mut h, 300.0);
+        assert!(h.update(|console, window, cx| console.holds_quit(window, cx)));
+        let asking = h.update(|console, _, _| edits_ref(console).and_then(|e| e.asking.clone()));
+        assert_eq!(asking, Some(Leave::Quit));
+    }
+
+    #[gpui::test]
+    fn a_conflicting_save_asks_and_can_overwrite(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        h.update(|console, _, _| {
+            if let Some(editor) = edits(console) {
+                editor.base = Some("rev-1".into());
+            }
+        });
+        move_a(&mut h, 300.0);
+        h.update(|console, _, cx| save(console, None, cx));
+        let first = saves(&mut h).pop().expect("the save");
+        h.reply(
+            first,
+            Reply::ok(Saved::Conflict {
+                revision: "rev-2".into(),
+                message: "This screen was changed by someone else since you opened it".into(),
+            }),
+        );
+        h.draw();
+        let conflict = h.update(|console, _, _| {
+            edits_ref(console)
+                .and_then(|editor| editor.conflict.as_ref().map(|c| c.revision.clone()))
+        });
+        assert_eq!(conflict.as_deref(), Some("rev-2"));
+        assert!(dirty(&mut h), "nothing saved");
+        h.update(|console, window, cx| resolve(console, Resolve::Mine, window, cx));
+        let again = saves(&mut h).pop().expect("saved again over rev-2");
+        h.reply(
+            again,
+            Reply::ok(Saved::Done {
+                revision: Some("rev-3".into()),
+            }),
+        );
+        assert!(!dirty(&mut h));
+        let base = h.update(|console, _, _| edits_ref(console).and_then(|e| e.base.clone()));
+        assert_eq!(base.as_deref(), Some("rev-3"), "the next save builds on it");
+    }
+
+    /// The screen's layout read on focus, answered with revision `rev`.
+    fn answer_remote(h: &mut Harness, layout: Layout, rev: &str) {
+        let key = h
+            .calls()
+            .into_iter()
+            .find(|key| key.name == REMOTE)
+            .expect("the check");
+        let screen = h.update(|console, _, _| active(console));
+        h.reply(key, Reply::ok((screen, layout, Some(rev.to_owned()))));
+        h.draw();
+    }
+
+    #[gpui::test]
+    fn a_save_elsewhere_shows_the_banner_or_loads_into_a_clean_editor(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        let theirs = Layout {
+            widgets: vec![tank("t", 100.0)],
+            connections: Vec::new(),
+        };
+        h.update(|console, _, _| {
+            if let Some(editor) = edits(console) {
+                editor.base = Some("rev-1".into());
+            }
+            check_remote(console);
+        });
+        // Clean: their copy comes in.
+        answer_remote(&mut h, theirs.clone(), "rev-2");
+        let (ids, base) = h.update(|console, _, _| {
+            let editor = edits_ref(console).expect("editing");
+            (
+                editor
+                    .layout()
+                    .widgets
+                    .iter()
+                    .map(|w| w.id.clone())
+                    .collect::<Vec<_>>(),
+                editor.base.clone(),
+            )
+        });
+        assert_eq!(ids, ["t"]);
+        assert_eq!(base.as_deref(), Some("rev-2"));
+        // Unsaved edits: the banner, the edits kept.
+        h.update(|console, window, cx| {
+            let moved = Edit::Move(vec![("t".into(), 300.0, 200.0)]);
+            apply(console, &moved, None, window, cx);
+            check_remote(console);
+        });
+        answer_remote(&mut h, theirs.clone(), "rev-3");
+        let banner = h.update(|console, _, _| edits_ref(console).is_some_and(|e| e.remote_changed));
+        assert!(banner);
+        assert!(dirty(&mut h));
+        // Same revision: nothing to say.
+        h.update(|console, _, _| {
+            if let Some(editor) = edits(console) {
+                editor.remote_changed = false;
+                editor.base = Some("rev-3".into());
+            }
+            check_remote(console);
+        });
+        answer_remote(&mut h, theirs, "rev-3");
+        let banner = h.update(|console, _, _| edits_ref(console).is_some_and(|e| e.remote_changed));
+        assert!(!banner);
+    }
+
+    #[gpui::test]
+    fn unsaved_edits_outlive_a_failed_link_and_come_back_after_sign_in(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        h.update(|console, _, _| {
+            if let Some(editor) = edits(console) {
+                editor.base = Some("rev-1".into());
+            }
+        });
+        move_a(&mut h, 320.0);
+        h.event(crate::console::Event::Link(
+            voltrus_scada_native::runtime::Link::Failed("Session expired".into()),
+        ));
+        assert!(
+            h.update(|console, _, _| !editing(console)),
+            "the session ended"
+        );
+        let kept = h.update(|console, _, _| {
+            console
+                .state_ref::<Drafts>()
+                .and_then(|drafts| drafts.draft.as_ref().map(|d| d.present.widgets[0].x))
+        });
+        assert_eq!(kept, Some(320.0));
+        h.sign_in("admin");
+        h.update(|console, window, cx| {
+            console.show(Page::Mimic, window, cx);
+            let screen = active(console);
+            let layout = Layout {
+                widgets: vec![tank("a", 200.0), tank("b", 600.0)],
+                connections: Vec::new(),
+            };
+            console
+                .state::<State>()
+                .layouts
+                .insert(screen, Loaded::Ready(Rc::new(layout)));
+        });
+        // The viewer opens the Designer on the draft's screen by itself.
+        h.draw();
+        h.draw();
+        assert!(h.update(|console, _, _| editing(console)));
+        assert_eq!(widget(&mut h, "a").x, 320.0, "the edit is back");
+        assert!(dirty(&mut h));
+        let base = h.update(|console, _, _| edits_ref(console).and_then(|e| e.base.clone()));
+        assert_eq!(
+            base.as_deref(),
+            Some("rev-1"),
+            "still based on what it started from"
+        );
+        assert_eq!(
+            last_toast(&mut h),
+            "Your unsaved edits from before the sign-in are back; save to keep them"
+        );
+        // Undo goes back to the server's copy.
+        h.update(|console, window, cx| run(console, Cmd::Undo, window, cx));
+        assert_eq!(widget(&mut h, "a").x, 200.0);
+    }
+
+    #[gpui::test]
+    fn enter_in_the_tag_search_places_or_binds_from_the_keyboard(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        let mut flow = Harness::tag(9, "intake_flow");
+        flow.device_id = "wtp".into();
+        h.event(crate::console::Event::Tags(vec![flow]));
+        // One component selected: Enter binds it.
+        h.update(|console, window, cx| {
+            run(console, Cmd::Pane(panes::Pane::Tags), window, cx);
+            let filter = edits_ref(console).unwrap().tag_filter.clone();
+            assert!(
+                filter.read(cx).focus_handle(cx).is_focused(window),
+                "the search has the keys"
+            );
+            filter.update(cx, |field, cx| field.set_text("intake", cx));
+            panes::submit_tag(console, window, cx);
+        });
+        assert_eq!(widget(&mut h, "a").tags, [9]);
+        // Nothing selected: the placement menu, in the middle of the stage.
+        h.update(|console, window, cx| {
+            if let Some(editor) = edits(console) {
+                editor.selection.clear();
+            }
+            panes::submit_tag(console, window, cx);
+        });
+        let menu = h.update(|console, _, _| edits_ref(console).and_then(|e| e.menu.clone()));
+        let menu = menu.expect("the placement menu");
+        assert_eq!(menu.tag, 9);
+        assert!(
+            (menu.at.0 - 960.0).abs() < 1.0 && (menu.at.1 - 540.0).abs() < 1.0,
+            "{:?}",
+            menu.at
+        );
+        // ⌘B opens the binding editor on the label of the selected component.
+        h.update(|console, window, cx| {
+            if let Some(editor) = edits(console) {
+                editor.menu = None;
+                editor.selection = vec!["a".into()];
+            }
+            run(console, Cmd::EditBinding, window, cx);
+        });
+        let open = h.update(|console, _, _| {
+            edits_ref(console).and_then(|e| e.bind.as_ref().map(|b| b.prop))
+        });
+        assert_eq!(open, Some("label"));
     }
 }
