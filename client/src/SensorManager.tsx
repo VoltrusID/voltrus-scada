@@ -7,6 +7,7 @@ import { HistoryDeadbandFields } from './components/HistoryDeadbandFields';
 import { HistoryDeadbandBulk } from './components/HistoryDeadbandBulk';
 import { applyHistoryDeadband, describeHistoryDeadband, type HistoryDeadbandForm } from './historyDeadband';
 import { useUpdateSensor, useReorderSensors } from './queries';
+import { useRole } from './RoleContext';
 
 const CELL: React.CSSProperties = {
   background: 'transparent',
@@ -33,7 +34,7 @@ const tdStyle: React.CSSProperties = {
   padding: '0', fontSize: 12, borderBottom: '1px solid var(--border)',
 };
 
-function ShortcutCell({ shortcut, onSet, onClear }: { shortcut: string | null; onSet: (s: string) => void; onClear: () => void }) {
+function ShortcutCell({ shortcut, onSet, onClear, readOnly }: { shortcut: string | null; onSet: (s: string) => void; onClear: () => void; readOnly?: boolean }) {
   const [recording, setRecording] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -72,14 +73,14 @@ function ShortcutCell({ shortcut, onSet, onClear }: { shortcut: string | null; o
       ) : (
         <span style={{ fontSize: 10, color: 'var(--muted)' }}>—</span>
       )}
-      <button onClick={() => setRecording(true)} style={{
+      {!readOnly && <button onClick={() => setRecording(true)} style={{
         padding: '1px 5px', borderRadius: 3, fontSize: 9, cursor: 'pointer',
         border: recording ? '1px solid var(--cyan)' : '1px solid var(--border)',
         background: recording ? 'rgba(34,197,94,.1)' : 'transparent',
         color: recording ? 'var(--cyan)' : 'var(--muted)',
         whiteSpace: 'nowrap',
-      }}>{recording ? '...' : 'rec'}</button>
-      {shortcut && !recording && (
+      }}>{recording ? '...' : 'rec'}</button>}
+      {shortcut && !recording && !readOnly && (
         <button onClick={onClear} style={{
           padding: '1px 4px', borderRadius: 3, fontSize: 9, cursor: 'pointer',
           border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)',
@@ -94,6 +95,8 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
   onAdd: (s: Partial<SensorConfig>) => void; onDuplicate: (s: SensorConfig) => void; onClose: () => void; shortcuts: Record<number, string>;
   embedded?: boolean;
 }) {
+  // Viewers and operators see the tag list; changing it is configuration.
+  const readOnly = !useRole().canConfigure;
   const [filter, setFilter] = useState('');
   const [newRow, setNewRow] = useState<Partial<SensorConfig> & { source_config_obj?: Record<string, any> } | null>(null);
   const [configPopover, setConfigPopover] = useState<{ id: number; srcType: string; config: Record<string, any>; rect: DOMRect } | null>(null);
@@ -231,6 +234,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
       key={`${sensor.id}-${field}-${sensor[field]}`}
       type="number" step="any"
       defaultValue={sensor[field] as number}
+      readOnly={readOnly}
       onBlur={e => {
         const v = parseFloat(e.target.value);
         if (!isNaN(v) && v !== sensor[field]) updateField(sensor, field, v);
@@ -248,7 +252,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
     return (
       <tr
         key={s.id}
-        draggable
+        draggable={!readOnly}
         onDragStart={() => handleDragStart(s.id)}
         onDragOver={e => handleDragOver(e, s.id)}
         onDragEnd={handleDragEnd}
@@ -257,7 +261,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
         onMouseLeave={e => { if (!isDragging && !isDragOver) (e.currentTarget as HTMLElement).style.background = ''; }}
         style={{
           opacity: isDragging ? 0.4 : (updateMut.isPending && updateMut.variables?.id === s.id ? 0.6 : 1),
-          cursor: 'grab',
+          cursor: readOnly ? 'default' : 'grab',
           borderTop: isDragOver ? '2px solid var(--cyan)' : undefined,
           borderBottom: isDragOver ? 'none' : undefined,
           background: isDragOver ? 'rgba(34,197,94,.05)' : undefined,
@@ -265,19 +269,19 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
         }}
       >
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
-          <input type="checkbox" aria-label={`Select ${s.name}`} checked={selected.has(s.id)} onChange={() => toggleSelected(s.id)} />
+          {!readOnly && <input type="checkbox" aria-label={`Select ${s.name}`} checked={selected.has(s.id)} onChange={() => toggleSelected(s.id)} />}
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
-          <input type="color" value={s.color} onChange={e => updateField(s, 'color', e.target.value)} style={{ width: 28, height: 24, padding: 1, border: 'none', background: 'transparent', cursor: 'pointer' }} />
+          <input type="color" value={s.color} disabled={readOnly} onChange={e => updateField(s, 'color', e.target.value)} style={{ width: 28, height: 24, padding: 1, border: 'none', background: 'transparent', cursor: readOnly ? 'default' : 'pointer' }} />
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
-          <input key={`name-${s.id}-${s.name}`} defaultValue={s.name} onBlur={e => { if (e.target.value !== s.name) updateField(s, 'name', e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} style={CELL} />
+          <input key={`name-${s.id}-${s.name}`} defaultValue={s.name} readOnly={readOnly} onBlur={e => { if (e.target.value !== s.name) updateField(s, 'name', e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} style={CELL} />
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
-          <input key={`key-${s.id}-${s.key}`} defaultValue={s.key} onBlur={e => { if (e.target.value !== s.key) updateField(s, 'key', e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} style={CELL_MONO} />
+          <input key={`key-${s.id}-${s.key}`} defaultValue={s.key} readOnly={readOnly} onBlur={e => { if (e.target.value !== s.key) updateField(s, 'key', e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} style={CELL_MONO} />
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
-          <input key={`unit-${s.id}-${s.unit}`} defaultValue={s.unit} onBlur={e => { if (e.target.value !== s.unit) updateField(s, 'unit', e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} style={CELL} />
+          <input key={`unit-${s.id}-${s.unit}`} defaultValue={s.unit} readOnly={readOnly} onBlur={e => { if (e.target.value !== s.unit) updateField(s, 'unit', e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} style={CELL} />
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>{numField(s, 'min_val')}</td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>{numField(s, 'max_val')}</td>
@@ -286,13 +290,13 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>{numField(s, 'base_val')}</td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>{numField(s, 'decimals')}</td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
-          <select value={s.chart_type || 'sparkline'} onChange={e => updateField(s, 'chart_type', e.target.value)} style={{ ...CELL, cursor: 'pointer' }}>
+          <select value={s.chart_type || 'sparkline'} disabled={readOnly} onChange={e => updateField(s, 'chart_type', e.target.value)} style={{ ...CELL, cursor: 'pointer' }}>
             {CHART_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>{numField(s, 'sort_order')}</td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
-          <select value={s.source_type} onChange={e => {
+          <select value={s.source_type} disabled={readOnly} onChange={e => {
             const newType = e.target.value;
             onSave({ ...s, source_type: newType, source_config: '{}', device_id: '' });
           }} style={{ ...CELL, cursor: 'pointer', color: SOURCE_CATEGORY[s.source_type]?.color ?? 'var(--fg)', fontSize: 11 }}>
@@ -313,16 +317,17 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
             shortcut={shortcuts[s.id] ?? null}
             onSet={sc => onSave(s, sc)}
             onClear={() => onSave(s, null)}
+            readOnly={readOnly}
           />
         </td>
         <td style={tdStyle} onMouseDown={e => e.stopPropagation()}>
-          <button onClick={e => startConfigEdit(s, e.currentTarget)} title={describeHistoryDeadband(parseConfig(s.source_config)) ? `History deadband: ${describeHistoryDeadband(parseConfig(s.source_config))}` : 'Source config'} style={{ padding: '2px 8px', borderRadius: 3, border: '1px solid var(--border)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 10 }}>cfg{describeHistoryDeadband(parseConfig(s.source_config)) ? '*' : ''}</button>
+          {!readOnly && <button onClick={e => startConfigEdit(s, e.currentTarget)} title={describeHistoryDeadband(parseConfig(s.source_config)) ? `History deadband: ${describeHistoryDeadband(parseConfig(s.source_config))}` : 'Source config'} style={{ padding: '2px 8px', borderRadius: 3, border: '1px solid var(--border)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 10 }}>cfg{describeHistoryDeadband(parseConfig(s.source_config)) ? '*' : ''}</button>}
         </td>
         <td style={{ ...tdStyle, whiteSpace: 'nowrap' }} onMouseDown={e => e.stopPropagation()}>
           <div style={{ display: 'flex', gap: 3 }}>
             <button onClick={() => openTrend(s.id)} aria-label={`Trend ${s.name}`} style={{ padding: '2px 6px', borderRadius: 3, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 10 }}>trend</button>
-            <button onClick={() => onDuplicate(s)} aria-label={`Duplicate ${s.name}`} style={{ padding: '2px 6px', borderRadius: 3, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 10 }}>dup</button>
-            <button onClick={() => { if (confirm(`Delete ${s.name}?`)) onDelete(s.id); }} aria-label={`Delete ${s.name}`} style={{ padding: '2px 6px', borderRadius: 3, border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)', cursor: 'pointer', fontSize: 10 }}>del</button>
+            {!readOnly && <button onClick={() => onDuplicate(s)} aria-label={`Duplicate ${s.name}`} style={{ padding: '2px 6px', borderRadius: 3, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 10 }}>dup</button>}
+            {!readOnly && <button onClick={() => { if (confirm(`Delete ${s.name}?`)) onDelete(s.id); }} aria-label={`Delete ${s.name}`} style={{ padding: '2px 6px', borderRadius: 3, border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)', cursor: 'pointer', fontSize: 10 }}>del</button>}
           </div>
         </td>
       </tr>
@@ -377,7 +382,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
         <span style={{ color: 'var(--muted)', fontSize: 13 }}>{sensors.length} sources</span>
         <div style={{ display: 'flex', gap: 8 }}>
           <input placeholder="Search..." value={filter} onChange={e => setFilter(e.target.value)} style={{ ...inputStyle, width: 200 }} />
-          <button style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)' }} onClick={handleAdd} aria-label="Create new data source">+ Create Source</button>
+          {!readOnly && <button style={{ ...btnStyle, borderColor: 'var(--green)', color: 'var(--green)' }} onClick={handleAdd} aria-label="Create new data source">+ Create Source</button>}
         </div>
       </div>
       {selected.size > 0 && (
@@ -407,7 +412,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
           <thead>
             <tr>
               <th style={thStyle}>
-                <input type="checkbox" aria-label="Select all shown tags" checked={allShownSelected} onChange={toggleAllShown} />
+                {!readOnly && <input type="checkbox" aria-label="Select all shown tags" checked={allShownSelected} onChange={toggleAllShown} />}
               </th>
               <th style={thStyle}></th>
               <th style={thStyle}>name</th>
@@ -423,7 +428,7 @@ export function SensorManager({ sensors, onSave, onDelete, onAdd, onDuplicate, o
               <th style={thStyle}>sort</th>
               <th style={thStyle}>source</th>
               <th style={thStyle}>hotkey</th>
-              <th style={thStyle}>cfg</th>
+              <th style={thStyle}>{readOnly ? '' : 'cfg'}</th>
               <th style={thStyle}></th>
             </tr>
           </thead>

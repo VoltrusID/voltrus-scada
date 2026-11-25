@@ -9,6 +9,8 @@ import { WritePolicyEditor } from './components/WritePolicyEditor';
 import { useAnnotations, useCreateAnnotation, useDeleteAnnotation } from './queries/annotations';
 import { useQuery } from '@tanstack/react-query';
 import { getWritePolicy } from './api/commands';
+import { distinctColors, overlayScales, sideLabel } from './trend/overlayAxes';
+import { PEN_COLORS } from './trend/trendModel';
 
 export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, historyDetail, onDetailChange, historyAutoAgg, shortcuts, mode, onModeChange, allSensors, isAdmin, canOperate = isAdmin }: {
   sensor: SensorConfig; onBack: () => void; historyRange: string; onRangeChange: (r: string) => void;
@@ -98,15 +100,19 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
     return { safeValues, minV, maxV, avgV, pointCount: data.length };
   }, [data]);
 
-  const overlays: OverlaySeries[] = useMemo(() => {
-    if (!allSensors || overlayIds.length === 0) return [];
-    return overlayIds.map(id => {
-      const s = allSensors.find(x => x.id === id);
-      if (!s) return null;
-      const pts = overlayPoints[String(s.id)] ?? [];
-      return { data: pts, color: s.color, name: s.name, unit: s.unit };
-    }).filter(Boolean) as OverlaySeries[];
-  }, [allSensors, overlayIds, overlayPoints]);
+  // The overlaid tags, each with a colour of its own (tags often share the default one).
+  const overlayTags = useMemo(() => {
+    const shown = overlayIds.map(id => (allSensors ?? []).find(x => x.id === id)).filter((s): s is SensorConfig => !!s);
+    const colors = distinctColors(sensor.color, shown.map(s => s.color), PEN_COLORS);
+    return shown.map((s, i) => ({ sensor: s, color: colors[i] }));
+  }, [allSensors, overlayIds, sensor.color]);
+
+  const overlays: OverlaySeries[] = useMemo(() =>
+    overlayTags.map(({ sensor: s, color }) => ({ data: overlayPoints[String(s.id)] ?? [], color, name: s.name, unit: s.unit })),
+    [overlayTags, overlayPoints]);
+
+  // Which axis each overlay is drawn on (the chart assigns them the same way).
+  const overlayScaleList = useMemo(() => overlayScales(sensor.unit, overlayTags.map(t => t.sensor.unit)), [overlayTags, sensor.unit]);
 
   const sparklineSensors = useMemo(() =>
     (allSensors ?? []).filter(s => s.chart_type === 'sparkline' && s.id !== sensor.id && !overlayIds.includes(s.id)),
@@ -198,13 +204,17 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
         {/* Overlay bar */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6, flexShrink: 0, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 10, color: 'var(--muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '.05em' }}>Overlays:</span>
-          {overlayIds.map(id => {
-            const s = (allSensors ?? []).find(x => x.id === id);
-            if (!s) return null;
+          {overlayTags.map(({ sensor: s, color }, i) => {
+            const id = s.id;
+            const scale = overlayScaleList[i];
+            const pts = overlayPoints[String(id)] ?? [];
+            const last = pts.length ? pts[pts.length - 1].value : null;
             return (
-              <div key={id} style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 3, background: s.color + '20', border: `1px solid ${s.color}40`, fontSize: 10, fontFamily: "var(--font-mono)", color: s.color, cursor: 'pointer' }} onClick={() => setOverlayIds(prev => prev.filter(x => x !== id))}>
-                <div style={{ width: 6, height: 2, background: s.color, borderRadius: 1 }} />
+              <div key={id} title={`Remove ${s.name}`} style={{ display: 'flex', alignItems: 'center', gap: 3, padding: '1px 6px', borderRadius: 3, background: color + '20', border: `1px solid ${color}40`, fontSize: 10, fontFamily: "var(--font-mono)", color, cursor: 'pointer' }} onClick={() => setOverlayIds(prev => prev.filter(x => x !== id))}>
+                <div style={{ width: 6, height: 2, background: color, borderRadius: 1 }} />
                 {s.name}
+                {last != null && Number.isFinite(last) && <span style={{ color: 'var(--fg)' }}>{last.toFixed(Math.min(Math.max(s.decimals, 0), 6))}{s.unit ? ` ${s.unit}` : ''}</span>}
+                {scale && <span style={{ opacity: 0.7 }}>· {sideLabel(scale.side)}</span>}
                 <span style={{ opacity: 0.6, marginLeft: 1 }}>x</span>
               </div>
             );
@@ -235,17 +245,20 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
           </div>
         </div>
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          <TvDetailChart data={data} live={mode !== 'history'} resetKey={mode === 'history' ? `history|${historyRange}|${historyDetail ?? 'auto'}|${historyAutoAgg ?? ''}` : 'live'} color={sensor.color} warn={sensor.warn_val} crit={sensor.crit_val} unit={sensor.unit} overlays={overlays} annotations={chartAnnotations} onAnnotationClick={handleAnnotationClick} />
+          <TvDetailChart data={data} live={mode !== 'history'} resetKey={mode === 'history' ? `history|${historyRange}|${historyDetail ?? 'auto'}|${historyAutoAgg ?? ''}` : 'live'} color={sensor.color} warn={sensor.warn_val} crit={sensor.crit_val} unit={sensor.unit} overlays={overlays} annotations={chartAnnotations} onAnnotationClick={isAdmin ? handleAnnotationClick : undefined} />
 
           {/* Top-left toolbar: hint + notes toggle */}
           <div style={{ position: 'absolute', top: 8, left: 8, display: 'flex', alignItems: 'center', gap: 6, zIndex: 5 }}>
-            <div style={{
-              fontSize: 10, color: 'var(--muted)',
-              background: 'var(--card)', border: '1px solid var(--border)',
-              borderRadius: 4, padding: '2px 8px', opacity: 0.7,
-            }}>
-              Right-click to annotate
-            </div>
+            {/* Writing notes is configuration (the server refuses viewers and operators). */}
+            {isAdmin && (
+              <div style={{
+                fontSize: 10, color: 'var(--muted)',
+                background: 'var(--card)', border: '1px solid var(--border)',
+                borderRadius: 4, padding: '2px 8px', opacity: 0.7,
+              }}>
+                Right-click to annotate
+              </div>
+            )}
             {annotations.length > 0 && (
               <button
                 onClick={() => setShowAnnotationList(v => !v)}
@@ -300,13 +313,13 @@ export function SensorDetail({ sensor, onBack, historyRange, onRangeChange, hist
                       </div>
                       <div style={{ marginTop: 2, lineHeight: 1.4 }}>{ann.annotation_text}</div>
                     </div>
-                    <button
+                    {isAdmin && <button
                       onClick={() => handleDeleteAnnotation(ann.id)}
                       style={{ background: 'none', border: 'none', color: 'var(--crit)', cursor: 'pointer', fontSize: 11, padding: 2, opacity: 0.5, flexShrink: 0 }}
                       title="Delete annotation"
                     >
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-                    </button>
+                    </button>}
                   </div>
                 ))}
               </div>

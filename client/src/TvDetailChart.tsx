@@ -8,8 +8,6 @@ import {
   type IChartApi,
   type ISeriesApi,
   type LineData,
-  type LineStyleOptions,
-  type SeriesOptionsCommon,
   type Time,
   type SeriesMarker,
 } from 'lightweight-charts'
@@ -17,6 +15,7 @@ import { DataPoint } from './types'
 import { toHexColor } from './styles'
 import { bandPoints } from './historyQuery'
 import { MinMaxBand } from './minMaxBand'
+import { axisLabel, overlayScales } from './trend/overlayAxes'
 
 export interface OverlaySeries {
   data: DataPoint[]
@@ -87,6 +86,11 @@ export function planChartUpdate(o: {
   if (o.next.length === 0) return { kind: 'none' }
   if (o.keyChanged) return { kind: 'set' }
   return planSeriesUpdate(o.drawn, o.next)
+}
+
+/** A series' axis and crosshair labels: two decimals and its own unit. */
+function unitPriceFormat(unit: string) {
+  return { type: 'custom' as const, minMove: 0.01, formatter: (p: number) => axisLabel(p, unit) }
 }
 
 interface Props {
@@ -176,7 +180,8 @@ export function TvDetailChart({
       lastValueVisible: true,
       priceLineVisible: false,
       title: unit || undefined,
-    } as LineStyleOptions & SeriesOptionsCommon)
+      priceFormat: unitPriceFormat(unit),
+    })
     seriesRef.current = series
 
     // Min/max band of aggregated history, drawn behind the line
@@ -210,12 +215,6 @@ export function TvDetailChart({
         axisLabelVisible: true,
       })
     }
-
-    chart.applyOptions({
-      localization: {
-        priceFormatter: (p: number) => p.toFixed(2) + (unit ? ' ' + unit : ''),
-      },
-    })
 
     // Track when user manually scrolls/pans the time scale
     chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
@@ -300,19 +299,29 @@ export function TvDetailChart({
     overlayRefs.current.forEach(s => chart.removeSeries(s))
     overlayRefs.current = []
 
-    overlayRefs.current = overlays.map(ov => {
+    // One axis per unit (trend/overlayAxes.ts): small-range tags are not flattened by a big one.
+    const scales = overlayScales(unit, overlays.map(ov => ov.unit))
+    chart.applyOptions({
+      leftPriceScale: { visible: scales.some(sc => sc.side === 'left'), borderColor: '#27272a', scaleMargins: { top: 0.1, bottom: 0.1 } },
+    })
+    overlayRefs.current = overlays.map((ov, i) => {
+      const scale = scales[i]
       const s = chart.addSeries(LineSeries, {
         color: toHexColor(ov.color),
         lineWidth: 1,
         lineType: LineType.Curved,
-        lastValueVisible: false,
+        // A scale of its own draws no axis: no label on another unit's axis, the legend shows its value.
+        lastValueVisible: scale.side !== 'own',
         priceLineVisible: false,
-        title: ov.name,
-      } as LineStyleOptions & SeriesOptionsCommon)
+        title: scale.side === 'own' ? '' : ov.name,
+        priceScaleId: scale.id,
+        priceFormat: unitPriceFormat(ov.unit),
+      })
+      if (scale.side === 'own') chart.priceScale(scale.id).applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } })
       s.setData(toTvData(ov.data))
       return s
     })
-  }, [overlays])
+  }, [overlays, unit])
 
   // Update annotation markers natively on the chart
   useEffect(() => {

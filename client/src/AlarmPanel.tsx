@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { SourceBadge } from './components/SourceBadge'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
@@ -19,6 +19,8 @@ import { detectFlood } from './alarmFlood'
 import { fmtTs } from './styles'
 import type { Alarm } from './types'
 import { useRole } from './RoleContext'
+import { useSensors } from './queries'
+import { tidyAlarmMessage } from './alarmFormat'
 
 const FILTER_TABS = ['all', 'active', 'acknowledged', 'shelved'] as const
 const PANEL_TABS = ['alarms', 'analytics', 'audit'] as const
@@ -440,6 +442,9 @@ export function AlarmPanel({ onClose }: Props) {
   const [shelfTarget, setShelfTarget] = useState<number | null>(null)
   const [historyTarget, setHistoryTarget] = useState<number | null>(null)
   const { data: alarms = NO_ALARMS, isLoading, isError, refetch } = useAlarms(filter)
+  // Tag decimals by key, to round the numbers of messages stored before the server did.
+  const { data: tags } = useSensors(true)
+  const decimalsByKey = useMemo(() => new Map((tags ?? []).map(s => [s.key, s.decimals])), [tags])
   const ackMut = useAcknowledgeAlarm()
   const ackAllMut = useAcknowledgeAllAlarms()
   const unshelfMut = useUnshelfAlarm()
@@ -585,7 +590,7 @@ export function AlarmPanel({ onClose }: Props) {
                           <span style={{ fontSize: timeSize, color: 'var(--muted)' }}>{fmtTs(alarm.triggered_at * 1000)}</span>
                         </div>
                         <div style={{ fontSize: sourceSize, fontWeight: 600, marginBottom: 4 }}>{alarm.source_name}</div>
-                        <div style={{ fontSize: msgSize, color: 'var(--muted)', marginBottom: 8 }}>{alarm.message}</div>
+                        <div style={{ fontSize: msgSize, color: 'var(--muted)', marginBottom: 8 }}>{tidyAlarmMessage(alarm.message, decimalsByKey.get(alarm.source_key))}</div>
 
                         {/* Action buttons */}
                         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
