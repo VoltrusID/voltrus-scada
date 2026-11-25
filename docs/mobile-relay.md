@@ -104,13 +104,17 @@ The site then clears that push token (`Storage::clear_mobile_push_token`).
 
 ```json
 {"type": "request", "id": "<relay id>", "method": "POST", "path": "/api/v1/alarms/12/acknowledge",
- "query": "status=active", "headers": {"authorization": "Bearer vdt_…", "content-type": "application/json", "accept-language": "id"}, "body": "<text or null>"}
+ "query": "status=active", "headers": {"authorization": "Bearer vdt_…", "content-type": "application/json", "accept-language": "id"}, "body": "<text or null>",
+ "client": "3fa9c01e"}
 ```
 
 The site runs it against its own router in process (`edition::app_router`), as if
 it arrived on its HTTP port from the relay, and answers with a `response` frame
-within 15 s. Forwarded requests carry the peer address 192.0.2.1, so rate limits
-and the security log count them as the relay's. Only these
+within 15 s. `client` is the first 8 hex digits of SHA-256 of
+`{site_id}:{phone address}`; the site turns it into the request's peer address
+(its own /64 in `2001:db8::/32`), so rate limits and login lockouts apply per
+phone address without the site learning the address. A request without it
+carries 192.0.2.1. Only these
 headers are forwarded: `authorization`, `content-type`, `accept-language`. Only
 these routes are forwarded; both the relay and the site check the list and answer
 anything else with 403 `{"code": "path_not_allowed"}`:
@@ -141,7 +145,7 @@ The relay answers itself with:
 * 503 `{"code": "site_offline"}` when the site is not connected,
 * 504 `{"code": "site_timeout"}` when the site did not answer within 15 s,
 * 403 `{"code": "path_not_allowed"}`,
-* 429 `{"code": "rate_limited"}` above 120 requests a minute per site and
+* 429 `{"code": "rate_limited"}` above 300 requests a minute per site and
   client address.
 
 Otherwise it returns the site's status, `content-type` and body unchanged.
@@ -174,7 +178,7 @@ Every message carries `data`:
 {"v": 1, "site_id": "…", "alarm_id": 12, "event": "raised", "priority": "warning", "ts": 1764000000}
 ```
 
-Data-only messages (`_contentAvailable: true`, no title or body) tell the app to
+Data-only messages (`contentAvailable: true`, no title or body; priority `normal` on iOS) tell the app to
 remove that alarm's notification.
 
 Texts are Indonesian when the target's `lang` is `id`, English otherwise.

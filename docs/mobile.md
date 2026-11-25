@@ -78,18 +78,18 @@ revokes it. A refused token is answered with 401 and `"code": "device_revoked"`.
 | Route | Who | |
 |---|---|---|
 | `POST /api/v1/mobile/pairings` | a signed-in person (not an API key or a phone) | A QR code: `link`, `payload` (`site`, `urls`, `relay`, `code`), `expires_at` |
-| `POST /api/v1/mobile/pair` | anyone with a code | `{code, name, platform, push_token?, lang?, min_priority?}` → `{token, device, username, role, site}` (201). An unknown, used or expired code: 401 `pairing_invalid`. A full site: 409 `device_limit` |
+| `POST /api/v1/mobile/pair` | anyone with a code | `{code, name, platform, push_token?, lang?, min_priority?}` → `{token, device, username, role, site, urls, relay?}` (201). An unknown, used or expired code: 401 `pairing_invalid`. A full site: 409 `device_limit` |
 | `POST /api/v1/mobile/devices` | a signed-in person | Pair the phone that signed in with this session (same body without `code`) |
 | `GET /api/v1/mobile/devices` | any user | One's own phones; `?all=true` every phone (admins) |
 | `DELETE /api/v1/mobile/devices/{id}` | owner or admin | Remove a phone |
 | `GET`, `PATCH`, `DELETE /api/v1/mobile/device` | a phone | The phone itself: read; change `push_token` (`null` turns pushes off), `min_priority`, `lang`, `name`; remove itself |
-| `GET /api/v1/mobile/summary` | any user | Site name, branding, the user's rights, alarm counts, key tag values |
+| `GET /api/v1/mobile/summary` | any user | Site name, branding (`logo` is a `data:` URL or a link), the user's rights, alarm counts, key tag values, and `urls` and `relay` as in the QR code, so a phone learns new addresses and a later licence |
 | `GET`, `PUT /api/v1/mobile/settings` | admin, demo, integration | The settings above |
 
 The app uses the existing routes for the rest: `GET /api/v1/alarms`,
 `POST /api/v1/alarms/{id}/acknowledge` (recorded with origin `mobile`; when an
-add-on requires an electronic signature for it, the phone is refused and the alarm
-is acknowledged at the HMI).
+add-on requires an electronic signature for it, the phone gets 403
+`signature_not_possible` and the alarm is acknowledged at the HMI).
 
 The QR code is the text `voltrus-scada://pair?d=` followed by the payload as
 base64url JSON:

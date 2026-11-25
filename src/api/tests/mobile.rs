@@ -115,6 +115,8 @@ async fn a_qr_code_pairs_one_phone_once() {
     assert_eq!(summary["user"]["can_acknowledge"], true);
     assert_eq!(summary["push"]["licensed"], false);
     assert_eq!(summary["site"], "Voltrus SCADA");
+    assert_eq!(summary["relay"], serde_json::Value::Null);
+    assert!(summary["urls"].is_array());
 
     let (status, _) = bearer(&app, "GET", "/api/v1/alarms?status=active", token, None).await;
     assert_eq!(status, StatusCode::OK);

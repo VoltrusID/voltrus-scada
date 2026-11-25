@@ -106,6 +106,11 @@ pub struct PairedResponse {
     pub username: String,
     pub role: String,
     pub site: String,
+    /// The site's other addresses (admin settings), for reaching it later.
+    pub urls: Vec<String>,
+    /// The push relay, when the site is licensed for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay: Option<PairingRelay>,
 }
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -247,6 +252,19 @@ fn encode_link(payload: &PairingPayload) -> String {
     )
 }
 
+impl From<&crate::edition::MobileRelay> for PairingRelay {
+    fn from(r: &crate::edition::MobileRelay) -> Self {
+        Self {
+            url: r.url.clone(),
+            site_id: r.site_id.clone(),
+        }
+    }
+}
+
+fn pairing_relay(state: &AppState) -> Option<PairingRelay> {
+    licensed_relay(state).as_ref().map(PairingRelay::from)
+}
+
 /// The relay to put in a QR code: only when the tier includes `mobile_push`.
 fn licensed_relay(state: &AppState) -> Option<crate::edition::MobileRelay> {
     if !state.tier().mobile_push() {
@@ -314,6 +332,8 @@ async fn pair_device(
             username: user.username.clone(),
             role: user.role.clone(),
             site: site_name(state, &settings).await,
+            urls: pairing_urls(&settings, None),
+            relay: pairing_relay(state),
         }),
     )
         .into_response())
@@ -345,10 +365,7 @@ pub async fn create_pairing(
         v: 1,
         site: site_name(&state, &settings).await,
         urls: pairing_urls(&settings, body.origin.as_deref()),
-        relay: relay.as_ref().map(|r| PairingRelay {
-            url: r.url.clone(),
-            site_id: r.site_id.clone(),
-        }),
+        relay: relay.as_ref().map(PairingRelay::from),
         code,
     };
     Ok(Json(PairingResponse {
@@ -689,6 +706,8 @@ pub async fn summary(
             "relay_connected": relay.as_ref().is_some_and(|r| r.connected),
             "details": settings.push_details,
         },
+        "urls": pairing_urls(&settings, None),
+        "relay": relay.as_ref().map(PairingRelay::from),
         "alarms": {
             "unacknowledged": active.len(),
             "unresolved": unresolved,
