@@ -35,8 +35,8 @@ mod tests;
 
 pub use export::export_project_yaml;
 pub use import::{
-    Env, Guard, apply_import, apply_import_guarded, apply_import_with_env, plan_import,
-    plan_import_guarded, plan_import_with_env, process_env,
+    Env, Guard, apply_import, apply_import_as, apply_import_guarded, apply_import_guarded_as,
+    apply_import_with_env, plan_import, plan_import_guarded, plan_import_with_env, process_env,
 };
 pub use io::{
     is_single_file_path, parse_project_yaml, read_project, to_yaml, write_project,

@@ -23,6 +23,9 @@ pub struct Ctx {
     pub sim_name_by_id: HashMap<i64, String>,
     pub sim_id_by_name: HashMap<String, i64>,
     pub warnings: Vec<String>,
+    /// Read each screen's published 2D rows (what operators see) instead of
+    /// the draft (`export --published`, docs/version-history.md).
+    pub published: bool,
 }
 
 /// An entity as stored, with its database handle and identity.
@@ -149,7 +152,14 @@ fn load_ctx(conn: &Connection) -> Result<Ctx> {
 
 /// Read every section from the database.
 pub fn read_all(conn: &Connection) -> Result<(Snapshot, Ctx)> {
+    read_all_with(conn, false)
+}
+
+/// [`read_all`]; with `published`, screens' 2D rows are the published ones
+/// (the draft for a screen never published).
+pub fn read_all_with(conn: &Connection, published: bool) -> Result<(Snapshot, Ctx)> {
     let mut ctx = load_ctx(conn)?;
+    ctx.published = published;
     let mut snap = Snapshot::new();
     for sec in spec::SECTIONS {
         let mut rows = match &sec.kind {
@@ -567,7 +577,7 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
     let mut scada_eq: ByScreen = BTreeMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT screen_id, equipment_id, equipment_type, equipment_name, x, y, width, height, rotation, sensor_bindings, config FROM scada_equipment ORDER BY screen_id, equipment_id",
+            &format!("SELECT screen_id, equipment_id, equipment_type, equipment_name, x, y, width, height, rotation, sensor_bindings, config FROM {} ORDER BY screen_id, equipment_id", scada_source("scada_equipment", "equipment_id, equipment_type, equipment_name, x, y, width, height, rotation, sensor_bindings, config", ctx.published)),
         )?;
         let mut rows = stmt.query([])?;
         while let Some(r) = rows.next()? {
@@ -670,7 +680,14 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
     }
     let mut scada_conn = group(
         conn,
-        "SELECT screen_id, connection_id, from_equipment, to_equipment, connection_type, waypoints FROM scada_connections ORDER BY screen_id, connection_id",
+        &format!(
+            "SELECT screen_id, connection_id, from_equipment, to_equipment, connection_type, waypoints FROM {} ORDER BY screen_id, connection_id",
+            scada_source(
+                "scada_connections",
+                "connection_id, from_equipment, to_equipment, connection_type, waypoints",
+                ctx.published
+            )
+        ),
         |r| {
             let mut m = Mapping::new();
             let mut w = Vec::new();
@@ -752,6 +769,17 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
         }
     }
 
+    // The name of each screen's published version (docs/version-history.md);
+    // informational, an import never publishes from it.
+    let mut published_versions: BTreeMap<String, String> = BTreeMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT s.screen_id, v.name FROM design_screen_state s JOIN design_versions v ON v.id = s.version_id",
+    ) {
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            published_versions.insert(lenient_text(r, 0)?, lenient_text(r, 1)?);
+        }
+    }
     let mut ids: Vec<String> = devices.keys().cloned().collect();
     for k in membership
         .keys()
@@ -841,6 +869,9 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
         if !scada.is_empty() {
             m.insert(text("scada"), Value::Mapping(scada));
         }
+        if let Some(v) = published_versions.remove(&id) {
+            m.insert(text("published_version"), text(v));
+        }
         if let Some(row) = finish(sec, m, Some(Sql::Text(id)), ctx) {
             out.push(row);
         }
@@ -851,6 +882,18 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
 // ── Settings singleton ──
 
 /// Key of a SCADA symbol's faceplate mapping (role -> tag) in its `config`.
+/// The table expression a screen's 2D rows are read from: the draft table,
+/// or the published rows of published screens and the draft of the others.
+fn scada_source(table: &str, columns: &str, published: bool) -> String {
+    if !published {
+        return table.to_string();
+    }
+    format!(
+        "(SELECT screen_id, {columns} FROM {table}_published WHERE screen_id IN (SELECT screen_id FROM design_screen_state)
+          UNION ALL SELECT screen_id, {columns} FROM {table} WHERE screen_id NOT IN (SELECT screen_id FROM design_screen_state))"
+    )
+}
+
 pub const FACEPLATE_MAP: &str = "faceplateMap";
 
 /// Key of the tag (an id in the database, a ref in the project) that animates
@@ -1009,10 +1052,16 @@ pub fn doc_from_snapshot(snap: &Snapshot, warnings: Vec<String>) -> ProjectDoc {
 /// sessions, licence activation) is not part of a project, and every secret is
 /// replaced by a `${ENV}` reference.
 pub async fn export_project_yaml(storage: &Storage) -> Result<ProjectDoc> {
+    export_project_yaml_with(storage, false).await
+}
+
+/// [`export_project_yaml`]; with `published`, each screen's 2D rows are the
+/// published ones (docs/version-history.md).
+pub async fn export_project_yaml_with(storage: &Storage, published: bool) -> Result<ProjectDoc> {
     storage
-        .with_conn(|conn| {
+        .with_conn(move |conn| {
             let tx = conn.transaction()?;
-            let (snap, ctx) = read_all(&tx)?;
+            let (snap, ctx) = read_all_with(&tx, published)?;
             Ok(doc_from_snapshot(&snap, ctx.warnings))
         })
         .await

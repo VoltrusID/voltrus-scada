@@ -143,7 +143,9 @@ pub async fn rollback(
         )
         .await;
 
-    match state.storage.rollback_to_snapshot(id).await {
+    let actor = super::design_history::actor(&user, api_key.is_some(), None, "rollback")
+        .with_note(format!("Snapshot {id} restored"));
+    match state.storage.rollback_to_snapshot_as(id, &actor).await {
         Ok(true) => {
             let mut details = format!("Rolled the configuration back to snapshot #{id}");
             if let Some(signed) = &signed {

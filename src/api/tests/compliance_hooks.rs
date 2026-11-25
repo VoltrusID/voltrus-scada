@@ -1313,3 +1313,118 @@ async fn equipment_changes_to_write_policies_need_the_signature() {
             .is_none()
     );
 }
+
+/// Publishing a Designer screen is the `design_publish` signed action: the
+/// author signs the request and a second admin signs the approval (21 CFR
+/// Part 11), and MCP cannot sign (docs/version-history.md).
+#[tokio::test]
+async fn a_screen_publish_and_its_approval_are_signed() {
+    let mut f = fixture(TestEdition::default()).await;
+    add_user(&f.state.storage, "reviewer", "reviewer-pass-1", "admin").await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let reviewer = cookie(&f.app, "reviewer", "reviewer-pass-1").await;
+    let rows = json!({"equipment": [{"equipment_id": "a", "equipment_type": "label", "equipment_name": "",
+        "x": 0, "y": 0, "width": 10, "height": 10, "rotation": 0, "sensor_bindings": "[]", "config": "{}"}],
+        "connections": []});
+    let (status, _) = send_request(
+        &f.app,
+        "PUT",
+        "/api/v1/screens/s1/scada-layout",
+        None,
+        Some(&admin),
+        Some(rows),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Direct publish: 428, then published once signed.
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/publish",
+        None,
+        Some(&admin),
+        Some(json!({"message": "m"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body["signature_required"]["action"], "design_publish");
+    drain(&mut f.audit);
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/publish",
+        None,
+        Some(&admin),
+        Some(json!({"message": "m", "signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["version"]["signature"], "sig-1");
+    let record = f.edition.records.lock().unwrap()[0].clone();
+    assert_eq!(record.action, SignedAction::DesignPublish);
+    assert_eq!(record.resource, "screen:s1:publish");
+    assert_eq!(record.details["stage"], "publish");
+    let entries = drain(&mut f.audit);
+    let e = entries
+        .iter()
+        .find(|e| e.action == "design_publish")
+        .unwrap();
+    assert!(e.details.as_deref().unwrap().contains("signature=sig-1"));
+
+    // With approval required: the request and the approval each signed.
+    let (status, _) = send_request(
+        &f.app,
+        "PUT",
+        "/api/v1/settings/design-history",
+        None,
+        Some(&admin),
+        Some(json!({"approval": "required"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/publish",
+        None,
+        Some(&admin),
+        Some(json!({"name": "r2", "signature": signature("admin")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "pending");
+    let (status, _) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/versions/r2/approve",
+        None,
+        Some(&reviewer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED);
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/screens/s1/versions/r2/approve",
+        None,
+        Some(&reviewer),
+        Some(json!({"signature": signature("reviewer-pass-1")})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let stages: Vec<String> = f
+        .edition
+        .records
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| format!("{}:{}", r.username, r.details["stage"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        stages,
+        ["admin:publish", "admin:request", "reviewer:approve"]
+    );
+    assert_eq!(body["version"]["signature"], "sig-3");
+}

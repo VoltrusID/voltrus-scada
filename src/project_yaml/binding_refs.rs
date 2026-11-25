@@ -206,26 +206,55 @@ pub fn rewrite_after_rename(
     if renamed.is_empty() {
         return Ok(0);
     }
-    let rows: Vec<(String, String, String)> = {
-        let mut stmt = conn.prepare(
-            "SELECT screen_id, equipment_id, config FROM scada_equipment WHERE config LIKE '%\"bindings\"%'",
-        )?;
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .collect::<Result<_, _>>()?
-    };
     let f = |r: &str| renamed.get(r).map(|n| n.to_string());
+    // The draft is logged in the design history; the published copy follows
+    // too (a rename is a ref fix-up, not a design change), so operators'
+    // screens keep their bindings.
+    let before_objects = crate::storage::design_history::read_objects(
+        conn,
+        crate::storage::design_history::Scope::Project,
+    )?;
     let mut n = 0;
-    for (screen, equipment, config) in rows {
-        let Ok(mut v) = serde_json::from_str::<Value>(&config) else {
-            continue;
+    for table in ["scada_equipment", "scada_equipment_published"] {
+        let rows: Vec<(String, String, String)> = {
+            let Ok(mut stmt) = conn.prepare(&format!(
+                "SELECT screen_id, equipment_id, config FROM {table} WHERE config LIKE '%\"bindings\"%'"
+            )) else {
+                continue;
+            };
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+                .collect::<Result<_, _>>()?
         };
-        if rewrite_config(&mut v, &f) {
-            conn.execute(
-                "UPDATE scada_equipment SET config = ?1 WHERE screen_id = ?2 AND equipment_id = ?3",
-                rusqlite::params![v.to_string(), screen, equipment],
-            )?;
-            n += 1;
+        for (screen, equipment, config) in rows {
+            let Ok(mut v) = serde_json::from_str::<Value>(&config) else {
+                continue;
+            };
+            if rewrite_config(&mut v, &f) {
+                conn.execute(
+                    &format!(
+                        "UPDATE {table} SET config = ?1 WHERE screen_id = ?2 AND equipment_id = ?3"
+                    ),
+                    rusqlite::params![v.to_string(), screen, equipment],
+                )?;
+                if table == "scada_equipment" {
+                    n += 1;
+                }
+            }
         }
+    }
+    if n > 0 {
+        use crate::storage::design_history as h;
+        let after_objects = h::read_objects(conn, h::Scope::Project)?;
+        let note = renamed
+            .iter()
+            .map(|(a, b)| format!("{a} → {b}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        h::append(
+            conn,
+            h::diff_objects(&before_objects, &after_objects),
+            &h::DesignActor::system("tag_rename").with_note(note),
+        )?;
     }
     Ok(n)
 }

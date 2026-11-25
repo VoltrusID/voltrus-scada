@@ -62,6 +62,7 @@ export {
 export {
   useScadaEquipment,
   useScadaConnections,
+  useScadaRows,
   useSaveScadaEquipment,
   useSaveScadaConnections,
 } from './scada'

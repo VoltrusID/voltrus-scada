@@ -313,7 +313,7 @@ and leaves everything else.
 ## Import
 
 ```
-voltrus project import <PATH> [--mode merge|replace] [--dry-run]
+voltrus project import <PATH> [--mode merge|replace] [--dry-run] [--publish]
 ```
 
 The whole import runs in one SQLite transaction. The document is validated
@@ -331,6 +331,21 @@ first; any error aborts before anything is written.
 * **`--dry-run`**: the same code path, then roll back. It prints one line per
   change (`+ create`, `~ update` with the fields that differ, `- delete`) and the
   totals. Values are never printed.
+* **Screens are drafts** ([version-history.md](version-history.md)): an import
+  writes the 2D rows of the screens it lists as their draft and logs every
+  changed widget, connection, equipment type, instance and faceplate in the
+  design history as one batch. Operators keep seeing each screen's published
+  version until someone publishes; **`--publish`** (REST `?publish=1`, MCP
+  `publish: true`) publishes every screen the import touched in the same
+  transaction.
+
+Export writes the draft, the engineering source. `voltrus project export
+<PATH> --published` (REST `GET /api/v1/project/export?published=1`, MCP
+`project_export_yaml {published: true}`) writes each published screen's
+published rows instead, for shipping exactly what runs. A published screen
+carries `published_version: <name>` in either export; import ignores it (a
+project never publishes behind the operators' back) and it never shows as a
+change.
 
 Validation covers: the format version, unknown fields and top-level keys, types,
 required fields, duplicate keys (and duplicate children inside one entity),

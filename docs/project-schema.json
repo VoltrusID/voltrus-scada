@@ -1445,6 +1445,12 @@
             "null"
           ]
         },
+        "published_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "scada": {
           "additionalProperties": false,
           "properties": {

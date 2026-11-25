@@ -1,5 +1,6 @@
 #![allow(clippy::needless_range_loop)]
 use super::Storage;
+use super::design_history::{self, DesignActor};
 use anyhow::{Context, Result};
 
 use crate::models::ConfigSnapshot;
@@ -156,7 +157,22 @@ impl Storage {
     }
 
     pub async fn rollback_to_snapshot(&self, snapshot_id: i64) -> Result<bool> {
+        self.rollback_to_snapshot_as(
+            snapshot_id,
+            &DesignActor::system("rollback").with_note(format!("Snapshot {snapshot_id} restored")),
+        )
+        .await
+    }
+
+    /// [`Self::rollback_to_snapshot`]; the design objects it rewrites are
+    /// logged in the design history as `actor`.
+    pub async fn rollback_to_snapshot_as(
+        &self,
+        snapshot_id: i64,
+        actor: &DesignActor,
+    ) -> Result<bool> {
         let conn = self.conn.clone();
+        let actor = actor.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
 
@@ -174,7 +190,7 @@ impl Storage {
             let tx = conn
                 .unchecked_transaction()
                 .context("Begin rollback tx failed")?;
-            apply_snapshot(&tx, &snapshot_data)?;
+            apply_snapshot(&tx, &snapshot_data, &actor)?;
             tx.commit().context("Commit rollback tx failed")?;
             Ok(true)
         })
@@ -204,7 +220,12 @@ impl Storage {
             let tx = conn
                 .unchecked_transaction()
                 .context("Begin go-live rollback tx failed")?;
-            apply_snapshot(&tx, &snapshot_data)?;
+            apply_snapshot(
+                &tx,
+                &snapshot_data,
+                &DesignActor::system("rollback")
+                    .with_note(format!("Go-live of {device_id} rolled back")),
+            )?;
             let affected = tx
                 .execute(
                     "UPDATE devices SET simulation_mode = 1 WHERE id = ?1",
@@ -275,7 +296,18 @@ impl Storage {
 /// keeps the token it has now (a flow the snapshot brings back that does not
 /// exist now has none), so a rollback cannot bring back a token that was
 /// rotated because it leaked.
-fn apply_snapshot(tx: &rusqlite::Transaction<'_>, snapshot_data: &str) -> Result<()> {
+fn apply_snapshot(
+    tx: &rusqlite::Transaction<'_>,
+    snapshot_data: &str,
+    actor: &DesignActor,
+) -> Result<()> {
+    design_history::tracked(tx, design_history::Scope::Project, actor, || {
+        apply_snapshot_rows(tx, snapshot_data)
+    })?;
+    Ok(())
+}
+
+fn apply_snapshot_rows(tx: &rusqlite::Transaction<'_>, snapshot_data: &str) -> Result<()> {
     let snapshot: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(snapshot_data).context("Parse snapshot JSON failed")?;
 

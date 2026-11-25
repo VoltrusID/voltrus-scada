@@ -4,6 +4,50 @@ Changes in behaviour that can need action when upgrading. The repository has
 no changelog file: release notes are generated from pull requests, so this
 page is where such changes are written down. Newest release first.
 
+## Unreleased
+
+### Designer version history: change log, versions, draft and published
+
+Phase 3 of the Designer ([version-history.md](version-history.md)). The
+upgrade adds the tables `design_changes`, `design_batches`, `design_versions`,
+`design_screen_state`, `scada_equipment_published` and
+`scada_connections_published`; existing rows are not touched and the log
+starts empty (history begins with the first write after the upgrade).
+
+Nothing changes for screens nobody publishes: a screen that was never
+published shows its draft to everybody, as before. Once a screen is
+published:
+
+* **Operators see the published screen.** `GET …/scada-equipment`,
+  `…/scada-connections` and `…/scada-layout` answer roles that cannot
+  configure (operator, viewer, read-only API keys) with the published rows.
+  Configure roles (admin, demo, integration keys) get the draft, or the
+  published rows with `?published=1`; the web 2D view and 3D twin ask for
+  them. Scripts with an integration key that read rows to show them to
+  operators should add `?published=1`. Every GET answer has `view: "draft"` or
+  `"published"`.
+* **Every write changes the draft.** REST layout `PUT`s, MCP, project import
+  and equipment propagation are unchanged for clients; their changes appear to
+  operators when the screen is published. A project import publishes only
+  with `?publish=1` / `--publish` / MCP `publish: true`.
+* Turn the two-stage flow off with `PUT /api/v1/settings/design-history
+  {"publishing": false}`: everybody sees the draft again.
+
+Other changes visible to API clients:
+
+* Layout `PUT`s answer `{ok, revision, seq, batch}` and accept `base_seq` next
+  to `base_revision`; a 409 also has `seq` and `changes_since` (who changed
+  what). The shapes of the old fields are unchanged.
+* `voltrus project export` writes `published_version: <name>` on published
+  screens; import ignores it, older servers refuse it as an unknown field
+  (export with an older version, or remove the line, to go back).
+* A new signed action `design_publish` for editions with electronic
+  signatures ([edition-hooks.md](edition-hooks.md)).
+* The change log grows with every save. Consecutive saves of one widget by one
+  person within 60 s are one row, and rows older than 30 days are squashed to
+  one per object per hour; set `keep_days` to prune (default: keep).
+* Git sync needs the `git` command line on the server only if you turn it on.
+
 ## v0.53.0
 
 ### New tags have no alarm limits; alarms clear when their limit goes

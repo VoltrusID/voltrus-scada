@@ -11,6 +11,7 @@ use rusqlite::Connection;
 use serde_json::{Value, json};
 
 use super::Storage;
+use super::design_history::{self, DesignActor};
 use crate::equipment_types::resolve::{self, ModbusDevice, World};
 use crate::equipment_types::{EquipmentInstance, EquipmentType};
 use crate::models::ScadaEquipment;
@@ -280,9 +281,14 @@ impl Storage {
         .await
     }
 
-    pub async fn delete_equipment_type(&self, id: &str) -> Result<TypeDelete> {
+    pub async fn delete_equipment_type(&self, id: &str, actor: &DesignActor) -> Result<TypeDelete> {
         let id = id.to_string();
+        let actor = actor.clone();
         self.with_conn(move |conn| {
+            let tx = conn.transaction().context("begin transaction")?;
+            let conn = &tx;
+            let before =
+                design_history::read_project_objects(conn, design_history::EQUIPMENT_TYPE)?;
             let users: Vec<String> = conn
                 .prepare("SELECT name FROM equipment_instances WHERE type_id = ?1 ORDER BY name")?
                 .query_map([&id], |r| r.get(0))?
@@ -293,6 +299,9 @@ impl Storage {
             let n = conn
                 .execute("DELETE FROM equipment_types WHERE id = ?1", [&id])
                 .context("delete equipment type")?;
+            let after = design_history::read_project_objects(conn, design_history::EQUIPMENT_TYPE)?;
+            design_history::append(conn, design_history::diff_objects(&before, &after), &actor)?;
+            tx.commit().context("commit")?;
             Ok(if n == 0 {
                 TypeDelete::NotFound
             } else {
@@ -312,10 +321,13 @@ impl Storage {
         &self,
         name: &str,
         dry_run: bool,
+        actor: &DesignActor,
     ) -> Result<Option<InstanceDelete>> {
         let name = name.to_string();
+        let actor = actor.clone();
         self.with_conn(move |conn| {
             let tx = conn.transaction().context("begin transaction")?;
+            let before = design_history::read_objects(&tx, design_history::Scope::Project)?;
             let Some(inst) = read_instances(&tx, Some(&name), None)?.into_iter().next() else {
                 return Ok(None);
             };
@@ -381,6 +393,8 @@ impl Storage {
                 )
                 .context("unbind widget")?;
             }
+            let after = design_history::read_objects(&tx, design_history::Scope::Project)?;
+            design_history::append(&tx, design_history::diff_objects(&before, &after), &actor)?;
             tx.commit().context("commit")?;
             Ok(Some(out))
         })

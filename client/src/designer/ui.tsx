@@ -68,6 +68,15 @@ const PATHS: Record<string, React.ReactNode> = {
   layers: <><path d="M12 3 2 8l10 5 10-5z" /><path d="M2 13l10 5 10-5" /></>,
   trash: <><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14" /></>,
   copy: <><rect x="8" y="8" width="12" height="12" /><path d="M16 8V4H4v12h4" /></>,
+  history: <><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5M12 7v5l3 2" /></>,
+  publish: <><path d="M12 15V3M7 8l5-5 5 5" /><path d="M4 15v5h16v-5" /></>,
+  version: <><circle cx="6" cy="6" r="2.5" /><circle cx="6" cy="18" r="2.5" /><circle cx="18" cy="9" r="2.5" /><path d="M6 8.5v7M18 11.5c0 3-4 3.5-10 5" /></>,
+  compare: <><rect x="3" y="4" width="7" height="16" rx="1" /><rect x="14" y="4" width="7" height="16" rx="1" /><path d="M12 2v20" strokeDasharray="2 2" /></>,
+  plus: <path d="M12 5v14M5 12h14" />,
+  minus: <path d="M5 12h14" />,
+  edit: <><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M13.5 6.5l4 4" /></>,
+  revert: <><path d="M9 14 4 9l5-5" /><path d="M4 9h11a5 5 0 0 1 0 10h-4" /></>,
+  check: <path d="M5 12l5 5 9-10" />,
 }
 
 export function Icon({ name, size = 14 }: { name: keyof typeof PATHS | string; size?: number }) {
@@ -170,6 +179,77 @@ export function SmallBtn({ children, onClick, title, danger, disabled, testId }:
       border: `1px solid ${danger ? 'color-mix(in srgb, var(--crit) 45%, transparent)' : D.line}`, background: 'transparent',
       color: danger ? 'var(--crit)' : 'var(--fg)', opacity: disabled ? 0.4 : 1,
     }}>{children}</button>
+  )
+}
+
+/** A modal with a form (publish, new version, confirm a revert). Escape cancels; keys do not reach the Designer. */
+export function Dialog({ title, children, actions, onCancel, testId, width = 460 }: {
+  title: React.ReactNode; children: React.ReactNode; actions: React.ReactNode; onCancel: () => void; testId?: string; width?: number
+}) {
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); onCancel(); return }
+      // Typing in the form is fine; the Designer's shortcuts must not see it.
+      e.stopPropagation()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onCancel])
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 90, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,.45)' }}>
+      <div role="dialog" aria-modal="true" aria-labelledby="designer-form-title" data-testid={testId} style={{
+        width, maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 48px)', overflow: 'auto', padding: 16, borderRadius: 6, background: 'var(--card)', color: 'var(--fg)',
+        border: `1px solid ${D.line}`, boxShadow: '0 12px 40px rgba(0,0,0,.5)', display: 'flex', flexDirection: 'column', gap: 12, fontSize: D.font,
+        userSelect: 'text',
+      }}>
+        <div id="designer-form-title" style={{ fontSize: 14, fontWeight: 700 }}>{title}</div>
+        {children}
+        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>{actions}</div>
+      </div>
+    </div>
+  )
+}
+
+/** A dialog button: primary (accent), danger, or plain. */
+export function DialogBtn({ children, onClick, primary, danger, disabled, testId, autoFocus }: {
+  children: React.ReactNode; onClick: () => void; primary?: boolean; danger?: boolean; disabled?: boolean; testId?: string; autoFocus?: boolean
+}) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} data-testid={testId} autoFocus={autoFocus} style={{
+      height: 26, padding: '0 12px', borderRadius: 3, cursor: disabled ? 'default' : 'pointer', fontSize: D.font, fontWeight: primary ? 600 : 400,
+      border: `1px solid ${danger ? 'color-mix(in srgb, var(--crit) 45%, transparent)' : primary ? D.accent : D.line}`, opacity: disabled ? 0.5 : 1,
+      background: primary ? D.accentBg : 'transparent', color: danger ? 'var(--crit)' : primary ? D.accent : 'var(--fg)',
+    }}>{children}</button>
+  )
+}
+
+/** Tabs in a pane header. */
+export function Tabs<T extends string>({ tabs, value, onChange, testId }: {
+  tabs: { id: T; label: string; icon?: string; disabled?: boolean; badge?: React.ReactNode }[]; value: T; onChange: (t: T) => void; testId?: string
+}) {
+  return (
+    <div role="tablist" data-testid={testId} style={{ display: 'flex', alignItems: 'stretch', gap: 0, height: '100%' }}>
+      {tabs.map(t => (
+        <button key={t.id} type="button" role="tab" aria-selected={value === t.id} disabled={t.disabled} data-testid={`${testId ?? 'tab'}-${t.id}`}
+          onClick={() => onChange(t.id)} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 5, padding: '0 9px', border: 'none', cursor: t.disabled ? 'default' : 'pointer',
+            borderBottom: `2px solid ${value === t.id ? D.accent : 'transparent'}`, background: 'transparent', opacity: t.disabled ? 0.4 : 1,
+            color: value === t.id ? 'var(--fg)' : 'var(--text-dim)', fontSize: 10.5, fontWeight: 700, letterSpacing: '.07em', textTransform: 'uppercase',
+          }}>
+          {t.icon && <Icon name={t.icon} size={12} />}{t.label}{t.badge}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** A small rounded label (status, source). */
+export function Badge({ children, color = 'var(--text-dim)', title, testId }: { children: React.ReactNode; color?: string; title?: string; testId?: string }) {
+  return (
+    <span title={title} data-testid={testId} style={{
+      display: 'inline-flex', alignItems: 'center', height: 16, padding: '0 5px', borderRadius: 3, fontSize: 10, fontWeight: 600, whiteSpace: 'nowrap',
+      color, border: `1px solid color-mix(in srgb, ${color} 45%, transparent)`, background: `color-mix(in srgb, ${color} 10%, transparent)`,
+    }}>{children}</span>
   )
 }
 

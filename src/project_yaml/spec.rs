@@ -960,9 +960,10 @@ pub const TAG_FIELDS: &[Field] = &[
     Field::o("id_hint", Int).virt(),
 ];
 
-/// Input-only fields: accepted when parsing, never emitted, ignored when
-/// comparing an entity with the database.
-pub const INPUT_ONLY: &[&str] = &["id_hint"];
+/// Fields ignored when comparing an entity with the database: input-only ones
+/// (accepted when parsing, never emitted) and `published_version`, which
+/// export writes for information and import never acts on.
+pub const INPUT_ONLY: &[&str] = &["id_hint", "published_version"];
 
 // ── Screens ──
 
@@ -1036,6 +1037,9 @@ pub const SCREEN_FIELDS: &[Field] = &[
     Field::d("canvas", List(SCREEN_CANVAS), Arr).lean(),
     Field::d("twin", Obj(SCREEN_TWIN), Map).lean(),
     Field::d("scada", Obj(SCREEN_SCADA), Map).lean(),
+    // Written by export: the name of the screen's published version. Never
+    // read back (an import does not publish), see docs/version-history.md.
+    Field::o("published_version", Text).virt(),
 ];
 
 // ── Settings singleton ──

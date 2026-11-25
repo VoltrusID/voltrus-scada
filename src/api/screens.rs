@@ -131,6 +131,13 @@ pub async fn delete_screen(
         .delete_screen_data_sources_by_screen(&id)
         .await?;
     state.storage.delete_device(&id).await?;
+    // The published copy goes with the screen; its change log and versions
+    // stay (docs/version-history.md).
+    let screen = id.clone();
+    state
+        .storage
+        .design_tx(move |c| crate::storage::design_history::forget_published(c, &screen))
+        .await?;
 
     state.audit_logger.log(crate::security::AuditEvent {
         action: "delete_screen".to_string(),

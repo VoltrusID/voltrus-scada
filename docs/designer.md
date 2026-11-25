@@ -2,8 +2,8 @@
 
 Design for the browser screen editor that replaces the 2D view's Edit mode:
 panes, bindings, a flat ISA-101 library, version history, live collaboration,
-mobile layouts and a widget SDK. Phases 1 and 2 are built; the later phases are
-designs, grounded in the code as it is on `main` after #29.
+mobile layouts and a widget SDK. Phases 1, 2 and 3 are built; the later phases
+are designs, grounded in the code as it is on `main` after #29.
 
 Order: **1** editor, **2** symbol library and equipment types, **2b** widget SDK,
 **3** version history, **4** collaboration, **5** mobile and PWA. Version history
@@ -382,112 +382,99 @@ Custom widgets are Web Components with a JSON manifest:
 The existing add-on widget registry (`client/src/edition/widgets.ts`) stays for
 first-party edition widgets; the SDK is for project widgets.
 
-## Phase 3: version history
+## Phase 3: version history (built)
+
+The reference is [version-history.md](version-history.md); this section is the
+design summary and what the Designer shows.
 
 ### Data model
 
-An **object** is a screen or a widget on a screen (later: faceplates, equipment
-types, custom widgets). New tables:
+An **object** is a widget or connection of a screen, or a project-wide
+equipment type, equipment instance or faceplate. Tables:
 
-```sql
--- one row per change of one object; never updated or deleted
-CREATE TABLE design_changes (
-  seq        INTEGER PRIMARY KEY AUTOINCREMENT,
-  screen_id  TEXT NOT NULL,
-  object_id  TEXT NOT NULL,        -- equipment_id, connection_id, or '' for the screen
-  kind       TEXT NOT NULL,        -- 'add' | 'update' | 'remove'
-  before     TEXT,                 -- row JSON before (null on add)
-  after      TEXT,                 -- row JSON after (null on remove)
-  user_id    INTEGER, username TEXT NOT NULL,
-  at_ms      INTEGER NOT NULL,
-  batch      TEXT NOT NULL         -- one save or one collaborative transaction
-);
-CREATE INDEX design_changes_obj ON design_changes(screen_id, object_id, seq);
+* `design_changes`: one row per change of one object, never updated except by
+  squashing: `seq`, `batch`, `screen_id` (`""` for project objects),
+  `object_type`, `object_id`, `kind` (`add`/`update`/`remove`), `before` and
+  `after` (row JSON), `username`, `source` (user, designer, api_key, mcp,
+  copilot, flow, cli, system), `operation` (save, import, equipment,
+  faceplate, revert, rollback, tag_rename, wizard), `at_ms`, `squashed`.
+  `design_batches` holds each batch's note.
+* `design_versions`: named snapshots of a screen's draft (`upto_seq`, rows,
+  message, author) with their publish and review state.
+* `scada_equipment_published`, `scada_connections_published` and
+  `design_screen_state`: what operators see.
 
-CREATE TABLE design_versions (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  screen_id  TEXT NOT NULL,
-  name       TEXT NOT NULL, message TEXT NOT NULL DEFAULT '',
-  upto_seq   INTEGER NOT NULL,     -- the version is the screen as of this change
-  snapshot   TEXT NOT NULL,        -- rows JSON, so restore does not replay
-  username   TEXT NOT NULL, at_ms INTEGER NOT NULL,
-  published  INTEGER NOT NULL DEFAULT 0
-);
-```
+The log is written on the server: every writer (layout `PUT`s, project
+import, equipment propagation, faceplates, snapshot rollback, revert, tag
+renames, the FEED wizard) diffs the objects it may touch before and after its
+write inside its own transaction and appends one row per change under one
+batch id. REST, MCP, CLI and the Designer are logged alike, with no client
+change; the audit log's line per save names the batch.
 
-The change log is written on the server: `PUT .../scada-layout` and the
-per-table `PUT`s already receive whole sets, so the handler diffs the new set
-against the stored one by id inside the same transaction and appends one row per
-added, changed or removed object, all with one `batch` id. REST, MCP, project
-import and the Designer are logged alike, with no client change. The audit log
-keeps its one line per save, pointing at the batch.
+**Optimistic locking with `seq`.** A screen's head is the highest `seq`
+touching it; `GET …/scada-layout` returns it as `seq` beside the phase 1
+`revision`. Layout `PUT`s take `base_seq` and/or `base_revision`; a mismatch is
+409 with the current head and `changes_since` (the batches after `base_seq`:
+who, when, which objects), so the Designer shows who changed what before the
+user picks reload or overwrite. Writers without a base keep overwriting,
+logged like any batch.
 
-**Optimistic locking moves to `seq`.** Phase 1's revision is a hash of the rows.
-Once `design_changes` exists, a screen's revision is the highest `seq` touching
-it (`screen_head`), and every layout `PUT` takes `base_seq` instead of (or as
-well as, during the transition) `base_revision`: a mismatch is 409 with the head
-and the batches since `base_seq`, so the Designer can show *who* changed *what*
-before the user picks reload or overwrite. Writers without a base (old MCP
-clients, scripts) keep overwriting, logged like any batch.
-
-**Retention.** Saves from people are rare, but a phase 4 flush every 2 s while
-someone drags would write thousands of rows an hour. Flush batches from the same
-author on the same object within 60 s are squashed into one row (the first
-`before`, the last `after`) when the next flush lands, and a nightly job squashes
-unnamed batches older than 30 days to one per object per hour. Rows that a named
-version's `upto_seq` points at, and published batches, are never squashed; the
-snapshots in `design_versions` do not depend on the log, so squashing never
-breaks a restore. Retention is a site setting (default: keep squashed history
-forever, about one row per edited object per hour).
+**Retention.** Consecutive saves of one object by one author through one
+source within 60 s become one row (first `before`, last `after`); a daily job
+squashes rows older than 30 days to one per object per hour. Rows a version
+points at are never merged across, and versions keep snapshots, so squashing
+never breaks a restore. Both and a `keep_days` prune are site settings
+(default: keep squashed history forever).
 
 ### Draft and published
 
-`scada_equipment`/`scada_connections` stay the **draft** (what editors see and
-save). Publishing copies the draft into `scada_equipment_published` /
-`scada_connections_published` (same columns) and records a `design_versions` row
-with `published = 1`. Operators read the published rows; a screen never published
-falls back to the draft, so existing installations behave as today. A setting
-per site can turn the two-stage flow off.
-
-Who writes and reads which side:
+`scada_equipment`/`scada_connections` stay the draft. Publishing copies a
+version into the published tables. Operators read the published rows; a
+screen never published falls back to the draft, so existing installations
+behave as before; the site setting `publishing: false` turns the two-stage
+flow off. Who writes and reads which side (details in
+[version-history.md](version-history.md#draft-and-published)):
 
 | Path | Writes | Reads |
 |---|---|---|
-| Designer, old editor | draft | draft |
-| REST `PUT` layout routes, MCP screen tools, the copilot's apply | draft (the copilot proposes, an engineer applies; publishing is a separate, explicit step) | draft, or published with `?published=1` |
-| Project import | draft for every screen it touches; a plan option *publish after import* publishes those screens in the same transaction (default off, so an import never changes what operators see unasked) | — |
-| Project export | — | **draft** (the project file is the engineering source, like a git working tree). The published state is not a second copy in the file: each screen carries `published_version: <name>` when one exists, and `export --published` writes the published rows instead, for shipping exactly what runs |
-| 2D runtime, 3D twin, mobile | — | published, falling back to draft |
+| Designer, old editor, native console editor | draft | draft |
+| REST layout `PUT`s, MCP, scripts, copilot | draft (publishing is a separate, explicit step) | draft, or published with `?published=1` |
+| Roles that cannot configure (operator, viewer, read-only keys) | — | always published |
+| Project import | draft; *publish* option publishes the touched screens in the same transaction (default off) | — |
+| Project export | — | draft; `--published` / `?published=1` writes what operators see; each published screen carries `published_version: <name>` (never acted on by import) |
+| 2D runtime | — | published, falling back to draft |
 
-`*_published` tables are never exported as such and never imported: importing a
-project never publishes behind the operators' back, and a restored project's
-screens start unpublished-equals-draft until someone publishes.
+Publishing needs a configure role; with `approval: required` it files a
+request that another administrator approves (four eyes). Editions that need
+21 CFR Part 11 signatures get the signed action `design_publish` with
+`stage` `publish`, `request` or `approve` ([edition-hooks.md](edition-hooks.md)).
 
 ### API
 
 | Route | What |
 |---|---|
-| `GET /api/v1/screens/{id}/history?object=&before_seq=&limit=` | change log, newest first |
-| `GET /api/v1/screens/{id}/blame` | per object: last change (who, when, batch) |
-| `GET/POST /api/v1/screens/{id}/versions` | list; create `{name, message}` from the current draft |
-| `GET /api/v1/screens/{id}/versions/{v}` | snapshot |
-| `GET /api/v1/screens/{id}/diff?from=v1&to=v2\|draft` | per object: added, removed, changed fields |
-| `POST /api/v1/screens/{id}/revert` | `{to: v}` whole screen, or `{object, to_seq}` one object; written as new changes, never by deleting history (rules for one object below) |
-| `POST /api/v1/screens/{id}/publish` | `{name, message}`; needs the configure permission and, when the site requires it, an electronic signature (existing `signature/` flow) |
-| `GET /api/v1/screens/{id}/scada-equipment?published=1` | what operators see |
+| `GET /api/v1/screens/{id}/history?object=&object_type=&user=&batch=&before_seq=&limit=` | change log, newest first |
+| `GET /api/v1/screens/{id}/blame` | per object: last change (who, when, batch, how many), who added it |
+| `GET /api/v1/screens/{id}/design-status` | head, published version, changes since, pending requests |
+| `GET/POST /api/v1/screens/{id}/versions`, `GET …/versions/{v}` | list; create `{name, message}` from the current draft; one with its rows |
+| `GET /api/v1/screens/{id}/diff?from=&to=` | per object: added, removed, changed fields; both states as project YAML and rows |
+| `GET /api/v1/screens/{id}/state?at=` | the rows of `draft`, `published`, `seq:<n>` or a version |
+| `POST /api/v1/screens/{id}/revert` | whole screen or objects, written as new changes |
+| `POST /api/v1/screens/{id}/publish`, `…/versions/{v}/approve`, `…/reject` | publish, or request and review |
+| `GET /api/v1/design/history`, `POST /api/v1/design/revert` | project objects (types, instances, faceplates) |
+| `GET/PUT /api/v1/settings/design-history`, `/api/v1/design/git`, `POST /api/v1/design/git/sync` | settings and git sync |
 
-MCP gets `screen_history`, `screen_diff`, `screen_publish` (admin, propose then
-apply, like `project_apply_import`).
+MCP: `list_changes`, `list_versions`, `create_version`, `diff_versions`,
+`revert_screen`, `publish_screen` (propose, then apply; admin).
 
 **Reverting one object** must not leave dangling connections or half groups:
 
-* Reverting a widget to a state where it did not exist (undoing its add) removes
-  it and, in the same batch, every connection that ends on it; the response lists
-  them and the History pane shows them as part of the revert.
-* Reverting a connection to a state where it existed, when one of its end widgets
-  no longer exists, is refused (409 naming the missing widget) unless the request
-  also restores that widget (`{objects: [...]}` reverts several objects as one
-  batch; the UI offers *also restore P-101*).
+* Reverting a widget to a state where it did not exist removes it and, in the
+  same batch, every connection that ends on it; the response lists them.
+* Reverting a connection to a state where it existed, when one of its end
+  widgets no longer exists, is refused (409 `dangling_connection` naming the
+  missing widgets) unless the request also restores them (`{objects: [...]}`
+  reverts several objects as one batch; the Designer offers *Also restore …*).
 * A restored widget whose `config.group` names a group with no other member is
   restored ungrouped; `config.z` is kept and re-normalised with the rest of the
   stacking order on the next save.
@@ -495,22 +482,52 @@ apply, like `project_apply_import`).
 
 ### Designer UI
 
-A *History* pane (per screen and per selected object): timeline grouped by batch,
-avatar and time, click to preview that state on the canvas (read-only overlay),
-*Revert this object*, *Revert screen to here*. *Versions*: name + message,
-*Compare* opens a split view: the two canvases side by side with added (green),
-removed (red) and changed (amber) outlines, and a YAML diff of the rows in project
-format (refs, not ids) underneath. The title bar shows *Draft · 3 changes since
-v12* and a *Publish* button.
+The title bar shows the draft/published state (*Draft · 3 changes since
+v12*, *Published v12*, *Not published*, *Publish pending approval*) and a
+*Publish* button (*Request publish* when approval is required) with name,
+message and what changes. A *History* pane: the timeline grouped by batch
+(avatar, user, source, time, note), filtered by the selected object or user;
+clicking a batch previews that state on the canvas read-only; *Revert this
+object*, *Revert screen to here*. *Versions*: create, list with status,
+*Compare* any two (or against draft or published) in a split view of the two
+canvases with added (green), removed (red) and changed (amber) outlines and a
+YAML diff underneath; revert to or publish a version; approve or reject
+requests. The properties of a selected component show its blame. A save
+conflict names who changed what since you loaded.
 
-### Git sync (optional)
+Code: `client/src/designer/history.tsx` (History pane, blame line),
+`versions.tsx` (Versions tab, publish and review dialogs), `diffView.tsx`
+(compare view), `StageView.tsx` (read-only render of a state with outlines),
+`historyModel.ts` (batching, labels, revert requests, line diff; no React),
+`client/src/queries/designHistory.ts`.
 
-A site setting points at a local bare repo or a remote with a deploy key. On
-publish, the server runs the project exporter for that screen (and anything it
-references) into `screens/<id>.yaml` and commits with the version message, author
-from the user. Pull is manual (*Import from git*) through the existing project
-import plan, so a merge conflict shows as an import plan, never as a half-written
-screen. No git on the operator path.
+Screenshots (WTP showcase, taken by the smoke run):
+
+![History pane previewing a past state](images/designer-phase3/16-history-pane.webp)
+![Blame of the selected component](images/designer-phase3/17-blame.webp)
+![Versions](images/designer-phase3/18-versions.webp)
+![Compare a version with the draft: canvases and YAML diff](images/designer-phase3/19-compare-diff.webp)
+![Publish dialog](images/designer-phase3/20-publish-dialog.webp)
+![Published indicator](images/designer-phase3/21-published-indicator.webp)
+![Reverting a connection whose pump is gone](images/designer-phase3/22-revert-dangling.webp)
+
+### Git sync
+
+Optional: the published project is committed and pushed to a configured
+remote (GitHub, Gitea, a bare repository) on publish or on demand, through the
+`git` command line with the credential encrypted at rest. Pull is manual
+through the project import plan, so a merge conflict shows as an import plan,
+never as a half-written screen. No git on the operator path. See
+[version-history.md](version-history.md#git-sync-optional).
+
+### Native console
+
+The native Designer and the console's mimic editor save through the same
+routes, so their saves are logged and their conflicts are still 409s;
+operators on the console get published rows by their role. Follow-ups:
+the `X-Voltrus-Client` header and `base_seq` on native saves, `?published=1`
+in the console's run mode, and a History pane
+([version-history.md](version-history.md#native-console)).
 
 ## Phase 4: live collaboration
 
@@ -645,11 +662,26 @@ site.
 * Server: `equipment_types::tests`, `api::tests::equipment_types` (CRUD, 409s,
   instantiate, propagation, materialisation on save, library), the MCP tool
   tests and the project round trip with types and instances.
+* Server, phase 3: `api::tests::design_history` (log on every write path:
+  layout `PUT`s, import, equipment, faceplates, rollback, tag rename; 409 with
+  `changes_since`; squashing and retention; versions; diff and YAML; revert
+  with dangling connections and groups; draft and published per role; the
+  approval step; permissions; export `--published` and import `publish`; git
+  sync to a local bare repository), `api::tests::mcp::mcp_version_history_tools`,
+  `api::tests::compliance_hooks::a_screen_publish_and_its_approval_are_signed`,
+  `design_git::tests`.
+* Client, phase 3: `client/tests/historyModel.test.ts` (line diff, batches,
+  labels, revert requests), `client/tests/flow/designerHistory.test.tsx`
+  (History pane and filters, revert with *Also restore*, publish with approval
+  and signature, compare with the YAML diff, runtime reads published, conflict
+  names who changed what).
 * `client/e2e/designer.smoke.mjs`: browser run against the WTP showcase: open,
   drag a tag in, bind an expression, undo/redo, marquee, align, group, save,
   reload and check the rows over REST, preview, light theme; then drop the Pump
   type, place the seeded P-101A and a new instance, check both show live run
-  states, save and check the rows over REST, open the faceplate in preview. Needs a server, `plant-sim.py` and `playwright-core`; not
+  states, save and check the rows over REST, open the faceplate in preview;
+  then edit, record a version, edit again, compare, revert, publish, and check
+  an operator sees the published screen while the draft moves on. Needs a server, `plant-sim.py` and `playwright-core`; not
   part of `npm test`. `scripts/smoke-designer.sh <binary>` runs it end to end
   (simulator, server, seed, headless Chrome); CI runs that against the release
   binary in the embedded-UI job.

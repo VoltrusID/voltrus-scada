@@ -135,10 +135,16 @@ saying so.
 | `update_equipment_type` | write | Change a type; every instance follows. Dry run by default: lists each affected instance with the tags created or updated (and which fields), registers, flows and widgets; `dry_run: false` saves. |
 | `instantiate_equipment` | write (destructive) | One line per piece of equipment: `{name, type, device}` binds existing tags by key pattern; `base` on a Modbus device creates the missing registers and tags; `overrides` per role. A dry run unless `dry_run: false`: it can change existing tags (limits, alarms, write policy) and flows, and `changes` lists each attribute before and after. |
 | `list_equipment_instances` | read | Instances with the tag of every role (`resolved.roles`: key, ref, tag id, status). |
+| `list_changes` | read (configure roles) | The change log of a screen (or of the project objects with `screen_id: ""`): who (user, key, MCP, import…), when, what, batch; filter by object, type, user; `include_rows` for before/after. See [version-history.md](version-history.md). |
+| `list_versions` | read (configure roles) | A screen's named versions (status, current) and its publish status: head seq, published version, changes since. |
+| `create_version` | write | Record the screen's draft as a named version with a message. Changes nothing operators see. |
+| `diff_versions` | read (configure roles) | Compare two states (`draft`, `published`, `seq:<n>`, a version): added, removed, changed fields per object, and both as project YAML. Default: published → draft. |
+| `revert_screen` | write (destructive) | Put a screen or some objects back to an earlier state (`to`, `to_seq`, `object`, `objects`), written as new changes; a removed widget takes its connections along, a connection whose widget is gone is refused unless that widget is restored too. Draft only. |
+| `publish_screen` | **admin** | Make the draft (or a version) what operators see. Propose first (the diff and whether approval is needed), then `apply: true`; with approval required it files a request an administrator approves in the Designer. An edition that wants publishing signed refuses MCP. |
 | `import_catalog_template` | **admin** | Download a catalog template, check its sha256 and store it. Takes no URL. |
-| `project_export_yaml` | **admin** | The whole configuration as one `voltrus-project/1` YAML document (secrets as `${ENV}` references). |
+| `project_export_yaml` | **admin** | The whole configuration as one `voltrus-project/1` YAML document (secrets as `${ENV}` references); `published: true` writes each screen's published rows. |
 | `project_plan_import` | **admin** | Dry run of a project import: what would be created, updated and deleted. Writes nothing. |
-| `project_apply_import` | **admin** | Import a project (`mode` merge or replace) in one transaction, after a rollback snapshot. |
+| `project_apply_import` | **admin** | Import a project (`mode` merge or replace) in one transaction, after a rollback snapshot. Screens change as drafts; `publish: true` also publishes the screens it touched. Logged in the design history as source `mcp`. |
 
 `write_tag`, `delete_device`, `delete_tag` and `project_apply_import` ask for
 confirmation first (see [Guardrails](#guardrails)), and `confirm_action` carries

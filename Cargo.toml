@@ -70,7 +70,7 @@ s7 = []
 scripts = ["dep:rquickjs"]
 
 [dependencies]
-tokio = { version = "=1.52.1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "time"] }
+tokio = { version = "=1.52.1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "time", "process"] }
 bytes = "1"
 tokio-modbus = { version = "=0.16.1", default-features = false, features = ["tcp", "tcp-server"], optional = true }
 axum = { version = "=0.8.9", features = ["ws", "multipart"] }

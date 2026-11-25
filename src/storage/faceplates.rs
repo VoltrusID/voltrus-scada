@@ -3,9 +3,13 @@
 use anyhow::Context;
 
 use super::Storage;
+use super::design_history::{self, DesignActor};
 use crate::faceplate::{Faceplate, FaceplateRole};
 
-fn load(conn: &rusqlite::Connection, id: Option<&str>) -> anyhow::Result<Vec<Faceplate>> {
+pub(super) fn load(
+    conn: &rusqlite::Connection,
+    id: Option<&str>,
+) -> anyhow::Result<Vec<Faceplate>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, kind, description FROM faceplates WHERE ?1 IS NULL OR id = ?1 ORDER BY name, id",
     )?;
@@ -61,11 +65,24 @@ impl Storage {
     /// Insert or replace a definition with its roles. `create` refuses an id
     /// that exists (false), an update refuses one that does not (false).
     pub async fn save_faceplate(&self, f: &Faceplate, create: bool) -> anyhow::Result<bool> {
+        self.save_faceplate_as(f, create, &DesignActor::system("faceplate"))
+            .await
+    }
+
+    /// [`Self::save_faceplate`], logged in the design history as `actor`.
+    pub async fn save_faceplate_as(
+        &self,
+        f: &Faceplate,
+        create: bool,
+        actor: &DesignActor,
+    ) -> anyhow::Result<bool> {
         let conn = self.conn.clone();
         let f = f.clone();
+        let actor = actor.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let tx = conn.unchecked_transaction()?;
+            let before = design_history::read_project_objects(&tx, design_history::FACEPLATE)?;
             let exists: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM faceplates WHERE id = ?1)",
                 [&f.id],
@@ -93,6 +110,8 @@ impl Storage {
                     rusqlite::params![f.id, r.role, r.label, r.kind, r.required as i64, i as i64],
                 )?;
             }
+            let after = design_history::read_project_objects(&tx, design_history::FACEPLATE)?;
+            design_history::append(&tx, design_history::diff_objects(&before, &after), &actor)?;
             tx.commit()?;
             Ok(true)
         })
@@ -101,12 +120,25 @@ impl Storage {
     }
 
     pub async fn delete_faceplate(&self, id: &str) -> anyhow::Result<bool> {
+        self.delete_faceplate_as(id, &DesignActor::system("faceplate"))
+            .await
+    }
+
+    /// [`Self::delete_faceplate`], logged in the design history as `actor`.
+    pub async fn delete_faceplate_as(&self, id: &str, actor: &DesignActor) -> anyhow::Result<bool> {
         let conn = self.conn.clone();
         let id = id.to_string();
+        let actor = actor.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
-            conn.execute("DELETE FROM faceplate_roles WHERE faceplate_id = ?1", [&id])?;
-            Ok(conn.execute("DELETE FROM faceplates WHERE id = ?1", [&id])? > 0)
+            let tx = conn.unchecked_transaction()?;
+            let before = design_history::read_project_objects(&tx, design_history::FACEPLATE)?;
+            tx.execute("DELETE FROM faceplate_roles WHERE faceplate_id = ?1", [&id])?;
+            let n = tx.execute("DELETE FROM faceplates WHERE id = ?1", [&id])?;
+            let after = design_history::read_project_objects(&tx, design_history::FACEPLATE)?;
+            design_history::append(&tx, design_history::diff_objects(&before, &after), &actor)?;
+            tx.commit()?;
+            Ok(n > 0)
         })
         .await
         .context("Task join failed")?

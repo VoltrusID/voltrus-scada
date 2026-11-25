@@ -16,6 +16,7 @@ mod config_snapshots;
 mod csv_import;
 pub(crate) mod data;
 pub(crate) mod data_sources;
+pub(crate) mod design_history;
 pub(crate) mod device_templates;
 #[cfg(feature = "dnp3")]
 mod dnp3_devices;
@@ -1426,6 +1427,58 @@ pub fn create_router(state: AppState) -> Router {
                 "/api/v1/screens/{id}/scada-layout",
                 put(layouts::save_scada_layout),
             )
+            // Version history (docs/version-history.md): reads and writes are
+            // for the roles that configure screens.
+            .route(
+                "/api/v1/screens/{id}/history",
+                get(design_history::screen_history),
+            )
+            .route(
+                "/api/v1/screens/{id}/blame",
+                get(design_history::screen_blame),
+            )
+            .route(
+                "/api/v1/screens/{id}/design-status",
+                get(design_history::screen_status),
+            )
+            .route(
+                "/api/v1/screens/{id}/versions",
+                get(design_history::list_versions).post(design_history::post_version),
+            )
+            .route(
+                "/api/v1/screens/{id}/versions/{v}",
+                get(design_history::get_version),
+            )
+            .route(
+                "/api/v1/screens/{id}/versions/{v}/approve",
+                post(design_history::post_approve),
+            )
+            .route(
+                "/api/v1/screens/{id}/versions/{v}/reject",
+                post(design_history::post_reject),
+            )
+            .route("/api/v1/screens/{id}/state", get(design_history::get_state))
+            .route("/api/v1/screens/{id}/diff", get(design_history::get_diff))
+            .route(
+                "/api/v1/screens/{id}/revert",
+                post(design_history::post_revert),
+            )
+            .route(
+                "/api/v1/screens/{id}/publish",
+                post(design_history::post_publish),
+            )
+            .route(
+                "/api/v1/design/history",
+                get(design_history::project_history),
+            )
+            .route(
+                "/api/v1/design/revert",
+                post(design_history::post_project_revert),
+            )
+            .route(
+                "/api/v1/settings/design-history",
+                get(design_history::get_settings),
+            )
             .route(
                 "/api/v1/data-sources",
                 post(data_sources::create_data_source),
@@ -1530,6 +1583,18 @@ pub fn create_router(state: AppState) -> Router {
             get(settings::get_mcp_settings).put(settings::update_mcp_settings),
         )
         .route("/api/v1/seed", post(auth::seed))
+        .route(
+            "/api/v1/settings/design-history",
+            put(design_history::put_settings),
+        )
+        .route(
+            "/api/v1/design/git",
+            get(design_history::get_git).put(design_history::put_git),
+        )
+        .route(
+            "/api/v1/design/git/sync",
+            post(design_history::post_git_sync),
+        )
         .route("/api/v1/project/export", get(project::export_project))
         .route(
             "/api/v1/telemetry",

@@ -65,6 +65,11 @@ interface Props {
   toolbarSlotSetter?: (slot: React.ReactNode) => void
   /** Opens this screen in the Voltrus Designer (beta). */
   onOpenDesigner?: () => void
+  /**
+   * Edit mode was entered or left. The owner then passes the draft rows
+   * (edit) or the published ones (run); `loaded` is false until they arrive.
+   */
+  onEditModeChange?: (editing: boolean) => void
 }
 
 type Selection = { kind: 'widget' | 'connection'; id: string } | null
@@ -101,7 +106,7 @@ const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.25, 1.5, 2]
 
 export const ScadaView: React.FC<Props> = ({
   sensors, activeScreen, scadaEquipment, scadaConnections, loaded,
-  onSave, onSensorClick, isAdmin, toolbarSlotSetter, onOpenDesigner,
+  onSave, onSensorClick, isAdmin, toolbarSlotSetter, onOpenDesigner, onEditModeChange,
 }) => {
   const { canOperate } = useRole()
   const { data: faceplateDefs = [] } = useFaceplates()
@@ -149,6 +154,12 @@ export const ScadaView: React.FC<Props> = ({
       setSaving(false)
     }
   }, [sensors, onSave])
+
+  // Tell the owner which rows to pass: the draft while editing, the published screen otherwise.
+  const editModeCb = useRef(onEditModeChange)
+  editModeCb.current = onEditModeChange
+  useEffect(() => { editModeCb.current?.(editMode) }, [editMode])
+  useEffect(() => () => editModeCb.current?.(false), [])
 
   // Latest values for the unmount auto-save below.
   const latest = useRef({ dirty, layout, saveLayout })
@@ -322,7 +333,7 @@ export const ScadaView: React.FC<Props> = ({
   // ── Keyboard ──
 
   useEffect(() => {
-    if (!editMode) return
+    if (!editMode || !loaded) return
     const onKey = (e: KeyboardEvent) => {
       if (isTyping(e.target)) return
       const mod = e.ctrlKey || e.metaKey
@@ -356,7 +367,7 @@ export const ScadaView: React.FC<Props> = ({
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [editMode, selectedWidget, handleSave, deleteSelection, pasteWidget, zoomBy])
+  }, [editMode, loaded, selectedWidget, handleSave, deleteSelection, pasteWidget, zoomBy])
 
   // Warn before closing the tab with unsaved work.
   useEffect(() => {
@@ -521,7 +532,14 @@ export const ScadaView: React.FC<Props> = ({
               {connectFrom ? 'Now click the target equipment · Esc to cancel' : 'Click the source equipment'}
             </div>
           )}
-          {editMode && layout.widgets.length === 0 && (
+          {editMode && !loaded && (
+            // Switching to the draft: no edits until it is here, or a save would be based on the published rows.
+            <div data-testid="scada-loading-draft" style={{
+              position: 'absolute', inset: 0, zIndex: 6, display: 'grid', placeItems: 'center', color: 'var(--muted)', fontSize: 13,
+              background: 'color-mix(in srgb, var(--bg) 55%, transparent)',
+            }}>Loading the draft…</div>
+          )}
+          {editMode && loaded && layout.widgets.length === 0 && (
             <div style={{
               position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none',
               color: 'var(--muted)', fontSize: 13, textAlign: 'center', lineHeight: 1.6,

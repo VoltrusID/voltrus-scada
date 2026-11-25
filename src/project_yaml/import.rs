@@ -20,6 +20,7 @@ use super::secrets;
 use super::spec::{self, Child, Field, Kind, Pk, Plain, Section, Stamp, Ty};
 use super::validate;
 use crate::storage::Storage;
+use crate::storage::design_history::{self, DesignActor};
 
 /// Where `${ENV}` references are resolved from.
 pub type Env = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -53,7 +54,16 @@ pub async fn plan_import_guarded(
     mode: Mode,
     guard: Guard,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, false, process_env(), Some(guard)).await
+    run_async(
+        storage,
+        doc,
+        mode,
+        false,
+        process_env(),
+        Some(guard),
+        &default_actor(),
+    )
+    .await
 }
 
 /// [`apply_import`] with a [`Guard`].
@@ -63,7 +73,40 @@ pub async fn apply_import_guarded(
     mode: Mode,
     guard: Guard,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, true, process_env(), Some(guard)).await
+    apply_import_guarded_as(storage, doc, mode, guard, &default_actor()).await
+}
+
+/// [`apply_import_guarded`], logged in the design history as `actor`.
+pub async fn apply_import_guarded_as(
+    storage: &Storage,
+    doc: &ProjectDoc,
+    mode: Mode,
+    guard: Guard,
+    actor: &DesignActor,
+) -> Result<ImportPlan> {
+    run_async(storage, doc, mode, true, process_env(), Some(guard), actor).await
+}
+
+/// [`apply_import`]; the design objects it changes (screens' widgets and
+/// connections, equipment types and instances, faceplates) are logged in the
+/// design history as one batch by `actor`.
+pub async fn apply_import_as(
+    storage: &Storage,
+    doc: &ProjectDoc,
+    mode: Mode,
+    actor: &DesignActor,
+    publish: bool,
+) -> Result<ImportPlan> {
+    let doc = doc.clone();
+    let actor = actor.clone();
+    let env = process_env();
+    storage
+        .with_conn(move |conn| run(conn, &doc, mode, true, &*env, None, &actor, publish))
+        .await
+}
+
+fn default_actor() -> DesignActor {
+    DesignActor::system("import")
 }
 
 pub async fn plan_import_with_env(
@@ -72,7 +115,7 @@ pub async fn plan_import_with_env(
     mode: Mode,
     env: Env,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, false, env, None).await
+    run_async(storage, doc, mode, false, env, None, &default_actor()).await
 }
 
 pub async fn apply_import_with_env(
@@ -81,7 +124,7 @@ pub async fn apply_import_with_env(
     mode: Mode,
     env: Env,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, true, env, None).await
+    run_async(storage, doc, mode, true, env, None, &default_actor()).await
 }
 
 async fn run_async(
@@ -91,10 +134,12 @@ async fn run_async(
     write: bool,
     env: Env,
     guard: Option<Guard>,
+    actor: &DesignActor,
 ) -> Result<ImportPlan> {
     let doc = doc.clone();
+    let actor = actor.clone();
     storage
-        .with_conn(move |conn| run(conn, &doc, mode, write, &*env, guard))
+        .with_conn(move |conn| run(conn, &doc, mode, write, &*env, guard, &actor, false))
         .await
 }
 
@@ -105,6 +150,7 @@ struct Work {
     existing: Option<Row>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     conn: &mut Connection,
     doc: &ProjectDoc,
@@ -112,6 +158,8 @@ fn run(
     write: bool,
     env: &(dyn Fn(&str) -> Option<String> + Send + Sync),
     guard: Option<Guard>,
+    actor: &DesignActor,
+    publish: bool,
 ) -> Result<ImportPlan> {
     let tx = conn.transaction().context("begin transaction")?;
     let (snap, mut ctx) = export::read_all(&tx)?;
@@ -147,6 +195,8 @@ fn run(
         changes: Vec::new(),
         warnings,
         expanded,
+        design_batch: None,
+        published: Vec::new(),
     };
     let mut work: Vec<Work> = Vec::new();
     let mut secret_errors: Vec<Issue> = Vec::new();
@@ -266,6 +316,7 @@ fn run(
     }
 
     if write {
+        let design_before = design_history::read_objects(&tx, design_history::Scope::Project)?;
         // Deletes first (children before parents), then creates and updates in
         // dependency order.
         for w in work.iter().rev().filter(|w| w.action == Action::Delete) {
@@ -288,6 +339,39 @@ fn run(
                 || format!("writing {} {}", w.sec.label, entity_key(w.sec, &w.entity)),
             )?;
         }
+        let design_after = design_history::read_objects(&tx, design_history::Scope::Project)?;
+        let batch = design_history::append(
+            &tx,
+            design_history::diff_objects(&design_before, &design_after),
+            actor,
+        )?;
+        if publish {
+            // "Publish after import": every screen the import touched, in the
+            // same transaction, as a version named after the batch.
+            let mut screens: Vec<String> = plan
+                .changes_in("screens")
+                .filter(|c| c.action != Action::Delete)
+                .map(|c| c.key.clone())
+                .collect();
+            if let Some(b) = &batch {
+                screens.extend(b.screens.iter().filter(|s| !s.is_empty()).cloned());
+            }
+            screens.sort();
+            screens.dedup();
+            for screen in screens {
+                let v = design_history::create_version(
+                    &tx,
+                    &screen,
+                    None,
+                    "Published by a project import",
+                    &actor.username,
+                    "saved",
+                )?;
+                design_history::publish_version(&tx, &screen, v.id, &actor.username, None)?;
+                plan.published.push(screen);
+            }
+        }
+        plan.design_batch = batch.map(|b| b.batch);
         tx.commit().context("commit import")?;
     }
     Ok(plan)

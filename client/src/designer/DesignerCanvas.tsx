@@ -459,7 +459,7 @@ const byIdNow = (doc: Doc, id: string) => doc.widgets.find(w => w.id === id)
 type DesignWidgetProps = { w: WidgetInstance; sensor: SensorConfig | undefined; sensors: SensorConfig[]; onHover: (id: string | null) => void }
 
 /** One widget in design mode: live values and bindings shown, never interactive. A widget that fails to draw shows a placeholder. */
-const DesignWidget = memo(function DesignWidget(props: DesignWidgetProps) {
+export const DesignWidget = memo(function DesignWidget(props: DesignWidgetProps) {
   const { w, onHover } = props
   return (
     <WidgetErrorBoundary type={w.type} resetKey={w} fallback={

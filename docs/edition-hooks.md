@@ -137,7 +137,7 @@ core's 15-minute access token and 7-day sliding refresh token.
 ## Electronic signatures
 
 ```rust
-pub enum SignedAction { TagWrite, AlarmAck, AlarmShelve, RecipeLoad, ModeSwitch }
+pub enum SignedAction { TagWrite, AlarmAck, AlarmShelve, RecipeLoad, ModeSwitch, DesignPublish }
 pub enum ActionOrigin { Session, ApiKey, Mcp, Flow, Recipe }   // can_sign(): Session, Recipe
 pub struct ActionContext { action, origin, username, role, resource: String, details: serde_json::Value }
 pub struct SignatureRequirement { pub meaning: String }
@@ -216,6 +216,8 @@ format is the same everywhere:
 | `mode_switch` | `PATCH /api/v1/data-sources/{id}/write-policy` (body fields plus `signature`) | `data_source:<id>:write_policy` | `{mode: "write_policy", tag_id, policy}` |
 | `mode_switch` | `POST /api/v1/config/snapshots/{id}/rollback` (optional body); it rewrites tags with their write policies | `config_snapshot:<id>:rollback` | `{mode: "config_rollback", snapshot_id}` |
 | `tag_write` | `POST /api/v1/voltrus-plc/devices/{id}/write` (body `{variable, value, reason?, signature?}`); the variable must be read by a tag of the device, whose write policy applies | `data_source:<id>` | as for `POST /api/v1/tags/{id}/write` |
+| `design_publish` | `POST /api/v1/screens/{id}/publish` (body `{…, signature?}`); MCP `publish_screen` (cannot sign) | `screen:<id>:publish` | `{stage: "publish"\|"request", screen_id, version, message, changes: {added, removed, changed}}` |
+| `design_publish` | `POST /api/v1/screens/{id}/versions/{v}/approve` (body `{note?, signature?}`) | `screen:<id>:publish` | `{stage: "approve", screen_id, version, requested_by, message}` |
 
 "Optional body" means the route accepts no body (as before) or a JSON body
 `{"signature": {...}}` with `Content-Type: application/json`.
@@ -224,6 +226,15 @@ A recipe load needs one signature: Core asks `recipe_load`, and if that needs
 none, asks `tag_write` (origin `recipe`) for each tag the recipe writes; the
 first requirement found is the one the user signs, and it covers every write
 of the load. The individual writes are then queued without asking again.
+
+Publishing a Designer screen ([version-history.md](version-history.md)) is
+one action in three stages: a direct publish when the site needs no approval
+(`publish`), the author's request when it does (`request`), and the second
+admin's approval (`approve`). A 21 CFR Part 11 edition answers all three with
+a requirement (for example "Authored" and "Approved" meanings by stage); the
+signature id is kept on the version and in the audit entry. Core asks for
+none, and approval itself (a second admin, not the requester) is a site
+setting of the core.
 
 ### Who can sign
 

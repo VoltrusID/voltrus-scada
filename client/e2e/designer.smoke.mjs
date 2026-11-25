@@ -15,6 +15,11 @@
 // server. Then, on a scratch screen, it drops the Pump equipment type, places
 // the seeded instance P-101A and a new instance, checks both show live run
 // states, saves, checks the rows over REST and opens the faceplate in preview.
+// Then version history on the Plant Overview: an edit, a version, another
+// edit, the History pane with a past state previewed, blame, compare (canvases
+// and YAML diff), revert to the version, publish, and an operator who keeps
+// seeing the published screen while the draft moves on; on a scratch screen,
+// reverting a connection whose widget is gone restores the widget too.
 // With a screenshot directory it also writes the PR screenshots.
 
 import assert from 'node:assert/strict'
@@ -272,6 +277,182 @@ try {
 } finally {
   await context.request.delete(`${BASE}/api/v1/screens/${scratch.id}`)
   await context.request.delete(`${BASE}/api/v1/equipment-instances/P-311`)
+}
+
+// ── Version history (phase 3) ──
+const layoutRows = async (screenId, ctx = context.request, query = '') =>
+  (await (await ctx.get(`${BASE}/api/v1/screens/${screenId}/scada-layout${query}`)).json())
+const tab = name => page.locator(`[data-testid=designer-tab-${name}]`).click()
+const saveNow = async () => {
+  await page.keyboard.press('Control+s')
+  await page.locator('[data-testid=designer-dirty]', { hasText: 'All changes saved' }).waitFor()
+}
+
+step('history: an edit saved, a version, another edit')
+await openDesigner()
+// A free-standing component on top (not grouped, locked or an area) to move.
+const draft0 = await layoutRows(SCREEN)
+const movable = new Set(draft0.equipment.filter(r => {
+  const c = JSON.parse(r.config || '{}')
+  return !c.group && !c.locked && r.equipment_type !== 'area' && r.width < 400
+}).map(r => r.equipment_id))
+const target = await page.evaluate(ids => {
+  for (const el of document.querySelectorAll('[data-testid=designer-widget]')) {
+    const id = el.getAttribute('data-wid')
+    if (!ids.includes(id)) continue
+    const r = el.getBoundingClientRect()
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+    if (hit && hit.closest('[data-wid]')?.getAttribute('data-wid') === id && r.width > 8) return { id, x: r.left + r.width / 2, y: r.top + r.height / 2 }
+  }
+  return null
+}, [...movable])
+assert.ok(target, 'a component to edit')
+const x0 = draft0.equipment.find(r => r.equipment_id === target.id).x
+const xOf = rows => rows.equipment.find(r => r.equipment_id === target.id)?.x
+const nudge = async () => {
+  await page.mouse.click(target.x, target.y)
+  await page.locator('[data-testid=designer-props-widget]').waitFor()
+  await page.keyboard.press('Shift+ArrowRight')
+  target.x += 10 * ((await page.locator('[data-testid=designer-stage]').boundingBox()).width / 1920)
+  await saveNow()
+}
+await nudge()
+assert.equal(xOf(await layoutRows(SCREEN)), x0 + 10, 'first edit saved')
+
+await tab('versions')
+await page.locator('[data-testid=designer-version-name]').fill('v-smoke')
+await page.locator('[data-testid=designer-version-message]').fill('Smoke test: one component moved 10 px')
+await page.locator('[data-testid=designer-version-create]').click()
+await page.locator('[data-testid=designer-version][data-version=v-smoke]').waitFor()
+
+await tab('properties')
+await nudge()
+assert.equal(xOf(await layoutRows(SCREEN)), x0 + 20, 'second edit saved')
+
+step('History pane: batches, preview of a past state')
+await tab('history')
+await page.locator('[data-testid=designer-history-batch]').first().waitFor()
+await page.locator('[data-testid=designer-history-whole]').check()
+const batches = page.locator('[data-testid=designer-history-batch]')
+await page.waitForFunction(() => document.querySelectorAll('[data-testid=designer-history-batch]').length >= 2)
+// The older save: preview the screen as it was then.
+await batches.nth(1).locator('button').first().click()
+await page.locator('[data-testid=designer-preview-banner]').waitFor()
+await page.waitForFunction(() => document.querySelectorAll('[data-testid=designer-preview-stage] [data-testid=designer-widget]').length > 0)
+await page.waitForTimeout(800)
+await shot('16-history-pane')
+await page.locator('[data-testid=designer-preview-back]').click()
+await page.locator('[data-testid=designer-stage]').waitFor()
+
+step('blame in the Properties pane')
+await tab('properties')
+await page.mouse.click(target.x, target.y)
+await page.locator('[data-testid=designer-blame]', { hasText: 'Last changed by admin' }).waitFor()
+await shot('17-blame')
+
+step('compare v-smoke with the draft')
+await tab('versions')
+await page.locator('[data-testid=designer-version][data-version=v-smoke]').waitFor()
+await shot('18-versions')
+await page.locator('[data-testid=designer-version-vs-draft-v-smoke]').click()
+const cmp = page.locator('[data-testid=designer-compare]')
+await cmp.locator(`[data-testid=designer-compare-object][data-object="${target.id}"][data-kind=changed]`).waitFor()
+assert.ok(await cmp.locator('[data-testid=designer-yaml-del]').count() >= 1, 'YAML diff has removed lines')
+assert.ok(await cmp.locator('[data-testid=designer-yaml-add]').count() >= 1, 'YAML diff has added lines')
+await cmp.locator(`[data-testid=designer-compare-to] [data-testid=designer-outline-changed][data-wid="${target.id}"]`).waitFor()
+await page.waitForTimeout(800)
+await shot('19-compare-diff')
+
+step('revert the screen to v-smoke')
+await cmp.locator('[data-testid=designer-compare-revert]').click()
+await page.locator('[data-testid=designer-revert-dialog]').waitFor()
+await page.locator('[data-testid=designer-revert-note]').fill('Back to the smoke version')
+await page.locator('[data-testid=designer-revert-confirm]').click()
+await page.locator('[data-testid=designer-revert-dialog]').waitFor({ state: 'detached' })
+await page.waitForFunction(() => !document.querySelector('[data-testid=designer-compare]'))
+for (let i = 0; i < 50 && xOf(await layoutRows(SCREEN)) !== x0 + 10; i++) await page.waitForTimeout(100)
+assert.equal(xOf(await layoutRows(SCREEN)), x0 + 10, 'reverted rows over REST')
+assert.equal(await page.locator('[data-testid=designer-dirty]').textContent(), 'All changes saved')
+
+step('publish with a message')
+await page.locator('[data-testid=designer-publish]').click()
+const pub = page.locator('[data-testid=designer-publish-dialog]')
+await pub.waitFor()
+await pub.locator('[data-testid=designer-publish-message]').fill('Moved one component; reverted to v-smoke')
+await page.waitForFunction(() => !/…/.test(document.querySelector('[data-testid=designer-publish-summary]')?.textContent ?? '…'))
+await shot('20-publish-dialog')
+await pub.locator('[data-testid=designer-publish-confirm]').click()
+await pub.locator('[data-testid=designer-publish-result][data-status=published]').waitFor()
+await pub.locator('[data-testid=designer-publish-close]').click()
+await page.locator('[data-testid=designer-publish-state][data-tone=ok]').waitFor()
+assert.match(await page.locator('[data-testid=designer-publish-state]').textContent(), /^Published /)
+await shot('21-published-indicator')
+
+step('operators see the published screen, not later draft edits')
+const opName = `smoke-operator-${Date.now()}`
+const opPassword = 'Smoke-Operator-2026!'
+const created = await context.request.post(`${BASE}/api/v1/users`, { data: { username: opName, password: opPassword, role: 'operator' } })
+assert.equal(created.status(), 200, `operator created: ${await created.text()}`)
+const opId = (await created.json()).id
+// Its own cookies: a second browser context.
+const operator = await browser.newContext()
+try {
+  const opLogin = await operator.request.post(`${BASE}/api/v1/auth/login`, { data: { username: opName, password: opPassword } })
+  assert.equal(opLogin.status(), 200, 'operator login')
+  let opView = await layoutRows(SCREEN, operator.request)
+  assert.equal(opView.view, 'published')
+  assert.equal(xOf(opView), x0 + 10)
+
+  await tab('properties')
+  await nudge()
+  await page.locator('[data-testid=designer-publish-state][data-tone=warn]').waitFor()
+  assert.match(await page.locator('[data-testid=designer-publish-state]').textContent(), /^Draft · \d+ changes? since /)
+  assert.equal(xOf(await layoutRows(SCREEN)), x0 + 20, 'the Designer (draft) has the new edit')
+  opView = await layoutRows(SCREEN, operator.request)
+  assert.equal(xOf(opView), x0 + 10, 'the operator does not see it')
+  assert.equal(xOf(await layoutRows(SCREEN, context.request, '?published=1')), x0 + 10, 'nor does ?published=1')
+} finally {
+  await operator.close()
+  if (opId != null) await context.request.delete(`${BASE}/api/v1/users/${opId}`)
+}
+
+step('revert a connection whose widget is gone: also restore it')
+const hist = await (await context.request.post(`${BASE}/api/v1/screens`, { data: { name: 'History demo' } })).json()
+try {
+  const eqRow = (id, x, label, symbol) => ({
+    screen_id: hist.id, equipment_id: id, equipment_type: 'symbol', equipment_name: label, x, y: 380, width: 110, height: 120, rotation: 0,
+    sensor_bindings: '[]', config: JSON.stringify({ symbol, label }),
+  })
+  const conn = { screen_id: hist.id, connection_id: 'c-feed', from_equipment: 'tk-1', to_equipment: 'p-1', connection_type: 'flow', waypoints: '[]' }
+  // Two saves from different editors, so the second is not squashed into the first (same author and source within a minute).
+  const put = (data, client) => context.request.put(`${BASE}/api/v1/screens/${hist.id}/scada-layout`, { data, headers: client ? { 'X-Voltrus-Client': client } : {} })
+  assert.equal((await put({ equipment: [eqRow('tk-1', 520, 'TK-1', 'isa_tank'), eqRow('p-1', 980, 'P-1', 'isa_pump')], connections: [conn] }, 'designer')).status(), 200)
+  assert.equal((await put({ equipment: [eqRow('tk-1', 520, 'TK-1', 'isa_tank')], connections: [] })).status(), 200)
+  await page.goto(`${BASE}/designer?screen=${hist.id}`)
+  await page.locator('[data-testid=designer-stage]').waitFor()
+  await tab('history')
+  const first = page.locator('[data-testid=designer-history-batch]').nth(1)
+  await first.waitFor()
+  await first.locator('button').first().click()
+  await page.locator('[data-testid=designer-revert-object-c-feed]').click()
+  await page.locator('[data-testid=designer-revert-confirm]').click()
+  const dangling = page.locator('[data-testid=designer-dangling-dialog]')
+  await dangling.waitFor()
+  assert.match(await dangling.textContent(), /p-1/)
+  await shot('22-revert-dangling')
+  await dangling.locator('[data-testid=designer-revert-also-restore]').click()
+  await dangling.waitFor({ state: 'detached' })
+  let rows
+  for (let i = 0; i < 50; i++) {
+    rows = await layoutRows(hist.id)
+    if (rows.connections.length) break
+    await page.waitForTimeout(100)
+  }
+  assert.deepEqual(rows.equipment.map(r => r.equipment_id).sort(), ['p-1', 'tk-1'])
+  assert.deepEqual(rows.connections.map(c => c.connection_id), ['c-feed'])
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid=designer-stage] [data-testid=designer-widget]').length === 2)
+} finally {
+  await context.request.delete(`${BASE}/api/v1/screens/${hist.id}`)
 }
 } catch (e) {
   await shot('failure').catch(() => {})

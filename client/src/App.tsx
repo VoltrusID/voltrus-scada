@@ -20,7 +20,7 @@ import { useDesignerGuard } from './hooks/useDesignerGuard'
 import { useKioskMode } from './hooks/useKioskMode'
 import { useDashboardSystemInfo, useDashboardStoreActions } from './store/dashboardStore'
 import { createDashboardStore, DashboardStoreProvider } from './store/dashboardStore'
-import { useSensors, useScreenSensors, useScreens, useLayouts, useTwinLayouts, useTwinConnections, useCanvasLayouts, useShortcuts, useNavShortcuts, useActiveAlarmCount, useUpdateSensor, useDeleteSensor, useAddSensor, useSaveLayout, useSaveTwinLayout, useSaveTwinConnections, useSaveCanvasLayout, useSaveShortcuts, useSaveNavShortcuts, useCreateScreen, useRenameScreen, useDeleteScreen, useAddSensorToScreen, useRemoveSensorFromScreen, useScadaEquipment, useScadaConnections, useSaveScadaEquipment, useSaveScadaConnections, fetchOk, fetchJson } from './queries'
+import { useSensors, useScreenSensors, useScreens, useLayouts, useTwinLayouts, useTwinConnections, useCanvasLayouts, useShortcuts, useNavShortcuts, useActiveAlarmCount, useUpdateSensor, useDeleteSensor, useAddSensor, useSaveLayout, useSaveTwinLayout, useSaveTwinConnections, useSaveCanvasLayout, useSaveShortcuts, useSaveNavShortcuts, useCreateScreen, useRenameScreen, useDeleteScreen, useAddSensorToScreen, useRemoveSensorFromScreen, useScadaRows, useSaveScadaEquipment, useSaveScadaConnections, fetchOk, fetchJson } from './queries'
 import { LicenseContext } from './LicenseContext'
 import { useLicenseStatus } from './queries/license'
 import { edition, useEditionBranding, DEFAULT_BRANDING, applyBrandToDocument } from './edition'
@@ -184,8 +184,10 @@ export function AppInner() {
   const twinLayouts = twinLayoutsData?.items ?? []
   const twinCamera = twinLayoutsData?.camera
   const { data: twinConnections = EMPTY_LIST } = useTwinConnections(activeScreen, sessionReady)
-  const { data: scadaEquipment = EMPTY_LIST, isFetched: scadaEquipmentFetched } = useScadaEquipment(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
-  const { data: scadaConnections = EMPTY_LIST, isFetched: scadaConnectionsFetched } = useScadaConnections(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'))
+  // The 2D runtime and the 3D twin show what operators see (the published screen); the 2D view's Edit mode edits the draft.
+  const scadaRows = useScadaRows(activeScreen, sessionReady && (viewMode === 'scada' || viewMode === 'twin'), viewMode)
+  const scadaEquipment = scadaRows.equipment.data ?? EMPTY_LIST
+  const scadaConnections = scadaRows.connections.data ?? EMPTY_LIST
   const { data: serverCanvasLayouts = EMPTY_LIST } = useCanvasLayouts(activeScreen, sessionReady)
   const canvasLayouts = localCanvasLayouts ?? serverCanvasLayouts
   const { data: shortcuts = EMPTY_SHORTCUTS } = useShortcuts(sessionReady)
@@ -658,7 +660,8 @@ export function AppInner() {
               shortcuts={shortcuts}
               scadaEquipment={scadaEquipment}
               scadaConnections={scadaConnections}
-              scadaLoaded={scadaEquipmentFetched && scadaConnectionsFetched}
+              scadaLoaded={scadaRows.loaded}
+              onScadaEditModeChange={scadaRows.setEditing}
               twinLayouts={twinLayouts}
               twinCamera={twinCamera}
               twinConnections={twinConnections}

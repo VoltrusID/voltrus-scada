@@ -10,7 +10,15 @@ import { STAGE_H, STAGE_W } from '../scada2/ScadaCanvas'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBlocker } from '@tanstack/react-router'
 import { useScreens, useSensors } from '../queries'
-import { fetchScadaLayout, saveScadaLayout, useFaceplates, useScadaLayout, type ScadaLayout } from '../queries/scada'
+import {
+  fetchScadaLayout, saveScadaLayout, useFaceplates, useScadaLayout, type ChangeSince, type LayoutBase, type ScadaLayout,
+} from '../queries/scada'
+import {
+  invalidateDesign, revertScreen, useBlame, useDesignStatus, useScreenState, useVersions, type DesignChange, type RevertBody,
+} from '../queries/designHistory'
+import { useAuthMe } from '../queries/users'
+import { useRole } from '../RoleContext'
+import { canConfigure as roleCanConfigure } from '../roles'
 import { useModbusDevices } from '../queries/modbus'
 import {
   updateInstance, useEquipmentInstances, useEquipmentTypes, useInstallLibrary, useInvalidateEquipment,
@@ -20,6 +28,7 @@ import { queryKeys } from '../queries/keys'
 import { useTrackedCurrentValues } from '../store/dashboardStore'
 import { openTrend } from '../trend/TrendPopup'
 import { toast } from '../components/Toast'
+import { isSignatureCancelled } from '../signature/logic'
 import { ThemeToggle } from '../components/ThemeToggle'
 import {
   alignPatches, bindPrimaryPatch, boundsOf, distributePatches, duplicate, emptyHistory, expandToGroups, groupOf, groupPatches,
@@ -32,7 +41,14 @@ import { PalettePane, ProjectBrowser, TagBrowserPane } from './panes'
 import { EquipmentTree, EquipmentTypesSection, InstancePicker, InstanceSection } from './equipment'
 import { bindInstancePatch, configOf, instanceOf, widgetsByInstance } from './equipmentModel'
 import { PropertyEditor } from './PropertyEditor'
-import { ChoiceDialog, D, Icon, Pane, Sep, SmallBtn, ToolBtn, mono } from './ui'
+import { ChoiceDialog, D, Dialog, DialogBtn, Icon, Pane, Sep, SmallBtn, Tabs, ToolBtn, input, mono } from './ui'
+import { BlameInfo, HistoryList, type HistoryObject } from './history'
+import { PublishDialog, VersionsList } from './versions'
+import { CompareView } from './diffView'
+import { StageView } from './StageView'
+import {
+  kindSummary, objectLabel, publishState, relativeTime, revertObjectRequest, revertScreenRequest, sourceLabel, withAlsoRestore, type Batch,
+} from './historyModel'
 
 interface Props {
   screen: string
@@ -42,8 +58,14 @@ interface Props {
   onOpenPage: (page: 'scripts' | 'alarms' | 'tags') => void
 }
 
-/** A save the server refused because the screen changed since it was loaded. */
-interface Conflict { revision: string; message: string; then?: () => void }
+/** A save the server refused because the screen changed since it was loaded: who changed what since. */
+interface Conflict { revision: string; seq: number | null; message: string; changesSince: ChangeSince[]; then?: () => void }
+
+/** A revert waiting for the user: confirm it, or restore the widgets a connection needs too. */
+interface RevertAsk { body: RevertBody; title: string; message: React.ReactNode }
+interface Dangling { body: RevertBody; connection: string; missing: string[] }
+
+type RightTab = 'properties' | 'history' | 'versions'
 
 const ZOOM_STEPS = [0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 3, 4]
 const isTyping = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))
@@ -97,6 +119,14 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const { data: modbusDevices = [] } = useModbusDevices()
   const installLibrary = useInstallLibrary()
   const invalidateEquipment = useInvalidateEquipment()
+  const role = useRole()
+  const { data: me } = useAuthMe()
+  const canConfigure = role.canConfigure || roleCanConfigure(me?.role)
+  const isAdmin = role.isAdmin || me?.role === 'admin'
+  const statusQ = useDesignStatus(screen)
+  const status = statusQ.data
+  const publishing = !!status?.publishing
+  const { data: versions = [] } = useVersions(screen)
   /** An equipment type dropped on the stage: the instance picker is open for it. */
   const [picker, setPicker] = useState<{ type: string; x?: number; y?: number } | null>(null)
 
@@ -124,16 +154,35 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const savingRef = useRef(false)
   /** Revision of the server layout the document is based on (sent with a save). */
   const baseRevision = useRef<string | null>(null)
+  /** Change-log head of the server layout the document is based on (sent with a save). */
+  const baseSeq = useRef<number | null>(null)
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
   const [conflict, setConflict] = useState<Conflict | null>(null)
   /** The screen was saved elsewhere while this one has unsaved changes. */
   const [remoteChanged, setRemoteChanged] = useState(false)
+  const [rightTab, setRightTab] = useState<RightTab>('properties')
+  /** History of the whole screen rather than of the selected component. */
+  const [wholeScreen, setWholeScreen] = useState(false)
+  /** A past state shown read-only on the canvas (History pane): editing is off meanwhile. */
+  const [previewAt, setPreviewAt] = useState<Batch | null>(null)
+  const readOnlyRef = useRef(false)
+  readOnlyRef.current = previewAt != null
+  const [compare, setCompare] = useState<{ from: string; to: string } | null>(null)
+  const [publishOpen, setPublishOpen] = useState<{ version?: { id: string; label: string } } | null>(null)
+  const [revertAsk, setRevertAsk] = useState<RevertAsk | null>(null)
+  const [dangling, setDangling] = useState<Dangling | null>(null)
+  /** Something that works on the saved screen asked for unsaved edits to be saved or dropped first. */
+  const [needSave, setNeedSave] = useState<{ what: string; then: () => void } | null>(null)
 
   const setSelection = useCallback((ids: string[]) => { setSelectionRaw(ids); if (ids.length) setSelConn(null) }, [])
   // Edits carry their time: the same kind of edit after a pause is a new undo step.
-  const edit = useCallback((e: Edit, coalesce?: string) => dispatch({ type: 'edit', edit: e, coalesce, at: Date.now() }), [])
+  // While a past state is previewed nothing edits the draft.
+  const edit = useCallback((e: Edit, coalesce?: string) => {
+    if (!readOnlyRef.current) dispatch({ type: 'edit', edit: e, coalesce, at: Date.now() })
+  }, [])
   const patch = useCallback((patches: Record<string, Patch>, coalesce?: string) => {
+    if (readOnlyRef.current) return
     if (Object.keys(patches).length) dispatch({ type: 'edit', edit: { type: 'patch', patches }, coalesce, at: Date.now() })
   }, [])
 
@@ -151,6 +200,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const loadLayout = useCallback((data: ScadaLayout, id: string) => {
     loadedScreen.current = id
     baseRevision.current = data.revision
+    baseSeq.current = typeof data.seq === 'number' ? data.seq : null
     setRemoteChanged(false)
     dispatch({ type: 'load', doc: loadLayoutFromAPI(data.equipment ?? [], data.connections ?? []) })
     setSelectionRaw([])
@@ -171,15 +221,16 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
     void qc.invalidateQueries({ queryKey: queryKeys.scadaLayout(id) })
     void qc.invalidateQueries({ queryKey: queryKeys.scadaEquipment(id) })
     void qc.invalidateQueries({ queryKey: queryKeys.scadaConnections(id) })
+    void invalidateDesign(qc, id)
   }, [qc])
 
   /**
-   * Save equipment and connections together, based on the revision loaded.
-   * `base` overrides it (overwrite after a conflict: the revision the user saw
-   * in the conflict). Nothing to save is a no-op. `then` runs after a save
-   * that first had to resolve a conflict.
+   * Save equipment and connections together, based on the revision and seq
+   * loaded. `base` overrides them (overwrite after a conflict: the head the
+   * user saw in the conflict). Nothing to save is a no-op. `then` runs after a
+   * save that first had to resolve a conflict.
    */
-  const save = useCallback(async (opts: { base?: string | null; then?: () => void } = {}): Promise<boolean> => {
+  const save = useCallback(async (opts: { base?: LayoutBase; then?: () => void } = {}): Promise<boolean> => {
     const id = loadedScreen.current
     if (!id || savingRef.current) return false
     if (!dirtyRef.current) return true
@@ -188,12 +239,13 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
     const snapshot = doc
     try {
       const rows = saveLayoutToAPI(snapshot, w => sensors.find(s => s.id === w.sensorId)?.name || widgetTitle(w))
-      const r = await saveScadaLayout(id, rows.equipment, rows.connections, opts.base !== undefined ? opts.base : baseRevision.current)
+      const r = await saveScadaLayout(id, rows.equipment, rows.connections, opts.base ?? { revision: baseRevision.current, seq: baseSeq.current })
       if (!r.ok) {
-        setConflict({ revision: r.revision, message: r.message, then: opts.then })
+        setConflict({ revision: r.revision, seq: r.seq, message: r.message, changesSince: r.changesSince, then: opts.then })
         return false
       }
       baseRevision.current = r.revision
+      if (r.seq != null) baseSeq.current = r.seq
       setRemoteChanged(false)
       dispatch({ type: 'saved', doc: snapshot })
       invalidate(id)
@@ -213,6 +265,81 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
     const data = await qc.fetchQuery({ queryKey: queryKeys.scadaLayout(id), queryFn: () => fetchScadaLayout(id), staleTime: 0 })
     loadLayout(data, id)
   }, [qc, screen, loadLayout])
+
+  // ── Version history ──
+
+  useEffect(() => { setPreviewAt(null); setCompare(null) }, [screen])
+
+  /** Run `then` on the saved screen: unsaved edits are saved or dropped first (the user picks). */
+  const withSaved = useCallback((what: string, then: () => void) => {
+    if (dirtyRef.current) setNeedSave({ what, then })
+    else then()
+  }, [])
+
+  /** Send a revert; a dangling connection asks to restore its widgets too. Reverts are new changes, so the draft reloads. */
+  const runRevert = useCallback(async (body: RevertBody) => {
+    const id = loadedScreen.current ?? screen
+    try {
+      const r = await revertScreen(id, { ...body, base_seq: baseSeq.current })
+      if (r.ok) {
+        setPreviewAt(null)
+        await reloadFromServer()
+        invalidate(id)
+        const extra = [
+          r.removed_connections.length ? `removed ${r.removed_connections.length} connection${r.removed_connections.length === 1 ? '' : 's'} that ended on it` : '',
+          r.ungrouped.length ? `${r.ungrouped.join(', ')} restored ungrouped` : '',
+        ].filter(Boolean).join('; ')
+        toast.success(`Reverted${extra ? `: ${extra}` : ''}`)
+        return
+      }
+      if (r.code === 'dangling_connection') { setDangling({ body, connection: r.connection, missing: r.missing }); return }
+      if (r.code === 'conflict') {
+        await reloadFromServer()
+        invalidate(id)
+        toast.error('The screen changed since you loaded it. It was reloaded; check it and revert again.')
+        return
+      }
+      toast.error(`Not reverted: ${r.message}`)
+    } catch (e: any) {
+      if (!isSignatureCancelled(e)) toast.error(`Not reverted: ${e?.message || 'request failed'}`)
+    }
+  }, [screen, reloadFromServer, invalidate])
+
+  const askRevert = useCallback((a: RevertAsk) => {
+    withSaved('A revert writes new changes to the saved screen.', () => setRevertAsk(a))
+  }, [withSaved])
+
+  /**
+   * One object as it was after the whole save it changed in (the save's last
+   * seq, not the row's: a connection and the widgets it ends on, added in one
+   * save, exist together only after all of it).
+   */
+  const revertObject = useCallback((c: DesignChange, b: Batch) => {
+    const name = objectLabel(c.after ?? c.before, c.object_id)
+    askRevert({
+      body: revertObjectRequest(c.object_id, c.object_type, b.maxSeq),
+      title: `Revert ${name}?`,
+      message: <>Put <b style={{ color: 'var(--fg)' }}>{name}</b> back as it was after change #{b.maxSeq}{c.after ? '' : ' (when it did not exist: it is removed, with the connections that end on it)'}. Nothing else on the screen changes; history is kept.</>,
+    })
+  }, [askRevert])
+
+  const revertWholeScreen = useCallback((to: number | string, label: string) => {
+    askRevert({
+      body: revertScreenRequest(to),
+      title: 'Revert the whole screen?',
+      message: <>Put every component and connection back as {label}. It is saved as new changes on the draft; history is kept and operators keep seeing what is published.</>,
+    })
+  }, [askRevert])
+
+  const historyObject: HistoryObject | null = useMemo(() => {
+    if (selConn) return { id: selConn, type: 'connection', label: selConn }
+    if (selection.length !== 1) return null
+    const w = doc.widgets.find(x => x.id === selection[0])
+    return w ? { id: w.id, type: 'widget', label: String(w.config?.label || w.name || widgetTitle(w)) } : null
+  }, [selection, selConn, doc.widgets])
+  const blameQ = useBlame(screen, rightTab === 'properties' && historyObject != null)
+  const blame = historyObject ? blameQ.data?.find(b => b.object_id === historyObject.id && b.object_type === historyObject.type) : undefined
+  const pubState = publishState(status)
 
   // Leaving with unsaved changes (Close, another screen, Back, a link in the
   // Project pane, an app shortcut) asks first: Save, Discard or Cancel.
@@ -407,7 +534,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
     copy, paste, cut: () => { copy(); removeSelection() }, duplicate: duplicateSel, remove: removeSelection,
     all: () => setSelection(expandToGroups(doc, doc.widgets.filter(w => !isLocked(w)).map(w => w.id))),
     group, ungroup, lock: toggleLock, front: () => order('front'), back: () => order('back'), forward: () => order('forward'), backward: () => order('backward'),
-    preview: () => setPreview(p => !p), fit: () => setZoom('fit'), zoomIn: () => zoomBy(1), zoomOut: () => zoomBy(-1),
+    preview: () => { if (!readOnlyRef.current) setPreview(p => !p) }, fit: () => setZoom('fit'), zoomIn: () => zoomBy(1), zoomOut: () => zoomBy(-1),
     escape: () => { setSelection([]); setSelConn(null); setConnectFrom(null); setTool('select'); setDropMenu(null) },
   }
   const nudge = useRef<(dx: number, dy: number) => void>(() => {})
@@ -417,6 +544,8 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
     const onKey = (e: KeyboardEvent) => {
       if (isTyping(e.target)) return
       const k = keys.current
+      // Viewing a past state: nothing edits; Escape goes back to the draft.
+      if (readOnlyRef.current) { if (e.key === 'Escape') setPreviewAt(null); return }
       const mod = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
       // F5 toggles preview (Ctrl+P stays the browser's print).
@@ -479,6 +608,27 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
         <Icon name="screen" size={13} />
         <span data-testid="designer-screen-name" style={{ fontWeight: 600 }}>{screenName}</span>
         {dirty && <span title="Unsaved changes" style={{ width: 7, height: 7, borderRadius: 4, background: 'var(--warn)' }} />}
+        {pubState && (
+          <>
+            <Sep />
+            <button type="button" data-testid="designer-publish-state" data-tone={pubState.tone} title={`${pubState.title}. Open the versions.`}
+              onClick={() => setRightTab('versions')} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6, height: 22, padding: '0 8px', borderRadius: 11, cursor: 'pointer', fontSize: D.small,
+                border: `1px solid color-mix(in srgb, ${TONES[pubState.tone]} 45%, transparent)`, background: `color-mix(in srgb, ${TONES[pubState.tone]} 10%, transparent)`, color: TONES[pubState.tone],
+              }}>
+              <span style={{ width: 6, height: 6, borderRadius: 3, background: TONES[pubState.tone] }} />{pubState.text}
+            </button>
+            {canConfigure && (
+              <button type="button" data-testid="designer-publish" onClick={() => setPublishOpen({})} disabled={!!previewAt}
+                title={status?.approval === 'required' ? 'Ask an administrator to publish the draft to operators' : 'Publish the draft: operators see it from now on'} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5, height: 24, padding: '0 10px', borderRadius: 4, cursor: previewAt ? 'default' : 'pointer', fontSize: D.small, fontWeight: 600,
+                  border: `1px solid ${D.accent}`, background: D.accentBg, color: D.accent, opacity: previewAt ? 0.5 : 1,
+                }}>
+                <Icon name="publish" size={12} />{status?.approval === 'required' ? 'Request publish' : 'Publish'}
+              </button>
+            )}
+          </>
+        )}
         <div style={{ flex: 1 }} />
         <div role="radiogroup" aria-label="Mode" style={{ display: 'flex', border: `1px solid ${D.line}`, borderRadius: 4, overflow: 'hidden' }}>
           {(['design', 'preview'] as const).map(m => (
@@ -498,6 +648,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
 
       {/* Toolbar */}
       {!preview && (
+        <fieldset disabled={!!previewAt} style={{ border: 'none', margin: 0, padding: 0, minWidth: 0, opacity: previewAt ? 0.55 : 1 }}>
         <div role="toolbar" aria-label="Designer tools" style={{ height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '0 6px', borderBottom: `1px solid ${D.line}`, background: D.chrome, overflowX: 'auto' }}>
           <ToolBtn icon="save" title="Save (Ctrl+S)" label={saving ? 'Saving…' : dirty ? 'Save' : 'Saved'} onClick={() => { void save() }} disabled={!dirty || saving} active={dirty} testId="designer-save" />
           <ToolBtn icon="undo" title={`Undo (Ctrl+Z) · ${h.past.length} step${h.past.length === 1 ? '' : 's'}`} onClick={() => dispatch({ type: 'undo' })} disabled={!h.past.length} testId="designer-undo" />
@@ -545,12 +696,14 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
           </button>
           <ToolBtn icon="zoomIn" title="Zoom in (Ctrl++)" onClick={() => zoomBy(1)} />
         </div>
+        </fieldset>
       )}
 
       {/* Body */}
       <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
         {!preview && (
-          <aside style={{ width: 264, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: `1px solid ${D.line}`, background: D.pane }}>
+          <aside style={{ width: 264, flexShrink: 0, display: 'flex', flexDirection: 'column', borderRight: `1px solid ${D.line}`, background: D.pane, ...(previewAt ? { pointerEvents: 'none', opacity: 0.55 } : {}) }}
+            aria-disabled={previewAt ? true : undefined}>
             <Pane title="Project" icon="folder" grow={1} testId="designer-project">
               <ProjectBrowser screens={screens} active={screen} onOpenScreen={id => { void openScreen(id) }} doc={doc} selection={selection} onSelect={setSelection}
                 onToggleLock={id => patch(lockPatches(doc, [id], !isLocked(doc.widgets.find(w => w.id === id)!)))}
@@ -582,6 +735,9 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
                 isAdmin={false}
               />
             </div>
+          ) : previewAt ? (
+            <PastState screen={screen} batch={previewAt} sensors={sensors} canRevert={canConfigure}
+              onBack={() => setPreviewAt(null)} onRevert={() => revertWholeScreen(previewAt.maxSeq, `it was after change #${previewAt.maxSeq}`)} />
           ) : !loaded && loadedScreen.current !== screen ? (
             <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: 'var(--text-muted)' }}>Loading {screenName}…</div>
           ) : (
@@ -595,12 +751,12 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
               onSelect={setSelection} onEdit={edit} onDrop={onDrop} onCursor={setCursor}
             />
           )}
-          {!preview && tool === 'connect' && (
+          {!preview && !previewAt && tool === 'connect' && (
             <div style={{ position: 'absolute', top: 30, left: '50%', transform: 'translateX(-50%)', zIndex: 5, padding: '4px 12px', borderRadius: 999, fontSize: D.small, background: D.pane, border: `1px solid ${D.line}`, color: 'var(--text-dim)' }}>
               {connectFrom ? 'Now click the target component · Esc to cancel' : 'Click the source component'}
             </div>
           )}
-          {!preview && loaded && doc.widgets.length === 0 && (
+          {!preview && !previewAt && loaded && doc.widgets.length === 0 && (
             <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', pointerEvents: 'none', color: 'var(--text-muted)', textAlign: 'center', lineHeight: 1.7 }}>
               <div>Drag a tag from the <b>Tag browser</b> onto the screen for a bound component,<br />or a symbol from <b>Components</b>.</div>
             </div>
@@ -611,8 +767,8 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
         </main>
 
         {!preview && (
-          <aside style={{ width: 312, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${D.line}`, background: D.pane }}>
-            <Pane title="Components" icon="layers" grow={0.9} testId="designer-components">
+          <aside style={{ width: rightTab === 'properties' ? 312 : 380, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${D.line}`, background: D.pane }}>
+            <Pane title="Components" icon="layers" grow={rightTab === 'properties' ? 0.9 : 0.35} testId="designer-components">
               <PalettePane top={q => (
                 <EquipmentTypesSection types={eqTypes} query={q} onAdd={key => addEquipment(key)} installing={installLibrary.isPending}
                   onInstall={() => installLibrary.mutate(undefined, {
@@ -621,26 +777,54 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
                   })} />
               )} onAdd={it => add(make(it.kind, it.key))} />
             </Pane>
-            <Pane title="Properties" icon="faceplate" grow={1.6} testId="designer-properties"
-              actions={n ? <span style={{ ...mono, color: 'var(--text-muted)' }}>{n} selected</span> : undefined}>
-              {selConn ? (
-                <ConnectionProps conn={doc.connections.find(c => c.id === selConn)!} widgets={doc.widgets}
-                  onChange={p => edit({ type: 'patchConnection', id: selConn, patch: p })} onDelete={removeSelection} />
-              ) : (
-                <PropertyEditor doc={doc} selection={selection} sensors={sensors} screenName={screenName} onPatch={patch} arrange={arrangeButtons}
-                  equipment={w => {
-                    const name = instanceOf(w)
-                    if (!name) return null
-                    const inst = eqInstances.find(i => i.name === name)
-                    return (
-                      <InstanceSection key={`${w.id}:${name}`} w={w} name={name} instance={inst} type={eqTypes.find(t => t.id === inst?.type)} sensors={sensors}
-                        onApply={applyInstance}
-                        onUnbind={() => patch({ [w.id]: { config: { equipment: undefined } } })}
-                        onRebind={i => patch({ [w.id]: bindInstancePatch(w, i.name, i.resolved.widget) })} />
-                    )
-                  }} />
-              )}
-            </Pane>
+            <section aria-label="Properties and history" data-testid="designer-properties" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1.6 }}>
+              <header style={{ height: 26, flexShrink: 0, display: 'flex', alignItems: 'stretch', gap: 6, padding: '0 6px 0 2px', background: D.chrome, borderBottom: `1px solid ${D.line}` }}>
+                <Tabs<RightTab> testId="designer-tab" value={rightTab} onChange={setRightTab} tabs={[
+                  { id: 'properties', label: 'Properties', icon: 'faceplate', disabled: !!previewAt },
+                  { id: 'history', label: 'History', icon: 'history' },
+                  { id: 'versions', label: 'Versions', icon: 'version' },
+                ]} />
+                <div style={{ flex: 1 }} />
+                {rightTab === 'properties' && n > 0 && <span style={{ ...mono, color: 'var(--text-muted)', alignSelf: 'center' }}>{n} selected</span>}
+              </header>
+              <div style={{ flex: 1, minHeight: 0, overflow: rightTab === 'properties' ? 'auto' : 'hidden' }}>
+                {rightTab === 'properties' && (
+                  <>
+                    {historyObject && (
+                      <BlameInfo entry={blame} onHistory={() => { setWholeScreen(false); setRightTab('history') }} />
+                    )}
+                    {selConn ? (
+                      <ConnectionProps conn={doc.connections.find(c => c.id === selConn)!} widgets={doc.widgets}
+                        onChange={p => edit({ type: 'patchConnection', id: selConn, patch: p })} onDelete={removeSelection} />
+                    ) : (
+                      <PropertyEditor doc={doc} selection={selection} sensors={sensors} screenName={screenName} onPatch={patch} arrange={arrangeButtons}
+                        equipment={w => {
+                          const name = instanceOf(w)
+                          if (!name) return null
+                          const inst = eqInstances.find(i => i.name === name)
+                          return (
+                            <InstanceSection key={`${w.id}:${name}`} w={w} name={name} instance={inst} type={eqTypes.find(t => t.id === inst?.type)} sensors={sensors}
+                              onApply={applyInstance}
+                              onUnbind={() => patch({ [w.id]: { config: { equipment: undefined } } })}
+                              onRebind={i => patch({ [w.id]: bindInstancePatch(w, i.name, i.resolved.widget) })} />
+                          )
+                        }} />
+                    )}
+                  </>
+                )}
+                {rightTab === 'history' && (
+                  <HistoryList screen={screen} object={historyObject} wholeScreen={wholeScreen} onWholeScreen={setWholeScreen}
+                    previewSeq={previewAt?.maxSeq ?? null} onPreview={setPreviewAt} canRevert={canConfigure}
+                    onRevertObject={revertObject}
+                    onRevertScreen={b => revertWholeScreen(b.maxSeq, `it was after change #${b.maxSeq} (${b.username}, ${relativeTime(b.at_ms)})`)} />
+                )}
+                {rightTab === 'versions' && (
+                  <VersionsList screen={screen} me={{ username: me?.username ?? '', isAdmin }} canConfigure={canConfigure} publishing={publishing && !!status?.published}
+                    dirty={dirty} ensureSaved={() => save()} onCompare={(from, to) => setCompare({ from, to })}
+                    onChanged={() => { void invalidateDesign(qc, screen) }} />
+                )}
+              </div>
+            </section>
           </aside>
         )}
       </div>
@@ -683,7 +867,10 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
       {conflict && (
         <ChoiceDialog title="Screen changed elsewhere" testId="designer-conflict-dialog"
           onCancel={() => { setConflict(null); if (blocker.status === 'blocked') blocker.reset() }}
-          message={<>{conflict.message}. Load their version (your changes here are lost), or overwrite it with yours?</>}
+          message={<>
+            {conflict.message}. Load their version (your changes here are lost), or overwrite it with yours?
+            {conflict.changesSince.length > 0 && <ChangesSince batches={conflict.changesSince} />}
+          </>}
           choices={[
             { label: 'Load theirs', testId: 'designer-conflict-reload', onClick: () => {
               const then = conflict.then
@@ -691,17 +878,64 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
               void reloadFromServer().then(() => then?.())
             } },
             { label: 'Overwrite with mine', danger: true, testId: 'designer-conflict-overwrite', onClick: () => {
-              const { revision, then } = conflict
+              const { revision, seq, then } = conflict
               setConflict(null)
-              void save({ base: revision, then }).then(ok => { if (ok) then?.() })
+              void save({ base: { revision, seq }, then }).then(ok => { if (ok) then?.() })
             } },
             { label: 'Cancel', testId: 'designer-conflict-cancel', onClick: () => { setConflict(null); if (blocker.status === 'blocked') blocker.reset() } },
           ]} />
       )}
 
+      {needSave && (
+        <ChoiceDialog title="Unsaved changes" testId="designer-needsave-dialog" onCancel={() => setNeedSave(null)}
+          message={<>{needSave.what} Save your changes to <b style={{ color: 'var(--fg)' }}>{screenName}</b> first, or discard them?</>}
+          choices={[
+            { label: 'Save', primary: true, testId: 'designer-needsave-save', onClick: () => {
+              const then = needSave.then
+              setNeedSave(null)
+              void save().then(ok => { if (ok) then() })
+            } },
+            { label: 'Discard', danger: true, testId: 'designer-needsave-discard', onClick: () => {
+              const then = needSave.then
+              setNeedSave(null)
+              void reloadFromServer().then(then)
+            } },
+            { label: 'Cancel', testId: 'designer-needsave-cancel', onClick: () => setNeedSave(null) },
+          ]} />
+      )}
+
+      {revertAsk && <RevertDialog ask={revertAsk} onCancel={() => setRevertAsk(null)}
+        onConfirm={note => { const body = { ...revertAsk.body, ...(note.trim() ? { message: note.trim() } : {}) }; setRevertAsk(null); void runRevert(body) }} />}
+
+      {dangling && (
+        <ChoiceDialog title="Restore the widgets it connects?" testId="designer-dangling-dialog" onCancel={() => setDangling(null)}
+          message={<>Connection <b style={{ color: 'var(--fg)' }}>{dangling.connection}</b> would end on {dangling.missing.join(', ')}, which no longer exist{dangling.missing.length === 1 ? 's' : ''}. Restore {dangling.missing.length === 1 ? 'it' : 'them'} too, as {dangling.missing.length === 1 ? 'it was' : 'they were'} at the same point?</>}
+          choices={[
+            { label: `Also restore ${dangling.missing.join(', ')}`, primary: true, testId: 'designer-revert-also-restore', onClick: () => {
+              const body = withAlsoRestore(dangling.body, dangling.missing)
+              setDangling(null)
+              void runRevert(body)
+            } },
+            { label: 'Cancel', testId: 'designer-dangling-cancel', onClick: () => setDangling(null) },
+          ]} />
+      )}
+
+      {publishOpen && (
+        <PublishDialog screen={screen} status={status} versions={versions} version={publishOpen.version} dirty={dirty}
+          save={() => save()} baseSeq={() => baseSeq.current} onClose={() => setPublishOpen(null)}
+          onDone={() => { void invalidateDesign(qc, screen); invalidate(screen) }} />
+      )}
+
+      {compare && (
+        <CompareView screen={screen} from={compare.from} to={compare.to} versions={versions} sensors={sensors}
+          canConfigure={canConfigure} publishing={publishing} onClose={() => setCompare(null)}
+          onRevertTo={(spec, label) => { setCompare(null); revertWholeScreen(spec, label) }}
+          onPublishVersion={(id, label) => { setCompare(null); setPublishOpen({ version: { id, label } }) }} />
+      )}
+
       {/* Status bar */}
       <div data-testid="designer-status" style={{ height: 22, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 14, padding: '0 10px', borderTop: `1px solid ${D.line}`, background: D.chrome, ...mono, color: 'var(--text-dim)' }}>
-        <span style={{ color: preview ? D.accent : undefined }}>{preview ? 'PREVIEW · live data · F5 or Esc to edit' : 'DESIGN'}</span>
+        <span style={{ color: preview || previewAt ? D.accent : undefined }}>{preview ? 'PREVIEW · live data · F5 or Esc to edit' : previewAt ? `HISTORY · after change #${previewAt.maxSeq} · read only · Esc for the draft` : 'DESIGN'}</span>
         {!preview && <span>{cursor ? `x ${cursor.x}  y ${cursor.y}` : 'x —  y —'}</span>}
         {!preview && <span>{n ? `${n} selected · ${selBox!.x}, ${selBox!.y} · ${selBox!.width} × ${selBox!.height}` : `${doc.widgets.length} components`}</span>}
         <span>{guides.length} guide{guides.length === 1 ? '' : 's'}</span>
@@ -783,5 +1017,70 @@ function ConnectionProps({ conn, widgets, onChange, onDelete }: {
       </label>
       <div><SmallBtn danger onClick={onDelete}>Delete connection</SmallBtn></div>
     </div>
+  )
+}
+
+const TONES = { ok: 'var(--ok)', warn: 'var(--warn)', muted: 'var(--text-dim)', info: 'var(--cyan)' } as const
+
+/** The screen as it was after a batch, read only, with a banner back to the draft. */
+function PastState({ screen, batch, sensors, canRevert, onBack, onRevert }: {
+  screen: string; batch: Batch; sensors: SensorConfig[]; canRevert: boolean; onBack: () => void; onRevert: () => void
+}) {
+  const q = useScreenState(screen, `seq:${batch.maxSeq}`)
+  return (
+    <div data-testid="designer-history-preview" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      <div role="status" data-testid="designer-preview-banner" style={{
+        flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8, padding: '5px 10px', fontSize: D.font,
+        background: 'color-mix(in srgb, var(--cyan) 12%, var(--card))', borderBottom: `1px solid color-mix(in srgb, var(--cyan) 40%, transparent)`,
+      }}>
+        <Icon name="history" size={13} />
+        <span style={{ flex: 1, minWidth: 0 }}>
+          Viewing the state after change <b>#{batch.maxSeq}</b> by <b>{batch.username}</b> ({sourceLabel(batch.source)}, {relativeTime(batch.at_ms)}) · read only
+        </span>
+        {canRevert && <SmallBtn onClick={onRevert} testId="designer-preview-revert">Revert screen to here</SmallBtn>}
+        <SmallBtn onClick={onBack} testId="designer-preview-back">Back to draft</SmallBtn>
+      </div>
+      {q.data ? (
+        <StageView rows={q.data} sensors={sensors} testId="designer-preview-stage" />
+      ) : (
+        <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: q.isError ? 'var(--crit)' : 'var(--text-muted)' }}>
+          {q.isError ? `Not loaded: ${(q.error as Error)?.message}` : 'Loading that state…'}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Who changed what since the editor loaded the screen (a 409's `changes_since`). */
+function ChangesSince({ batches }: { batches: ChangeSince[] }) {
+  const shown = batches.slice(-6).reverse()
+  return (
+    <div data-testid="designer-conflict-changes" style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 180, overflow: 'auto' }}>
+      <div style={{ fontWeight: 600, color: 'var(--fg)' }}>Changed since you loaded it:</div>
+      {shown.map(b => (
+        <div key={b.batch} data-testid="designer-conflict-change" style={{ display: 'flex', flexDirection: 'column', gap: 1, paddingLeft: 8, borderLeft: `2px solid ${D.line}` }}>
+          <span><b style={{ color: 'var(--fg)' }}>{b.username}</b> via {sourceLabel(b.source)} · {relativeTime(b.at_ms)}</span>
+          <span>
+            {kindSummary(b.objects.map(o => o.kind))}: {b.objects.slice(0, 6).map(o => o.object_id).join(', ')}{b.objects.length > 6 ? ` and ${b.objects.length - 6} more` : ''}
+          </span>
+          {b.note && <span style={{ fontStyle: 'italic' }}>{b.note}</span>}
+        </div>
+      ))}
+      {batches.length > shown.length && <span>…and {batches.length - shown.length} earlier saves</span>}
+    </div>
+  )
+}
+
+function RevertDialog({ ask, onConfirm, onCancel }: { ask: RevertAsk; onConfirm: (note: string) => void; onCancel: () => void }) {
+  const [note, setNote] = useState('')
+  return (
+    <Dialog title={ask.title} onCancel={onCancel} testId="designer-revert-dialog" actions={<>
+      <DialogBtn primary onClick={() => onConfirm(note)} testId="designer-revert-confirm" autoFocus>Revert</DialogBtn>
+      <DialogBtn onClick={onCancel} testId="designer-revert-cancel">Cancel</DialogBtn>
+    </>}>
+      <div style={{ lineHeight: 1.5, color: 'var(--text-dim)' }}>{ask.message}</div>
+      <input value={note} onChange={e => setNote(e.target.value)} placeholder="Note for the history (optional)" aria-label="Note"
+        data-testid="designer-revert-note" maxLength={2000} style={input} />
+    </Dialog>
   )
 }

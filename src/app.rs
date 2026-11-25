@@ -649,6 +649,11 @@ pub(crate) async fn serve(
         });
     }
 
+    // Designer version history: squash and prune the change log daily.
+    tokio::spawn(crate::storage::design_history::run_maintenance_task(
+        storage.clone(),
+    ));
+
     // Spawn retention task
     {
         let storage = storage.clone();

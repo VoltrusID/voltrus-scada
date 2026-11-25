@@ -616,6 +616,90 @@ pub(super) fn run_migrations(conn: &Connection) {
              ON alarms(source_key) WHERE resolved_at IS NULL",
     );
 
+    // Migration: Designer version history (docs/version-history.md). An
+    // append-only change log per design object, with one batch per save; named
+    // versions of a screen (snapshots, so a restore never replays the log);
+    // the published copy of each screen's 2D rows that operators see.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS design_batches (
+            batch TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            source TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            at_ms INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS design_changes (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch TEXT NOT NULL,
+            screen_id TEXT NOT NULL DEFAULT '',
+            object_type TEXT NOT NULL,
+            object_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            before TEXT,
+            after TEXT,
+            username TEXT NOT NULL,
+            source TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            at_ms INTEGER NOT NULL,
+            squashed INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_design_changes_obj
+            ON design_changes(screen_id, object_type, object_id, seq);
+        CREATE INDEX IF NOT EXISTS idx_design_changes_batch ON design_changes(batch);
+        CREATE INDEX IF NOT EXISTS idx_design_changes_at ON design_changes(at_ms);
+        CREATE TABLE IF NOT EXISTS design_versions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            screen_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            message TEXT NOT NULL DEFAULT '',
+            upto_seq INTEGER NOT NULL,
+            snapshot TEXT NOT NULL,
+            username TEXT NOT NULL,
+            at_ms INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'saved',
+            requested_by TEXT,
+            reviewed_by TEXT,
+            review_note TEXT,
+            reviewed_at_ms INTEGER,
+            published_at_ms INTEGER,
+            published_by TEXT,
+            signature TEXT,
+            UNIQUE(screen_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_design_versions_screen ON design_versions(screen_id, id);
+        CREATE TABLE IF NOT EXISTS design_screen_state (
+            screen_id TEXT PRIMARY KEY,
+            version_id INTEGER NOT NULL,
+            upto_seq INTEGER NOT NULL,
+            published_at_ms INTEGER NOT NULL,
+            published_by TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS scada_equipment_published (
+            screen_id TEXT NOT NULL,
+            equipment_id TEXT NOT NULL,
+            equipment_type TEXT NOT NULL,
+            equipment_name TEXT NOT NULL DEFAULT '',
+            x REAL NOT NULL DEFAULT 0,
+            y REAL NOT NULL DEFAULT 0,
+            width REAL NOT NULL DEFAULT 100,
+            height REAL NOT NULL DEFAULT 60,
+            rotation REAL NOT NULL DEFAULT 0,
+            sensor_bindings TEXT NOT NULL DEFAULT '[]',
+            config TEXT NOT NULL DEFAULT '{}',
+            PRIMARY KEY (screen_id, equipment_id)
+        );
+        CREATE TABLE IF NOT EXISTS scada_connections_published (
+            screen_id TEXT NOT NULL,
+            connection_id TEXT NOT NULL,
+            from_equipment TEXT NOT NULL,
+            to_equipment TEXT NOT NULL,
+            waypoints TEXT NOT NULL DEFAULT '[]',
+            connection_type TEXT NOT NULL DEFAULT 'power',
+            PRIMARY KEY (screen_id, connection_id)
+        );",
+    );
+
     // Migration: alarms raised by a flow's alarm node used to be stored as
     // type 'high' with value, limit and deadband 0. They are 'event' alarms
     // now (limit evaluation never touches them, acknowledging one resolves

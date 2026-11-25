@@ -27,6 +27,7 @@ pub mod compliance;
 pub mod compression;
 pub mod config;
 pub mod deadband;
+pub mod design_git;
 pub mod device_templates;
 #[cfg(any(
     feature = "modbus",

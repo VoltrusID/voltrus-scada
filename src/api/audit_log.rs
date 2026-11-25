@@ -146,11 +146,17 @@ pub async fn audit_writes_middleware(
         .map(|u| u.username.clone())
         .unwrap_or_else(|| "unknown".to_string());
     let resp = next.run(req).await;
+    // A design write names its change-log batch (docs/version-history.md).
+    let batch = resp
+        .extensions()
+        .get::<super::design_history::AuditBatch>()
+        .map(|b| format!(" batch={}", b.0))
+        .unwrap_or_default();
     state.audit_logger.log(crate::security::AuditEvent {
         action: format!("{method} {route}"),
         username,
         resource: path,
-        details: Some(format!("status={}", resp.status().as_u16())),
+        details: Some(format!("status={}{batch}", resp.status().as_u16())),
     });
     resp
 }
