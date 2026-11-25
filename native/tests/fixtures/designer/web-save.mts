@@ -4,8 +4,7 @@
 // bindings.ts) and save (client/src/scada2/engine/layout.ts), so the Rust
 // test compares against the web code, not a copy of its rules.
 //
-// From a checkout that has client/src/designer (feat/designer-phase1, or
-// main once the web Designer is merged), with Node 23.6 or later:
+// From a checkout of main (client/src/designer), with Node 23.6 or later:
 //
 //   node native/tests/fixtures/designer/web-save.mts
 //

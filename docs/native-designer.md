@@ -1,7 +1,7 @@
 # Native Designer
 
 The Voltrus Designer in the GPUI console (`native/`, `voltrus-native`), beside
-the web Designer ([designer.md](designer.md), PR #33). Both edit the same
+the web Designer ([designer.md](designer.md), PR #33, on `main`). Both edit the same
 screens with the same rules, so an engineer can switch editors in the middle of
 a job and a screen never belongs to one of them.
 
@@ -14,12 +14,14 @@ its own.
 | | Shared thing | Web | Native |
 |---|---|---|---|
 | Document | the 2D screen rows, `ScadaLayoutState` | `scada2/engine/layout.ts` | `mimic::Layout` (`native/src/mimic.rs`) |
-| Load | `GET /screens/{id}/scada-equipment`, `/scada-connections` | `loadLayoutFromAPI` | `mimic::parse` |
-| Save | the same two `PUT`s, rows named `label ‖ stored name ‖ tag name ‖ type` | `saveLayoutToAPI` | `designer::rows` / `designer::named` |
+| Load | `GET /screens/{id}/scada-layout` → rows and `revision` | `loadLayoutFromAPI` | `designer::load` → `mimic::parse` |
+| Save | one `PUT /screens/{id}/scada-layout` with `base_revision`; 409 with the current revision when the screen changed since; rows named `label ‖ stored name ‖ tag name ‖ type` | `saveScadaLayout`, `saveLayoutToAPI` | `designer::save`, `designer::rows` / `designer::named` |
 | Edits | one undoable step per edit, typing and nudges coalesced | `designer/model.ts` (`Edit`, `historyReducer`) | `mimic::edit::{Edit, History}` |
-| Designer keys in `config` | `group`, `locked`, `visible`, `opacity`, `bindings` | written | read, kept on save; `visible`, `locked`, `bindings` used |
-| Bindings | `config.bindings[prop] = {kind: tag|expr|map, …}`, tags by project ref `device/key` | `designer/bindings.ts` | `designer::bindings` |
-| Expressions | grammar, values, errors | `designer/expr.ts` | `designer::expr` (port) |
+| Arrange | group, ungroup, lock, align, distribute, marquee, restacking by unit | `model.ts` (`groupPatches`, `alignPatches`, …) | `designer::arrange` |
+| Designer keys in `config` | `group`, `locked`, `visible`, `opacity`, `bindings` | written and used | written and used |
+| Bindings | `config.bindings[prop] = {kind: tag|expr|map, …}`, tags by project ref `device/key` (`device/key#2` for the second tag sharing it) | `designer/bindings.ts` | `designer::bindings` |
+| Expressions | grammar, values, errors, limits (2048 characters, 1000 parts, 100 levels) | `designer/expr.ts` | `designer::expr` (port) |
+| Placement menu | what a tag dropped on the empty stage can become | `dropChoices` | `designer::arrange::drop_choices` |
 | Symbols | `SymbolDef` keys, ports, `config.symbol` | `scada2/hmi/` (SVG) | `mimic::SYMBOLS` + `console/views/mimic/symbols.rs` (SVG path data tessellated with lyon) |
 | Permissions | configure roles (admin, demo, integration) save screens | server | `Console::may_configure`, server |
 
@@ -35,20 +37,40 @@ it level with the web Designer's rules. What changed to match:
 * **Rotation column.** `mimic::parse` copies a row's `rotation` column into
   `config.rotation` when the config has none, as `loadLayoutFromAPI` does.
 * **Bindings at runtime.** The viewer evaluates `config.bindings` before
-  drawing (`designer::bound`) and skips widgets whose `visible` is false, so a
-  bound screen looks the same in the browser and on the console.
+  drawing (`designer::bound`), skips widgets whose `visible` is false and
+  draws `opacity`, so a bound screen looks the same in the browser and on the
+  console. Tag picker properties are never bound, as on the web.
+* **Saves are revision-checked.** The console loads `scada-layout` with its
+  revision and saves the whole layout in one `PUT` based on it. A 409 opens
+  the web's choice: *Load theirs* (the edits here are lost) or *Overwrite
+  with mine* (saves again based on the revision the conflict named). A server
+  from before the Designer has no `scada-layout`: the console then loads and
+  saves with the two older routes, without a revision.
+* **Expression safety.** As #33's review fixes: text over 2048 characters,
+  more than 1000 parts or nesting deeper than 100 fails to parse; refs escape
+  `}` and `\` inside braces; `text()` and `round()` clamp decimals to 0–20;
+  `bit()` takes bits 0–52 in two's complement; a result that is not a number
+  gives no value; the parse cache drops the least recently used text.
+* **ISA-101 symbols.** The flat ISA-101 set (pump, motor, valve, control
+  valve, tank, heat exchanger, process lines) is drawn natively with the
+  web's geometry and colours, so the placement menu's choices and screens
+  built with them look the same.
 
 **Proof, not promises.** `native/tests/fixtures/designer/web-save.mts` runs the
 web Designer's own `model.ts`, `bindings.ts` and `layout.ts` (Node, no build)
-over rows of the WTP showcase and writes what it saves after eight edits
+over rows of the WTP showcase and writes what it saves after sixteen edits
 (move, resize, typed label, primary tag rebind, label expression, a visibility
-binding undone and redone, a state map, an undone move).
+binding undone and redone, a state map, an undone move, a group, align left,
+distribute vertically, a lock and an align around the locked tank, an opacity
+expression, a delete that dissolves a group of one, a second group brought
+forward a step, an undone centring).
 `designer::tests::the_save_matches_the_web_designer` makes the same edits with
 the native model and compares every row field and every config key. The same
 module runs the web's binding tests (`designerBindings.test.ts`) against the
 Rust port. Regenerate the fixture whenever `model.ts`, `bindings.ts` or
-`layout.ts` change; when the web Designer is on `main`, run the script in the
-web test job and diff, so drift fails CI.
+`layout.ts` change (`node native/tests/fixtures/designer/web-save.mts` from
+the checkout); the committed one is generated from `main`. Next: run the
+script in the web test job and diff, so drift fails CI.
 
 ## The expression evaluator: one implementation
 
@@ -79,8 +101,8 @@ big screens. The server validates; the clients evaluate.
 
 One library, keyed by `config.symbol`. The web draws SVG components; the
 console draws the same geometry from SVG path data (`symbols.rs`, lyon
-tessellation, cached per size). New symbols (phase 2's ISA-101 set:
-compressor, fan, conveyor, …) should be authored once as **data**: a
+tessellation, cached per size). The ISA-101 set is ported by hand; new
+symbols should be authored once as **data**: a
 `symbols/<key>.json` with viewBox, SVG path strings per layer (body, fill,
 state, text anchors), ports and the binding kind. The web renders it as
 `<path d>`; the console tessellates the same strings. Until then a symbol
@@ -138,37 +160,75 @@ Both stay complete for the core: open, edit, bind, save. New *rules* land in
 the shared crate first; new *panes* land where the table says, and the other
 editor shows their data read-only until it catches up.
 
-## Phase 1 native prototype (this branch)
+## The native Designer (this branch)
 
 Open it from the Mimic page (**Designer** in the bar, or E; `--page mimic
 --edit` from the command line). Configure roles only: the button is not
 shown to others and the save refuses them before the server would.
 
 * Left column with three tabs: **Project** (screens; the edited one opened into
-  its components, top first, with bound ƒ, hidden and locked marks; click
-  selects), **Tags** (every tag with its live value and `device/key` ref,
-  searched; click binds the selected component, drag onto a component binds
-  it), **Components** (the symbol and widget palette).
-* Stage: the existing mimic painter with live values and bindings applied,
-  grid, select, rubber band, move and resize with grid and edge/centre
-  snapping and guides, connect tool.
-* Inspector: position and size, a label for every component, the label's
-  expression with its live result or error, every other binding listed with
-  its result and an unbind button, primary tag binding, the type's settings,
-  arrange.
-* Undo/redo (⌘Z, ⇧⌘Z), save (⌘S) with the web's naming, unsaved-changes
-  prompt on leaving.
+  its components, top first, with bound ƒ, group, hidden and locked marks;
+  click selects; the eye and lock icons hide/show and lock/unlock),
+  **Tags** (every tag with its live value and ref, searched; click binds the
+  selected component, drag onto a component binds it, drag onto the empty
+  stage opens the placement menu; Enter in the search binds the first match
+  to the selected component, or with none selected opens the placement menu
+  in the middle of the stage), **Components** (the symbol and widget
+  palette).
+* **Placement menu.** A tag dropped on the empty stage (or on a locked
+  component, or one that shows no tag) offers what it can become, the web's
+  list: for a digital tag the ISA-101 pump, valve and motor, status light,
+  on/off, toggle, number; for an analog one number, value indicator, tank
+  (first for a level or % tag), control valve, bar, gauge, trend, slider.
+  Arrows and Enter or a click pick; Esc closes. The component lands centred
+  on the drop point on the 10-pixel grid, bound to the tag (a symbol labelled
+  with the tag's name and showing its status), selected, one undo step.
+* **Groups and locks.** ⌘G groups the selection, ⇧⌘G ungroups, ⌘L locks or
+  unlocks (unlocks when all of it is locked), also as inspector buttons and
+  palette commands. A press, ⇧-click or marquee on one member takes its whole
+  group; a group moves and restacks as one; locked components keep their
+  place (no drag, no handles, no nudge, no align move), are skipped by the
+  marquee and ⌘A, and survive ⌫ (a toast says so). Deleting all but one
+  member dissolves the group; a pasted group is a new group, unlocked.
+* **Align and distribute.** With two or more selected: left, centre, right,
+  top, middle, bottom to the selection's box; with three or more: equal gaps
+  horizontally or vertically, the outer ones staying. Each is one undo step;
+  locked components stay but count for the box.
+* **Properties.** Every property but a tag picker lists its value now:
+  bound ones the live value and `← binding`, fixed ones the value set. ƒ
+  Bind (or ƒ Edit) opens the binding editor under it: Tag (pick from the
+  store), Expression (with *Insert tag…* and the function list) or Map
+  (expression, cases with an operator, a number and a result, *otherwise*;
+  switches for a boolean property). The preview shows `Now: <value>`, the
+  errors, or that nothing is bound yet. Apply is one undo step; Remove
+  binding unbinds. Visible and opacity are listed with the rest. ⌘B opens
+  the editor on the selection's first bound property (or its label).
+* **Hidden and opacity.** In the Designer a hidden component (fixed or
+  bound) is drawn at 30% and nothing below 15%; the viewer skips hidden ones
+  and draws `opacity` (0–1).
+* Stage: the mimic painter with live values and bindings applied, grid,
+  select, ⇧-click, marquee, move and resize with grid and edge/centre
+  snapping and guides, connect tool; a selected group gets a dashed frame,
+  locked components a dashed outline.
+* **Keys** (as the web where the console has no other use for them): ⌘S,
+  ⌘Z / ⇧⌘Z, ⌘C / ⌘X / ⌘V, ⌘D, ⌘A, ⌘G / ⇧⌘G, ⌘L, arrows and ⇧arrows,
+  ⌫, Esc, ⌘+ / ⌘− / ⌘0; Tab steps through the components (a group whole),
+  ⌘B edits bindings. The console keeps ] and [ for front and back
+  (⌘[ and ⌘] go back and forward through pages), so forward and backward
+  one step are ⌥] and ⌥[. Align and distribute are palette commands.
+* **Unsaved changes.** Done, another screen, another page, back/forward,
+  signing out, ⌘Q and closing the window ask first: Save, Discard, Cancel.
 
-Later, in order: tag drop on empty stage opening the placement menu (web's
-`dropChoices`), group/ungroup and lock editing (read today), align and
-distribute, binding editor for any property (tag, expression, map) instead of
-the label only, hidden widgets drawn faded in design mode, opacity, the
-shared crate, the History pane.
+Later: the shared crate and the WASM build, the History pane (phase 3),
+collaboration (phase 4), match size and the faceplate editor in the
+inspector.
 
 Screenshots: the console built from this branch against the WTP showcase
-(`scenarios/wtp-hmi`, server v0.53.0), T-101 and T-401 with label expressions.
+(`scenarios/wtp-hmi`, server from this branch).
 
-![Project tree, stage and inspector with a label expression](images/native-designer/01-designer-wtp.webp)
-![Tag browser with live values; the selected tank's tag highlighted](images/native-designer/02-tags.webp)
-![Components palette on the Filtration screen](images/native-designer/03-components.webp)
-![Light theme](images/native-designer/04-light.webp)
+![Project tree, stage and the property list with a bound label](images/native-designer/01-designer-wtp.webp)
+![A tag dropped on the empty stage: the placement menu](images/native-designer/02-tag-drop-menu.webp)
+![Binding editor: a state map on a colour with its live preview](images/native-designer/03-binding-editor.webp)
+![A group and a locked tank selected; align and distribute](images/native-designer/04-group-align.webp)
+![A hidden component drawn faded while designing](images/native-designer/05-hidden-faded.webp)
+![Light theme](images/native-designer/06-light.webp)

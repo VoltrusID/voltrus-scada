@@ -1103,7 +1103,16 @@ fn widget_panel(
     }
 
     let schema = edit::schema(widget);
-    let mut settings: Vec<AnyElement> = Vec::with_capacity(schema.len() + 2);
+    let mut settings: Vec<AnyElement> = Vec::with_capacity(schema.len() + 3);
+    // The label of a type whose settings have none (every component has one).
+    if let Some(label) = editor
+        .fields
+        .iter()
+        .find(|(at, _)| *at == Slot::Label)
+        .map(|(_, field)| field.clone())
+    {
+        settings.push(labelled("Label", label, theme));
+    }
     for field in &schema {
         settings.push(control(console, widget, field, theme, cx));
     }
@@ -1341,7 +1350,7 @@ const SHORTCUTS: [(&str, &str); 14] = [
     ("⇧-click, drag", "Add to selection, marquee"),
     ("⌘G · ⇧⌘G", "Group / ungroup"),
     ("⌘L", "Lock / unlock"),
-    ("] · [ · ⌥] · ⌥[", "Front, back, forward, backward"),
+    ("] · [", "To front / back (⌥: one step)"),
     ("Arrows · ⇧Arrows", "Nudge 1 / 10 px"),
     ("R · ⇧R · H", "Turn / turn back / mirror"),
     ("V · C", "Select / connect tool"),
@@ -1393,9 +1402,8 @@ fn screen_panel(
 // ── The Designer's properties and bindings ─────────────────────────────────
 
 /// Every bindable property (`PropertyEditor`'s list): its value now, bound
-/// or fixed, and a button that opens the binding editor under it. The
-/// fixed label is typed here; the other fixed values in the sections
-/// above.
+/// or fixed, and a button that opens the binding editor under it. Fixed
+/// values are set in Appearance & behaviour.
 fn properties_panel(
     console: &Console,
     widget: &Widget,
@@ -1406,14 +1414,6 @@ fn properties_panel(
         return Vec::new();
     };
     let mut out = Vec::new();
-    if let Some(label) = editor
-        .fields
-        .iter()
-        .find(|(at, _)| *at == Slot::Label)
-        .map(|(_, field)| field.clone())
-    {
-        out.push(labelled("Label", label, theme));
-    }
     let open = editor
         .bind
         .as_ref()
@@ -1437,7 +1437,7 @@ fn properties_panel(
                 .gap(SPACE_3)
                 .child(
                     div()
-                        .w(px(84.0))
+                        .w(px(100.0))
                         .flex_none()
                         .text_size(FONT_SMALL)
                         .text_color(if bound { theme.accent } else { theme.fg_muted })

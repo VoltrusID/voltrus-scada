@@ -110,6 +110,7 @@ actions!(
         DesignerAlignBottom,
         DesignerDistributeHorizontally,
         DesignerDistributeVertically,
+        DesignerEditBinding,
         DesignerProject,
         DesignerTags,
         DesignerComponents,
@@ -263,6 +264,9 @@ enum Cmd {
     Lock,
     Align(Align),
     Distribute(Axis),
+    /// Open the binding editor on the selection's first bound property
+    /// (or its label).
+    EditBinding,
 }
 
 /// The placement menu of a tag dropped on the empty stage (`DropMenu`):
@@ -521,6 +525,9 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
             window,
             |console, _, event: &InputEvent, window, cx| match event {
                 InputEvent::Cancelled => focus_stage(console, window, cx),
+                // Enter: the first match binds the selected component, or
+                // opens the placement menu (a drop from the keyboard).
+                InputEvent::Submitted => panes::submit_tag(console, window, cx),
                 _ => cx.notify(),
             },
         ),
@@ -1226,6 +1233,9 @@ pub(crate) fn actions(root: Stateful<Div>, cx: &Context<Console>) -> Stateful<Di
             run(console, Cmd::Distribute(Axis::Vertical), window, cx);
         }),
     )
+    .on_action(cx.listener(|console, _: &DesignerEditBinding, window, cx| {
+        run(console, Cmd::EditBinding, window, cx);
+    }))
     .on_action(cx.listener(|console, _: &DesignerProject, window, cx| {
         run(console, Cmd::Pane(panes::Pane::Project), window, cx);
     }))
@@ -1259,8 +1269,34 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
         Cmd::Pane(pane) => {
             if let Some(editor) = edits(console) {
                 editor.pane = pane;
+                // The tags pane is for searching: its field takes the keys.
+                if pane == panes::Pane::Tags {
+                    let filter = editor.tag_filter.clone();
+                    filter.read(cx).focus(window);
+                }
             }
             cx.notify();
+        }
+        Cmd::EditBinding => {
+            let prop = edits_ref(console)
+                .and_then(Editor::single)
+                .and_then(|widget| {
+                    let props = designer::properties(widget);
+                    let bound = designer::bindings::bindings_of(&widget.config);
+                    props
+                        .iter()
+                        .find(|prop| {
+                            prop.bindable() && bound.iter().any(|(key, _)| key == prop.key)
+                        })
+                        .or_else(|| props.iter().find(|prop| prop.key == "label"))
+                        .cloned()
+                });
+            match prop {
+                Some(prop) => binding::open(console, &prop, window, cx),
+                None => {
+                    console.show_toast("Select one component to bind its properties", false, cx)
+                }
+            }
         }
         Cmd::Find => {
             if let Some(editor) = edits(console) {
@@ -1319,7 +1355,16 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
                     editor.selection.last().map(String::as_str),
                     forward,
                 );
-                editor.selection = next.into_iter().collect();
+                // A group member brings its group (`expandToGroups`); the
+                // stepped one stays last, so the next Tab goes on from it.
+                let picked: Vec<String> = next.into_iter().collect();
+                let mut selection: Vec<String> =
+                    arrange::expand_to_groups(editor.history.present(), &picked)
+                        .into_iter()
+                        .filter(|id| !picked.contains(id))
+                        .collect();
+                selection.extend(picked);
+                editor.selection = selection;
                 editor.line = None;
             }
             changed(console, window, cx);
@@ -2606,7 +2651,7 @@ pub(super) fn edit_button(cx: &mut Context<Console>) -> AnyElement {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{KeyUpEvent, Keystroke, Modifiers, TestAppContext, point};
+    use gpui::{Focusable, KeyUpEvent, Keystroke, Modifiers, TestAppContext, point};
     use voltrus_scada_native::mimic::{Widget, WidgetKind};
 
     use super::*;
@@ -3083,5 +3128,52 @@ mod tests {
         assert!(!dirty(&mut h));
         let base = h.update(|console, _, _| edits_ref(console).and_then(|e| e.base.clone()));
         assert_eq!(base.as_deref(), Some("rev-3"), "the next save builds on it");
+    }
+
+    #[gpui::test]
+    fn enter_in_the_tag_search_places_or_binds_from_the_keyboard(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        let mut flow = Harness::tag(9, "intake_flow");
+        flow.device_id = "wtp".into();
+        h.event(crate::console::Event::Tags(vec![flow]));
+        // One component selected: Enter binds it.
+        h.update(|console, window, cx| {
+            run(console, Cmd::Pane(panes::Pane::Tags), window, cx);
+            let filter = edits_ref(console).unwrap().tag_filter.clone();
+            assert!(
+                filter.read(cx).focus_handle(cx).is_focused(window),
+                "the search has the keys"
+            );
+            filter.update(cx, |field, cx| field.set_text("intake", cx));
+            panes::submit_tag(console, window, cx);
+        });
+        assert_eq!(widget(&mut h, "a").tags, [9]);
+        // Nothing selected: the placement menu, in the middle of the stage.
+        h.update(|console, window, cx| {
+            if let Some(editor) = edits(console) {
+                editor.selection.clear();
+            }
+            panes::submit_tag(console, window, cx);
+        });
+        let menu = h.update(|console, _, _| edits_ref(console).and_then(|e| e.menu.clone()));
+        let menu = menu.expect("the placement menu");
+        assert_eq!(menu.tag, 9);
+        assert!(
+            (menu.at.0 - 960.0).abs() < 1.0 && (menu.at.1 - 540.0).abs() < 1.0,
+            "{:?}",
+            menu.at
+        );
+        // ⌘B opens the binding editor on the label of the selected component.
+        h.update(|console, window, cx| {
+            if let Some(editor) = edits(console) {
+                editor.menu = None;
+                editor.selection = vec!["a".into()];
+            }
+            run(console, Cmd::EditBinding, window, cx);
+        });
+        let open = h.update(|console, _, _| {
+            edits_ref(console).and_then(|e| e.bind.as_ref().map(|b| b.prop))
+        });
+        assert_eq!(open, Some("label"));
     }
 }

@@ -107,6 +107,37 @@ fn bind_selected(console: &mut Console, tag: i64, window: &mut Window, cx: &mut 
     }
 }
 
+/// Enter in the tag search: the first match binds the one selected
+/// component; with none selected it opens the placement menu at the
+/// middle of the visible stage (a drop from the keyboard).
+pub(super) fn submit_tag(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    let Some(editor) = edits_ref(console) else {
+        return;
+    };
+    let query = editor.tag_filter.read(cx).value().to_owned();
+    let Some(tag) = console
+        .store
+        .filter(&query)
+        .first()
+        .and_then(|at| console.store.tags.get(*at))
+        .map(|tag| tag.info.id)
+    else {
+        return;
+    };
+    if editor.single().is_some() {
+        bind_selected(console, tag, window, cx);
+        return;
+    }
+    let Some(drawn) = console.state::<super::State>().drawn.get() else {
+        return;
+    };
+    let centre = drawn.bounds.center();
+    if let Some((at, _)) = stage_at(console, centre) {
+        super::open_menu(console, tag, at, centre, cx);
+    }
+    focus_stage(console, window, cx);
+}
+
 /// A tag dropped on the stage: bind the component under the pointer
 /// when it takes a tag and is not locked; else (the empty stage) the
 /// placement menu of what the tag can become (the web's `onDrop`).

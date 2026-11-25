@@ -1674,6 +1674,18 @@ pub static COMMANDS: &[CommandSpec] = &[
         role: Role::Configure,
     },
     CommandSpec {
+        label: "Designer: edit the selection's bindings",
+        group: Group::View,
+        icon: Icon::Waypoints,
+        keys: &["secondary-b"],
+        context: super::views::mimic::editor::KEYS,
+        action: || -> Box<dyn Action> {
+            Box::new(super::views::mimic::editor::DesignerEditBinding)
+        },
+        palette: true,
+        role: Role::Configure,
+    },
+    CommandSpec {
         label: "Designer: show the project pane",
         group: Group::View,
         icon: Icon::Folder,
