@@ -225,7 +225,7 @@ function Btn({ children, onClick, kbd, danger }: { children: React.ReactNode; on
   )
 }
 
-function TagSelect({ sensors, value, onChange, placeholder = '— Not bound —' }: {
+export function TagSelect({ sensors, value, onChange, placeholder = '— Not bound —' }: {
   sensors: SensorConfig[]; value: number | null | undefined; onChange: (id: number | null) => void; placeholder?: string
 }) {
   const sorted = [...sensors].sort((a, b) => a.name.localeCompare(b.name))
@@ -237,7 +237,7 @@ function TagSelect({ sensors, value, onChange, placeholder = '— Not bound —'
   )
 }
 
-function MultiTagPicker({ sensors, value, onChange }: { sensors: SensorConfig[]; value: number[]; onChange: (ids: number[]) => void }) {
+export function MultiTagPicker({ sensors, value, onChange }: { sensors: SensorConfig[]; value: number[]; onChange: (ids: number[]) => void }) {
   const byId = new Map(sensors.map(s => [s.id, s]))
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -255,7 +255,7 @@ function MultiTagPicker({ sensors, value, onChange }: { sensors: SensorConfig[];
 }
 
 /** Number field that edits a local draft and commits on blur / Enter, so clearing it to retype doesn't write 0. */
-function NumberInput({ value, onCommit, step, min, max }: {
+export function NumberInput({ value, onCommit, step, min, max }: {
   value: number; onCommit: (v: number) => void; step?: number | 'any'; min?: number; max?: number
 }) {
   const [draft, setDraft] = React.useState<string | null>(null)
@@ -317,7 +317,7 @@ function Field({ field, value, sensors, onChange }: { field: ConfigFieldDef; val
 }
 
 /** Pick a faceplate definition for this symbol and map each of its roles to a tag. */
-function FaceplateSection({ widget, sensors, onUpdate, onUpdateConfig }: {
+export function FaceplateSection({ widget, sensors, onUpdate, onUpdateConfig }: {
   widget: WidgetInstance
   sensors: SensorConfig[]
   onUpdate: WidgetProps['onUpdate']

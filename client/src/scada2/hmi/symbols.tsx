@@ -1,5 +1,6 @@
 import React from 'react'
 import type { ConfigFieldDef } from '../widgets/types'
+import { ISA101_SYMBOLS } from './isa101'
 
 // ISA-101 style equipment symbols. Bodies are neutral grey; colour is
 // reserved for state (running / fault / stale) so abnormal conditions stand out.
@@ -9,7 +10,7 @@ export type EquipState = 'idle' | 'running' | 'stopped' | 'fault' | 'stale'
 /** How the primary tag drives the symbol. */
 export type SymbolBinding = 'state' | 'level' | 'value' | 'none'
 
-export type SymbolCategory = 'Rotating' | 'Valves' | 'Vessels' | 'Process' | 'Electrical' | 'Instruments' | 'Piping'
+export type SymbolCategory = 'ISA-101' | 'Rotating' | 'Valves' | 'Vessels' | 'Process' | 'Electrical' | 'Instruments' | 'Piping'
 
 export type PortSide = 'left' | 'right' | 'top' | 'bottom'
 
@@ -746,8 +747,9 @@ export const SYMBOLS: SymbolDef[] = [
   breaker, transformer, generator, solar, battery, inverter, meter, busbar,
   instrument, flowMeter,
   pipe, pipeVertical, pipeElbow, pipeTee,
+  ...ISA101_SYMBOLS,
 ]
 
 export const SYMBOL_MAP: Record<string, SymbolDef> = Object.fromEntries(SYMBOLS.map(s => [s.key, s]))
 
-export const SYMBOL_CATEGORIES: SymbolCategory[] = ['Rotating', 'Valves', 'Vessels', 'Process', 'Electrical', 'Instruments', 'Piping']
+export const SYMBOL_CATEGORIES: SymbolCategory[] = ['ISA-101', 'Rotating', 'Valves', 'Vessels', 'Process', 'Electrical', 'Instruments', 'Piping']

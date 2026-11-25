@@ -43,6 +43,7 @@ interface Props {
   fetchOk: any
   isAdmin: boolean
   scadaToolbarSlotSetter?: (slot: React.ReactNode) => void
+  onOpenDesigner?: () => void
   screenName?: string
   dashboardWidgets?: DashboardWidget[]
   onDashboardWidgetsChange?: (widgets: DashboardWidget[]) => void
@@ -56,7 +57,7 @@ export function MainContent({
   twinLayouts, twinCamera, twinConnections, sensors,
   saveScadaEquipmentMut, saveScadaConnectionsMut, saveTwinLayoutMut,
   saveTwinConnectionsMut, updateSensorMut, fetchOk, isAdmin,
-  scadaToolbarSlotSetter, screenName, dashboardWidgets, onDashboardWidgetsChange,
+  scadaToolbarSlotSetter, screenName, dashboardWidgets, onDashboardWidgetsChange, onOpenDesigner,
 }: Props) {
   const queryClient = useQueryClient()
 
@@ -131,6 +132,7 @@ export function MainContent({
           onSensorClick={(id: number) => setSelectedSensor(id)}
           isAdmin={isAdmin}
           toolbarSlotSetter={scadaToolbarSlotSetter}
+          onOpenDesigner={onOpenDesigner}
         />
       </Suspense>
     )

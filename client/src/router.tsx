@@ -42,6 +42,8 @@ const dataRoute = createRoute({ getParentRoute: () => rootRoute, path: '/data', 
 const alarmsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/alarms', component: None })
 const commandsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/commands', component: None })
 const shiftRoute = createRoute({ getParentRoute: () => rootRoute, path: '/shift', component: None })
+// Voltrus Designer (screen editor, beta). The 2D view's own Edit mode stays until it is accepted.
+const designerRoute = createRoute({ getParentRoute: () => rootRoute, path: '/designer', component: None })
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -55,6 +57,7 @@ const routeTree = rootRoute.addChildren([
   alarmsRoute,
   commandsRoute,
   shiftRoute,
+  designerRoute,
 ])
 
 export const router = createRouter({

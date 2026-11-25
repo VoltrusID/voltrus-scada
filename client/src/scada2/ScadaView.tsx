@@ -62,6 +62,8 @@ interface Props {
   onSensorClick: (sensorId: number) => void
   isAdmin: boolean
   toolbarSlotSetter?: (slot: React.ReactNode) => void
+  /** Opens this screen in the Voltrus Designer (beta). */
+  onOpenDesigner?: () => void
 }
 
 type Selection = { kind: 'widget' | 'connection'; id: string } | null
@@ -98,7 +100,7 @@ const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.25, 1.5, 2]
 
 export const ScadaView: React.FC<Props> = ({
   sensors, activeScreen, scadaEquipment, scadaConnections, loaded,
-  onSave, onSensorClick, isAdmin, toolbarSlotSetter,
+  onSave, onSensorClick, isAdmin, toolbarSlotSetter, onOpenDesigner,
 }) => {
   const { canOperate } = useRole()
   const { data: faceplateDefs = [] } = useFaceplates()
@@ -413,6 +415,12 @@ export const ScadaView: React.FC<Props> = ({
           </>
         )}
         {sep}
+        {onOpenDesigner && !editMode && (
+          <button onClick={onOpenDesigner} disabled={!loaded} title="Open this screen in the Voltrus Designer (beta)" data-testid="open-designer" style={{
+            padding: '3px 10px', borderRadius: 5, fontSize: 11, fontWeight: 600, cursor: 'pointer',
+            border: '1px solid var(--cyan)', background: 'color-mix(in srgb, var(--cyan) 12%, transparent)', color: 'var(--cyan)',
+          }}>Designer</button>
+        )}
         <button onClick={toggleEdit} disabled={!loaded || saving} title={editMode ? 'Save and leave edit mode' : loaded ? 'Edit screen' : 'Loading screen…'} style={{
           padding: '3px 10px', borderRadius: 5, fontSize: 11, fontWeight: 600, cursor: 'pointer',
           border: `1px solid ${editMode ? 'var(--warn)' : 'var(--border)'}`,
@@ -422,7 +430,7 @@ export const ScadaView: React.FC<Props> = ({
       </div>,
     )
     return () => toolbarSlotSetter(null)
-  }, [editMode, tool, connectType, showGrid, zoom, scale, dirty, saving, loaded, history.past.length, history.future.length, isAdmin, toolbarSlotSetter, handleSave, toggleEdit, zoomBy])
+  }, [editMode, tool, connectType, showGrid, zoom, scale, dirty, saving, loaded, history.past.length, history.future.length, isAdmin, toolbarSlotSetter, handleSave, toggleEdit, zoomBy, onOpenDesigner])
 
   // The inspector column is always reserved in edit mode: opening it on select would rescale the stage under the pointer.
   const rightOpen = editMode

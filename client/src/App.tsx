@@ -60,6 +60,7 @@ const NodeRedImportWizard = lazy(() => import('./NodeRedImportWizard').then(m =>
 const MqttBrokerPanel = lazy(() => import('./MqttBrokerPanel').then(m => ({ default: m.MqttBrokerPanel })))
 const EdrCompatPanel = lazy(() => import('./EdrCompatPanel').then(m => ({ default: m.EdrCompatPanel })))
 const ScriptEditor = lazy(() => import('./components/ScriptEditor').then(m => ({ default: m.ScriptEditor })))
+const Designer = lazy(() => import('./designer/Designer').then(m => ({ default: m.Designer })))
 
 // Stable fallbacks while a query has no data: a fresh `[]` per render would
 // re-run every effect and memo that depends on it.
@@ -125,6 +126,7 @@ export function AppInner() {
     if (m === 'system' || m === 'flows' || m === 'tags' || m === 'assets' || m === 'scripts') navigate({ to: `/${m}`, search: prev => ({ ...prev, screen: 'all' }) })
     else navigate({ to: '/', search: prev => ({ ...prev, mode: m }) })
   }, [navigate])
+  const openDesigner = useCallback(() => navigate({ to: '/designer', search: prev => ({ ...prev }) }), [navigate])
   const toggleAlarms = useCallback(() => navigate({ to: _routePage === 'alarms' ? '/' : '/alarms' }), [navigate, _routePage])
   const [scadaToolbarSlot, setScadaToolbarSlot] = useState<React.ReactNode>(null)
   const [localLayouts, setLocalLayouts] = useState<ScreenLayouts | null>(null)
@@ -631,7 +633,7 @@ export function AppInner() {
               <Suspense fallback={null}><ScriptEditor /></Suspense>
             </OverlayScreen>
           )}
-          {mode !== 'system' && mode !== 'flows' && mode !== 'tags' && mode !== 'assets' && mode !== 'scripts' && selectedSensor == null && (
+          {mode !== 'system' && mode !== 'flows' && mode !== 'tags' && mode !== 'assets' && mode !== 'scripts' && selectedSensor == null && _routePage !== 'designer' && (
             <MainContent
               viewMode={viewMode} mode={mode}
               screenSensors={screenSensors}
@@ -657,6 +659,7 @@ export function AppInner() {
               sensors={sensors}
               saveScadaEquipmentMut={saveScadaEquipmentMut}
               scadaToolbarSlotSetter={setScadaToolbarSlot}
+              onOpenDesigner={canConfigure ? openDesigner : undefined}
               screenName={screens.find(sc => sc.id === activeScreen)?.name}
               saveScadaConnectionsMut={saveScadaConnectionsMut}
               saveTwinLayoutMut={saveTwinLayoutMut}
@@ -702,6 +705,16 @@ export function AppInner() {
         {screenPrompt && <PromptDialog {...screenPrompt} onClose={() => setScreenPrompt(null)} />}
         {screenConfirm && <ConfirmDialog {...screenConfirm} onClose={() => setScreenConfirm(null)} />}
         {showBrandingDialog && edition.branding && <edition.branding.Dialog branding={branding} onClose={() => setShowBrandingDialog(false)} />}
+        {_routePage === 'designer' && canConfigure && (
+          <Suspense fallback={null}>
+            <Designer
+              screen={activeScreen}
+              onOpenScreen={id => navigate({ to: '/designer', search: prev => ({ ...prev, screen: id }) })}
+              onClose={() => navigate({ to: '/', search: prev => ({ ...prev, view: 'scada' }) })}
+              onOpenPage={page => navigate({ to: `/${page}` })}
+            />
+          </Suspense>
+        )}
         {_routePage === 'alarms' && <Suspense fallback={null}><AlarmPanel onClose={() => navigate({ to: '/' })} /></Suspense>}
         {_routePage === 'commands' && <Suspense fallback={null}><CommandPanel onClose={() => navigate({ to: '/' })} canOperate={canOperate} /></Suspense>}
         {showExportPanel && <Suspense fallback={null}><DataExportPanel onClose={() => setShowExportPanel(false)} /></Suspense>}

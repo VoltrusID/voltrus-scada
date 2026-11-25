@@ -1,0 +1,155 @@
+// Property bindings: any widget property can follow a tag, an expression or a
+// state-to-value map instead of holding a fixed value. Bindings live in the
+// widget's `config.bindings`, keyed by property name, so they travel with the
+// screen through the REST rows, MCP and the project file unchanged.
+//
+//   config.bindings = {
+//     label:   { kind: 'expr', expr: '"P-101A " + text({wtp/intake_flow}, 0) + " m³/h"' },
+//     visible: { kind: 'tag',  tag: 'wtp/p101a_run' },
+//     color:   { kind: 'map',  expr: '{wtp/p101b_fault}', cases: [{ op: '>=', v: 1, out: '#f04646' }], else: '#8b939e' },
+//   }
+//
+// Tags are named by project ref (`device/key`), resolved to the live value in
+// the browser. The widget's primary value tag stays in `sensorId`/`sensor_bindings`.
+
+import { compile, evaluate, ExprError, refsOf, truthy, type Value } from './expr.ts'
+
+export type Binding =
+  | { kind: 'tag'; tag: string }
+  | { kind: 'expr'; expr: string }
+  | { kind: 'map'; expr: string; cases: MapCase[]; else?: unknown }
+
+export interface MapCase { op: '==' | '>=' | '<=' | '>' | '<'; v: number; out: unknown }
+
+export type PropType = 'string' | 'number' | 'boolean' | 'color' | 'select' | 'tag'
+
+export const BINDINGS_KEY = 'bindings'
+
+/** Properties every widget has besides its own schema. */
+export const COMMON_PROPS: { key: string; label: string; type: PropType; default: unknown }[] = [
+  { key: 'visible', label: 'Visible', type: 'boolean', default: true },
+  { key: 'opacity', label: 'Opacity', type: 'number', default: 1 },
+]
+
+interface TagLike { id: number; key: string; device_id?: string | null }
+
+/** A tag's project ref: `device/key` (the project format's natural key). */
+export const tagRef = (s: TagLike): string => `${s.device_id ?? ''}/${s.key}`
+
+export function refIndex(sensors: TagLike[]): Map<string, number> {
+  const m = new Map<string, number>()
+  for (const s of sensors) {
+    const r = tagRef(s)
+    if (!m.has(r)) m.set(r, s.id)
+  }
+  return m
+}
+
+export function bindingsOf(config: Record<string, any> | undefined): Record<string, Binding> {
+  const b = config?.[BINDINGS_KEY]
+  return b && typeof b === 'object' && !Array.isArray(b) ? b : {}
+}
+
+export const hasBindings = (config: Record<string, any> | undefined) => Object.keys(bindingsOf(config)).length > 0
+
+/** Config with one property bound (or unbound with `null`). Returns a new config object. */
+export function withBinding(config: Record<string, any>, prop: string, binding: Binding | null): Record<string, any> {
+  const next = { ...bindingsOf(config) }
+  if (binding) next[prop] = binding
+  else delete next[prop]
+  const out = { ...config }
+  if (Object.keys(next).length) out[BINDINGS_KEY] = next
+  else delete out[BINDINGS_KEY]
+  return out
+}
+
+/** Problems in a binding, for the property editor. Empty means fine. */
+export function bindingErrors(b: Binding, known: Set<string> | Map<string, number>): string[] {
+  const errs: string[] = []
+  const has = (r: string) => known.has(r)
+  if (b.kind === 'tag') {
+    if (!b.tag) errs.push('Pick a tag')
+    else if (!has(b.tag)) errs.push(`Unknown tag ${b.tag}`)
+    return errs
+  }
+  const c = compile(b.expr)
+  if (c instanceof ExprError) return [c.message]
+  for (const r of refsOf(c)) if (!has(r)) errs.push(`Unknown tag {${r}}`)
+  return errs
+}
+
+/** Every tag ref a widget's bindings read. */
+export function bindingRefs(config: Record<string, any> | undefined): string[] {
+  const out = new Set<string>()
+  for (const b of Object.values(bindingsOf(config))) {
+    if (b.kind === 'tag') { if (b.tag) out.add(b.tag) } else {
+      const c = compile(b.expr)
+      if (!(c instanceof ExprError)) refsOf(c, out)
+    }
+  }
+  return [...out]
+}
+
+function coerce(v: unknown, type: PropType | undefined): unknown {
+  if (type === 'boolean') return typeof v === 'boolean' ? v : truthy(v as Value)
+  if (type === 'number') return typeof v === 'number' ? v : v == null ? null : Number(v)
+  if (type === 'string') return v == null ? '' : typeof v === 'number' ? String(Math.round(v * 1000) / 1000) : String(v)
+  return v
+}
+
+const matches = (x: number, c: MapCase) =>
+  c.op === '==' ? x === c.v : c.op === '>=' ? x >= c.v : c.op === '<=' ? x <= c.v : c.op === '>' ? x > c.v : x < c.v
+
+/** The value a binding gives now. `undefined` when it cannot be evaluated (the property keeps its fixed value). */
+export function evaluateBinding(b: Binding, read: (ref: string) => number | null, type?: PropType): unknown {
+  if (b.kind === 'tag') {
+    const v = read(b.tag)
+    return v == null ? undefined : coerce(v, type)
+  }
+  const c = compile(b.expr)
+  if (c instanceof ExprError) return undefined
+  const v = evaluate(c, read)
+  if (b.kind === 'expr') return v == null ? undefined : coerce(v, type)
+  const x = typeof v === 'boolean' ? (v ? 1 : 0) : typeof v === 'number' ? v : NaN
+  const hit = Number.isNaN(x) ? undefined : b.cases.find(c => matches(x, c))
+  const out = hit ? hit.out : b.else
+  return out === undefined ? undefined : coerce(out, type)
+}
+
+/**
+ * The config a widget is drawn with: every bound property replaced by its
+ * current value. `types` gives the property types (from the widget schema).
+ * Returns the same object when nothing is bound.
+ */
+export function applyBindings(
+  config: Record<string, any>,
+  read: (ref: string) => number | null,
+  types: Record<string, PropType> = {},
+): Record<string, any> {
+  const bs = bindingsOf(config)
+  const keys = Object.keys(bs)
+  if (keys.length === 0) return config
+  const out: Record<string, any> = { ...config }
+  for (const k of keys) {
+    const v = evaluateBinding(bs[k], read, types[k] ?? (k === 'visible' ? 'boolean' : k === 'opacity' ? 'number' : undefined))
+    if (v !== undefined) out[k] = v
+  }
+  return out
+}
+
+/** Reader over the live value store, by ref. */
+export function liveReader(index: Map<string, number>, values: Record<string, { value: number } | undefined>) {
+  return (ref: string): number | null => {
+    const id = index.get(ref)
+    if (id == null) return null
+    const v = values[String(id)]?.value
+    return typeof v === 'number' ? v : null
+  }
+}
+
+/** One-line description of a binding for the property grid. */
+export function describeBinding(b: Binding): string {
+  if (b.kind === 'tag') return `{${b.tag}}`
+  if (b.kind === 'expr') return b.expr
+  return `map ${b.expr} (${b.cases.length} case${b.cases.length === 1 ? '' : 's'})`
+}

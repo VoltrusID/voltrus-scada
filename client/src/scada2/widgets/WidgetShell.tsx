@@ -1,10 +1,12 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Rnd } from 'react-rnd'
 import type { SensorConfig, SensorData } from '../../types'
 import type { WidgetInstance } from './types'
 import { getWidgetComponent } from './registry'
 import { ScreenWidgetView } from '../../components/ScreenWidgetView'
 import { framesWidget, valueStyle } from '../../valueStyle'
+import { applyBindings, hasBindings, liveReader, refIndex } from '../../designer/bindings'
+import { propTypesOf } from '../../designer/props'
 
 interface WidgetShellProps {
   instance: WidgetInstance
@@ -42,11 +44,24 @@ const HANDLES = {
   bottomRight: corner({ right: -4, bottom: -4 }),
 }
 
+/** The instance with its property bindings (Designer) applied to the live values. Same object when nothing is bound. */
+export function useBoundInstance(instance: WidgetInstance, sensors: SensorConfig[], currentValues: Record<string, SensorData>, active: boolean): WidgetInstance {
+  const bound = active && hasBindings(instance.config)
+  const index = useMemo(() => (bound ? refIndex(sensors) : null), [bound, sensors])
+  if (!bound || !index) return instance
+  const config = applyBindings(instance.config, liveReader(index, currentValues), propTypesOf(instance))
+  return config === instance.config ? instance : { ...instance, config }
+}
+
 export default function WidgetShell({
-  instance, sensor, data, sensors, currentValues,
+  instance: saved, sensor, data, sensors, currentValues,
   editMode, selected, scale, locked, onSelect, onMove, onResize, onWriteValue, activatable = false,
 }: WidgetShellProps) {
   const [hover, setHover] = useState(false)
+  // Bindings drive the drawing at runtime; the editor shows and edits the saved values.
+  const instance = useBoundInstance(saved, sensors, currentValues, !editMode)
+  const hidden = !editMode && instance.config?.visible === false
+  const opacity = !editMode && typeof instance.config?.opacity === 'number' ? Math.max(0, Math.min(1, instance.config.opacity)) : undefined
 
   // A click selects; only a real pointer drag moves. Selecting opens the inspector and can rescale
   // the stage mid-click, which react-rnd would otherwise report as a drag to a bogus position.
@@ -98,7 +113,7 @@ export default function WidgetShell({
       dragGrid={[10, 10]}
       resizeGrid={[10, 10]}
       resizeHandleStyles={selected ? HANDLES : undefined}
-      style={{ display: 'flex', zIndex: selected ? 5 : 2 }}
+      style={{ display: hidden ? 'none' : 'flex', zIndex: selected ? 5 : 2, opacity }}
     >
       <div
         onMouseDown={editMode ? () => onSelect(instance.id) : undefined}
