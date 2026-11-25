@@ -78,7 +78,7 @@ INSERT INTO twin_layouts (screen_id,equipment_id,equipment_type,position_x,posit
 INSERT INTO twin_connections (screen_id,from_id,to_id) VALUES ('plts_1','inv1','inv2');
 INSERT INTO scada_equipment (screen_id,equipment_id,equipment_type,equipment_name,x,y,width,height,rotation,sensor_bindings,config) VALUES
   ('plts_1','w1','gauge','Voltage gauge',10,20,100,60,0,'[1,2]','{"z":1,"label":"V"}'),
-  ('plts_1','w2','tank','',0,0,100,60,45,'[]','{"faceplate":"pump_std","faceplateMap":{"run":1,"fault":2}}');
+  ('plts_1','w2','tank','',0,0,100,60,45,'[]','{"faceplate":"pump_std","faceplateMap":{"run":1,"fault":2},"runSensorId":4,"bindings":{"label":{"kind":"expr","expr":"text({plts_1/power#2}, 1) + \" kW\""},"visible":{"kind":"tag","tag":"plts_1/voltage"}}}');
 INSERT INTO faceplates (id,name,kind,description,created_at,updated_at) VALUES ('pump_std','Pump','pump','',100,100);
 INSERT INTO faceplate_roles (faceplate_id,role,label,kind,required,sort_order) VALUES
   ('pump_std','run','Running','state',1,0),('pump_std','fault','','fault',0,1),('pump_std','cmd','Start / stop','command',0,2);
@@ -431,6 +431,18 @@ async fn import_recreates_everything_with_cross_references_intact() {
     assert_eq!(config["faceplate"], "pump_std");
     assert_eq!(config["faceplateMap"]["run"], voltage_id);
     assert_eq!(config["faceplateMap"]["fault"], current_id);
+    // So does the tag that animates it; property bindings keep their refs as text.
+    let power2_id = scalar_i64(
+        &b,
+        "SELECT MAX(id) FROM data_sources WHERE device_id='plts_1' AND key='power'",
+    )
+    .await;
+    assert_eq!(config["runSensorId"], power2_id);
+    assert_eq!(
+        config["bindings"]["label"]["expr"],
+        "text({plts_1/power#2}, 1) + \" kW\""
+    );
+    assert_eq!(config["bindings"]["visible"]["tag"], "plts_1/voltage");
     assert_eq!(
         scalar_i64(
             &b,
@@ -825,6 +837,32 @@ scripts:
     assert!(joined.contains("unknown tag 'd1/missing'"), "{joined}");
     assert!(joined.contains("unknown script 'nope'"), "{joined}");
     assert!(joined.contains("duplicate script 's1'"), "{joined}");
+
+    // Property bindings and the run tag of SCADA widgets name tags by ref too.
+    let scada = doc_of(&SMALL.replace(
+        "  - ref: d1/v\n",
+        "  - ref: d1/v\n  scada:\n    equipment:\n    - equipment_id: w\n      equipment_type: symbol\n      config:\n        runSensorId: d1/run\n        bindings:\n          label: {kind: expr, expr: 'text({d1/v}) + {d1/nope}'}\n          visible: {kind: tag, tag: d1/gone}\n          color: {kind: loop}\n",
+    ));
+    let joined = validate_doc(&scada, None, false)
+        .iter()
+        .filter(|i| i.severity == Severity::Error)
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        joined.contains("config.bindings.label") && joined.contains("unknown tag 'd1/nope'"),
+        "{joined}"
+    );
+    assert!(!joined.contains("'d1/v'"), "{joined}");
+    assert!(
+        joined.contains("config.bindings.visible") && joined.contains("unknown tag 'd1/gone'"),
+        "{joined}"
+    );
+    assert!(joined.contains("unknown binding kind 'loop'"), "{joined}");
+    assert!(
+        joined.contains("config.runSensorId") && joined.contains("unknown tag 'd1/run'"),
+        "{joined}"
+    );
 
     // The import refuses it and writes nothing.
     let s = fresh();

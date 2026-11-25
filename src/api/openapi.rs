@@ -160,6 +160,8 @@ use utoipa::{Modify, OpenApi};
         crate::api::layouts::save_scada_equipment,
         crate::api::layouts::get_scada_connections,
         crate::api::layouts::save_scada_connections,
+        crate::api::layouts::get_scada_layout,
+        crate::api::layouts::save_scada_layout,
         // Data Sources
         crate::api::data_sources::list_data_sources,
         crate::api::data_sources::create_data_source,
