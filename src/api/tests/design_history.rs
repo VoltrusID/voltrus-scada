@@ -2241,6 +2241,7 @@ async fn git_settings_refuse_unsafe_remotes_and_folders() {
 /// A remote whose tree has the project file (or a folder on its path) as a
 /// symbolic link is refused, and nothing outside the repository is read or
 /// written.
+#[cfg(unix)]
 #[tokio::test]
 async fn git_sync_never_follows_symlinks_in_the_remote() {
     if !git_ok() {
@@ -2273,13 +2274,7 @@ async fn git_sync_never_follows_symlinks_in_the_remote() {
             tmp.path(),
             &["init", "-q", "-b", "main", src.to_str().unwrap()],
         );
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&target, src.join(link_at)).unwrap();
-        #[cfg(not(unix))]
-        {
-            let _ = (&target, link_at);
-            return;
-        }
         git(&src, &["add", "-A"]);
         git(
             &src,
