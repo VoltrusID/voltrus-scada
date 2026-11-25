@@ -14,6 +14,10 @@ write puts that tag in manual until it is written again. Setpoints (SETPOINTS)
 are writable too: a write is clamped to the setpoint's range and the process
 follows it (cl2_dose_sp sets the hypochlorite dose, so the chlorine residual
 drifts towards the new level over a few minutes).
+
+The same port also serves the four vertical demo sites from verticals.py (solar,
+genset, energy meters, booster pumps), read-only, each in its own address block
+starting at 1000, 2000, 3000 and 4000. The unit id is ignored.
 """
 import argparse
 import asyncio
@@ -21,6 +25,8 @@ import math
 import random
 import struct
 import time
+
+from verticals import DEVICES as VERTICAL_DEVICES, Verticals
 
 TAGS = [
     # Intake
@@ -66,6 +72,7 @@ class Plant:
                  energy_kwh=184_220.0, fcv201_pos=46.0, p301a_speed=48.5, chlorine_residual=1.15,
                  cl2_dose_sp=1.7)
         self.backwash_left = [0.0, 0.0, 0.0]
+        self.vert = Verticals()
 
     def cmd(self, name: str, auto: float) -> float:
         return self.manual.get(name, auto)
@@ -164,11 +171,24 @@ class Plant:
         v['bus_voltage'] = 400 + 3 * math.sin(t / 50) + n(0.4)
         v['power_factor'] = 0.93 + 0.02 * math.sin(t / 120) + n(0.002)
 
-    def registers(self) -> list[int]:
-        words = []
-        for name in TAGS:
-            words.extend(struct.unpack('>HH', struct.pack('>f', self.v[name])))
-        return words
+        self.vert.step(DT)
+
+    def read(self, addr: int, qty: int) -> list[int] | None:
+        """Words for a read that falls inside one block (the WTP at 0 or one vertical site), else None."""
+        for base, names, values in self.blocks():
+            if base <= addr and addr + qty <= base + 2 * len(names):
+                first, last = (addr - base) // 2, (addr + qty - base - 1) // 2
+                words = []
+                for name in names[first:last + 1]:
+                    words.extend(struct.unpack('>HH', struct.pack('>f', values[name])))
+                skip = (addr - base) % 2
+                return words[skip:skip + qty]
+        return None
+
+    def blocks(self):
+        yield 0, TAGS, self.v
+        for d in VERTICAL_DEVICES.values():
+            yield d['base'], d['tags'], self.vert.v
 
 
 def clamp(x, lo, hi):
@@ -177,12 +197,11 @@ def clamp(x, lo, hi):
 
 def handle_pdu(plant: Plant, pdu: bytes) -> bytes:
     fc = pdu[0]
-    regs = plant.registers()
     if fc in (3, 4):
         addr, qty = struct.unpack('>HH', pdu[1:5])
-        if qty < 1 or addr + qty > len(regs):
+        data = plant.read(addr, qty) if 1 <= qty <= 125 else None
+        if data is None:
             return bytes([fc | 0x80, 2])
-        data = regs[addr:addr + qty]
         return bytes([fc, qty * 2]) + struct.pack(f'>{qty}H', *data)
     if fc == 6:
         addr, word = struct.unpack('>HH', pdu[1:5])
@@ -232,6 +251,8 @@ async def main():
 
     server = await asyncio.start_server(lambda r, w: serve(plant, r, w), '127.0.0.1', args.port)
     print(f'WTP plant sim on 127.0.0.1:{args.port} — {len(TAGS)} float32 tags, holding regs 0..{len(TAGS) * 2 - 1}', flush=True)
+    for dev_id, d in VERTICAL_DEVICES.items():
+        print(f'  {dev_id}: {len(d["tags"])} tags at {d["base"]}..{d["base"] + 2 * len(d["tags"]) - 1}', flush=True)
     async with server:
         await asyncio.gather(server.serve_forever(), ticker())
 
