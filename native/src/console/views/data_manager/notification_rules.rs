@@ -323,10 +323,6 @@ fn switch(console: &mut Console, rule: &NotificationRule, cx: &mut Context<Conso
 }
 
 fn test_rule(console: &mut Console, rule: &NotificationRule, cx: &mut Context<Console>) {
-    if !channel(&rule.channel_type).is_none_or(|channel| channel.testable) {
-        console.show_toast("Push is tested from a browser that subscribed", true, cx);
-        return;
-    }
     let state = console.state::<State>();
     if state.busy.contains(&rule.id) {
         return;
@@ -538,7 +534,6 @@ fn channel_color(id: &str, theme: &Theme) -> gpui::Hsla {
     match id {
         "email" => theme.accent,
         "webhook" => theme.info,
-        "push" => theme.success,
         _ => theme.warning,
     }
 }
@@ -726,7 +721,6 @@ fn rule_row(
             tag_name(console, &rule.source_key).unwrap_or_else(|| "no such tag".to_owned()),
         )
     };
-    let testable = channel(&rule.channel_type).is_none_or(|channel| channel.testable);
     let (edit, switch_rule, test, remove) =
         (rule.clone(), rule.clone(), rule.clone(), rule.clone());
     row_frame(
@@ -800,12 +794,8 @@ fn rule_row(
         actions(ACTIONS, current)
             .child(
                 IconButton::new(element_id("data-rule-test", id), Icon::Send)
-                    .tooltip(if testable {
-                        "Send a test  T"
-                    } else {
-                        "Push is tested from a browser"
-                    })
-                    .disabled(!testable || busy)
+                    .tooltip("Send a test  T")
+                    .disabled(busy)
                     .on_click(cx.listener(move |console, _, _, cx| test_rule(console, &test, cx))),
             )
             .child(
@@ -932,44 +922,36 @@ fn form_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>)
         )
         .into_any_element(),
     ];
-    if spec.testable {
-        let result = test.as_ref().map(outcome_line);
-        body.push(
-            div()
-                .flex()
-                .items_center()
-                .gap(SPACE_4)
-                .child(
-                    Button::new(
-                        "data-rule-test",
-                        if testing { "Sending…" } else { "Send a test" },
-                    )
-                    .compact()
-                    .icon(Icon::Send)
-                    .disabled(testing)
-                    .on_click(cx.listener(|console, _, window, cx| test_form(console, window, cx))),
+    let result = test.as_ref().map(outcome_line);
+    body.push(
+        div()
+            .flex()
+            .items_center()
+            .gap(SPACE_4)
+            .child(
+                Button::new(
+                    "data-rule-test",
+                    if testing { "Sending…" } else { "Send a test" },
                 )
-                .child(div().flex_1().min_w_0().child(match result {
-                    Some((line, ok)) => note(
-                        line,
-                        if ok { theme.success } else { theme.danger },
-                        Some(if ok {
-                            Icon::CircleCheck
-                        } else {
-                            Icon::CircleAlert
-                        }),
-                    ),
-                    None => note("A sample alarm to each target, now", theme.fg_dim, None),
-                }))
-                .into_any_element(),
-        );
-    } else {
-        body.push(note(
-            "Push reaches the browsers these users subscribed from the web client.",
-            theme.fg_dim,
-            Some(Icon::Info),
-        ));
-    }
+                .compact()
+                .icon(Icon::Send)
+                .disabled(testing)
+                .on_click(cx.listener(|console, _, window, cx| test_form(console, window, cx))),
+            )
+            .child(div().flex_1().min_w_0().child(match result {
+                Some((line, ok)) => note(
+                    line,
+                    if ok { theme.success } else { theme.danger },
+                    Some(if ok {
+                        Icon::CircleCheck
+                    } else {
+                        Icon::CircleAlert
+                    }),
+                ),
+                None => note("A sample alarm to each target, now", theme.fg_dim, None),
+            }))
+            .into_any_element(),
+    );
 
     div()
         .flex()
