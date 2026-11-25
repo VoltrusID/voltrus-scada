@@ -919,6 +919,8 @@ pub(crate) async fn serve(
         state.license_status.clone(),
     );
     let app = api::create_router(state);
+    // The push relay connector (an add-on) forwards phone requests through it.
+    crate::edition::set_app_router(app.clone());
     api::ui::log_source().await;
 
     let addr = format!("{}:{}", app_config.server_host, app_config.server_port);

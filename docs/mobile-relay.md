@@ -107,8 +107,10 @@ The site then clears that push token (`Storage::clear_mobile_push_token`).
  "query": "status=active", "headers": {"authorization": "Bearer vdt_…", "content-type": "application/json", "accept-language": "id"}, "body": "<text or null>"}
 ```
 
-The site runs it against its own router in process, as if it arrived on its HTTP
-port from the relay, and answers with a `response` frame within 15 s. Only these
+The site runs it against its own router in process (`edition::app_router`), as if
+it arrived on its HTTP port from the relay, and answers with a `response` frame
+within 15 s. Forwarded requests carry the peer address 192.0.2.1, so rate limits
+and the security log count them as the relay's. Only these
 headers are forwarded: `authorization`, `content-type`, `accept-language`. Only
 these routes are forwarded; both the relay and the site check the list and answer
 anything else with 403 `{"code": "path_not_allowed"}`:

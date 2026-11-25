@@ -224,6 +224,22 @@ pub fn mobile_push_sender() -> Option<&'static Arc<dyn MobilePushSender>> {
     MOBILE_PUSH_SENDER.get()
 }
 
+static APP_ROUTER: OnceLock<Router> = OnceLock::new();
+
+/// Keep the site's HTTP router for add-ons. Called once by [`crate::run`],
+/// before the server listens.
+pub fn set_app_router(router: Router) {
+    let _ = APP_ROUTER.set(router);
+}
+
+/// The site's own HTTP router, with every route and its authentication, role,
+/// rate limit and security layers, once built. An add-on that receives
+/// requests another way (the push relay) runs them through it in process.
+/// Cloning it is cheap.
+pub fn app_router() -> Option<&'static Router> {
+    APP_ROUTER.get()
+}
+
 /// A hosted AI completion service for the `voltrus_ai` copilot provider.
 /// Registered by an add-on edition; Core only talks to the AI providers the
 /// operator configures with their own key (`byok_openai`, `byok_anthropic`).
