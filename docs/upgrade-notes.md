@@ -60,9 +60,13 @@ unconfigured limit it still finds on tags never edited since (no
 `*_enabled` flag in their settings):
 
 * first-start tags with the seeded limits exactly as seeded (name, colour,
-  range and limits unchanged);
-* vertical and FEED template tags (orange) whose high warning limit is still
-  the range minimum or whose high critical limit is still the range maximum;
+  range, base and limits unchanged);
+* vertical and FEED template tags still as the template wrote them (orange,
+  template name, base in the middle of the range) whose high warning limit is
+  still the range minimum or whose high critical limit is still the range
+  maximum. Two-state tags (range 0–1, bool, coil, discrete input, FEED DI/DO)
+  are not listed for a critical limit at the maximum: that is how a fault bit
+  is alarmed, so a seeded one looks the same as one set on purpose;
 * vertical template tags whose "below" alarm was stored as a high limit
   (the warning names them; move the value to the low limit).
 

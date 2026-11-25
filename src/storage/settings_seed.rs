@@ -156,41 +156,66 @@ impl Storage {
         let conn = self.conn.clone();
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
-            // First start: every register got 80/90 (name, colour, range and
-            // limits exactly as seeded), known register names fixed limits.
-            // Vertical and FEED templates (orange): warning at the range's
-            // minimum, critical at its maximum. A template alarm overwrote one
-            // of the two at most, so either one left in place counts (only a
-            // limit above 0 is a limit).
+            // First start: every register got 80/90, known register names
+            // fixed limits; name, colour, range, base and limits as seeded.
             let mut stmt = conn.prepare(
-                "SELECT key, color = '#f97316'
-                 FROM data_sources
+                "SELECT key FROM data_sources
                  WHERE instr(source_config, '_enabled') = 0
                    AND (
                      (name = key AND color = '#94a3b8' AND min_val = 0 AND max_val = 100
                       AND base_val = 50 AND warn_val = 80 AND crit_val = 90)
-                     OR (key, color, warn_val, crit_val) IN (VALUES
-                       ('voltage', '#f59e0b', 400, 420),
-                       ('current', '#06b6d4', 85, 95),
-                       ('power', '#a855f7', 40000, 45000),
-                       ('frequency', '#22c55e', 51, 52),
-                       ('power_factor', '#ef4444', 0.95, 0.98),
-                       ('energy_total', '#8b5cf6', 800000, 900000))
-                     OR (color = '#f97316'
-                         AND ((warn_val = min_val AND warn_val > 0)
-                              OR (crit_val = max_val AND crit_val > 0)))
+                     OR (key, name, color, min_val, max_val, warn_val, crit_val, base_val)
+                        IN (VALUES
+                       ('voltage', 'Voltage', '#f59e0b', 0, 450, 400, 420, 380),
+                       ('current', 'Current', '#06b6d4', 0, 100, 85, 95, 65),
+                       ('power', 'Power', '#a855f7', 0, 50000, 40000, 45000, 24700),
+                       ('frequency', 'Frequency', '#22c55e', 45, 55, 51, 52, 50),
+                       ('power_factor', 'Power Factor', '#ef4444', 0, 1, 0.95, 0.98, 0.92),
+                       ('energy_total', 'Energy Total', '#8b5cf6', 0, 999999, 800000, 900000,
+                        158732))
                    )
                  ORDER BY id",
             )?;
             let mut old = OldSeededLimits::default();
+            for key in stmt.query_map([], |row| row.get::<_, String>(0))? {
+                old.first_start.push(key?);
+            }
+            // Vertical and FEED templates: orange, the template's id in
+            // source_config, the tag's name (vertical) or "<name> — <description>"
+            // (FEED), base in the middle of the range, warning at the range's
+            // minimum and critical at its maximum. A template alarm overwrote
+            // one of the two limits at most, so either one left in place counts
+            // (only a limit above 0 is a limit).
+            let mut stmt = conn.prepare(
+                "SELECT key, min_val, max_val, warn_val, source_config
+                 FROM data_sources
+                 WHERE color = '#f97316'
+                   AND instr(source_config, '_enabled') = 0
+                   AND instr(source_config, '\"template_id\"') > 0
+                   AND base_val = (min_val + max_val) / 2
+                   AND (name = substr(key, instr(key, ':') + 1)
+                        OR substr(name, 1, length(key) - instr(key, ':') + 3)
+                           = substr(key, instr(key, ':') + 1) || ' — ')
+                   AND ((warn_val = min_val AND warn_val > 0)
+                        OR (crit_val = max_val AND crit_val > 0))
+                 ORDER BY id",
+            )?;
             for row in stmt.query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, f64>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
             })? {
-                let (key, template) = row?;
-                if template {
+                let (key, min, max, warn, cfg) = row?;
+                // On a two-state tag (a fault bit, a running contact) a
+                // critical limit at the top of the range is how a fault is
+                // alarmed, so it is no sign of a leftover; only a warning at
+                // the minimum is.
+                if (warn == min && warn > 0.0) || !is_digital(min, max, &cfg) {
                     old.template_range.push(key);
-                } else {
-                    old.first_start.push(key);
                 }
             }
             // Vertical templates stored a "below" alarm as a high limit.
@@ -423,6 +448,21 @@ impl OldSeededLimits {
             );
         }
     }
+}
+
+/// Whether a tag is two-state: range 0–1, or a bool, coil or discrete input
+/// (`data_type`, `register_area` or FEED `io_type` in its source_config).
+fn is_digital(min: f64, max: f64, source_config: &str) -> bool {
+    if min == 0.0 && max == 1.0 {
+        return true;
+    }
+    let Ok(cfg) = serde_json::from_str::<serde_json::Value>(source_config) else {
+        return false;
+    };
+    let field = |name: &str| cfg.get(name).and_then(|v| v.as_str()).unwrap_or("");
+    matches!(field("data_type"), "bool" | "boolean")
+        || matches!(field("register_area"), "coil" | "discrete")
+        || matches!(field("io_type"), "DI" | "DO")
 }
 
 /// Whether a template tag name such as `TK-2_LVL` matches a pattern such as
