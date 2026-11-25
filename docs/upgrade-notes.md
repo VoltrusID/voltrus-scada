@@ -25,7 +25,8 @@ poll. Now:
   contacts such as `SAFE_DOOR`, `SAFE_ROPE` and `NAV_<light>` alarm at 0;
   they used to get no alarm at all) or a high limit otherwise. A tag with
   several template alarms keeps them all, and the template's deadband is
-  written to the tag.
+  written to the tag. An "above 0" alarm (the lift template's `OPS_FAULT`)
+  still sets no limit, since a high limit of 0 is "not set".
 * An active limit alarm clears on the next evaluation (persistence interval)
   when its condition no longer exists because the tag changed: its limit was
   removed or disabled, its limit moved so the current value is inside it

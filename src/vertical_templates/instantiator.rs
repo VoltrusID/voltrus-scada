@@ -377,9 +377,10 @@ pub struct InstantiationResult {
 /// source_config; written as warn_val or crit_val it would be a high limit,
 /// raised in normal operation). "equal" is for two-state tags: equal to the
 /// bottom of the tag's range (a safety contact reading 0) is a low limit
-/// there, anything else a high limit. High limits are written with their
-/// `<name>_enabled` flag so a limit of 0 or below counts. The tag's deadband
-/// is the largest of its alarms' deadbands.
+/// there, anything else a high limit. High limits go in the columns without
+/// an `<name>_enabled` flag, where only a limit above 0 counts: with the
+/// flag, "above 0" (lift `OPS_FAULT`) would fire at value >= 0, always. The
+/// tag's deadband is the largest of its alarms' deadbands.
 fn apply_template_alarm(
     alarm: &TemplateAlarm,
     min_val: f64,
@@ -394,13 +395,8 @@ fn apply_template_alarm(
         _ => return false,
     };
     if high {
-        let (column, flag) = if critical {
-            ("crit_val", "crit_enabled")
-        } else {
-            ("warn_val", "warn_enabled")
-        };
+        let column = if critical { "crit_val" } else { "warn_val" };
         columns.insert(column.into(), json!(alarm.threshold));
-        cfg[flag] = json!(true);
     } else {
         cfg[if critical { "low_crit" } else { "low_warn" }] = json!(alarm.threshold);
     }
@@ -539,6 +535,9 @@ mod tests {
         let estop = crate::alarm_eval::Thresholds::of(tag(&sources, ":SAFE_ESTOP"));
         assert_eq!(estop.condition(1.0), Some(("critical", 1.0, "high")));
         assert_eq!(estop.condition(0.0), None);
+        // "above 0" is no limit (a high limit of 0 would always fire).
+        let fault = crate::alarm_eval::Thresholds::of(tag(&sources, ":OPS_FAULT"));
+        assert_eq!(fault.condition(0.0), None);
         // The template's deadband is written with the limit.
         let vib = crate::alarm_eval::Thresholds::of(tag(&sources, ":MTR_VIB"));
         assert_eq!((vib.high_warn, vib.deadband), (Some(10.0), 2.0));
