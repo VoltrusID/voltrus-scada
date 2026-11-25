@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Seed the WTP showcase: tag names/units/alarm limits, write policies, and SCADA screens.
 
-Also creates the four vertical demo sites from verticals.py (solar, genset, energy meters, booster pumps):
-their Modbus devices on plant-sim.py, their tags and one screen each.
+Also creates the four vertical demo sites from verticals.py (solar with its Victron ESS, genset, energy meters,
+booster pumps) and the packaging line from line.py (S7, EtherNet/IP and Modbus PLCs): their devices on plant-sim.py,
+their tags and one screen each.
 
     python3 seed.py --url http://localhost:3100 --password <admin password>
     python3 seed.py --log server.log      # read the generated first-run password from the server log
 
 On a fresh database the admin must change password first; seed.py does that and prints the new one.
 Re-running is safe: screens are matched by name and their SCADA layouts replaced.
+When it adds the packaging line's S7 or EtherNet/IP PLCs or their tags it says so: restart the server then, which
+starts their pollers (Voltrus v0.52 decodes S7 REAL tags right only in pollers started with the server).
 """
 import argparse
 import secrets
@@ -18,6 +21,7 @@ import re
 import urllib.error
 import urllib.request
 
+import line
 import verticals
 
 
@@ -77,6 +81,7 @@ WRITABLE = ['p101a_run', 'p101b_run', 'xv101_open', 'coag_pump_run', 'flash_mixe
 # Setpoints: (write_min, write_max). A write outside the range is refused; the plant clamps to 0-5 mg/L itself.
 SETPOINTS = {'cl2_dose_sp': (1.0, 3.0)}
 TAGS.update(verticals.META)
+TAGS.update(line.META)
 
 
 class Api:
@@ -329,7 +334,7 @@ def annunciator(s, ids, x, y, w, h, tags, n=12):
 
 def solar(ids):
     s = Screen(ids)
-    header(s, 'PLTS Atap Cikarang · 925 kWp', 'Rooftop PV, 8 string inverters from 4 brands · Modbus TCP via data logger · live')
+    header(s, 'PLTS Atap Cikarang · 925 kWp + 61 kWh ESS', 'Rooftop PV: 8 string inverters (Sungrow, Huawei, SMA, Growatt, Solis) and a Victron ESS · Modbus TCP · live')
     kpis(s, ['pv_site_kw', 'pv_site_kwh', 'pv_irr', 'pv_pr'])
 
     s.area(16, 104, 1376, 600, 'PV arrays & inverters', 'string inverters, AC side to ACP-PV')
@@ -364,13 +369,31 @@ def solar(ids):
     for j, (text, t) in enumerate([('Ambient', 'pv_tamb'), ('Grid V', 'pv_grid_v'), ('Grid Hz', 'pv_grid_hz'), ('Export', 'pv_export_mwh')]):
         row(s, 1706, 330 + j * 36, 186, text, t)
 
-    s.area(16, 716, 1176, 348, 'Trends', 'live, 1 s samples')
-    s.widget('trend', 32, 756, 568, 140, 'pv_irr', lineColor='var(--warn)')
-    s.widget('trend', 612, 756, 568, 140, 'pv_site_kw')
-    s.widget('multi_trend', 32, 906, 1148, 150, None, maxTags=8, pointsCount=180)
-    s.items[-1]['sensor_bindings'] = json.dumps([ids[f'pv_inv{k}_kw'] for k in range(1, 9)])
-    s.area(1204, 716, 700, 348, 'Alarms')
-    annunciator(s, ids, 1220, 754, 668, 298, [f'pv_inv{k}_fault' for k in range(1, 9)] + ['pv_inv5_temp', 'pv_pr', 'pv_grid_v', 'pv_tmod'])
+    s.area(16, 716, 560, 348, 'Trends', 'live, 1 s samples')
+    s.widget('trend', 32, 756, 528, 145, 'pv_irr', lineColor='var(--warn)')
+    s.widget('trend', 32, 911, 528, 145, 'pv_site_kw')
+
+    s.area(588, 716, 804, 348, 'ESS · Victron', '3 × Quattro 48/15000 · Lynx Smart BMS · Cerbo GX, Modbus TCP units 100 / 227 / 225')
+    s.sym('battery', 604, 768, 160, 96, 'vic_soc', label='Lithium 51.2 V · 61 kWh')
+    s.sym('inverter', 636, 896, 96, 128, 'vic_out_p1', label='3 × Quattro', showStatus=True, onThreshold=100,
+          faultSensorId='vic_vebus_err')
+    for j, (text, t) in enumerate([('SOC', 'vic_soc'), ('Battery power', 'vic_bat_w'), ('Battery voltage', 'vic_bat_v'), ('Battery current', 'vic_bat_i'),
+                                   ('BMS temp', 'vic_bms_temp'), ('SoH', 'vic_bms_soh')]):
+        row(s, 784, 752 + j * 32, 286, text, t)
+    for j, (text, t) in enumerate([('AC-in L1', 'vic_in_p1'), ('AC-in L2', 'vic_in_p2'), ('AC-in L3', 'vic_in_p3'),
+                                   ('AC-out L1', 'vic_out_p1'), ('AC-out L2', 'vic_out_p2'), ('AC-out L3', 'vic_out_p3')]):
+        row(s, 1090, 752 + j * 32, 290, text, t)
+    for j, (text, t) in enumerate([('VE.Bus state', 'vic_vebus_state'), ('Battery state', 'vic_bat_state'), ('Active input', 'vic_active_in')]):
+        row(s, 784 + j * 202, 948, 196, text, t, size=14)
+    for j, text in enumerate(['VE.Bus: 3 bulk · 4 absorption · 5 float · 9 inverting · Battery: 0 idle · 1 charging · 2 discharging',
+                              'Active input: 0 = AC-in 1 (PLN), 240 = disconnected (critical loads on battery)']):
+        s.label(784, 986 + j * 22, 600, 20, text, 10, align='left', muted=True)
+    s.label(784, 1032, 600, 20, 'ESS charges from PV surplus, shaves the afternoon peak, then floats; critical loads on AC-out.',
+            10, align='left', muted=True)
+
+    s.area(1404, 716, 500, 348, 'Alarms')
+    annunciator(s, ids, 1420, 754, 468, 298, [f'pv_inv{k}_fault' for k in range(1, 9)] + ['pv_inv5_temp', 'pv_pr', 'pv_grid_v',
+                                                'vic_soc', 'vic_vebus_err', 'vic_grid_lost', 'vic_bms_temp'], n=16)
     return s
 
 
@@ -556,11 +579,61 @@ def pumps(ids):
     return s
 
 
-VERTICAL_SCREENS = [('Solar PV', solar), ('Genset', genset), ('Energy Meters', meters), ('Pump VSD', pumps)]
+def packaging(ids):
+    s = Screen(ids)
+    header(s, 'Line 2 · PET Bottle Packaging 600 ml', 'Four machines, four PLCs: Siemens S7-1500 and S7-1200 over S7, Omron NJ over EtherNet/IP, '
+           'Mitsubishi iQ-R over Modbus TCP · live')
+    kpis(s, ['line_oee', 'line_output', 'line_rate', 'line_plan'])
+
+    s.area(16, 104, 1888, 200, 'Line flow', 'each machine read from its own PLC, in its own protocol')
+    syms = []
+    for i, (k, label, plc, proto, *_rest) in enumerate(line.MACHINES):
+        cx = 16 + 236 + i * 472
+        s.label(cx - 220, 128, 440, 22, label, 15, bold=True)
+        s.label(cx - 220, 150, 440, 20, plc, 12)
+        s.label(cx - 220, 170, 440, 18, proto, 11, muted=True)
+        syms.append(s.sym('motor', cx - 60, 192, 120, 104, f'{k}_run', label=k.upper(), showStatus=True, faultSensorId=f'{k}_fault'))
+    for i, (tag, text) in enumerate([('m2_run', 'CV-01 accumulation'), ('m3_run', 'CV-02 accumulation'), ('g120_run', 'CV-03 · Sinamics G120')]):
+        cx = 16 + 236 + i * 472
+        s.sym('conveyor', cx + 90, 214, 292, 76, tag, label=text, **({'faultSensorId': 'g120_fault'} if tag == 'g120_run' else {}))
+
+    extra = {'m1': [('Bowl level', 'm1_bowl'), ('Product temp', 'm1_temp')], 'm2': [('Cap torque', 'm2_torque')],
+             'm3': [('Label reel', 'm3_stock')], 'm4': [('G120 speed', 'g120_rpm'), ('G120 current', 'g120_amp'), ('G120 torque', 'g120_torque')]}
+    for i, (k, label, *_rest) in enumerate(line.MACHINES):
+        x = 16 + i * 472
+        s.area(x, 316, 460, 388, f'{label} · this shift')
+        s.widget('semicircle_gauge', x + 12, 352, 200, 130, f'{k}_oee')
+        s.label(x + 12, 482, 200, 18, 'OEE', 11, muted=True)
+        for j, (text, t) in enumerate([('Availability', 'avail'), ('Performance', 'perf'), ('Quality', 'qual'), ('Downtime', 'down')]):
+            row(s, x + 222, 352 + j * 34, 230, text, f'{k}_{t}')
+        for j, (text, t) in enumerate([('Speed', 'speed'), ('Cycle time', 'cycle'), ('Good', 'good'), ('Reject', 'rej'), ('Stop code', 'code')]):
+            row(s, x + 12, 516 + j * 34, 214, text, f'{k}_{t}')
+        for j, (text, t) in enumerate(extra[k]):
+            row(s, x + 236, 516 + j * 34, 214, text, t)
+
+    s.area(16, 716, 560, 348, 'Downtime this shift', 'machine-minutes by reason, from the S7-1500 line master')
+    for j, (text, t) in enumerate([('Jams', 'dt_jam'), ('Material out', 'dt_material'), ('Starved / blocked', 'dt_flow'), ('Other', 'dt_other')]):
+        row(s, 36, 756 + j * 44, 520, text, t, size=22, h=38)
+    for j, text in enumerate(['Stop codes: 0 running · 10 starved · 20 blocked · 31 jam · 32 material out · 41 operator stop',
+                              'OEE = availability × performance × quality, per shift (06:00 / 14:00 / 22:00 WIB)']):
+        s.label(36, 950 + j * 24, 520, 22, text, 10, align='left', muted=True)
+
+    s.area(588, 716, 604, 348, 'Trends', 'live, 1 s samples')
+    s.widget('trend', 604, 756, 572, 145, 'line_rate')
+    s.widget('multi_trend', 604, 911, 572, 145, None, maxTags=4, pointsCount=240)
+    s.items[-1]['sensor_bindings'] = json.dumps([ids[f'{k}_speed'] for k in ('m1', 'm2', 'm3')])
+    s.area(1204, 716, 700, 348, 'Alarms')
+    annunciator(s, ids, 1220, 754, 668, 298, [f'{k}_fault' for k, *_ in line.MACHINES] + ['g120_fault', 'm2_torque', 'm3_stock',
+                'm1_bowl', 'g120_amp', 'line_oee'] + [f'{k}_oee' for k, *_ in line.MACHINES], n=16)
+    return s
 
 
-def ensure_devices(api, plc_port):
-    """Create the vertical sites' Modbus devices (or refresh their registers) and their tags."""
+VERTICAL_SCREENS = [('Solar PV', solar), ('Genset', genset), ('Energy Meters', meters), ('Pump VSD', pumps),
+                    ('Packaging Line', packaging)]
+
+
+def ensure_devices(api, plc_port, plc_hosts):
+    """Create the vertical sites' and the packaging line's devices (or refresh their registers) and their tags."""
     have = {d['id'] for d in api.call('GET', '/api/v1/modbus-devices')}
     for dev_id, d in verticals.DEVICES.items():
         regs = [{'name': k, 'offset': d['base'] + 2 * i, 'register_type': 'float32'} for i, k in enumerate(d['tags'])]
@@ -571,17 +644,122 @@ def ensure_devices(api, plc_port):
                                                         'unit_id': d['unit_id'], 'interval_ms': 1000, 'endianness': 'big',
                                                         'registers': regs})
             print(f'created Modbus device {dev_id} ({len(regs)} registers)')
+    # Victron GX services and the Mitsubishi labeller: Modbus devices with typed registers.
+    typed = {dev_id: (d['name'], d['unit_id'], 'big', [{'name': k, 'offset': addr, 'register_type': typ, 'scale': sc}
+                                                       for addr, k, typ, sc in d['regs']])
+             for dev_id, d in verticals.GX_DEVICES.items()}
+    typed[MELSEC_DEVICE] = ('Line 2 M3 Labeller Mitsubishi iQ-R', 1, 'little',
+                            [{'name': k, 'offset': addr, 'register_type': typ, 'scale': sc} for addr, k, typ, sc in line.MELSEC])
+    for dev_id, (name, unit_id, order, regs) in typed.items():
+        if dev_id in have:
+            api.call('PUT', f'/api/v1/modbus-devices/{dev_id}/registers', {'registers': regs})
+        else:
+            api.call('POST', '/api/v1/modbus-devices', {'id': dev_id, 'name': name, 'ip': '127.0.0.1', 'port': plc_port,
+                                                        'unit_id': unit_id, 'interval_ms': 1000, 'endianness': order,
+                                                        'registers': regs})
+            print(f'created Modbus device {dev_id} ({len(regs)} registers)')
     # Data sources are only made from config.yaml on a fresh database; for devices added later we create them.
     keys = {s['key'] for s in api.call('GET', '/api/v1/data-sources')}
     made = 0
-    for dev_id, d in verticals.DEVICES.items():
-        for key in d['tags']:
+    modbus_tags = [(dev_id, d['tags']) for dev_id, d in verticals.DEVICES.items()]
+    modbus_tags += [(dev_id, [r['name'] for r in regs]) for dev_id, (_, _, _, regs) in typed.items()]
+    for dev_id, tags in modbus_tags:
+        for key in tags:
             if key not in keys:
                 api.call('POST', '/api/v1/data-sources', {'key': key, 'name': TAGS[key][0], 'device_id': dev_id,
                                                           'source_type': 'modbus', 'chart_type': 'sparkline'})
                 made += 1
     if made:
         print(f'created {made} vertical tags')
+    ensure_line_plcs(api, plc_hosts)
+
+
+MELSEC_DEVICE = 'l2_m3_labeller_iqr'
+S7_PLCS = [  # device name, port option, rack/slot, layout
+    ('L2-M1-Filler-S7-1500', 's7_filler', 0, 1, line.S7_FILLER),
+    ('L2-M4-CasePacker-S7-1200', 's7_packer', 0, 1, line.S7_PACKER),
+]
+ENIP_PLC = 'L2-M2-Capper-Omron-NJ501'
+
+
+def ensure_line_plcs(api, hosts):
+    """The packaging line's S7 and EtherNet/IP PLCs: create the devices and tags that are missing (enabled, so the
+    server starts their pollers when it starts), then link their values to data sources (link_line_tags)."""
+    have = {d['name']: d for d in api.call('GET', '/api/v1/s7/devices')}
+    new_pollers = False
+    for name, port_opt, rack, slot, layout in S7_PLCS:
+        dev, changed = have.get(name), False
+        if dev is None:
+            changed = True
+            dev = {'id': api.call('POST', '/api/v1/s7/devices', {'name': name, 'url': f"127.0.0.1:{hosts[port_opt]}", 'rack': rack,
+                                                                  'slot': slot, 'interval_ms': 1000, 'enabled': True})['id']}
+            print(f'created S7 device {name}')
+        tags = {t['name'] for t in api.call('GET', f"/api/v1/s7/devices/{dev['id']}/tags")}
+        for db, items in layout.items():
+            for key, addr, typ in items:
+                if line.s7_tag_name(addr) not in tags:
+                    changed = True
+                    api.call('POST', f"/api/v1/s7/devices/{dev['id']}/tags",
+                             {'tag_address': f'DB{db}.{addr}', 'name': line.s7_tag_name(addr), 'display_name': TAGS[key][0],
+                              'data_type': typ})
+        new_pollers |= changed
+    have = {d['name']: d for d in api.call('GET', '/api/v1/enip/devices')}
+    dev, changed = have.get(ENIP_PLC), False
+    if dev is None:
+        changed = True
+        dev = {'id': api.call('POST', '/api/v1/enip/devices', {'name': ENIP_PLC, 'url': f"127.0.0.1:{hosts['enip']}", 'slot': 0,
+                                                                'interval_ms': 1000, 'enabled': True})['id']}
+        print(f'created EtherNet/IP device {ENIP_PLC}')
+    tags = {t['name'] for t in api.call('GET', f"/api/v1/enip/devices/{dev['id']}/tags")}
+    for cip_name, (key, typ) in line.ENIP_TAGS.items():
+        if key not in tags:
+            changed = True
+            api.call('POST', f"/api/v1/enip/devices/{dev['id']}/tags",
+                     {'tag_name': cip_name, 'name': key, 'display_name': TAGS[key][0], 'data_type': typ})
+    link_line_tags(api)
+    if new_pollers or changed:
+        # Not started through the API: Voltrus v0.52 decodes S7 REAL tags right only in pollers started with the server.
+        print('packaging line PLCs added or changed: restart the Voltrus server to start their pollers')
+
+
+def plc_cache_keys(api):
+    """{data source key: our tag key} for the S7 and EtherNet/IP tags, plus the cache device of each.
+
+    The S7 and EtherNet/IP pollers file a value under the cache device 's7_<id>' / 'enip_<id>' with the tag name as
+    the metric. A data source keyed '<cache device>.<tag>' on that device reads it on every Voltrus version;
+    the data source a tag gets when it is created (keyed by device name, device_id the bare id) is only resolved
+    by versions after v0.52.0."""
+    out = {}
+    s7 = {d['name']: d['id'] for d in api.call('GET', '/api/v1/s7/devices')}
+    for name, _, _, _, layout in S7_PLCS:
+        for items in layout.values():
+            for key, addr, _ in items:
+                out[f"s7_{s7[name]}.{line.s7_tag_name(addr)}"] = (key, f"s7_{s7[name]}", line.s7_tag_name(addr))
+    enip = {d['name']: d['id'] for d in api.call('GET', '/api/v1/enip/devices')}[ENIP_PLC]
+    for key, _ in line.ENIP_TAGS.values():
+        out[f'enip_{enip}.{key}'] = (key, f'enip_{enip}', key)
+    return out
+
+
+def link_line_tags(api):
+    sources = api.call('GET', '/api/v1/data-sources')
+    have = {s['key'] for s in sources}
+    made = 0
+    for ds_key, (key, device, tag) in plc_cache_keys(api).items():
+        if ds_key not in have:
+            api.call('POST', '/api/v1/data-sources', {'key': ds_key, 'name': TAGS[key][0], 'device_id': device,
+                                                      'source_type': 'modbus', 'chart_type': 'sparkline',
+                                                      'source_config': json.dumps({'tag': tag})})
+            made += 1
+    # The per-tag data sources the S7/EtherNet/IP tag API made would duplicate these in the tag list.
+    prefixes = tuple(f's7_{name}:' for name, *_ in S7_PLCS) + (f'{ENIP_PLC}:',)
+    dropped = 0
+    for s in sources:
+        if s.get('source_type') in ('s7', 'enip') and s['key'].startswith(prefixes):
+            api.call('DELETE', f"/api/v1/data-sources/{s['id']}")
+            dropped += 1
+    if made or dropped:
+        print(f'line PLC tags: {made} data sources linked to the poller cache, {dropped} duplicates removed')
 
 
 def main():
@@ -590,6 +768,9 @@ def main():
     ap.add_argument('--password')
     ap.add_argument('--log', help='server log holding the generated first-run admin password')
     ap.add_argument('--plc-port', type=int, default=5030, help='plant-sim.py port the vertical devices poll (default 5030)')
+    ap.add_argument('--s7-filler', type=int, default=5102, help='plant-sim.py S7 port of the S7-1500 filler')
+    ap.add_argument('--s7-packer', type=int, default=5103, help='plant-sim.py S7 port of the S7-1200 case packer')
+    ap.add_argument('--enip', type=int, default=5144, help='plant-sim.py EtherNet/IP port of the Omron NJ capper')
     ap.add_argument('--new-password', default=None, help='password set on first login (default: a random one, printed once)')
     a = ap.parse_args()
     if not a.new_password:
@@ -615,15 +796,24 @@ def main():
         api.call('POST', '/api/v1/auth/change-password', {'old_password': pw, 'new_password': a.new_password})
         print(f'admin password changed to {a.new_password}')
 
-    ensure_devices(api, a.plc_port)
+    ensure_devices(api, a.plc_port, {'s7_filler': a.s7_filler, 's7_packer': a.s7_packer, 'enip': a.enip})
     sources = api.call('GET', '/api/v1/data-sources')
-    ids = {s['key']: s['id'] for s in sources if s['key'] in TAGS}
+    # S7 and EtherNet/IP tags are keyed '<cache device>.<tag>'; map them back to our tag keys.
+    plc_keys = {ds_key: key for ds_key, (key, _, _) in plc_cache_keys(api).items()}
+    by_key = {plc_keys.get(s['key'], s['key']): s for s in sources}
+    ids = {k: s['id'] for k, s in by_key.items() if k in TAGS}
     missing = set(TAGS) - set(ids)
     if missing:
         raise SystemExit(f'tags not found (is the server polling plant-sim?): {sorted(missing)}')
 
     for key, (name, unit, lo, hi, warn, crit, dec, lw, lc) in TAGS.items():
-        cfg = {k: v for k, v in (('low_warn', lw), ('low_crit', lc)) if v is not None}
+        # Keep what the source config already holds (the S7/EtherNet/IP tag binding), set the low alarm limits.
+        try:
+            cfg = json.loads(by_key[key].get('source_config') or '{}')
+        except ValueError:
+            cfg = {}
+        cfg = {k: v for k, v in cfg.items() if k not in ('low_warn', 'low_crit')}
+        cfg.update({k: v for k, v in (('low_warn', lw), ('low_crit', lc)) if v is not None})
         api.call('PUT', f'/api/v1/data-sources/{ids[key]}', {
             'name': name, 'unit': unit, 'min_val': lo, 'max_val': hi, 'warn_val': warn, 'crit_val': crit, 'decimals': dec,
             'base_val': lo, 'source_config': json.dumps(cfg) if cfg else '{}',
