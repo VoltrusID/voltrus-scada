@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Seed the WTP showcase: tag names/units/alarm limits, write policies, and SCADA screens.
 
+Also creates the four vertical demo sites from verticals.py (solar, genset, energy meters, booster pumps):
+their Modbus devices on plant-sim.py, their tags and one screen each.
+
     python3 seed.py --url http://localhost:3100 --password <admin password>
     python3 seed.py --log server.log      # read the generated first-run password from the server log
 
@@ -14,6 +17,8 @@ import json
 import re
 import urllib.error
 import urllib.request
+
+import verticals
 
 
 # key: (name, unit, min, max, warn, crit, decimals, low_warn, low_crit)
@@ -71,6 +76,7 @@ WRITABLE = ['p101a_run', 'p101b_run', 'xv101_open', 'coag_pump_run', 'flash_mixe
             'p301a_run', 'p301b_run', 'p301c_run', 'backwash_pump_run', 'air_blower_run', 'clarifier_rake_run']
 # Setpoints: (write_min, write_max). A write outside the range is refused; the plant clamps to 0-5 mg/L itself.
 SETPOINTS = {'cl2_dose_sp': (1.0, 3.0)}
+TAGS.update(verticals.META)
 
 
 class Api:
@@ -294,12 +300,296 @@ def power(ids):
         s.widget('trend', 32 + (i % 2) * 940, 716 + (i // 2) * 172, 924, 160, t)
     return s
 
+# ── Vertical demo screens (tags from verticals.py) ──
+
+def row(s, x, y, w, text, tag, size=15, h=30):
+    """Caption, live value and unit on one line, for faceplate-style lists."""
+    s.label(x, y, w * 0.46, h, text, 11, align='left', muted=True)
+    s.widget('big_number', x + w * 0.40, y, w * 0.44, h, tag, fontSize=size, showName=False, showUnit=False, decimals=TAGS[tag][6])
+    if TAGS[tag][1]:
+        s.label(x + w * 0.85, y, 44, h, TAGS[tag][1], 10, align='left', muted=True)
+
+
+def cell(s, x, y, w, text, tag, size=17):
+    """A small caption (with the unit) over a live value, for rows of drive readings."""
+    s.label(x, y, w, 16, text, 10, muted=True)
+    s.widget('big_number', x, y + 14, w, 34, tag, fontSize=size, showName=False, showUnit=False, decimals=TAGS[tag][6])
+
+
+def gen_feed(s, gen, x, y, brk):
+    """Cable from a generator's side terminal down into its breaker, clear of the name and status under the symbol."""
+    gx, gy = nozzle(x, y, 100, 132, (100, 100), (88, 50), ('label', 'status'))
+    s.pipe(gen, brk, 'power', waypoints=[[gx + 16, gy], [gx + 16, 284], [x + 50, 284]])
+
+
+def annunciator(s, ids, x, y, w, h, tags, n=12):
+    s.widget('annunciator', x, y, w, h, None, maxItems=n)
+    s.items[-1]['sensor_bindings'] = json.dumps([ids[t] for t in tags])
+
+
+def solar(ids):
+    s = Screen(ids)
+    header(s, 'PLTS Atap Cikarang · 925 kWp', 'Rooftop PV, 8 string inverters from 4 brands · Modbus TCP via data logger · live')
+    kpis(s, ['pv_site_kw', 'pv_site_kwh', 'pv_irr', 'pv_pr'])
+
+    s.area(16, 104, 1376, 600, 'PV arrays & inverters', 'string inverters, AC side to ACP-PV')
+    for i, (model, rated, _, _) in enumerate(verticals.INVERTERS):
+        k, cx = i + 1, 16 + 86 + i * 170
+        p = f'pv_inv{k}_'
+        s.label(cx - 80, 130, 160, 18, f'PV-0{k} · {rated * verticals.DC_RATIO:.0f} kWp', 11, muted=True)
+        arr = s.sym('solar_panel', cx - 50, 150, 100, 86, p + 'run')
+        inv = s.sym('inverter', cx - 45, 262, 90, 136, p + 'kw', label=f'INV-0{k}', showValue=True, showStatus=True,
+                    onThreshold=0.5, faultSensorId=p + 'fault')
+        s.pipe(arr, inv, 'power')
+        s.label(cx - 84, 402, 168, 18, model, 10, muted=True)
+        for j, (text, t) in enumerate([('Today', 'kwh'), ('DC V', 'vdc'), ('DC A', 'idc'), ('AC V', 'vac'), ('Temp', 'temp')]):
+            row(s, cx - 78, 430 + j * 36, 156, text, p + t, size=14)
+    s.label(32, 668, 1340, 24, 'O&M notes: INV-04 roof section B soiled, cleaning scheduled · INV-07 trips on grid overvoltage, '
+            'reconnects 30 s after the fault clears', 11, align='left', muted=True)
+
+    s.area(1404, 104, 500, 600, 'Grid connection', '0.4 / 20 kV · export to PLN')
+    s.label(1430, 140, 300, 20, 'ACP-PV 400 V AC combiner', 11, align='left', muted=True)
+    bus = s.sym('busbar', 1430, 164, 240, 14, 'pv_site_kw', onThreshold=1, showValue=False)
+    q = s.sym('breaker', 1520, 196, 60, 96, 'pv_site_kw', onThreshold=1)
+    s.label(1584, 232, 60, 22, 'Q-PV', 11, align='left', muted=True)
+    m = s.sym('meter', 1502, 316, 96, 96, 'pv_site_kw', showValue=False)
+    s.label(1602, 352, 90, 22, 'PM-EXP', 11, align='left', muted=True)
+    tx = s.sym('transformer', 1514, 448, 72, 108, 'pv_grid_v', onThreshold=300)
+    s.label(1590, 486, 120, 24, 'TX-PV 1 MVA', 11, align='left', muted=True)
+    s.label(1430, 566, 240, 24, '▼ PLN 20 kV', 13, bold=True)
+    s.pipe(bus, q, 'power'); s.pipe(q, m, 'power'); s.pipe(m, tx, 'power')
+    s.label(1700, 140, 190, 20, 'Weather station', 11, align='left', muted=True)
+    s.sym('instrument', 1706, 166, 84, 128, 'pv_irr', label='Pyranometer', tagFunction='RT', loopNumber='01', showValue=True)
+    s.sym('instrument', 1800, 166, 84, 128, 'pv_tmod', label='Module', tagFunction='TT', loopNumber='02', showValue=True)
+    for j, (text, t) in enumerate([('Ambient', 'pv_tamb'), ('Grid V', 'pv_grid_v'), ('Grid Hz', 'pv_grid_hz'), ('Export', 'pv_export_mwh')]):
+        row(s, 1706, 330 + j * 36, 186, text, t)
+
+    s.area(16, 716, 1176, 348, 'Trends', 'live, 1 s samples')
+    s.widget('trend', 32, 756, 568, 140, 'pv_irr', lineColor='var(--warn)')
+    s.widget('trend', 612, 756, 568, 140, 'pv_site_kw')
+    s.widget('multi_trend', 32, 906, 1148, 150, None, maxTags=8, pointsCount=180)
+    s.items[-1]['sensor_bindings'] = json.dumps([ids[f'pv_inv{k}_kw'] for k in range(1, 9)])
+    s.area(1204, 716, 700, 348, 'Alarms')
+    annunciator(s, ids, 1220, 754, 668, 298, [f'pv_inv{k}_fault' for k in range(1, 9)] + ['pv_inv5_temp', 'pv_pr', 'pv_grid_v', 'pv_tmod'])
+    return s
+
+
+def genset(ids):
+    s = Screen(ids)
+    header(s, 'Genset House · RS Gedung A & B', 'ATS/AMF: Deep Sea DSE7320 MKII · Synchronising: 2 × SmartGen HGM9520N · Modbus TCP · live')
+    kpis(s, ['gs_m_v', 'gs_load_a_kw', 'gs_load_b_kw', 'gs_bus_hz'])
+
+    # A: ATS / AMF
+    s.area(16, 104, 820, 600, 'ATS / AMF panel · Gedung A', 'DSE7320 MKII · 500 kVA standby')
+    s.label(40, 136, 200, 20, 'PLN 20 kV', 12, align='left', bold=True)
+    tx = s.sym('transformer', 70, 160, 72, 108, 'gs_m_v', onThreshold=300)
+    s.label(146, 200, 120, 22, 'TX-A 630 kVA', 11, align='left', muted=True)
+    qm = s.sym('breaker', 76, 300, 60, 96, 'gs_qm')
+    s.label(140, 336, 80, 22, 'Q-PLN', 11, align='left', muted=True)
+    g1 = s.sym('generator', 300, 140, 100, 132, 'gs_g1_run', label='GEN-01', showStatus=True)
+    qg = s.sym('breaker', 320, 300, 60, 96, 'gs_qg1')
+    s.label(384, 336, 80, 22, 'Q-G1', 11, align='left', muted=True)
+    bus = s.sym('busbar', 50, 430, 400, 14, 'gs_load_a_kw', onThreshold=5, showValue=False)
+    s.label(50, 452, 400, 20, 'LVMDP Gedung A · essential load', 11, muted=True)
+    s.widget('big_number', 130, 480, 240, 70, 'gs_load_a_kw', fontSize=28, showName=True, decimals=0)
+    s.pipe(tx, qm, 'power'); s.pipe(qm, bus, 'power'); gen_feed(s, g1, 300, 140, qg); s.pipe(qg, bus, 'power')
+    s.sym('tank_horizontal', 60, 576, 200, 118, 'gs_g1_fuel', label='GEN-01 day tank')
+    for j, text in enumerate(['AMF: PLN fails → 5 s start delay → crank → 10 s warm-up → transfer.',
+                              'PLN back → 30 s return delay → retransfer → 60 s cool-down → stop.']):
+        s.label(290, 600 + j * 24, 530, 22, text, 11, align='left', muted=True)
+    s.label(480, 136, 340, 20, 'DSE7320 MKII · GEN-01', 12, align='left', bold=True)
+    s.label(480, 166, 150, 30, 'Control mode', 11, align='left', muted=True)
+    s.widget('status_light', 660, 168, 26, 26, 'gs_g1_auto')
+    s.label(692, 166, 100, 30, 'AUTO', 13, align='left', bold=True)
+    for j, (text, t) in enumerate([(None, None), ('Engine speed', 'gs_g1_rpm'), ('Frequency', 'gs_g1_hz'),
+                                   ('Voltage L-L', 'gs_g1_v'), ('Active power', 'gs_g1_kw'), ('Oil pressure', 'gs_g1_oil'),
+                                   ('Coolant', 'gs_g1_ct'), ('Fuel', 'gs_g1_fuel'), ('Battery', 'gs_g1_batt'),
+                                   ('Engine hours', 'gs_g1_hours'), ('PLN frequency', 'gs_m_hz')]):
+        if t:
+            row(s, 480, 166 + j * 36, 330, text, t)
+
+    # B: synchronising panel
+    s.area(848, 104, 1056, 600, 'Synchronising panel · Gedung B', '2 × HGM9520N · 2 × 1000 kVA prime · load-dependent start/stop')
+    gens = {}
+    for idx, k in enumerate((2, 3)):
+        x = 900 + idx * 250
+        g = s.sym('generator', x, 140, 100, 132, f'gs_g{k}_run', label=f'GEN-0{k}', showStatus=True)
+        q = s.sym('breaker', x + 20, 300, 60, 96, f'gs_g{k}_brk')
+        s.label(x + 84, 336, 80, 22, f'Q-G{k}', 11, align='left', muted=True)
+        gen_feed(s, g, x, 140, q)
+        gens[k] = q
+    sbus = s.sym('busbar', 880, 430, 420, 14, 'gs_bus_v', onThreshold=300, showValue=False)
+    s.label(880, 452, 420, 20, 'Sync bus 400 V · LVMDP Gedung B', 11, muted=True)
+    for q in gens.values():
+        s.pipe(q, sbus, 'power')
+    s.widget('big_number', 970, 480, 260, 70, 'gs_load_b_kw', fontSize=28, showName=True, decimals=0)
+    s.label(870, 566, 440, 20, 'Synchroscope (GEN-03 to bus)', 11, align='left', muted=True)
+    s.widget('semicircle_gauge', 870, 590, 170, 104, 'gs_sync_phase')
+    row(s, 1050, 600, 250, 'Slip', 'gs_sync_slip')
+    row(s, 1050, 636, 250, 'ΔV', 'gs_sync_dv')
+    for idx, k in enumerate((2, 3)):
+        x = 1330 + idx * 284
+        s.label(x, 136, 270, 20, f'HGM9520N · GEN-0{k}', 12, align='left', bold=True)
+        for j, (text, t) in enumerate([('Active power', 'kw'), ('Load share', 'share'), ('Frequency', 'hz'), ('Voltage L-L', 'v'),
+                                       ('Engine speed', 'rpm'), ('Oil pressure', 'oil'), ('Coolant', 'ct'), ('Fuel', 'fuel'),
+                                       ('Battery', 'batt'), ('Engine hours', 'hours')]):
+            row(s, x, 166 + j * 36, 266, text, f'gs_g{k}_{t}')
+    for j, text in enumerate(['Load-dependent start: GEN-03 starts above 640 kW, synchronises',
+                              '(slip < 0.1 Hz, angle < 8°), closes Q-G3 and ramps to a 50/50 share;',
+                              'below 520 kW it unloads, opens Q-G3 and cools down.']):
+        s.label(1330, 560 + j * 24, 560, 22, text, 11, align='left', muted=True)
+
+    s.area(16, 716, 1176, 348, 'Trends', 'live, 1 s samples')
+    s.widget('multi_trend', 32, 756, 568, 300, None, maxTags=3, pointsCount=240)
+    s.items[-1]['sensor_bindings'] = json.dumps([ids[t] for t in ['gs_m_v', 'gs_g1_v']])
+    s.widget('multi_trend', 612, 756, 568, 300, None, maxTags=3, pointsCount=240)
+    s.items[-1]['sensor_bindings'] = json.dumps([ids[t] for t in ['gs_load_b_kw', 'gs_g2_kw', 'gs_g3_kw']])
+    s.area(1204, 716, 700, 348, 'Alarms')
+    annunciator(s, ids, 1220, 754, 668, 298, ['gs_m_v', 'gs_g1_fuel', 'gs_g1_ct', 'gs_g1_batt', 'gs_g1_kw', 'gs_g2_kw',
+                                               'gs_g2_ct', 'gs_g3_ct', 'gs_g2_fuel', 'gs_g3_fuel', 'gs_load_b_kw', 'gs_g3_batt'])
+    return s
+
+
+def meters(ids):
+    s = Screen(ids)
+    header(s, 'MDP-01 · Energy Monitoring', 'Schneider PM5560 incomer · 5 × PM5100 feeders · 2 × Raritan PX3 rack PDUs · Modbus TCP via Link150 · live')
+    kpis(s, ['em_in_kw', 'em_in_pf', 'em_in_dmd', 'em_pue'])
+
+    s.area(16, 104, 440, 600, 'Incomer · PM5560', 'TX-01 1600 kVA · ACB 2500 A')
+    tx = s.sym('transformer', 60, 140, 72, 108, 'em_in_v1', onThreshold=150)
+    s.label(136, 180, 120, 22, 'TX-01 20/0.4 kV', 11, align='left', muted=True)
+    acb = s.sym('breaker', 66, 270, 60, 96, 'em_in_kw', onThreshold=1)
+    s.label(130, 306, 80, 22, 'ACB-1', 11, align='left', muted=True)
+    pm = s.sym('meter', 48, 390, 96, 116, 'em_in_kw', label='PM5560', showValue=False)
+    s.pipe(tx, acb, 'power'); s.pipe(acb, pm, 'power')
+    for j, (text, t) in enumerate([('V L1-N', 'em_in_v1'), ('V L2-N', 'em_in_v2'), ('V L3-N', 'em_in_v3'), ('I L1', 'em_in_i1'),
+                                   ('I L2', 'em_in_i2'), ('I L3', 'em_in_i3'), ('kvar', 'em_in_kvar'), ('Frequency', 'em_in_hz'),
+                                   ('THD-V', 'em_in_thdv'), ('THD-I', 'em_in_thdi'), ('Import', 'em_in_kwh'), ('PF', 'em_in_pf')]):
+        row(s, 230, 140 + j * 36, 210, text, t)
+    s.label(32, 600, 420, 22, 'PLN contract 690 kVA · kVArh charged when PF < 0.85', 11, align='left', muted=True)
+
+    s.area(468, 104, 1000, 600, 'Feeders · PM5100', '400 V main busbar')
+    bus = s.sym('busbar', 500, 150, 940, 14, 'em_in_kw', onThreshold=1, showValue=False)
+    for i, (k, _, label) in enumerate(verticals.FEEDERS):
+        x = 490 + i * 194
+        q = s.sym('breaker', x + 66, 180, 60, 90, f'em_{k}_kw', onThreshold=1)
+        m = s.sym('meter', x + 48, 290, 96, 116, f'em_{k}_kw', label=f'PM5100 · {k.upper()}', showValue=False)
+        s.pipe(bus, q, 'power'); s.pipe(q, m, 'power')
+        s.label(x, 410, 190, 20, label, 12, bold=True)
+        for j, (text, t) in enumerate([('kW', 'kw'), ('kWh', 'kwh'), ('PF', 'pf'), ('I avg', 'i'), ('THD-I', 'thdi')]):
+            row(s, x + 6, 436 + j * 32, 178, text, f'em_{k}_{t}', size=14)
+
+    s.area(1480, 104, 424, 600, 'Server room · Raritan PX3', 'rack PDUs, 32 A single-phase inlets')
+    for r in (1, 2):
+        x = 1496 + (r - 1) * 204
+        s.label(x, 136, 196, 20, f'Rack A0{r}', 12, bold=True)
+        s.widget('semicircle_gauge', x, 160, 196, 124, f'em_pdu{r}_i')
+        for j, (text, t) in enumerate([('kW', 'kw'), ('kWh', 'kwh'), ('Inlet V', 'v'), ('Inlet air', 'temp'), ('RH', 'rh')]):
+            row(s, x + 4, 296 + j * 32, 188, text, f'em_pdu{r}_{t}', size=14)
+    s.widget('big_number', 1496, 470, 196, 86, 'em_it_kw', fontSize=30, showName=True, decimals=1)
+    s.widget('big_number', 1700, 470, 196, 86, 'em_pue', fontSize=30, showName=True, decimals=2)
+    s.label(1496, 566, 400, 22, 'PUE = MDP-01 incomer / UPS output (IT load)', 11, align='left', muted=True)
+
+    s.area(16, 716, 1176, 348, 'Trends', 'live, 1 s samples')
+    s.widget('multi_trend', 32, 756, 568, 300, None, maxTags=5, pointsCount=240)
+    s.items[-1]['sensor_bindings'] = json.dumps([ids[f'em_{k}_kw'] for k, _, _ in verticals.FEEDERS])
+    s.widget('trend', 612, 756, 568, 145, 'em_in_dmd')
+    s.widget('trend', 612, 911, 568, 145, 'em_f3_thdi', lineColor='var(--warn)')
+    s.area(1204, 716, 700, 348, 'Alarms')
+    annunciator(s, ids, 1220, 754, 668, 298, ['em_in_pf', 'em_in_dmd', 'em_in_thdv', 'em_in_thdi', 'em_f3_thdi', 'em_pdu1_i', 'em_pdu2_i',
+                                               'em_pdu1_temp', 'em_pdu2_temp', 'em_in_v1', 'em_in_v2', 'em_in_v3'])
+    return s
+
+
+def pumps(ids):
+    s = Screen(ids)
+    header(s, 'BPS-01 · Booster Pump Station', 'Constant header pressure 4.5 bar · Danfoss VLT FC 302 (P-01, P-02) · ABB ACS580 (P-03, P-04) · Modbus TCP · live')
+    kpis(s, ['vsd_pd', 'vsd_flow', 'vsd_kw', 'vsd_sec'])
+
+    s.area(16, 104, 1376, 600, 'Pumping', 'duty / assist / standby, speed shared')
+    tank = s.sym('tank', 36, 200, 120, 240, 'vsd_lvl', label='GR-01 Reservoir')
+    tank_out = nozzle(36, 200, 120, 240, (100, 170), (88, 130))
+    pt1 = s.sym('instrument', 36, 470, 84, 128, 'vsd_ps', label='Suction', tagFunction='PT', loopNumber='01', showValue=True)
+    ft = s.sym('flow_meter', 1040, 128, 110, 104, 'vsd_flow', label='FT-02', showValue=True)
+    ft_in = nozzle(1040, 128, 110, 104, (100, 70), (0, 46))
+    pt2 = s.sym('instrument', 1190, 116, 84, 128, 'vsd_pd', label='Header', tagFunction='PT', loopNumber='02', showValue=True)
+    s.label(1280, 160, 100, 40, '▶ to network', 12, align='left', bold=True)
+    for i, (model, kw) in enumerate(verticals.PUMPS):
+        k, y = i + 1, 252 + i * 112
+        p = f'vsd_p{k}_'
+        pump = s.sym('pump', 200, y, 90, 108, p + 'run', label=f'P-0{k}', showStatus=True, faultSensorId=p + 'fault')
+        p_in = nozzle(200, y, 90, 108, (100, 100), (2, 52.5), ('label', 'status'))
+        p_out = nozzle(200, y, 90, 108, (100, 100), (97, 29.5), ('label', 'status'))
+        # Suction header down the reservoir side, discharge riser up to the header line, both clear of the drive readouts.
+        s.pipe(tank, pump, waypoints=[[176, tank_out[1]], [176, p_in[1]]])
+        s.pipe(pump, ft, waypoints=[[316, p_out[1]], [316, ft_in[1]]])
+        s.label(336, y + 8, 140, 20, f'P-0{k} · {model}', 11, align='left', bold=True)
+        s.label(336, y + 28, 140, 20, f'{kw} kW · 400 V', 11, align='left', muted=True)
+        for j, (text, t) in enumerate([('Output Hz', 'hz'), ('Speed rpm', 'rpm'), ('Current A', 'amp'), ('Power kW', 'kw'),
+                                       ('Heatsink °C', 'temp'), ('DC-link V', 'dc'), ('Fault code', 'code')]):
+            cell(s, 480 + j * 128, y + 6, 118, text, p + t)
+    s.pipe(pt1, tank, 'data')
+    s.pipe(ft, pt2)
+
+    s.area(1404, 104, 500, 600, 'Station')
+    s.label(1424, 136, 220, 20, 'Header pressure PT-02', 11, muted=True)
+    s.label(1664, 136, 220, 20, 'Reservoir GR-01 level', 11, muted=True)
+    s.widget('semicircle_gauge', 1424, 158, 220, 140, 'vsd_pd')
+    s.widget('semicircle_gauge', 1664, 158, 220, 140, 'vsd_lvl')
+    for j, (text, t) in enumerate([('Pressure setpoint', 'vsd_sp'), ('Suction pressure', 'vsd_ps'), ('Header flow', 'vsd_flow'),
+                                   ('Station power', 'vsd_kw'), ('Specific energy', 'vsd_sec')]):
+        row(s, 1430, 316 + j * 38, 450, text, t, size=17, h=32)
+    for j, text in enumerate(['Duty P-01 · assist P-02, P-03 by demand · standby P-04.',
+                              'When P-02 trips (FC 302 alarm 13, over current) the next',
+                              'pump starts and the header dips below 3.9 bar until it is',
+                              'up to speed.']):
+        s.label(1430, 530 + j * 24, 460, 22, text, 11, align='left', muted=True)
+
+    s.area(16, 716, 1176, 348, 'Trends', 'live, 1 s samples')
+    s.widget('trend', 32, 756, 568, 145, 'vsd_pd')
+    s.widget('trend', 32, 911, 568, 145, 'vsd_flow')
+    s.widget('multi_trend', 612, 756, 568, 300, None, maxTags=4, pointsCount=240)
+    s.items[-1]['sensor_bindings'] = json.dumps([ids[f'vsd_p{k}_hz'] for k in range(1, 5)])
+    s.area(1204, 716, 700, 348, 'Alarms')
+    annunciator(s, ids, 1220, 754, 668, 298, [f'vsd_p{k}_fault' for k in range(1, 5)] + ['vsd_pd', 'vsd_lvl']
+                + [f'vsd_p{k}_amp' for k in range(1, 5)] + ['vsd_p1_temp', 'vsd_p3_temp'])
+    return s
+
+
+VERTICAL_SCREENS = [('Solar PV', solar), ('Genset', genset), ('Energy Meters', meters), ('Pump VSD', pumps)]
+
+
+def ensure_devices(api, plc_port):
+    """Create the vertical sites' Modbus devices (or refresh their registers) and their tags."""
+    have = {d['id'] for d in api.call('GET', '/api/v1/modbus-devices')}
+    for dev_id, d in verticals.DEVICES.items():
+        regs = [{'name': k, 'offset': d['base'] + 2 * i, 'register_type': 'float32'} for i, k in enumerate(d['tags'])]
+        if dev_id in have:
+            api.call('PUT', f'/api/v1/modbus-devices/{dev_id}/registers', {'registers': regs})
+        else:
+            api.call('POST', '/api/v1/modbus-devices', {'id': dev_id, 'name': d['name'], 'ip': '127.0.0.1', 'port': plc_port,
+                                                        'unit_id': d['unit_id'], 'interval_ms': 1000, 'endianness': 'big',
+                                                        'registers': regs})
+            print(f'created Modbus device {dev_id} ({len(regs)} registers)')
+    # Data sources are only made from config.yaml on a fresh database; for devices added later we create them.
+    keys = {s['key'] for s in api.call('GET', '/api/v1/data-sources')}
+    made = 0
+    for dev_id, d in verticals.DEVICES.items():
+        for key in d['tags']:
+            if key not in keys:
+                api.call('POST', '/api/v1/data-sources', {'key': key, 'name': TAGS[key][0], 'device_id': dev_id,
+                                                          'source_type': 'modbus', 'chart_type': 'sparkline'})
+                made += 1
+    if made:
+        print(f'created {made} vertical tags')
+
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--url', default='http://localhost:3100')
     ap.add_argument('--password')
     ap.add_argument('--log', help='server log holding the generated first-run admin password')
+    ap.add_argument('--plc-port', type=int, default=5030, help='plant-sim.py port the vertical devices poll (default 5030)')
     ap.add_argument('--new-password', default=None, help='password set on first login (default: a random one, printed once)')
     a = ap.parse_args()
     if not a.new_password:
@@ -325,6 +615,7 @@ def main():
         api.call('POST', '/api/v1/auth/change-password', {'old_password': pw, 'new_password': a.new_password})
         print(f'admin password changed to {a.new_password}')
 
+    ensure_devices(api, a.plc_port)
     sources = api.call('GET', '/api/v1/data-sources')
     ids = {s['key']: s['id'] for s in sources if s['key'] in TAGS}
     missing = set(TAGS) - set(ids)
@@ -345,7 +636,7 @@ def main():
     print(f'{len(TAGS)} tags configured, {len(WRITABLE) + len(SETPOINTS)} writable')
 
     screens = {sc['name']: sc['id'] for sc in api.call('GET', '/api/v1/screens')}
-    plan = [('Plant Overview', overview), ('Filtration', filtration), ('High-Lift & Power', power)]
+    plan = [('Plant Overview', overview), ('Filtration', filtration), ('High-Lift & Power', power)] + VERTICAL_SCREENS
     for name, build in plan:
         if name not in screens:
             if name == 'Plant Overview' and 'WTP' in screens:
