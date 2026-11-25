@@ -42,6 +42,36 @@ pub enum ClientMessage {
         signature: Option<WsSignature>,
     },
     Ping,
+    /// Join the live editing session of a screen's draft (configure roles
+    /// only; docs/collaboration.md). `protocol` is
+    /// [`voltrus_collab::PROTOCOL`]; `epoch` is the session the client was in
+    /// before a reconnect, if any.
+    DesignJoin {
+        screen: String,
+        protocol: u32,
+        #[serde(default)]
+        epoch: Option<String>,
+    },
+    /// One y-sync v1 message (step 1, step 2 or update) for the screen.
+    DesignSync {
+        screen: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    /// A y-protocols awareness update: this client's presence.
+    DesignAwareness {
+        screen: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    /// Leave the screen's session.
+    DesignLeave {
+        screen: String,
+    },
+    /// Write the screen's pending edits to its draft rows now (Ctrl+S).
+    DesignFlush {
+        screen: String,
+    },
 }
 
 /// A signature on a WebSocket tag write (see `models::SignatureInput`).
@@ -151,6 +181,98 @@ pub enum ServerMessage {
         peer_id: Option<String>,
         failover_ts: Option<String>,
     },
+    /// The client is in the screen's session: `epoch` names the session (a
+    /// different one after a reconnect means the server document was rebuilt
+    /// from the rows, so the client starts from the server's state);
+    /// `resync` says so. A sync step 1 of the server's document follows.
+    DesignJoined {
+        screen: String,
+        epoch: String,
+        resync: bool,
+        user: String,
+        color: String,
+        protocol: u32,
+        limits: DesignLimits,
+    },
+    DesignSync {
+        screen: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    DesignAwareness {
+        screen: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    /// A collaboration error. `reload`: the client's document can no longer
+    /// be trusted; it drops it and joins again (or falls back to saving
+    /// whole layouts when `code` is `disabled`).
+    DesignError {
+        screen: String,
+        code: String,
+        message: String,
+        reload: bool,
+    },
+    /// Edits of the receiving client that did not pass validation at a
+    /// flush: the objects were put back as they were last written.
+    DesignRejected {
+        screen: String,
+        objects: Vec<DesignRejectedObject>,
+    },
+    /// The screen's edits were written to its draft rows (`seq` is the new
+    /// change-log head, `users` whose changes it holds).
+    DesignFlushed {
+        screen: String,
+        seq: i64,
+        at_ms: i64,
+        users: Vec<String>,
+    },
+    /// Who edits which screen; sent to everyone in a session when it changes.
+    DesignSessions {
+        sessions: Vec<DesignSessionInfo>,
+    },
+    /// A comment of the screen was `created`, `updated` or `deleted`.
+    DesignComment {
+        screen: String,
+        event: String,
+        comment: serde_json::Value,
+    },
+}
+
+/// The limits a session enforces, told to the client when it joins.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignLimits {
+    /// Largest sync message, bytes.
+    pub max_update: usize,
+    /// Most sync messages per second per connection.
+    pub max_rate: u32,
+    /// Largest document, bytes.
+    pub max_doc: usize,
+    /// Largest awareness state, bytes.
+    pub max_awareness: usize,
+    /// How long edits wait before they are written to the draft, ms.
+    pub flush_ms: u64,
+}
+
+/// One object a flush put back, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignRejectedObject {
+    pub object_type: String,
+    pub object_id: String,
+    pub reason: String,
+}
+
+/// The people editing one screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignSessionInfo {
+    pub screen: String,
+    pub users: Vec<DesignUser>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignUser {
+    pub user: String,
+    pub color: String,
 }
 
 #[cfg(test)]

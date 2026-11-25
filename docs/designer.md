@@ -2,8 +2,8 @@
 
 Design for the browser screen editor that replaces the 2D view's Edit mode:
 panes, bindings, a flat ISA-101 library, version history, live collaboration,
-mobile layouts and a widget SDK. Phases 1, 2 and 3 are built; the later phases
-are designs, grounded in the code as it is on `main` after #29.
+mobile layouts and a widget SDK. Phases 1, 2, 3 and 4 are built; the later
+phases are designs, grounded in the code as it is on `main` after #29.
 
 Order: **1** editor, **2** symbol library and equipment types, **2b** widget SDK,
 **3** version history, **4** collaboration, **5** mobile and PWA. Version history
@@ -529,7 +529,10 @@ the `X-Voltrus-Client` header and `base_seq` on native saves, `?published=1`
 in the console's run mode, and a History pane
 ([version-history.md](version-history.md#native-console)).
 
-## Phase 4: live collaboration
+## Phase 4: live collaboration (built)
+
+The reference is [collaboration.md](collaboration.md); this section is the
+design summary and what the Designer shows.
 
 LAN only: the Voltrus server is the relay and the authority; nothing leaves the
 site.
@@ -537,54 +540,79 @@ site.
 * **Client:** one `Y.Doc` per open screen. `Y.Map widgets` (id → `Y.Map` of the
   row's fields, with `config` as a nested `Y.Map` so two people editing different
   properties of one widget merge, and `config.bindings` a nested `Y.Map` of
-  property → binding inside it, so two people binding different properties of one
-  widget merge too; one binding is replaced whole, last writer wins),
-  `Y.Map connections`. **Z-order is defined once:** each widget's `Y.Map` holds a
-  fractional index string `zi` (e.g. `a0`, `a0V`), and the stacking order is the
-  widgets sorted by `(zi, id)`. There is no separate `Y.Array order`, so a
+  property → binding inside it, always present, so two people binding different
+  properties of one widget merge too; one binding is replaced whole, last writer
+  wins), `Y.Map connections`. **Z-order is defined once:** each widget's `Y.Map`
+  holds a fractional index string `zi` (e.g. `V`, `VV`), and the stacking order
+  is the widgets sorted by `(zi, id)`. There is no separate `Y.Array order`, so a
   concurrent reorder and delete cannot disagree. On flush the server converts the
-  order to the integer `config.z` the rows have always had (0, 1, 2, …), so REST,
-  MCP, project files and the old editor never see fractional indexes; on load it
-  derives `zi` from `config.z`. The Designer's `Edit` operations become Yjs
-  transactions; undo uses `Y.UndoManager` scoped to the local user's origin,
-  which keeps phase 1's one-edit-one-step behaviour.
-* **Server:** `yrs` holds the authoritative doc per screen while anyone has it
-  open. Sync messages ride the existing `/api/v1/ws` socket as new MessagePack
-  types (`DesignJoin {screen}`, `DesignSync {screen, update}`, `DesignAwareness
-  {screen, state}`, `DesignLeave`), so auth, the 30-second re-check and
+  order to the integer `config.z` the rows have always had (0, 1, 2, …, only when
+  the order changed), so REST, MCP, project files and the old editor never see
+  fractional indexes; on load it derives `zi` from `config.z`. The Designer's
+  `Edit` operations still run on plain documents (`model.ts`); `writeDiff`
+  (`collab/ydoc.ts`) writes the difference field by field as one Yjs
+  transaction, and undo uses `Y.UndoManager` scoped to the local user's origin,
+  which keeps phase 1's one-edit-one-step behaviour and its coalescing.
+* **Server:** `yrs` (crate `collab/`, shared with the native console) holds the
+  authoritative doc per screen while anyone has it open. Sync messages ride the
+  existing `/api/v1/ws` socket as MessagePack types (`DesignJoin {screen,
+  protocol, epoch}`, `DesignSync {screen, data}`, `DesignAwareness {screen,
+  data}`, `DesignLeave`, `DesignFlush`), so auth, the 30-second re-check and
   reconnect come for free. Joining needs the configure permission; awareness
-  (presence, cursor, selection, colour) is broadcast but never stored.
-* **Persistence:** the server applies updates to the doc and, debounced (2 s) and
-  on last leave, writes the rows through the same save path as REST. Each flush is
-  one `design_changes` batch with the authors of the updates in it (squashed as in
-  phase 3's retention rules), which is why phase 3 comes first: blame and revert
-  work the same for collaborative edits.
-* **One lock per screen.** The open doc, its flush and every other write to that
-  screen (REST and MCP `PUT`s, copilot apply, project import, revert, publish) go
-  through one per-screen async mutex on the server. A REST/MCP write while a doc
-  is open takes the lock, diffs the incoming rows against the doc, applies the
-  difference to the doc as a server-origin transaction (so connected editors see
-  it and nobody overwrites anybody) and flushes immediately, all before releasing
-  the lock; the `base_seq` check of phase 3 runs against the doc's flushed head.
-  With no doc open, writes go straight to the tables as today.
+  (presence, cursor, selection, viewport) is broadcast with the server's name and
+  colour stamped on it, and never stored.
+* **Persistence:** the server applies updates to the doc and, about every 2 s, on
+  Ctrl+S and when the last person leaves, writes the rows through the same save
+  path as REST (`write_layout_rows`: instance binding, change log). Each write is
+  one `design_changes` batch per author (who last touched each object), source
+  `designer`, squashed as in phase 3's retention rules, so blame and revert work
+  the same for collaborative edits.
+* **One lock per screen.** The open doc's writes and every other write to that
+  screen (REST and MCP layout `PUT`s, revert, publish, project import) go through
+  one per-screen async mutex. A REST/MCP write while a doc is open takes the
+  lock, writes the session's pending edits first (so its `base_seq` is checked
+  against what the editors see), writes, and applies its difference to the doc
+  as a server-origin transaction, so connected editors see it and nobody
+  overwrites anybody. Writers that do not take the lock (equipment propagation,
+  tag renames, snapshot rollback, the FEED wizard) are merged the same way
+  within half a second: the session watches the change log. With no doc open,
+  writes go straight to the tables as before.
 * **Validating collaborative updates.** A client is trusted with nothing it could
-  not do over REST. Per connection: updates over 256 KB, more than 50 updates a
-  second, or a doc over 5 MB are refused (`DesignError`, the client reloads).
-  Awareness state is capped at 4 KB and never persisted. At every flush the
-  server checks the resulting rows with the same validation as a project import
-  (known widget types, numeric geometry within the stage, `config` JSON within the
-  row size limit, binding shapes and tag refs, connection ends that exist). An
-  update that makes a row invalid is not written: the server reverts the offending
-  objects to their last flushed state as a server-origin transaction (so every
-  client converges on the valid state), logs the rejected update with its author
-  to the audit log, and tells the author's client which objects were reverted and
-  why. Joining still needs the configure permission; a session that loses it
-  mid-edit is dropped by the existing 30-second re-check.
-* **Comments** pinned to objects: `design_comments` (id, screen, object_id, x, y,
-  body, author, resolved, at); shown as pins on the canvas and in a pane; events
-  over the same socket.
-* **Presence UI:** avatars in the title bar, coloured cursors with names on the
-  canvas, other people's selections outlined in their colour, *Follow* a user.
+  not do over REST: sync messages over 256 KB, more than 50 a second, or a doc
+  over 5 MB are refused (`DesignError`); awareness is capped at 4 KB. At every
+  write the server checks the objects that changed (shape, numbers within the
+  stage, `config` under 64 KB, binding shapes and new tag refs, tag ids,
+  equipment instances, faceplates, connection ends). An object that fails is put
+  back as it was last written as a server-origin transaction (every client
+  converges on the valid state), the rejection goes to the audit log with its
+  author, and the author's client gets `DesignRejected` (a toast names the
+  objects and why).
+* **Comments** pinned to objects or points, in threads with replies, resolve and
+  `@mentions` (a notification): `design_comments`, REST under
+  `/api/v1/screens/{id}/comments`, live over the socket, shown as pins, in a
+  Comments tab and in the History pane.
+* **Presence UI:** avatars in the title bar (click one to follow that person's
+  view), coloured cursors with names on the canvas, other people's selections
+  outlined in their colour, who edits which screen in the Project pane, a
+  *Live · n editing* chip (*Offline · reconnecting* while the socket is down,
+  with edits kept and merged on reconnect).
+* **Fallback:** with the site setting `collaboration: false`, or a server that
+  does not report it, the Designer saves whole layouts as in phases 1 and 3.
+* **Native console:** joins the same session with `yrs` directly: live edits,
+  presence and per-user undo ([native-designer.md](native-designer.md#live-collaboration-phase-4-yrs-natively-built)).
+
+Code: `client/src/designer/collab/` (`fractional.ts`, `ydoc.ts`, `provider.ts`,
+`undo.ts`, `useCollab.ts`, `ui.tsx`), `client/src/queries/designComments.ts`;
+server `src/collab/` (sessions, flush, validation), `src/api/collab.rs`,
+`src/storage/design_comments.rs`; shared `collab/` (`document.rs`,
+`fractional.rs`, `wire.rs`).
+
+Screenshots (WTP showcase, two browsers, taken by the collaboration smoke run):
+
+![Two people on one screen: bea's cursor and selection seen by the admin](images/designer-phase4/30-collab-two-cursors-admin.webp)
+![The same moment from bea's side](images/designer-phase4/31-collab-two-cursors-bea.webp)
+![A comment thread with a mention, pinned to a trend](images/designer-phase4/33-collab-comment-thread.webp)
+![Cursors moving live](images/designer-phase4/34-two-cursors.gif)
 
 ## Phase 5: mobile layouts and PWA
 
@@ -628,7 +656,7 @@ site.
 | Whole-set `PUT` loses a concurrent editor's work | the Designer saves both sets in one transaction with the revision it loaded; a stale save is a 409 and a Save / Overwrite / Load-theirs choice, never a silent overwrite. Writers that send no base (old editor, MCP, scripts) still overwrite: phase 3 logs it (recoverable), phase 4's per-screen lock removes it |
 | Tag refs `device/key#2` for duplicate keys | the browser numbers refs exactly as the exporter does (id order, `#n`), so a ref means the same tag everywhere; a rename rewrites refs whose number shifts. Deleting one of several same-key tags still shifts the others' numbers (import validation and the editor name the now-unknown refs) |
 | A bad expression or widget takes the screen down | evaluation never throws, expressions are length- and depth-limited at parse, each widget draws inside its own error boundary with its bindings |
-| Yjs/yrs version skew | pin both; protocol version in `DesignJoin`; server refuses mismatches with a reload prompt |
+| Yjs/yrs version skew | both pinned exactly (`yjs` 13.6.33, `yrs` 0.28.2, one `yrs` for server and console); protocol version in `DesignJoin`; the server refuses a mismatch (`DesignError protocol`) and the client asks for a reload |
 | Custom widget code (SDK, AI-generated) | iframe sandbox, no network, attribute-only bridge, approval step, hash-pinned versions |
 | Overlay route bypasses the app layout | it is inside the app's providers and error boundary; the app's navigation shortcuts are off while it is open; every SPA navigation with unsaved changes (Close, screen switch, Project pane links, Back) is held by a router blocker with Save / Discard / Cancel, and reload or closing the tab gets the browser prompt; `/designer` sends roles without the configure permission to the 2D view |
 | Old and new editor drift | both use `layout.ts`; round-trip tests cover Designer config keys (`client/tests/designerModel.test.ts`) |
@@ -684,4 +712,19 @@ site.
   an operator sees the published screen while the draft moves on. Needs a server, `plant-sim.py` and `playwright-core`; not
   part of `npm test`. `scripts/smoke-designer.sh <binary>` runs it end to end
   (simulator, server, seed, headless Chrome); CI runs that against the release
-  binary in the embedded-UI job.
+  binary in the embedded-UI job, with collaboration turned off (it covers the
+  single-user save path).
+* Phase 4: `collab` crate tests (`fractional`, `document`: rows round trip,
+  field and binding merges between replicas, outside writes, `wire`),
+  `api::tests::collab` (two clients converge and each change is logged under
+  its author; concurrent edits of one widget, first bindings, stacking order
+  with a concurrent delete; validation quarantine and the audit entry; REST
+  writes, revert and publish during a session; writes outside the lock;
+  permissions; limits; presence identity and removal; last leave; restart and
+  reconnect epochs; comments; the setting; idle close), `collab::validate`
+  tests; client `collabFractional`, `collabDoc`, `collabProvider`,
+  `collabUndo`, `flow/designerCollab`; native `designer::collab` tests and
+  `ws_roundtrip`. `client/e2e/collab.smoke.mjs` (`scripts/smoke-collab.sh`,
+  in CI): two headless browsers as two users on one screen move, lock and
+  edit at once and converge, see each other's cursors, a comment with a
+  mention reaches the other, and the rows over REST hold both people's edits.

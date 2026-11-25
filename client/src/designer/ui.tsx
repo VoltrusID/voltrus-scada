@@ -186,10 +186,13 @@ export function SmallBtn({ children, onClick, title, danger, disabled, testId }:
 export function Dialog({ title, children, actions, onCancel, testId, width = 460 }: {
   title: React.ReactNode; children: React.ReactNode; actions: React.ReactNode; onCancel: () => void; testId?: string; width?: number
 }) {
+  const box = React.useRef<HTMLDivElement>(null)
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { e.preventDefault(); e.stopImmediatePropagation(); onCancel(); return }
-      // Typing in the form is fine; the Designer's shortcuts must not see it.
+      // Keys in the form reach its fields (their own handlers, Enter to send);
+      // the form stops them on the way out. Keys elsewhere stop here.
+      if (box.current?.contains(e.target as Node)) return
       e.stopPropagation()
     }
     window.addEventListener('keydown', onKey, true)
@@ -197,7 +200,7 @@ export function Dialog({ title, children, actions, onCancel, testId, width = 460
   }, [onCancel])
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 90, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,.45)' }}>
-      <div role="dialog" aria-modal="true" aria-labelledby="designer-form-title" data-testid={testId} style={{
+      <div ref={box} onKeyDown={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="designer-form-title" data-testid={testId} style={{
         width, maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 48px)', overflow: 'auto', padding: 16, borderRadius: 6, background: 'var(--card)', color: 'var(--fg)',
         border: `1px solid ${D.line}`, boxShadow: '0 12px 40px rgba(0,0,0,.5)', display: 'flex', flexDirection: 'column', gap: 12, fontSize: D.font,
         userSelect: 'text',

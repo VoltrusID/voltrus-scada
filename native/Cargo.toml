@@ -29,6 +29,11 @@ rustls-native-certs = "0.8"
 rustls-pki-types = { version = "1", features = ["std"] }
 webpki-roots = "0.26"
 rmp-serde = "1.3"
+# MessagePack `bin` for the Designer's collaboration frames (`ws_types`).
+serde_bytes = "0.11"
+# Live collaboration in the Designer: the screen document as a Yjs CRDT,
+# the same crate (and `yrs` version) as the server (docs/collaboration.md).
+voltrus-collab = { path = "../collab" }
 async-channel = "2"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }

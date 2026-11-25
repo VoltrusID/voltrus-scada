@@ -8,6 +8,7 @@ mod audit_log;
 mod audit_trail;
 mod auth;
 mod auth_sessions;
+mod collab;
 mod command_device;
 mod compliance_hooks;
 mod config_snapshots;

@@ -175,6 +175,9 @@ pub struct DesignSettings {
     /// Rows older than this many days are deleted, except those a version
     /// points at (0: keep forever).
     pub keep_days: u64,
+    /// Live collaboration in the Designer (docs/collaboration.md). Off, the
+    /// Designer saves whole layouts as in phases 1 and 3.
+    pub collaboration: bool,
 }
 
 impl Default for DesignSettings {
@@ -185,6 +188,7 @@ impl Default for DesignSettings {
             squash_window_secs: 60,
             squash_after_days: 30,
             keep_days: 0,
+            collaboration: true,
         }
     }
 }
@@ -550,6 +554,10 @@ fn raise_head(conn: &Connection, screen_id: &str, seq: i64) -> Result<()> {
     Ok(())
 }
 
+/// Bumped by every [`append`]: open collaboration sessions compare it to
+/// notice writes made outside them (docs/collaboration.md).
+pub static DESIGN_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Append `changes` as one batch by `actor`. Nothing is written (and `None`
 /// returned) when there is no change. When the previous batch of these
 /// objects is by the same author, source and squashable operation, younger
@@ -565,6 +573,7 @@ pub fn append(
     if changes.is_empty() {
         return Ok(None);
     }
+    DESIGN_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let settings = read_settings(conn)?;
     let at_ms = crate::timeutil::now_millis();
     let batch = new_batch_id(at_ms);

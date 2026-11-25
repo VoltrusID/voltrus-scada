@@ -47,13 +47,15 @@ function Node({ label, icon, depth, active, onClick, children, count, right, def
   )
 }
 
-export function ProjectBrowser({ screens, active, onOpenScreen, doc, selection, onSelect, onToggleLock, onToggleVisible, faceplates, onOpenPage, equipment }: {
+export function ProjectBrowser({ screens, active, onOpenScreen, doc, selection, onSelect, onToggleLock, onToggleVisible, faceplates, onOpenPage, equipment, editors }: {
   screens: Screen[]; active: string; onOpenScreen: (id: string) => void
   doc: Doc; selection: string[]; onSelect: (ids: string[]) => void
   onToggleLock: (id: string) => void; onToggleVisible: (id: string) => void
   faceplates: FaceplateDef[]; onOpenPage: (page: 'scripts' | 'alarms' | 'tags') => void
   /** The Equipment folder (types and instances), drawn after the screens. */
   equipment?: React.ReactNode
+  /** Who edits which screen (live collaboration): drawn after the screen's name. */
+  editors?: (screenId: string) => React.ReactNode
 }) {
   const sel = new Set(selection)
   // Components of the open screen, front-most first (like a layers list), groups folded together.
@@ -84,7 +86,7 @@ export function ProjectBrowser({ screens, active, onOpenScreen, doc, selection, 
     <div style={{ padding: '2px 0' }}>
       <Node label="Screens" icon="folder" depth={0} count={screens.length}>
         {screens.map(s => (
-          <Node key={s.id} testId={`designer-screen-${s.id}`} label={s.name} icon="screen" depth={1} active={s.id === active && selection.length === 0}
+          <Node key={s.id} testId={`designer-screen-${s.id}`} label={<>{s.name}{editors?.(s.id)}</>} icon="screen" depth={1} active={s.id === active && selection.length === 0}
             onClick={() => (s.id === active ? onSelect([]) : onOpenScreen(s.id))} defaultOpen={s.id === active}
             count={s.id === active ? doc.widgets.length : undefined}>
             {s.id === active ? items.map(it => it.kind === 'w' ? widgetRow(it.w, 2) : (

@@ -22,6 +22,7 @@ pub mod backup;
 pub mod bacnet;
 pub mod cache;
 pub mod cli;
+pub mod collab;
 pub mod command_queue;
 pub mod compliance;
 pub mod compression;

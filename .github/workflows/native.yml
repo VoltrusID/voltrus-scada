@@ -14,6 +14,7 @@ on:
     branches: [main, native-v2, native-parity, 'native-*']
     paths:
       - native/**
+      - collab/**
       - src/**
       - scenarios/solar-farm/**
       - Cargo.toml
@@ -30,6 +31,7 @@ on:
   pull_request:
     paths:
       - native/**
+      - collab/**
       - src/**
       - scenarios/solar-farm/**
       - Cargo.toml

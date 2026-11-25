@@ -21,6 +21,7 @@
 
 pub mod arrange;
 pub mod bindings;
+pub mod collab;
 pub mod expr;
 
 use std::collections::HashMap;

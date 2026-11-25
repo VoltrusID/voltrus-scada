@@ -16,7 +16,10 @@ import {
 import {
   invalidateDesign, revertScreen, useBlame, useDesignStatus, useScreenState, useVersions, type DesignChange, type RevertBody,
 } from '../queries/designHistory'
-import { useAuthMe } from '../queries/users'
+import { useAuthMe, useUsers } from '../queries/users'
+import { applyCommentEvent, commentKeys, deleteComment, mentionsIn, patchComment, postComment, useComments, useDesignSessions, type DesignComment } from '../queries/designComments'
+import { useCollab } from './collab/useCollab'
+import { CommentBox, CommentPins, CommentsPane, PeersOverlay, PresenceBar, ScreenEditors } from './collab/ui'
 import { useRole } from '../RoleContext'
 import { canConfigure as roleCanConfigure } from '../roles'
 import { useModbusDevices } from '../queries/modbus'
@@ -65,7 +68,7 @@ interface Conflict { revision: string; seq: number | null; message: string; chan
 interface RevertAsk { body: RevertBody; title: string; message: React.ReactNode }
 interface Dangling { body: RevertBody; connection: string; missing: string[] }
 
-type RightTab = 'properties' | 'history' | 'versions'
+type RightTab = 'properties' | 'history' | 'versions' | 'comments'
 
 const ZOOM_STEPS = [0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 3, 4]
 const isTyping = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))
@@ -131,11 +134,40 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const [picker, setPicker] = useState<{ type: string; x?: number; y?: number } | null>(null)
 
   const [h, dispatch] = useReducer(historyReducer, emptyHistory)
-  const doc = h.present
-  const dirty = isDirty(h)
+
+  // ── Live collaboration (phase 4): the draft is a shared document while the server offers it ──
+  /** The server said collaboration is unavailable for this screen (off, refused, other protocol). */
+  const [collabFallback, setCollabFallback] = useState<string | null>(null)
+  useEffect(() => { setCollabFallback(null) }, [screen])
+  /** The server has phase 4 (comments, sessions), whether or not collaboration is switched on. */
+  const hasPhase4 = status?.collaboration != null
+  const wantCollab = !!status?.collaboration?.enabled && !collabFallback && canConfigure
+  const nameOf = useCallback((w: WidgetInstance) => sensors.find(s => s.id === w.sensorId)?.name || widgetTitle(w), [sensors])
+  const collab = useCollab(screen, wantCollab, nameOf, {
+    onFlushed: m => {
+      baseSeq.current = m.seq
+      void invalidateDesign(qc, screen)
+      void qc.invalidateQueries({ queryKey: queryKeys.scadaLayout(screen) })
+    },
+    onRejected: m => toast.error(`Not saved: ${m.objects.map(o => `${o.object_id} (${o.reason})`).join('; ')}. ${m.objects.length === 1 ? 'It was' : 'They were'} put back.`),
+    onComment: m => applyCommentEvent(qc, screen, m.event, m.comment as unknown as DesignComment),
+    onError: e => { if (e.code !== 'resync') toast.error(`Live editing: ${e.message}`) },
+    onFallback: e => {
+      setCollabFallback(e.code)
+      if (e.code === 'protocol') toast.error(`${e.message}`)
+      else if (e.code !== 'disabled') toast.info(`Live editing unavailable (${e.message}); saving whole screens`)
+    },
+  })
+  const live = collab.active
+  const liveRef = useRef(live)
+  liveRef.current = live
+  const collabRef = useRef(collab)
+  collabRef.current = collab
+  const doc = live ? collab.doc : h.present
+  const dirty = live ? false : isDirty(h)
   const [selection, setSelectionRaw] = useState<string[]>([])
   const [selConn, setSelConn] = useState<string | null>(null)
-  const [tool, setTool] = useState<'select' | 'connect'>('select')
+  const [tool, setTool] = useState<'select' | 'connect' | 'comment'>('select')
   const [connectFrom, setConnectFrom] = useState<string | null>(null)
   const [connectType, setConnectType] = useState<ConnectionInstance['connectionType']>('flow')
   const [zoom, setZoom] = useState<'fit' | number>('fit')
@@ -176,15 +208,65 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const [needSave, setNeedSave] = useState<{ what: string; then: () => void } | null>(null)
 
   const setSelection = useCallback((ids: string[]) => { setSelectionRaw(ids); if (ids.length) setSelConn(null) }, [])
+
+  // ── Presence, follow mode and comments ──
+
+  const hasPhase4Ref = useRef(hasPhase4)
+  hasPhase4Ref.current = hasPhase4
+  /** The awareness client id of the person whose view this one follows. */
+  const [following, setFollowing] = useState<number | null>(null)
+  const [viewTo, setViewTo] = useState<{ cx: number; cy: number; scale: number; n: number } | null>(null)
+  const followed = following != null ? collab.peers.find(p => p.clientId === following) : undefined
+  const followedView = followed?.viewport
+  useEffect(() => {
+    if (following != null && !followed && collab.status === 'live') setFollowing(null)
+  }, [following, followed, collab.status])
+  useEffect(() => {
+    if (!followedView) return
+    setViewTo(v => ({ cx: followedView.cx, cy: followedView.cy, scale: followedView.scale, n: (v?.n ?? 0) + 1 }))
+  }, [followedView?.cx, followedView?.cy, followedView?.scale]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (live) collab.setPresence({ selection }) }, [live, selection]) // eslint-disable-line react-hooks/exhaustive-deps
+  const onCursor = useCallback((pt: { x: number; y: number } | null) => {
+    setCursor(pt)
+    if (liveRef.current) collabRef.current.setPresence({ cursor: pt })
+  }, [])
+  const onViewport = useCallback((v: { cx: number; cy: number; scale: number }) => {
+    if (liveRef.current) collabRef.current.setPresence({ viewport: v })
+  }, [])
+
+  const commentsQ = useComments(screen, hasPhase4)
+  const comments = commentsQ.data ?? []
+  const sessionsQ = useDesignSessions(hasPhase4 && !live)
+  const sessions = collab.sessions ?? sessionsQ.data ?? null
+  const { data: userList = [] } = useUsers(isAdmin && hasPhase4)
+  const mentionUsers = useMemo(() => [...new Set([
+    ...userList.map(u => u.username), ...comments.map(c => c.author), ...collab.peers.map(p => p.user),
+    ...(sessions ?? []).flatMap(x => x.users.map(u => u.user)),
+  ].filter(Boolean))].sort(), [userList, comments, collab.peers, sessions])
+  const [activeComment, setActiveComment] = useState<number | null>(null)
+  const [showResolvedPins, setShowResolvedPins] = useState(false)
+  /** A new comment being written, pinned at this point (and component). */
+  const [newComment, setNewComment] = useState<{ x: number; y: number; object_id: string | null; object_type: string | null } | null>(null)
+  const refetchComments = useCallback(() => { void qc.invalidateQueries({ queryKey: commentKeys.screen(screen) }) }, [qc, screen])
+  // Without a live session nothing pushes comment events: the tab refetches when opened.
+  useEffect(() => { if (rightTab === 'comments' && !live) refetchComments() }, [rightTab, live, refetchComments])
   // Edits carry their time: the same kind of edit after a pause is a new undo step.
   // While a past state is previewed nothing edits the draft.
   const edit = useCallback((e: Edit, coalesce?: string) => {
-    if (!readOnlyRef.current) dispatch({ type: 'edit', edit: e, coalesce, at: Date.now() })
+    if (readOnlyRef.current) return
+    if (liveRef.current) collabRef.current.edit(e, coalesce, Date.now())
+    else dispatch({ type: 'edit', edit: e, coalesce, at: Date.now() })
   }, [])
   const patch = useCallback((patches: Record<string, Patch>, coalesce?: string) => {
     if (readOnlyRef.current) return
-    if (Object.keys(patches).length) dispatch({ type: 'edit', edit: { type: 'patch', patches }, coalesce, at: Date.now() })
+    if (!Object.keys(patches).length) return
+    if (liveRef.current) collabRef.current.edit({ type: 'patch', patches }, coalesce, Date.now())
+    else dispatch({ type: 'edit', edit: { type: 'patch', patches }, coalesce, at: Date.now() })
   }, [])
+  const undo = useCallback(() => { if (liveRef.current) collabRef.current.undo(); else dispatch({ type: 'undo' }) }, [])
+  const redo = useCallback(() => { if (liveRef.current) collabRef.current.redo(); else dispatch({ type: 'redo' }) }, [])
+  const undoDepth = live ? collab.undoDepth : h.past.length
+  const redoDepth = live ? collab.redoDepth : h.future.length
 
   // Drop selected ids that no longer exist (after undo, delete, load).
   useEffect(() => {
@@ -209,13 +291,15 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
 
   useEffect(() => {
     const data = layoutQ.data
+    // In a live session the shared document is the draft.
+    if (live) { loadedScreen.current = screen; return }
     if (!loaded || !data || savingRef.current) return
     const same = loadedScreen.current === screen
     if (same && data.revision === baseRevision.current) return
     // Changed on the server. Unsaved work is kept; the user decides (banner, or the conflict on save).
     if (same && dirtyRef.current) { setRemoteChanged(true); return }
     loadLayout(data, screen)
-  }, [screen, loaded, layoutQ.data, loadLayout])
+  }, [screen, loaded, layoutQ.data, loadLayout, live])
 
   const invalidate = useCallback((id: string) => {
     void qc.invalidateQueries({ queryKey: queryKeys.scadaLayout(id) })
@@ -231,6 +315,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
    * save that first had to resolve a conflict.
    */
   const save = useCallback(async (opts: { base?: LayoutBase; then?: () => void } = {}): Promise<boolean> => {
+    if (liveRef.current) { collabRef.current.flush(); return true }
     const id = loadedScreen.current
     if (!id || savingRef.current) return false
     if (!dirtyRef.current) return true
@@ -280,7 +365,8 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const runRevert = useCallback(async (body: RevertBody) => {
     const id = loadedScreen.current ?? screen
     try {
-      const r = await revertScreen(id, { ...body, base_seq: baseSeq.current })
+      // Live: the server writes the session's edits first, under the screen lock, so no base is sent.
+      const r = await revertScreen(id, { ...body, base_seq: liveRef.current ? null : baseSeq.current })
       if (r.ok) {
         setPreviewAt(null)
         await reloadFromServer()
@@ -351,7 +437,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
       const screenOf = (l: { search: unknown }) => (l.search as { screen?: string } | undefined)?.screen ?? 'all'
       return !(next.pathname === current.pathname && screenOf(next) === screenOf(current))
     },
-    enableBeforeUnload: () => dirtyRef.current,
+    enableBeforeUnload: () => dirtyRef.current || (liveRef.current && collabRef.current.status !== 'live' && collabRef.current.pending),
     withResolver: true,
   })
 
@@ -424,7 +510,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
     const id = loadedScreen.current
     if (id) {
       const fresh = await fetchScadaLayout(id)
-      if (!dirtyRef.current) loadLayout(fresh, id)
+      if (!dirtyRef.current && !liveRef.current) loadLayout(fresh, id)
       void qc.invalidateQueries({ queryKey: queryKeys.scadaLayout(id) })
     }
     toast.success(`${name} changed; its symbols follow`)
@@ -522,6 +608,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   }
 
   const zoomBy = useCallback((dir: 1 | -1) => {
+    setFollowing(null)
     const cur = zoom === 'fit' ? scale : zoom
     const next = dir > 0 ? ZOOM_STEPS.find(z => z > cur + 0.001) : [...ZOOM_STEPS].reverse().find(z => z < cur - 0.001)
     if (next) { setZoom(next); setScale(next) }
@@ -531,12 +618,12 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
 
   const keys = useRef<Record<string, () => void>>({})
   keys.current = {
-    save: () => { if (dirtyRef.current) void save() }, undo: () => dispatch({ type: 'undo' }), redo: () => dispatch({ type: 'redo' }),
+    save: () => { if (dirtyRef.current || liveRef.current) void save() }, undo, redo,
     copy, paste, cut: () => { copy(); removeSelection() }, duplicate: duplicateSel, remove: removeSelection,
     all: () => setSelection(expandToGroups(doc, doc.widgets.filter(w => !isLocked(w)).map(w => w.id))),
     group, ungroup, lock: toggleLock, front: () => order('front'), back: () => order('back'), forward: () => order('forward'), backward: () => order('backward'),
     preview: () => { if (!readOnlyRef.current) setPreview(p => !p) }, fit: () => setZoom('fit'), zoomIn: () => zoomBy(1), zoomOut: () => zoomBy(-1),
-    escape: () => { setSelection([]); setSelConn(null); setConnectFrom(null); setTool('select'); setDropMenu(null) },
+    escape: () => { setSelection([]); setSelConn(null); setConnectFrom(null); setTool('select'); setDropMenu(null); setFollowing(null) },
   }
   const nudge = useRef<(dx: number, dy: number) => void>(() => {})
   nudge.current = (dx, dy) => patch(movePatches(doc, selection, dx, dy, { w: STAGE_W, h: STAGE_H }), `nudge:${selection.join(',')}`)
@@ -566,6 +653,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
       if (key === 'escape') { k.escape(); return }
       if (key === 'v') { setTool('select'); setConnectFrom(null); return }
       if (key === 'c') { setTool('connect'); setSelection([]); return }
+      if (key === 'm' && hasPhase4Ref.current) { setTool(t => (t === 'comment' ? 'select' : 'comment')); return }
       if (key.startsWith('arrow')) {
         e.preventDefault()
         const step = e.shiftKey ? 10 : 1
@@ -631,6 +719,10 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
           </>
         )}
         <div style={{ flex: 1 }} />
+        {wantCollab && (
+          <PresenceBar status={live ? collab.status : 'off'} peers={collab.peers} me={collab.me} pending={collab.pending}
+            following={following} onFollow={id => { setFollowing(id); if (id == null) setViewTo(null) }} />
+        )}
         <div role="radiogroup" aria-label="Mode" style={{ display: 'flex', border: `1px solid ${D.line}`, borderRadius: 4, overflow: 'hidden' }}>
           {(['design', 'preview'] as const).map(m => (
             <button key={m} type="button" role="radio" aria-checked={(m === 'preview') === preview} data-testid={`designer-mode-${m}`}
@@ -651,12 +743,18 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
       {!preview && (
         <fieldset disabled={!!previewAt} style={{ border: 'none', margin: 0, padding: 0, minWidth: 0, opacity: previewAt ? 0.55 : 1 }}>
         <div role="toolbar" aria-label="Designer tools" style={{ height: 32, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2, padding: '0 6px', borderBottom: `1px solid ${D.line}`, background: D.chrome, overflowX: 'auto' }}>
-          <ToolBtn icon="save" title="Save (Ctrl+S)" label={saving ? 'Saving…' : dirty ? 'Save' : 'Saved'} onClick={() => { void save() }} disabled={!dirty || saving} active={dirty} testId="designer-save" />
-          <ToolBtn icon="undo" title={`Undo (Ctrl+Z) · ${h.past.length} step${h.past.length === 1 ? '' : 's'}`} onClick={() => dispatch({ type: 'undo' })} disabled={!h.past.length} testId="designer-undo" />
-          <ToolBtn icon="redo" title="Redo (Ctrl+Y)" onClick={() => dispatch({ type: 'redo' })} disabled={!h.future.length} testId="designer-redo" />
+          {live ? (
+            <ToolBtn icon="save" title="Edits are saved to the draft as you work (Ctrl+S: now)" label={collab.pending ? (collab.status === 'live' ? 'Saving…' : 'Waiting') : 'Saved'}
+              onClick={() => { void save() }} disabled={collab.status !== 'live'} testId="designer-save" />
+          ) : (
+            <ToolBtn icon="save" title="Save (Ctrl+S)" label={saving ? 'Saving…' : dirty ? 'Save' : 'Saved'} onClick={() => { void save() }} disabled={!dirty || saving} active={dirty} testId="designer-save" />
+          )}
+          <ToolBtn icon="undo" title={`Undo (Ctrl+Z) · ${undoDepth} step${undoDepth === 1 ? '' : 's'}${live ? ' of yours' : ''}`} onClick={undo} disabled={!undoDepth} testId="designer-undo" />
+          <ToolBtn icon="redo" title="Redo (Ctrl+Y)" onClick={redo} disabled={!redoDepth} testId="designer-redo" />
           <Sep />
           <ToolBtn icon="select" title="Select (V)" onClick={() => { setTool('select'); setConnectFrom(null) }} active={tool === 'select'} />
           <ToolBtn icon="connect" title="Connect (C): click source, then target" onClick={() => { setTool('connect'); setSelection([]) }} active={tool === 'connect'} />
+          {hasPhase4 && <ToolBtn icon="edit" title="Comment (M): click a component or the stage" onClick={() => setTool(t => (t === 'comment' ? 'select' : 'comment'))} active={tool === 'comment'} testId="designer-comment-tool" />}
           {tool === 'connect' && (
             <select value={connectType} onChange={e => setConnectType(e.target.value as ConnectionInstance['connectionType'])} aria-label="Connection type"
               style={{ height: 22, fontSize: D.small, background: 'var(--input-bg)', color: 'var(--fg)', border: `1px solid ${D.line}`, borderRadius: 3 }}>
@@ -710,6 +808,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
                 onToggleLock={id => patch(lockPatches(doc, [id], !isLocked(doc.widgets.find(w => w.id === id)!)))}
                 onToggleVisible={id => { const w = doc.widgets.find(x => x.id === id)!; patch({ [id]: { config: { visible: w.config?.visible === false ? undefined : false } } }) }}
                 faceplates={faceplates} onOpenPage={onOpenPage}
+                editors={hasPhase4 ? id => <ScreenEditors screen={id} sessions={sessions} me={collab.me.user || me?.username || ''} /> : undefined}
                 equipment={<EquipmentTree types={eqTypes} instances={eqInstances} onScreen={onScreenInstances}
                   selected={selection.length ? instanceOf(doc.widgets.find(w => w.id === selection[0]) ?? { config: {} }) : null}
                   onSelectInstance={name => { const ids = onScreenInstances.get(name); if (ids?.length) setSelection(ids) }} />} />
@@ -739,7 +838,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
           ) : previewAt ? (
             <PastState screen={screen} batch={previewAt} sensors={sensors} canRevert={canConfigure}
               onBack={() => setPreviewAt(null)} onRevert={() => revertWholeScreen(previewAt.maxSeq, `it was after change #${previewAt.maxSeq}`)} />
-          ) : !loaded && loadedScreen.current !== screen ? (
+          ) : (live ? !collab.synced : !loaded && loadedScreen.current !== screen) ? (
             <div style={{ flex: 1, display: 'grid', placeItems: 'center', color: 'var(--text-muted)' }}>Loading {screenName}…</div>
           ) : (
             <DesignerCanvas
@@ -749,12 +848,36 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
               guides={guides} onGuidesChange={g => setGuidesByScreen(all => ({ ...all, [screen]: g }))}
               tool={tool} connectFrom={connectFrom} onConnectPick={connectPick}
               selectedConnection={selConn} onSelectConnection={id => { setSelConn(id); setSelectionRaw([]) }}
-              onSelect={setSelection} onEdit={edit} onDrop={onDrop} onCursor={setCursor}
+              onSelect={setSelection} onEdit={edit} onDrop={onDrop} onCursor={onCursor}
+              onViewport={live ? onViewport : undefined} viewTo={following != null ? viewTo : null} onUserView={() => setFollowing(null)}
+              onCommentAt={(pt, target) => {
+                const w = target ? doc.widgets.find(x => x.id === target) : undefined
+                setNewComment({ x: pt.x, y: pt.y, object_id: w?.id ?? null, object_type: w ? 'widget' : null })
+                setTool('select')
+              }}
+              overlay={sx => (
+                <>
+                  {hasPhase4 && <CommentPins comments={comments} doc={doc} sx={sx} active={activeComment} showResolved={showResolvedPins}
+                    onOpen={id => { setActiveComment(id); setRightTab('comments') }} />}
+                  {live && <PeersOverlay peers={collab.peers} doc={doc} sx={sx} />}
+                </>
+              )}
             />
           )}
           {!preview && !previewAt && tool === 'connect' && (
             <div style={{ position: 'absolute', top: 30, left: '50%', transform: 'translateX(-50%)', zIndex: 5, padding: '4px 12px', borderRadius: 999, fontSize: D.small, background: D.pane, border: `1px solid ${D.line}`, color: 'var(--text-dim)' }}>
               {connectFrom ? 'Now click the target component · Esc to cancel' : 'Click the source component'}
+            </div>
+          )}
+          {!preview && !previewAt && tool === 'comment' && (
+            <div style={{ position: 'absolute', top: 30, left: '50%', transform: 'translateX(-50%)', zIndex: 5, padding: '4px 12px', borderRadius: 999, fontSize: D.small, background: D.pane, border: `1px solid ${D.line}`, color: 'var(--text-dim)' }}>
+              Click a component or a point to comment · Esc to cancel
+            </div>
+          )}
+          {following != null && followed && (
+            <div data-testid="designer-following" style={{ position: 'absolute', bottom: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 5, padding: '4px 12px', borderRadius: 999, fontSize: D.small, background: D.pane, border: `1px solid ${followed.color}`, color: 'var(--fg)', display: 'flex', gap: 8, alignItems: 'center' }}>
+              Following {followed.user}
+              <SmallBtn onClick={() => setFollowing(null)}>Stop</SmallBtn>
             </div>
           )}
           {!preview && !previewAt && loaded && doc.widgets.length === 0 && (
@@ -784,6 +907,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
                   { id: 'properties', label: 'Properties', icon: 'faceplate', disabled: !!previewAt },
                   { id: 'history', label: 'History', icon: 'history' },
                   { id: 'versions', label: 'Versions', icon: 'version' },
+                  ...(hasPhase4 ? [{ id: 'comments' as const, label: `Comments${comments.some(c => c.parent_id == null && !c.resolved) ? ` (${comments.filter(c => c.parent_id == null && !c.resolved).length})` : ''}`, icon: 'edit' }] : []),
                 ]} />
                 <div style={{ flex: 1 }} />
                 {rightTab === 'properties' && n > 0 && <span style={{ ...mono, color: 'var(--text-muted)', alignSelf: 'center' }}>{n} selected</span>}
@@ -817,7 +941,33 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
                   <HistoryList screen={screen} object={historyObject} wholeScreen={wholeScreen} onWholeScreen={setWholeScreen}
                     previewSeq={previewAt?.maxSeq ?? null} onPreview={setPreviewAt} canRevert={canConfigure}
                     onRevertObject={revertObject}
-                    onRevertScreen={b => revertWholeScreen(b.maxSeq, `it was after change #${b.maxSeq} (${b.username}, ${relativeTime(b.at_ms)})`)} />
+                    onRevertScreen={b => revertWholeScreen(b.maxSeq, `it was after change #${b.maxSeq} (${b.username}, ${relativeTime(b.at_ms)})`)}
+                    comments={hasPhase4 ? comments : undefined} onOpenComment={c => { setActiveComment(c.parent_id ?? c.id); setRightTab('comments') }} />
+                )}
+                {rightTab === 'comments' && (
+                  <CommentsPane comments={comments} me={me?.username ?? collab.me.user} isAdmin={isAdmin} users={mentionUsers}
+                    active={activeComment} onActive={id => { setActiveComment(id); setShowResolvedPins(true) }}
+                    labelOf={c => {
+                      if (!c.object_id) return `the stage at ${Math.round(c.x)}, ${Math.round(c.y)}`
+                      const w = doc.widgets.find(x => x.id === c.object_id)
+                      return w ? String(w.config?.label || w.name || widgetTitle(w)) : `${c.object_id} (removed)`
+                    }}
+                    onReply={async (root, body) => {
+                      try { const c = await postComment(screen, { body, parent_id: root.id, object_id: root.object_id, object_type: root.object_type, x: root.x, y: root.y }); applyCommentEvent(qc, screen, 'created', c) }
+                      catch (e: any) { toast.error(`Reply not sent: ${e?.message || 'request failed'}`) }
+                    }}
+                    onResolve={(root, resolved) => {
+                      patchComment(screen, root.id, { resolved }).then(c => applyCommentEvent(qc, screen, 'updated', c), (e: any) => toast.error(`Not changed: ${e?.message || 'request failed'}`))
+                    }}
+                    onDelete={c => {
+                      deleteComment(screen, c.id).then(() => applyCommentEvent(qc, screen, 'deleted', c), (e: any) => toast.error(`Not deleted: ${e?.message || 'request failed'}`))
+                    }}
+                    onNew={() => {
+                      const w = selWidgets[0]
+                      if (w) setNewComment({ x: w.x + w.width, y: w.y, object_id: w.id, object_type: 'widget' })
+                      else setTool('comment')
+                    }}
+                    hint="Select a component and press New comment, or press M and click the stage." />
                 )}
                 {rightTab === 'versions' && (
                   <VersionsList screen={screen} me={{ username: me?.username ?? '', isAdmin }} canConfigure={canConfigure} publishing={publishing && !!status?.published}
@@ -923,7 +1073,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
 
       {publishOpen && (
         <PublishDialog screen={screen} status={status} versions={versions} version={publishOpen.version} dirty={dirty}
-          save={() => save()} baseSeq={() => baseSeq.current} onClose={() => setPublishOpen(null)}
+          save={() => save()} baseSeq={() => (liveRef.current ? null : baseSeq.current)} onClose={() => setPublishOpen(null)}
           onDone={() => { void invalidateDesign(qc, screen); invalidate(screen) }} />
       )}
 
@@ -934,6 +1084,24 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
           onPublishVersion={(id, label) => { setCompare(null); setPublishOpen({ version: { id, label } }) }} />
       )}
 
+      {newComment && (
+        <Dialog title={newComment.object_id ? `Comment on ${(() => { const w = doc.widgets.find(x => x.id === newComment.object_id); return w ? String(w.config?.label || w.name || widgetTitle(w)) : newComment.object_id })()}` : 'Comment on the stage'}
+          testId="designer-comment-dialog" onCancel={() => setNewComment(null)} actions={<DialogBtn onClick={() => setNewComment(null)}>Cancel</DialogBtn>}>
+          <CommentBox users={mentionUsers} placeholder="Write a comment… (@ to mention)" autoFocus testId="designer-comment-body"
+            onSend={async body => {
+              try {
+                const c = await postComment(screen, { body, x: newComment.x, y: newComment.y, object_id: newComment.object_id, object_type: newComment.object_type })
+                applyCommentEvent(qc, screen, 'created', c)
+                setNewComment(null)
+                setActiveComment(c.id)
+                setRightTab('comments')
+                const named = mentionsIn(body, mentionUsers)
+                toast.success(named.length ? `Comment added; ${named.join(', ')} notified` : 'Comment added')
+              } catch (e: any) { toast.error(`Comment not added: ${e?.message || 'request failed'}`) }
+            }} />
+        </Dialog>
+      )}
+
       {/* Status bar */}
       <div data-testid="designer-status" style={{ height: 22, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 14, padding: '0 10px', borderTop: `1px solid ${D.line}`, background: D.chrome, ...mono, color: 'var(--text-dim)' }}>
         <span style={{ color: preview || previewAt ? D.accent : undefined }}>{preview ? 'PREVIEW · live data · F5 or Esc to edit' : previewAt ? `HISTORY · after change #${previewAt.maxSeq} · read only · Esc for the draft` : 'DESIGN'}</span>
@@ -942,8 +1110,14 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
         <span>{guides.length} guide{guides.length === 1 ? '' : 's'}</span>
         <div style={{ flex: 1 }} />
         <LiveCount sensors={sensors} />
-        <span>{h.past.length} undo · {h.future.length} redo</span>
-        <span style={{ color: dirty ? 'var(--warn)' : undefined }} data-testid="designer-dirty">{dirty ? 'Unsaved changes' : 'All changes saved'}</span>
+        <span>{undoDepth} undo · {redoDepth} redo</span>
+        {live ? (
+          <span style={{ color: collab.status !== 'live' ? 'var(--warn)' : undefined }} data-testid="designer-dirty">
+            {collab.status !== 'live' ? (collab.pending ? 'Offline: your edits are kept and sent on reconnect' : 'Offline') : collab.pending ? 'Saving…' : 'All changes saved'}
+          </span>
+        ) : (
+          <span style={{ color: dirty ? 'var(--warn)' : undefined }} data-testid="designer-dirty">{dirty ? 'Unsaved changes' : 'All changes saved'}</span>
+        )}
       </div>
     </div>
   )

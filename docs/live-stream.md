@@ -22,6 +22,11 @@ event: TagUpdateBatch
 data: {"type":"TagUpdateBatch","updates":[{"tag_id":"inverter-1.power","value":412.5,"quality":"normal","ts":1761700000,"simulated":false,"data_quality":"good","ts_ms":1761700000123}]}
 ```
 
+The WebSocket also carries the Designer's live collaboration (`DesignJoin`,
+`DesignSync`, `DesignAwareness`, … for roles that configure; see
+[collaboration.md](collaboration.md#wire-protocol)); clients that do not join
+a session never receive them, and the event stream does not carry them.
+
 The first event of a stream is `AuthOk` (the signed-in user and permissions), as on
 the WebSocket. A comment line is sent every 15 seconds to keep proxies from closing an
 idle stream. A value that is NaN (a failed read) is `null` in JSON.

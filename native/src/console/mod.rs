@@ -735,6 +735,11 @@ impl Console {
                     // A local station signs in again by itself.
                     station::session_ended(self, cx);
                 }
+                // A live Designer session leaves while the link is down
+                // and joins again when it is back.
+                if link != self.link {
+                    views::mimic::editor::on_design_link(self, &link);
+                }
                 self.link = link;
             }
             Event::SignedIn {
@@ -912,6 +917,9 @@ impl Console {
             } => {
                 self.devices
                     .insert(device_id, DeviceLink { online, latency_ms });
+            }
+            Event::Design(message) => {
+                views::mimic::editor::on_design(self, &message, window, cx);
             }
             Event::PublicReply { key, reply } => {
                 if key.scope() == station::SCOPE {

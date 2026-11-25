@@ -326,6 +326,20 @@ See [mcp.md](mcp.md#tools).
 | `POST /api/v1/settings/design-history/approve`, `…/reject` | admin session, not the requester |
 | `GET …/scada-equipment`, `…/scada-connections`, `…/scada-layout` `?published=1` / `?draft=1` | any (non-configure roles always get published) |
 
+## Live collaboration
+
+While people edit a screen together ([collaboration.md](collaboration.md)),
+the server writes the session's document to the draft about every 2 seconds,
+when the last person leaves and on Ctrl+S. Each write is one batch per author
+(the person who last touched each changed object), source `designer`,
+operation `save`, note *Live session*, so the 60-second squash folds a
+session's small moves into one entry per object and person. Blame, diff,
+revert and versions treat these batches like any save. Writes from outside the
+session (REST, MCP, revert, import, equipment propagation) keep their own
+batches and reach the open document as server changes; a revert or publish
+first writes the session's pending edits, under the screen's lock. Comments
+on the screen are listed in the History pane between the batches.
+
 ## Native console
 
 The native Designer (`native/src/designer.rs`) and the console's mimic editor

@@ -144,6 +144,15 @@ fn event_name(msg: &ServerMessage) -> &'static str {
         ServerMessage::AlarmUpdate { .. } => "AlarmUpdate",
         ServerMessage::Pong => "Pong",
         ServerMessage::HaStatus { .. } => "HaStatus",
+        // Collaboration needs the WebSocket; an event stream never joins a session.
+        ServerMessage::DesignJoined { .. } => "DesignJoined",
+        ServerMessage::DesignSync { .. } => "DesignSync",
+        ServerMessage::DesignAwareness { .. } => "DesignAwareness",
+        ServerMessage::DesignError { .. } => "DesignError",
+        ServerMessage::DesignRejected { .. } => "DesignRejected",
+        ServerMessage::DesignFlushed { .. } => "DesignFlushed",
+        ServerMessage::DesignSessions { .. } => "DesignSessions",
+        ServerMessage::DesignComment { .. } => "DesignComment",
     }
 }
 

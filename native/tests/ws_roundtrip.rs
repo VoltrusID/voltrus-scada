@@ -293,3 +293,127 @@ fn signatures_are_optional_on_the_wire() {
         other => panic!("wrong variant: {other:?}"),
     }
 }
+
+#[test]
+fn design_frames_roundtrip_with_binary_payloads() {
+    use voltrus_scada_native::ws_types::{DesignLimits, DesignRejectedObject};
+    let data = vec![0u8, 1, 2, 255];
+    let bytes = enc(&ClientMessage::DesignSync {
+        screen: "s1".into(),
+        data: data.clone(),
+    });
+    // The payload travels as MessagePack `bin` (0xc4), not an array of ints.
+    assert!(
+        bytes.windows(2).any(|w| w == [0xc4, 4]),
+        "bin8 of 4 bytes: {bytes:02x?}"
+    );
+    match rmp_serde::from_slice(&bytes).unwrap() {
+        ClientMessage::DesignSync { data: back, .. } => assert_eq!(back, data),
+        other => panic!("wrong variant: {other:?}"),
+    }
+    let messages = [
+        ServerMessage::DesignJoined {
+            screen: "s1".into(),
+            epoch: "e".into(),
+            resync: false,
+            user: "ana".into(),
+            color: "#123456".into(),
+            protocol: 1,
+            limits: DesignLimits {
+                max_update: 1,
+                max_rate: 2,
+                max_doc: 3,
+                max_awareness: 4,
+                flush_ms: 5,
+            },
+        },
+        ServerMessage::DesignAwareness {
+            screen: "s1".into(),
+            data: vec![1],
+        },
+        ServerMessage::DesignError {
+            screen: "s1".into(),
+            code: "disabled".into(),
+            message: "off".into(),
+            reload: false,
+        },
+        ServerMessage::DesignRejected {
+            screen: "s1".into(),
+            objects: vec![DesignRejectedObject {
+                object_type: "widget".into(),
+                object_id: "w".into(),
+                reason: "x".into(),
+            }],
+        },
+        ServerMessage::DesignFlushed {
+            screen: "s1".into(),
+            seq: 7,
+            at_ms: 1,
+            users: vec!["ana".into()],
+        },
+        ServerMessage::DesignSessions { sessions: vec![] },
+        ServerMessage::DesignComment {
+            screen: "s1".into(),
+            event: "created".into(),
+            comment: serde_json::json!({"id": 1}),
+        },
+    ];
+    for msg in &messages {
+        let bytes = rmp_serde::to_vec_named(msg).unwrap();
+        let _: ServerMessage = rmp_serde::from_slice(&bytes).unwrap();
+    }
+}
+
+/// Every collaboration frame of the server's `ws_types.rs` is mirrored here
+/// with the same fields.
+#[test]
+fn design_frames_match_the_servers() {
+    let server = include_str!("../../src/ws_types.rs");
+    let native = include_str!("../src/ws_types.rs");
+    let frames = [
+        ("DesignJoin {", &["screen", "protocol", "epoch"][..]),
+        ("DesignSync {", &["screen", "data"][..]),
+        ("DesignAwareness {", &["screen", "data"][..]),
+        ("DesignLeave {", &["screen"][..]),
+        ("DesignFlush {", &["screen"][..]),
+        (
+            "DesignJoined {",
+            &["epoch", "resync", "user", "color", "protocol", "limits"][..],
+        ),
+        ("DesignError {", &["code", "message", "reload"][..]),
+        ("DesignRejected {", &["objects"][..]),
+        ("DesignFlushed {", &["seq", "at_ms", "users"][..]),
+        ("DesignSessions {", &["sessions"][..]),
+        ("DesignComment {", &["event", "comment"][..]),
+        (
+            "pub struct DesignLimits {",
+            &[
+                "max_update",
+                "max_rate",
+                "max_doc",
+                "max_awareness",
+                "flush_ms",
+            ][..],
+        ),
+        (
+            "pub struct DesignRejectedObject {",
+            &["object_type", "object_id", "reason"][..],
+        ),
+        ("pub struct DesignSessionInfo {", &["screen", "users"][..]),
+        ("pub struct DesignUser {", &["user", "color"][..]),
+    ];
+    for (head, fields) in frames {
+        for (side, text) in [("server", server), ("native", native)] {
+            let at = text
+                .find(head)
+                .unwrap_or_else(|| panic!("{side} has no `{head}`"));
+            let body = &text[at..at + text[at..].find('}').unwrap()];
+            for field in fields {
+                assert!(
+                    body.contains(&format!("{field}:")),
+                    "{side} `{head}` has no field {field}"
+                );
+            }
+        }
+    }
+}

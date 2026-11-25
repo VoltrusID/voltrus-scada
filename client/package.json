@@ -24,6 +24,7 @@
     "dompurify": "3.4.17",
     "i18next": "^25.0.0",
     "i18next-http-backend": "^4.0.5",
+    "lib0": "0.2.120",
     "lightweight-charts": "^5.2.0",
     "marked": "18.0.2",
     "react": "19.2.4",
@@ -31,7 +32,9 @@
     "react-grid-layout": "2.2.3",
     "react-i18next": "^15.0.0",
     "react-rnd": "10.5.3",
-    "three": "0.184.0"
+    "three": "0.184.0",
+    "y-protocols": "1.0.7",
+    "yjs": "13.6.33"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.2",

@@ -78,6 +78,8 @@ pub(super) struct Marks {
     guides: Vec<Guide>,
     band: Option<Rect>,
     ghost: Option<Rect>,
+    /// The other people in a live session: their selections and cursors.
+    peers: Vec<super::live::PeerMark>,
 }
 
 pub(super) fn marks(
@@ -136,6 +138,7 @@ pub(super) fn marks(
             .zip(editor.pointer)
             .map(|(widget, (x, y))| edit::pending_route(widget, x, y)),
         guides: editor.guides.clone(),
+        peers: super::live::peer_marks(editor),
         band: editor.band,
         ghost: editor.ghost.map(|(placing, x, y)| {
             let (width, height) = placing.size();
@@ -273,6 +276,31 @@ pub(super) fn paint(marks: &Marks, window: &mut Window, cx: &mut App) {
         let r = rect(ghost);
         canvas.rect(&flat, r, 0.0, fade(accent, 0.08), None);
         dashed(&mut canvas, r, accent);
+    }
+    for peer in &marks.peers {
+        for b in &peer.boxes {
+            let (x, y, w, h) = rect(b);
+            outline(
+                &mut canvas,
+                (x - 2.0, y - 2.0, w + 4.0, h + 4.0),
+                peer.color,
+                2.0,
+            );
+        }
+        if let Some((px, py)) = peer.cursor {
+            // An arrow pointer at the person's stage point (their name is
+            // a label over the stage).
+            let (x, y) = at(px, py);
+            let arrow = [
+                (x, y),
+                (x, y + 16.0),
+                (x + 4.5, y + 12.0),
+                (x + 11.0, y + 11.0),
+            ];
+            let shape = Shape::polyline(&arrow, true);
+            canvas.fill(&flat, &shape, peer.color);
+            canvas.stroke(&flat, &shape, hmi.surface, Line::hairline(1.0));
+        }
     }
 }
 

@@ -5,6 +5,7 @@ import {
   sourceLabel, type Batch,
 } from './historyModel'
 import { Badge, D, Icon, SmallBtn, mono } from './ui'
+import type { DesignComment } from '../queries/designComments'
 
 /** The object the History pane follows: the selected component or connection. */
 export interface HistoryObject { id: string; type: 'widget' | 'connection'; label: string }
@@ -30,7 +31,7 @@ export function Avatar({ name, size = 22 }: { name: string; size?: number }) {
  * what each save changed. Clicking a batch previews the screen as it was
  * after it; its objects can be put back one by one, or the whole screen.
  */
-export function HistoryList({ screen, object, wholeScreen, onWholeScreen, previewSeq, onPreview, onRevertObject, onRevertScreen, canRevert }: {
+export function HistoryList({ screen, object, wholeScreen, onWholeScreen, previewSeq, onPreview, onRevertObject, onRevertScreen, canRevert, comments, onOpenComment }: {
   screen: string
   object: HistoryObject | null
   wholeScreen: boolean
@@ -41,6 +42,9 @@ export function HistoryList({ screen, object, wholeScreen, onWholeScreen, previe
   onRevertObject: (c: DesignChange, b: Batch) => void
   onRevertScreen: (b: Batch) => void
   canRevert: boolean
+  /** Comments of the screen, listed between the changes by time (live collaboration). */
+  comments?: DesignComment[]
+  onOpenComment?: (c: DesignComment) => void
 }) {
   const [user, setUser] = useState('')
   const [knownUsers, setKnownUsers] = useState<string[]>([])
@@ -55,6 +59,15 @@ export function HistoryList({ screen, object, wholeScreen, onWholeScreen, previe
   }, [pageUsers, knownUsers])
   const [open, setOpen] = useState<string | null>(null)
   const now = Date.now()
+  // Changes and comments in one timeline, newest first.
+  const entries = useMemo(() => {
+    const cs = (comments ?? []).filter(c => (!following || c.object_id === following.id) && (!user || c.author === user))
+    const out: ({ kind: 'b'; at: number; b: Batch } | { kind: 'c'; at: number; c: DesignComment })[] = [
+      ...batches.map(b => ({ kind: 'b' as const, at: b.at_ms, b })),
+      ...cs.map(c => ({ kind: 'c' as const, at: c.created_at_ms, c })),
+    ]
+    return out.sort((a, b) => b.at - a.at)
+  }, [batches, comments, following, user])
 
   return (
     <div data-testid="designer-history" style={{ display: 'flex', flexDirection: 'column', minHeight: 0, height: '100%' }}>
@@ -89,7 +102,23 @@ export function HistoryList({ screen, object, wholeScreen, onWholeScreen, previe
             {following ? `No recorded changes of ${following.label}.` : 'No changes recorded yet. Every save from now on appears here.'}
           </div>
         )}
-        {batches.map(b => (
+        {entries.map(e => e.kind === 'c' ? (
+          <button key={`c${e.c.id}`} type="button" data-testid="designer-history-comment" onClick={() => onOpenComment?.(e.c)} style={{
+            display: 'flex', width: '100%', gap: 7, alignItems: 'flex-start', padding: '6px 8px', border: 'none', textAlign: 'left', cursor: 'pointer',
+            borderBottom: `1px solid color-mix(in srgb, ${D.line} 60%, transparent)`, background: 'transparent', color: 'var(--fg)', fontSize: D.font,
+          }}>
+            <Avatar name={e.c.author} />
+            <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <b>{e.c.author}</b><Badge color="var(--warn)">{e.c.parent_id ? 'reply' : 'comment'}</Badge>
+                {e.c.resolved && <Badge>resolved</Badge>}
+                <span style={{ flex: 1 }} />
+                <span style={{ ...mono, color: 'var(--text-muted)' }}>{relativeTime(e.c.created_at_ms, now)}</span>
+              </span>
+              <span style={{ color: 'var(--text-dim)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{e.c.body}</span>
+            </span>
+          </button>
+        ) : (() => { const b = e.b; return (
           <BatchRow key={b.batch} b={b} now={now} open={open === b.batch} previewing={previewSeq === b.maxSeq} canRevert={canRevert}
             onToggle={() => {
               // Click: open and preview; again: close and back to the draft.
@@ -98,7 +127,7 @@ export function HistoryList({ screen, object, wholeScreen, onWholeScreen, previe
               onPreview(closing ? null : b)
             }}
             onRevertObject={onRevertObject} onRevertScreen={() => onRevertScreen(b)} />
-        ))}
+        ) })())}
         {q.hasNextPage && (
           <div style={{ padding: 8, display: 'flex', justifyContent: 'center' }}>
             <SmallBtn onClick={() => { void q.fetchNextPage() }} disabled={q.isFetchingNextPage} testId="designer-history-more">

@@ -429,6 +429,7 @@ async fn handle_socket(
         }
     }
 
+    state_loop.collab.disconnect(&state_loop, &conn_id_loop);
     ws_manager_loop.disconnect(&conn_id_loop);
     tracing::info!("WS: disconnected conn={}", conn_id);
 }
@@ -535,6 +536,58 @@ pub(super) async fn handle_client_message(
 
         ClientMessage::Auth { .. } => {
             tracing::debug!("WS: ignoring duplicate Auth message");
+        }
+
+        ClientMessage::DesignJoin {
+            screen,
+            protocol,
+            epoch,
+        } => {
+            // Only roles that configure edit screens; the role is read again,
+            // as for a write.
+            let Some(role) = principal.current_role(state).await else {
+                return After::Close;
+            };
+            if !super::auth_middleware::role_allows_configuration(&role) {
+                tracing::warn!("WS: {username} (role={role}) may not join the editing of {screen}");
+                ws_manager.send_to(
+                    conn_id,
+                    ServerMessage::DesignError {
+                        screen: screen.clone(),
+                        code: "forbidden".into(),
+                        message: "editing screens needs a role that may configure".into(),
+                        reload: false,
+                    },
+                );
+                return After::Continue;
+            }
+            state
+                .collab
+                .join(
+                    state,
+                    conn_id,
+                    username,
+                    screen,
+                    *protocol,
+                    epoch.as_deref(),
+                )
+                .await;
+        }
+
+        ClientMessage::DesignSync { screen, data } => {
+            state.collab.sync(state, conn_id, screen, data).await;
+        }
+
+        ClientMessage::DesignAwareness { screen, data } => {
+            state.collab.awareness(state, conn_id, screen, data);
+        }
+
+        ClientMessage::DesignLeave { screen } => {
+            state.collab.leave(state, conn_id, screen);
+        }
+
+        ClientMessage::DesignFlush { screen } => {
+            state.collab.flush_request(state, conn_id, screen).await;
         }
     }
     After::Continue
