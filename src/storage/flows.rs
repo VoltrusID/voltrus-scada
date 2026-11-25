@@ -304,6 +304,7 @@ impl Storage {
                 .query_row(
                     "SELECT COUNT(*) FROM alarms
                      WHERE source_key = ?1 AND severity = ?2
+                       AND alarm_type IN ('high', 'low')
                        AND cooldown_until IS NOT NULL AND cooldown_until > ?3",
                     rusqlite::params![source_key, severity, now],
                     |row| row.get(0),

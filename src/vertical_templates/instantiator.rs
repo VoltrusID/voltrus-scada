@@ -121,8 +121,8 @@ impl<'a> Instantiator<'a> {
                     "#f97316", // Default orange color
                     tag.min_val,
                     tag.max_val,
-                    tag.min_val, // warn_val defaults to min (no alarm by default)
-                    tag.max_val, // crit_val defaults to max (no alarm by default)
+                    0.0, // no high warning limit until one is configured
+                    0.0, // no high critical limit until one is configured
                     (tag.min_val + tag.max_val) / 2.0, // base_val
                     sort_order,
                     if tag.data_type == "bool" { 0 } else { 1 }, // decimals
@@ -196,40 +196,54 @@ impl<'a> Instantiator<'a> {
 
         // 5. Apply alarm thresholds to created data sources
         let expanded_alarms = self.expand_alarm_patterns(&expanded_tags);
-        let all_data_sources = self.storage.list_data_sources(None).await?;
+        // All tags, then this instance's (the argument of list_data_sources
+        // is a screen id, not a device id).
+        let all_data_sources: Vec<_> = self
+            .storage
+            .list_data_sources(None)
+            .await?
+            .into_iter()
+            .filter(|ds| ds.device_id == device_id)
+            .collect();
+        // Per tag: the columns and source_config to write, built from all of
+        // the tag's template alarms, so two alarms on one tag (warning and
+        // critical, high and low) don't overwrite each other.
+        let mut updates: Vec<(
+            i64,
+            serde_json::Map<String, serde_json::Value>,
+            serde_json::Value,
+        )> = Vec::new();
         for alarm in &expanded_alarms {
-            // Find matching data source
-            if let Some(ds) = all_data_sources.iter().find(|ds| {
-                ds.key.ends_with(&alarm.tag_pattern)
-                    || ds.key.contains(&format!(":{}", alarm.tag_pattern))
-            }) {
-                let update = match alarm.comparison.as_str() {
-                    "above" => json!({
-                        "warn_val": if alarm.severity == "warning" { alarm.threshold } else { ds.warn_val },
-                        "crit_val": if alarm.severity == "critical" { alarm.threshold } else { ds.crit_val },
-                    }),
-                    "below" => json!({
-                        "warn_val": if alarm.severity == "warning" { alarm.threshold } else { ds.warn_val },
-                        "crit_val": if alarm.severity == "critical" { alarm.threshold } else { ds.crit_val },
-                    }),
-                    "equal" => json!({
-                        "crit_val": if alarm.severity == "critical" { alarm.threshold } else { ds.crit_val },
-                        "warn_val": if alarm.severity == "warning" { alarm.threshold } else { ds.warn_val },
-                    }),
-                    _ => json!({}),
-                };
-
-                if !update.as_object().map(|o| o.is_empty()).unwrap_or(true) {
-                    self.storage
-                        .update_data_source(ds.id, &update)
-                        .await
-                        .context("Failed to update alarm threshold")?;
-                    created_alarms.push(format!(
-                        "{}: {} {} {}",
-                        alarm.tag_pattern, alarm.severity, alarm.comparison, alarm.threshold
-                    ));
+            let key = format!("{device_id}:{}", alarm.tag_pattern);
+            let Some(ds) = all_data_sources.iter().find(|ds| ds.key == key) else {
+                continue;
+            };
+            let at = match updates.iter().position(|(id, ..)| *id == ds.id) {
+                Some(at) => at,
+                None => {
+                    let cfg = serde_json::from_str::<serde_json::Value>(&ds.source_config)
+                        .ok()
+                        .filter(|v| v.is_object())
+                        .unwrap_or_else(|| json!({}));
+                    updates.push((ds.id, serde_json::Map::new(), cfg));
+                    updates.len() - 1
                 }
+            };
+            let (_, columns, cfg) = &mut updates[at];
+            if !apply_template_alarm(alarm, ds.min_val, columns, cfg) {
+                continue;
             }
+            created_alarms.push(format!(
+                "{}: {} {} {}",
+                alarm.tag_pattern, alarm.severity, alarm.comparison, alarm.threshold
+            ));
+        }
+        for (id, mut columns, cfg) in updates {
+            columns.insert("source_config".into(), json!(cfg.to_string()));
+            self.storage
+                .update_data_source(id, &serde_json::Value::Object(columns))
+                .await
+                .context("Failed to update alarm threshold")?;
         }
 
         // 6. Create OEE shift if template has OEE config
@@ -355,6 +369,44 @@ pub struct InstantiationResult {
     pub flows: Vec<String>,
 }
 
+/// Write one template alarm into a tag's limit columns (`columns`) and
+/// source_config (`cfg`). Returns false for a comparison that maps to no limit.
+///
+/// Limit evaluation fires a high limit at value >= limit and a low one at
+/// value <= limit. "above" is a high limit and "below" a low one (in
+/// source_config; written as warn_val or crit_val it would be a high limit,
+/// raised in normal operation). "equal" is for two-state tags: equal to the
+/// bottom of the tag's range (a safety contact reading 0) is a low limit
+/// there, anything else a high limit. High limits go in the columns without
+/// an `<name>_enabled` flag, where only a limit above 0 counts: with the
+/// flag, "above 0" (lift `OPS_FAULT`) would fire at value >= 0, always. The
+/// tag's deadband is the largest of its alarms' deadbands.
+fn apply_template_alarm(
+    alarm: &TemplateAlarm,
+    min_val: f64,
+    columns: &mut serde_json::Map<String, serde_json::Value>,
+    cfg: &mut serde_json::Value,
+) -> bool {
+    let critical = alarm.severity == "critical";
+    let high = match alarm.comparison.as_str() {
+        "above" => true,
+        "below" => false,
+        "equal" => alarm.threshold > min_val,
+        _ => return false,
+    };
+    if high {
+        let column = if critical { "crit_val" } else { "warn_val" };
+        columns.insert(column.into(), json!(alarm.threshold));
+    } else {
+        cfg[if critical { "low_crit" } else { "low_warn" }] = json!(alarm.threshold);
+    }
+    if alarm.deadband > 0.0 {
+        let current = cfg.get("deadband").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        cfg["deadband"] = json!(current.max(alarm.deadband));
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,5 +448,139 @@ mod tests {
         let max = HashMap::from([("n".to_string(), MAX_INSTANCE_COUNT)]);
         let inst = Instantiator::new(&storage, template_with_n(), "x".into(), max);
         assert!(inst.check_limits().is_ok());
+    }
+
+    #[tokio::test]
+    async fn template_tags_alarm_only_on_the_template_limits() {
+        let storage = storage().await;
+        let template = definitions::all_templates()
+            .into_iter()
+            .find(|t| t.id == "wastewater_treatment")
+            .unwrap();
+        Instantiator::new(
+            &storage,
+            template,
+            "ww".into(),
+            Instantiator::default_instance_counts(),
+        )
+        .instantiate()
+        .await
+        .unwrap();
+        let sources = storage.list_data_sources(None).await.unwrap();
+        let limits = |suffix: &str| {
+            let tag = sources
+                .iter()
+                .find(|ds| ds.key.ends_with(suffix))
+                .unwrap_or_else(|| panic!("no tag {suffix}"));
+            crate::alarm_eval::Thresholds::of(tag)
+        };
+        // pH: critical above 9 and warning below 6, both kept; neutral pH is normal.
+        let ph = limits(":PH-1");
+        assert_eq!((ph.high_crit, ph.high_warn), (Some(9.0), None));
+        assert_eq!((ph.low_warn, ph.low_crit), (Some(6.0), None));
+        assert_eq!(ph.condition(7.0), None);
+        assert_eq!(ph.condition(5.0), Some(("warning", 6.0, "low")));
+        // A low-only alarm is no high limit.
+        let cl = limits(":CLO2_RES");
+        assert_eq!(
+            (cl.high_warn, cl.high_crit, cl.low_warn),
+            (None, None, Some(0.2))
+        );
+        assert_eq!(cl.condition(1.0), None);
+        // A tag without template alarms has no limits at all.
+        let untouched = sources
+            .iter()
+            .filter(|ds| crate::alarm_eval::Thresholds::of(ds) == Default::default())
+            .count();
+        assert!(untouched > 0);
+    }
+
+    async fn instantiate(template_id: &str) -> Vec<crate::models::DataSource> {
+        let storage = storage().await;
+        let template = definitions::all_templates()
+            .into_iter()
+            .find(|t| t.id == template_id)
+            .unwrap();
+        Instantiator::new(
+            &storage,
+            template,
+            "t".into(),
+            Instantiator::default_instance_counts(),
+        )
+        .instantiate()
+        .await
+        .unwrap();
+        storage.list_data_sources(None).await.unwrap()
+    }
+
+    fn tag<'a>(
+        sources: &'a [crate::models::DataSource],
+        suffix: &str,
+    ) -> &'a crate::models::DataSource {
+        sources
+            .iter()
+            .find(|ds| ds.key.ends_with(suffix))
+            .unwrap_or_else(|| panic!("no tag {suffix}"))
+    }
+
+    #[tokio::test]
+    async fn equal_zero_safety_alarms_fire_when_the_contact_reads_zero() {
+        let sources = instantiate("elevator_ski_lift").await;
+        for name in [":SAFE_DOOR", ":SAFE_ROPE"] {
+            let t = crate::alarm_eval::Thresholds::of(tag(&sources, name));
+            assert_eq!(t.condition(0.0), Some(("critical", 0.0, "low")), "{name}");
+            assert_eq!(t.condition(1.0), None, "{name}");
+        }
+        // "equal 1" stays a high limit: fires at 1, not at 0.
+        let estop = crate::alarm_eval::Thresholds::of(tag(&sources, ":SAFE_ESTOP"));
+        assert_eq!(estop.condition(1.0), Some(("critical", 1.0, "high")));
+        assert_eq!(estop.condition(0.0), None);
+        // "above 0" is no limit (a high limit of 0 would always fire).
+        let fault = crate::alarm_eval::Thresholds::of(tag(&sources, ":OPS_FAULT"));
+        assert_eq!(fault.condition(0.0), None);
+        // The template's deadband is written with the limit.
+        let vib = crate::alarm_eval::Thresholds::of(tag(&sources, ":MTR_VIB"));
+        assert_eq!((vib.high_warn, vib.deadband), (Some(10.0), 2.0));
+
+        let ship = instantiate("maritime").await;
+        for light in ["PORT", "STBD", "BOW", "STERN"] {
+            let t = crate::alarm_eval::Thresholds::of(tag(&ship, &format!(":NAV_{light}")));
+            assert_eq!(t.condition(0.0), Some(("warning", 0.0, "low")), "{light}");
+            assert_eq!(t.condition(1.0), None, "{light}");
+        }
+        // Two alarms on one tag (critical 80, warning 50) both stay, with the
+        // larger deadband.
+        let bilge = crate::alarm_eval::Thresholds::of(tag(&ship, ":BILGE1_LVL"));
+        assert_eq!((bilge.high_warn, bilge.high_crit), (Some(50.0), Some(80.0)));
+        assert_eq!(bilge.deadband, 10.0);
+    }
+
+    #[tokio::test]
+    async fn template_alarms_go_to_this_instance_only() {
+        let storage = storage().await;
+        for name in ["a", "b"] {
+            let template = definitions::all_templates()
+                .into_iter()
+                .find(|t| t.id == "elevator_ski_lift")
+                .unwrap();
+            Instantiator::new(
+                &storage,
+                template,
+                name.into(),
+                Instantiator::default_instance_counts(),
+            )
+            .instantiate()
+            .await
+            .unwrap();
+        }
+        let sources = storage.list_data_sources(None).await.unwrap();
+        for device in ["vt_a", "vt_b"] {
+            let door = tag(&sources, &format!("{device}:SAFE_DOOR"));
+            assert_eq!(
+                crate::alarm_eval::Thresholds::of(door).low_crit,
+                Some(0.0),
+                "{device}"
+            );
+        }
     }
 }

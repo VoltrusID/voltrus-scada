@@ -297,10 +297,17 @@ same value the deadband check uses.
 |---|---|
 | `admin` | everything, including users, roles, API keys, security, compliance |
 | `demo` | operate and configure (the public demo account) |
-| `operator` | operate: write tags within their write policy, cancel commands, acknowledge, shelve and unshelve alarms and read the alarm journal, summary, audit and analytics, list, view and load recipes, start, stop and run flows (any signed-in user may read flows and their runs), shift handover, log and close downtime. Cannot change devices, tags, write policies, screens, flows, recipes or settings |
-| `viewer`, `user` (legacy) | read only; cannot acknowledge alarms |
+| `operator` | operate: write tags within their write policy, cancel commands, acknowledge, shelve and unshelve alarms, list, view and load recipes, start, stop and run flows (any signed-in user may read flows and their runs), shift handover, log and close downtime. Cannot change devices, tags, write policies, screens, flows, recipes or settings |
+| `viewer`, `user` (legacy) | read only, including the alarm summary, analytics, the alarm audit trail (`/alarms/audit`) and journal, and the trend annotations; cannot acknowledge alarms or write annotations. The system audit log (`/audit`, `/audit/export`) stays configuration tier |
 | API key `integration` | like `demo` (scopes can narrow it to read-only) |
-| API key `api` | read only |
+| API key `api` | read only, including the same alarm and annotation reads as `viewer` |
+
+The alarm audit trail and journal name who acknowledged or shelved each alarm.
+With SSO those are the identity provider's usernames, often email addresses,
+so every signed-in user (and every read-only key) can see them. Reads that any
+signed-in user makes are capped: `GET /alarms` and `/alarms/audit` return at
+most 1000 rows, annotation lists the newest 1000, and `/alarms/analytics`
+covers at most 90 days.
 
 Server: `api::role_allows_operation(role)` (operator tier) and
 `api::role_allows_configuration(role)` (configuration tier;

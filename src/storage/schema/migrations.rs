@@ -570,6 +570,31 @@ pub(super) fn run_migrations(conn: &Connection) {
     // flow's webhook token (the token itself is shown once and not stored).
     let _ = conn.execute_batch("ALTER TABLE flow_runs ADD COLUMN trace TEXT");
     let _ = conn.execute_batch("ALTER TABLE flows ADD COLUMN webhook_token_hash TEXT");
+
+    // Migration: why an AI proposal's apply failed (status 'failed').
+    let _ = conn.execute_batch("ALTER TABLE ai_proposals ADD COLUMN error_message TEXT");
+
+    // Migration: active alarms are looked up on every evaluation pass (stale
+    // limit alarms, "is one already raised"): a partial index over the few
+    // unresolved rows keeps that from scanning the whole alarm history. After
+    // the alarms rebuild above, which drops the table's indexes.
+    let _ = conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_alarms_unresolved
+             ON alarms(source_key) WHERE resolved_at IS NULL",
+    );
+
+    // Migration: alarms raised by a flow's alarm node used to be stored as
+    // type 'high' with value, limit and deadband 0. They are 'event' alarms
+    // now (limit evaluation never touches them, acknowledging one resolves
+    // it). A limit alarm always has a message made by alarm evaluation
+    // ("<tag> reached <value> (<severity>: <limit>)"), so a real high limit
+    // of 0 reached at exactly 0 is not mistaken for one.
+    let _ = conn.execute_batch(
+        "UPDATE alarms SET alarm_type = 'event'
+         WHERE alarm_type = 'high' AND value = 0 AND threshold = 0
+           AND COALESCE(deadband, 0) = 0
+           AND message NOT LIKE '% reached % (%: %)'",
+    );
 }
 
 /// Migration: failed sign-ins counted per (account, client address) instead

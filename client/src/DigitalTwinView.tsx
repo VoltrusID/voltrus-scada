@@ -14,6 +14,7 @@ import { EquipmentLabel } from './twin/EquipmentLabel'
 import { EquipmentPalette } from './twin/EquipmentPalette'
 import { DEFAULT_EQUIPMENT } from './twin/defaults'
 import { useSensorCurrentValue, useTrackedCurrentValues } from './store/dashboardStore'
+import { useRole } from './RoleContext'
 
 interface FlowConnection {
   from: string
@@ -157,6 +158,8 @@ export function DigitalTwinView(props: Props) {
 /** Hand-placed equipment twin for screens without a SCADA layout. */
 function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onEquipmentClick, onSwitchToCards, onSensorUpdate, onSaveLayouts, onSaveConnections, onSaveCamera, onBackToPlant }: Props & { onBackToPlant?: () => void }) {
   const [equipment, setEquipment] = useState<TwinEquipment[]>(DEFAULT_EQUIPMENT.map(e => ({ ...e })))
+  // Moving equipment and saving the camera change the screen: configuration only.
+  const { canConfigure } = useRole()
   const [twinEditMode, setTwinEditMode] = useState(false)
   const [bindingEquipmentId, setBindingEquipmentId] = useState<string | null>(null)
   const [connections, setConnections] = useState<FlowConnection[]>([])
@@ -261,7 +264,7 @@ function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onE
             border: '1px solid #06b6d4', background: 'rgba(6,182,212,0.15)', color: '#06b6d4', fontFamily: 'Inter, sans-serif',
           }}>Plant twin</button>
         )}
-        <button onClick={() => {
+        {canConfigure && <button onClick={() => {
           if (twinEditMode) {
             onSaveLayouts(equipment)
             onSaveConnections(connections)
@@ -276,7 +279,7 @@ function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onE
           fontFamily: 'Inter, sans-serif',
         }}>
           {twinEditMode ? 'Done Editing' : 'Edit Layout'}
-        </button>
+        </button>}
         {twinEditMode && (
           <button onClick={() => { setConnectFrom(connectFrom ? null : '__pick__'); if (connectFrom === '__pick__') setConnectFrom(null) }} style={{
             padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
@@ -291,7 +294,7 @@ function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onE
         {twinEditMode && <span style={{ fontSize: 10, color: 'rgba(255,255,255,0.35)', fontFamily: 'Inter, sans-serif' }}>Drag to move · Scroll to rotate</span>}
         {!twinEditMode && cameraMoved && (
           <>
-            <button onClick={() => {
+            {canConfigure && <button onClick={() => {
               if (!cameraRef.current) return
               const p = cameraRef.current.position
               onSaveCamera({ x: Math.round(p.x * 100) / 100, y: Math.round(p.y * 100) / 100, z: Math.round(p.z * 100) / 100 })
@@ -301,7 +304,7 @@ function FreeLayoutTwin({ sensors, twinLayouts, twinCamera, twinConnections, onE
               padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer',
               border: '1px solid #06b6d4', background: 'rgba(6,182,212,0.15)', color: '#06b6d4',
               fontFamily: 'Inter, sans-serif',
-            }}>Save View</button>
+            }}>Save View</button>}
             <button onClick={() => {
               if (!cameraRef.current) return
               const [sx, sy, sz] = savedCameraPos.current

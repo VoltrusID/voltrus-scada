@@ -82,9 +82,17 @@ pub struct ChatAlarm {
     pub severity: String,
     pub source_key: String,
     pub source_name: String,
+    /// `value` rounded to the tag's decimals, as in `value_text`.
     pub value: f64,
+    /// `threshold` rounded as in `threshold_text`.
     pub threshold: f64,
     pub unit: String,
+    /// The value as the alarm message shows it, unit included (`2.60 m`).
+    /// Print this rather than `value` and `unit`, so a chat message reads
+    /// the same as the alarm list and the email.
+    pub value_text: String,
+    /// The limit as the alarm message shows it, unit included.
+    pub threshold_text: String,
     pub message: String,
     /// RFC 3339 trigger time.
     pub triggered_at: String,

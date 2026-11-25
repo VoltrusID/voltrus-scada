@@ -657,6 +657,14 @@ pub enum RegisterType {
     Float64,
 }
 
+impl RegisterType {
+    /// The names the Modbus driver reads, as stored in `modbus_registers.register_type`.
+    pub const NAMES: [&'static str; 5] = ["int16", "uint16", "int32", "float32", "float64"];
+}
+
+/// The register areas the Modbus driver reads (`modbus_registers.register_area`).
+pub const REGISTER_AREAS: [&str; 4] = ["holding", "input", "coil", "discrete"];
+
 impl RegisterConfig {
     pub fn register_count(&self) -> u16 {
         match self.reg_type {

@@ -107,9 +107,10 @@ impl Storage {
         .context("Task join failed")?
     }
 
-    /// Check if there is any unresolved alarm for this source_key, regardless
-    /// of severity. Used by the off-delay logic, which must not start its
-    /// clear pending unless an alarm is actually raised.
+    /// Check if there is any unresolved limit alarm (high or low) for this
+    /// source_key, regardless of severity. Used by the off-delay logic, which
+    /// must not start its clear pending unless an alarm is actually raised.
+    /// Flow `event` alarms are not counted: limit evaluation never clears them.
     pub async fn has_any_unresolved_alarm(&self, source_key: &str) -> Result<bool> {
         let conn = self.conn.clone();
         let source_key = source_key.to_string();
@@ -118,7 +119,8 @@ impl Storage {
             let count: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM alarms
-                     WHERE source_key = ?1 AND resolved_at IS NULL",
+                     WHERE source_key = ?1 AND resolved_at IS NULL
+                       AND alarm_type IN ('high', 'low')",
                     rusqlite::params![source_key],
                     |row| row.get(0),
                 )
@@ -132,7 +134,9 @@ impl Storage {
     /// Check if there is any unresolved alarm for this source_key+severity.
     /// Uses `resolved_at IS NULL` (regardless of acknowledgment status) so that
     /// a new alarm cannot fire until the previous one is fully resolved.
-    /// This implements non-repeating alarm behavior.
+    /// This implements non-repeating alarm behavior. Only limit alarms (high or
+    /// low) count: a flow's `event` alarm on the same key does not hold back a
+    /// limit alarm.
     pub async fn has_unresolved_alarm(&self, source_key: &str, severity: &str) -> Result<bool> {
         let conn = self.conn.clone();
         let source_key = source_key.to_string();
@@ -143,7 +147,7 @@ impl Storage {
                 .query_row(
                     "SELECT COUNT(*) FROM alarms
                      WHERE source_key = ?1 AND severity = ?2
-                       AND resolved_at IS NULL",
+                       AND resolved_at IS NULL AND alarm_type IN ('high', 'low')",
                     rusqlite::params![source_key, severity],
                     |row| row.get(0),
                 )

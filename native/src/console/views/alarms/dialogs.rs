@@ -499,8 +499,8 @@ fn confirm_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
 
 // ── Detail ────────────────────────────────────────────────────────────────
 
-/// The sheet for alarm `id`: everything about it, its actions, and (for
-/// operators) its ISA-18.2 journal. j/k step through the list beneath.
+/// The sheet for alarm `id`: everything about it, its actions (for
+/// operators) and its ISA-18.2 journal. j/k step through the list beneath.
 pub(super) fn open_detail(
     console: &mut Console,
     id: i64,
@@ -595,31 +595,36 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
     let shelved = is_shelved(&alarm);
     let resolved = is_resolved(&alarm);
 
-    let mut facts = vec![
-        fact("Value", with_unit(alarm.value), &theme).font_family(MONO),
-        fact(
-            "Limit",
-            format!(
-                "{} ({})",
-                with_unit(alarm.threshold),
-                if alarm.alarm_type.eq_ignore_ascii_case("low") {
-                    "alarms at or below"
-                } else {
-                    "alarms at or above"
-                }
+    // A flow's event alarm has no value or limit (both 0): only the message.
+    let mut facts = if alarms::is_event(&alarm) {
+        vec![fact("Raised by", "A flow (event alarm)", &theme)]
+    } else {
+        vec![
+            fact("Value", with_unit(alarm.value), &theme).font_family(MONO),
+            fact(
+                "Limit",
+                format!(
+                    "{} ({})",
+                    with_unit(alarm.threshold),
+                    if alarm.alarm_type.eq_ignore_ascii_case("low") {
+                        "alarms at or below"
+                    } else {
+                        "alarms at or above"
+                    }
+                ),
+                &theme,
             ),
-            &theme,
+        ]
+    };
+    facts.push(fact(
+        "Raised",
+        format!(
+            "{} · {} ago",
+            local_time(alarm.triggered_at, &zone),
+            age(now - alarm.triggered_at)
         ),
-        fact(
-            "Raised",
-            format!(
-                "{} · {} ago",
-                local_time(alarm.triggered_at, &zone),
-                age(now - alarm.triggered_at)
-            ),
-            &theme,
-        ),
-    ];
+        &theme,
+    ));
     if alarm.deadband > 0.0 {
         facts.push(fact("Deadband", with_unit(alarm.deadband), &theme));
     }
@@ -689,7 +694,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
         );
     }
 
-    let journal = journal(console, id, operator, &theme, cx);
+    let journal = journal(console, id, &theme, cx);
     let hints: &[(&'static str, &'static str)] = if operator {
         &[
             ("J K", "Next"),
@@ -803,13 +808,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
 }
 
 /// The ISA-18.2 lifecycle: each event, when and by whom.
-fn journal(
-    console: &Console,
-    id: i64,
-    operator: bool,
-    theme: &Theme,
-    cx: &Context<Console>,
-) -> Div {
+fn journal(console: &Console, id: i64, theme: &Theme, cx: &Context<Console>) -> Div {
     let section = div()
         .flex()
         .flex_col()
@@ -821,11 +820,6 @@ fn journal(
             .text_color(theme.fg_muted)
             .child(text)
     };
-    if !operator {
-        return section.child(note(
-            "The journal is kept for operators (operator, demo, integration, admin).".into(),
-        ));
-    }
     let journal = console
         .state_ref::<State>()
         .and_then(|state| state.journal.as_ref())

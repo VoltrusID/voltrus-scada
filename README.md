@@ -29,7 +29,7 @@ running Core. Sign in as `guest` / `voltrus-demo` (read-only).
 **What is free and what is paid.** Core (this repository) is free, also for
 commercial use, with every protocol and no device, tag or retention limits.
 Two optional licences are sold per site: **Integrator** ($249 lifetime or
-$19 a month: white-label, PDF reports, Telegram and WhatsApp alarms,
+$19 a month: white-label, PDF reports, Telegram alarms,
 multi-site hub) and **Enterprise** ($999 lifetime or $79 a month: adds SSO,
 21 CFR Part 11 mode, hot standby). Current prices are on
 [voltrus.id](https://voltrus.id/voltrus-scada/#pricing); the split is in
@@ -41,7 +41,7 @@ Linux x86_64 (use `aarch64` on a Raspberry Pi; Windows and macOS builds are
 on the [releases page](https://github.com/VoltrusID/voltrus-scada/releases/latest)):
 
 ```bash
-V=v0.52.0
+V=v0.53.0
 curl -L https://github.com/VoltrusID/voltrus-scada/releases/download/$V/voltrus-core-$V-linux-x86_64.tar.gz | tar xz
 cd voltrus-core-$V-linux-x86_64 && cp config.yaml.example config.yaml
 ./modbus-sim &          # a simulated Schneider PM5560 power meter on port 5020
@@ -134,6 +134,26 @@ from source.
   [edition hooks](docs/edition-hooks.md).
 * **No limits and no licence key:** unlimited devices, tags and retention.
 
+## Footprint
+
+The same water-treatment project (47 Modbus tags polled every second) on five
+platforms, idle with no client open, measured on one Linux machine on
+2026-11-24/25:
+
+| | Voltrus SCADA | FUXA | Rapid SCADA | Ignition | WinCC OA |
+|---|---|---|---|---|---|
+| Disk | 63 MB binary | 936 MB image | 616 MB image | 4.45 GB image + 1.2 GB Designer on the engineer's PC | 8.02 GB image |
+| Idle RAM | 14–16 MiB | 81 MiB | 191–211 MiB | 880–890 MiB | 235–372 MiB |
+| Idle CPU (one core) | 0.3–0.4 % | ~0.8 % | 1.7–2.5 % | 44–59 % | 15–21 % |
+| Start | 0.1–0.6 s | 10 s | ~10 s | 48–75 s | 20 s |
+
+Three Voltrus plants side by side, each with its own config, database and
+port, took 44 MiB of RAM and about 1 % of one core in total, from one 63 MB
+binary plus 24.5 MB of data. One Ignition gateway can host several projects,
+so it does not need one gateway per plant; the Ignition and WinCC OA figures
+were taken before the machine started swapping. Method, caveats and the
+scripts to repeat it: [docs/footprint.md](docs/footprint.md).
+
 ## Project status
 
 Voltrus is young and built by a small team. Not every part is at the same
@@ -168,7 +188,7 @@ licence key; a lapsed or missing key never limits Core.
 |---|:-:|:-:|:-:|
 | Everything listed above, all protocols, no limits | yes | yes | yes |
 | White-label branding and theme editor | | yes | yes |
-| Scheduled PDF reports and Telegram/WhatsApp alarms | | yes | yes |
+| Scheduled PDF reports and Telegram alarms (WhatsApp alarms are no longer supported) | | yes | yes |
 | Multi-site hub | | yes | yes |
 | Single sign-on (AD, Azure AD, Okta, SAML, OIDC, LDAP) | | | yes |
 | 21 CFR Part 11 mode (e-signatures, record checksums) | | | yes |
@@ -201,7 +221,7 @@ client is inside the executable. On Linux x86_64 (use the file name of the
 latest release, and `aarch64` on a Pi):
 
 ```bash
-V=v0.52.0
+V=v0.53.0
 curl -LO https://github.com/VoltrusID/voltrus-scada/releases/download/$V/voltrus-core-$V-linux-x86_64.tar.gz
 tar xzf voltrus-core-$V-linux-x86_64.tar.gz && cd voltrus-core-$V-linux-x86_64
 cp config.yaml.example config.yaml   # set auth_secret and your devices

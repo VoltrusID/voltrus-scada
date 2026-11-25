@@ -15,10 +15,11 @@ pub struct AlarmEmailData {
     pub source_key: String,
     pub source_name: String,
     pub severity: String,
-    pub value: f64,
-    pub threshold: f64,
+    /// The value as the alarm message shows it, unit included (`2.60 m`).
+    pub value_text: String,
+    /// The limit as the alarm message shows it, unit included.
+    pub threshold_text: String,
     pub message: String,
-    pub unit: String,
     pub triggered_at: String,
 }
 
@@ -144,17 +145,16 @@ fn render_alarm_text(alarm: &AlarmEmailData) -> String {
          =================\n\
          Source:    {source_name}\n\
          Severity:  {severity_upper}\n\
-         Value:     {value}{unit}\n\
-         Threshold: {threshold}{unit}\n\
+         Value:     {value}\n\
+         Threshold: {threshold}\n\
          Message:   {message}\n\
          Triggered: {triggered_at}\n\
          \n\
          -- Voltrus Monitoring System",
         source_name = alarm.source_name,
         severity_upper = alarm.severity.to_uppercase(),
-        value = alarm.value,
-        unit = alarm.unit,
-        threshold = alarm.threshold,
+        value = alarm.value_text,
+        threshold = alarm.threshold_text,
         message = alarm.message,
         triggered_at = alarm.triggered_at,
     )
@@ -204,11 +204,11 @@ fn render_alarm_html(alarm: &AlarmEmailData) -> String {
     </div>
     <div class="row">
       <span class="label">Value:</span>
-      <span class="value">{value}{unit}</span>
+      <span class="value">{value}</span>
     </div>
     <div class="row">
       <span class="label">Threshold:</span>
-      <span class="value">{threshold}{unit}</span>
+      <span class="value">{threshold}</span>
     </div>
     <div class="row">
       <span class="label">Message:</span>
@@ -228,9 +228,8 @@ fn render_alarm_html(alarm: &AlarmEmailData) -> String {
         severity_color = severity_color,
         source_name = html_escape(&alarm.source_name),
         severity_upper = alarm.severity.to_uppercase(),
-        value = alarm.value,
-        unit = html_escape(&alarm.unit),
-        threshold = alarm.threshold,
+        value = html_escape(&alarm.value_text),
+        threshold = html_escape(&alarm.threshold_text),
         message = html_escape(&alarm.message),
         triggered_at = triggered_at,
     )
@@ -254,10 +253,9 @@ mod tests {
             source_key: "plts_1:voltage".to_string(),
             source_name: "PLTS 1 Voltage".to_string(),
             severity: "critical".to_string(),
-            value: 250.5,
-            threshold: 240.0,
-            message: "PLTS 1 Voltage reached 250.5V (critical: 240.0V)".to_string(),
-            unit: "V".to_string(),
+            value_text: "250.5 V".to_string(),
+            threshold_text: "240.0 V".to_string(),
+            message: "PLTS 1 Voltage reached 250.5 V (critical: 240.0 V)".to_string(),
             triggered_at: "2024-03-09T20:00:00Z".to_string(),
         }
     }
@@ -269,8 +267,8 @@ mod tests {
 
         assert!(html.contains("PLTS 1 Voltage"));
         assert!(html.contains("CRITICAL"));
-        assert!(html.contains("250.5"));
-        assert!(html.contains("240.0"));
+        assert!(html.contains("250.5 V"));
+        assert!(html.contains("240.0 V"));
         assert!(html.contains("Alarm Notification"));
     }
 

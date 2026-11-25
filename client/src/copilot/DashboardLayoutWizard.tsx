@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useGenerateDashboardLayout } from '../queries/copilot'
+import { GenerationError } from './GenerationError'
 
 export function DashboardLayoutWizard({ onProposal }: { onProposal: () => void }) {
   const gen = useGenerateDashboardLayout()
@@ -13,6 +14,8 @@ export function DashboardLayoutWizard({ onProposal }: { onProposal: () => void }
     try {
       await gen.mutateAsync({ description, screen_id: screenId || undefined })
       onProposal()
+    } catch {
+      // Shown below from gen.error.
     } finally { setLoading(false) }
   }
 
@@ -33,6 +36,8 @@ export function DashboardLayoutWizard({ onProposal }: { onProposal: () => void }
         <input type="text" value={screenId} onChange={e => setScreenId(e.target.value)} placeholder="Target screen to apply layout"
           style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', boxSizing: 'border-box' }} />
       </div>
+
+      <GenerationError error={gen.error} />
 
       <button onClick={handleGenerate} disabled={!description || loading}
         style={{ padding: '10px', borderRadius: 6, border: 'none', background: 'var(--primary)', color: '#fff', fontWeight: 600, cursor: 'pointer', opacity: !description ? 0.5 : 1 }}>

@@ -293,8 +293,9 @@ export function AppHeader({
   const actionItems: MenuItem[] = [
     { label: 'Data Manager', icon: Icons.db, onClick: onDataManagerClick },
     { label: 'Export Data', icon: Icons.download, onClick: onExportClick },
-    { label: 'Config Snapshots', icon: Icons.save, onClick: onSnapshotsClick },
-    { label: 'Shift Handover', icon: Icons.clipboard, onClick: onShiftHandoverToggle },
+    ...(isAdmin ? [{ label: 'Config Snapshots', icon: Icons.save, onClick: onSnapshotsClick }] : []),
+    // Shift handovers are read and written by operators (the server refuses viewers).
+    ...(canOperate ? [{ label: 'Shift Handover', icon: Icons.clipboard, onClick: onShiftHandoverToggle }] : []),
     { label: 'Commands', icon: Icons.pen, onClick: onCommandPanelToggle },
   ]
 
@@ -609,12 +610,16 @@ export function AppHeader({
             <button style={drawerItemStyle} onClick={() => { closeDrawer(); onExportClick(); }}>
               {Icons.download}<span>Export</span>
             </button>
-            <button style={drawerItemStyle} onClick={() => { closeDrawer(); onSnapshotsClick(); }}>
-              {Icons.save}<span>Snapshots</span>
-            </button>
-            <button style={drawerItemStyle} onClick={() => { closeDrawer(); onShiftHandoverToggle(); }}>
-              {Icons.clipboard}<span>Shift Handover</span>
-            </button>
+            {isAdmin && (
+              <button style={drawerItemStyle} onClick={() => { closeDrawer(); onSnapshotsClick(); }}>
+                {Icons.save}<span>Snapshots</span>
+              </button>
+            )}
+            {canOperate && (
+              <button style={drawerItemStyle} onClick={() => { closeDrawer(); onShiftHandoverToggle(); }}>
+                {Icons.clipboard}<span>Shift Handover</span>
+              </button>
+            )}
             <button style={drawerItemStyle} onClick={() => { closeDrawer(); onCommandPanelToggle(); }}>
               {Icons.pen}<span>Commands</span>
             </button>

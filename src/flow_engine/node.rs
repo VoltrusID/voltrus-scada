@@ -671,8 +671,10 @@ impl NodeConfig {
                         }})),
                     });
                 }
+                // "event": raised by the flow, not by a tag crossing a limit, so
+                // limit evaluation never clears it.
                 if let Err(e) = storage
-                    .create_alarm(source_key, severity, 0.0, 0.0, message, 0.0)
+                    .create_alarm_with_type(source_key, severity, 0.0, 0.0, message, 0.0, "event")
                     .await
                 {
                     tracing::warn!("AlarmOut node: failed to create alarm: {}", e);
@@ -957,6 +959,8 @@ impl NodeConfig {
                     value: 0.0,
                     threshold: 0.0,
                     unit: String::new(),
+                    value_text: "0".to_string(),
+                    threshold_text: "0".to_string(),
                     message: text,
                     triggered_at: crate::notification::webhook::format_triggered_at(
                         crate::timeutil::now_secs(),

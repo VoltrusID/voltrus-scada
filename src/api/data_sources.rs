@@ -106,7 +106,10 @@ pub async fn create_data_source(
     put,
     path = "/api/v1/data-sources/{id}",
     params(("id" = i64, Path, description = "Data source ID")),
-    responses((status = 200, description = "Data source updated")),
+    responses(
+        (status = 200, description = "Data source updated"),
+        (status = 404, description = "No such data source"),
+    ),
     tag = "Data Sources",
     security(("api_key" = []), ("cookie_auth" = []))
 )]
@@ -121,7 +124,9 @@ pub async fn update_data_source(
     {
         return Ok((StatusCode::BAD_REQUEST, Json(json!({"error": msg}))).into_response());
     }
-    state.storage.update_data_source(id, &body).await?;
+    if !state.storage.update_data_source(id, &body).await? {
+        return Err(AppError::not_found(format!("data source {id} not found")));
+    }
     Ok(Json(json!({"ok": true})).into_response())
 }
 

@@ -234,8 +234,12 @@ export interface Alarm {
   shelved_reason?: string;
   deadband: number;
   state: string;
-  /** "high" fires when value ≥ threshold, "low" when value ≤ threshold */
-  alarm_type: 'high' | 'low';
+  /**
+   * "high" fires when value ≥ threshold, "low" when value ≤ threshold.
+   * "event": raised by a flow's alarm node, not by a limit (value and
+   * threshold are 0); acknowledging it resolves it.
+   */
+  alarm_type: 'high' | 'low' | 'event';
 }
 
 export interface AlarmSummary {

@@ -100,8 +100,8 @@ impl<'a> FeedInstantiator<'a> {
                     "#f97316",
                     min_val,
                     max_val,
-                    min_val, // warn_val — no alarm by default
-                    max_val, // crit_val — no alarm by default
+                    0.0, // no high warning limit until one is configured
+                    0.0, // no high critical limit until one is configured
                     base_val,
                     sort_order,
                     decimals,

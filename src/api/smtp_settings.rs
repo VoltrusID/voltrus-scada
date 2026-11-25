@@ -182,10 +182,9 @@ pub async fn test_smtp_connection(
         severity: "info".to_string(),
         source_key: "system.smtp-test".to_string(),
         source_name: "SMTP Test".to_string(),
-        value: 0.0,
-        threshold: 0.0,
+        value_text: "0".to_string(),
+        threshold_text: "0".to_string(),
         message: "This is a test email from Voltrus SMTP configuration.".to_string(),
-        unit: "".to_string(),
         triggered_at: crate::notification::webhook::format_triggered_at(crate::timeutil::now_secs()),
     };
 

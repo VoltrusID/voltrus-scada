@@ -233,9 +233,412 @@ pub fn alarmable(tag: Option<TagValue>) -> Option<f64> {
         .map(|t| t.value)
 }
 
+/// Most decimals a reading or limit is shown with: more is float noise.
+const MAX_DECIMALS: usize = 6;
+
+/// The decimals a tag's values are shown with: its configured `decimals`,
+/// kept to 0..=6 so a bad setting neither panics nor prints float noise.
+fn shown_decimals(decimals: i64) -> usize {
+    decimals.clamp(0, MAX_DECIMALS as i64) as usize
+}
+
+/// The decimals an alarm limit is shown with: the tag's decimals, or more
+/// when the limit needs them, so a limit of 0.05 on a one-decimal tag reads
+/// `0.05`, not `0.1`.
+fn limit_decimals(threshold: f64, decimals: i64) -> usize {
+    let shown = shown_decimals(decimals);
+    if !threshold.is_finite() {
+        return shown;
+    }
+    (shown..=MAX_DECIMALS)
+        .find(|&d| format!("{threshold:.d$}").parse::<f64>() == Ok(threshold))
+        .unwrap_or(MAX_DECIMALS)
+}
+
+/// `value` with `decimals` decimals, rounded the way the web client's
+/// `toFixed` rounds: to the nearest, halves away from zero, on the exact
+/// value of the float (Rust's `{:.N}` rounds exact halves to even, so
+/// `0.125` would print `0.12` here and `0.13` in the browser). Never `-0.00`.
+/// `NaN` and infinities print as `NaN`, `inf` and `-inf`.
+pub fn format_number(value: f64, decimals: usize) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    // The exact decimal expansion, far past any digit that could matter:
+    // a tie at digit `decimals + 1` is then a 5 followed only by zeros.
+    let long = format!("{:.*}", decimals + 40, value.abs());
+    let (int_part, frac_part) = long.split_once('.').unwrap_or((&long, ""));
+    let mut digits: Vec<u8> = int_part
+        .bytes()
+        .chain(frac_part.bytes().take(decimals))
+        .collect();
+    if frac_part
+        .as_bytes()
+        .get(decimals)
+        .is_some_and(|&d| d >= b'5')
+    {
+        let mut i = digits.len();
+        loop {
+            if i == 0 {
+                digits.insert(0, b'1');
+                break;
+            }
+            i -= 1;
+            if digits[i] == b'9' {
+                digits[i] = b'0';
+            } else {
+                digits[i] += 1;
+                break;
+            }
+        }
+    }
+    let int_len = digits.len() - decimals;
+    let mut out = String::with_capacity(digits.len() + 2);
+    if value < 0.0 && digits.iter().any(|&d| d != b'0') {
+        out.push('-');
+    }
+    out.push_str(std::str::from_utf8(&digits[..int_len]).unwrap_or("0"));
+    if decimals > 0 {
+        out.push('.');
+        out.push_str(std::str::from_utf8(&digits[int_len..]).unwrap_or(""));
+    }
+    out
+}
+
+/// `value` rounded to the tag's decimals, for channels that carry a number
+/// (webhooks, chat). The same rounding as [`format_reading`], so the number
+/// and the text never disagree.
+pub fn round_to_decimals(value: f64, decimals: i64) -> f64 {
+    format_number(value, shown_decimals(decimals))
+        .parse()
+        .unwrap_or(value)
+}
+
+/// [`round_to_decimals`] for an alarm limit: with the decimals
+/// [`format_limit`] shows it with.
+pub fn round_limit(threshold: f64, decimals: i64) -> f64 {
+    format_number(threshold, limit_decimals(threshold, decimals))
+        .parse()
+        .unwrap_or(threshold)
+}
+
+fn with_unit(number: String, unit: &str) -> String {
+    let unit = unit.trim();
+    if unit.is_empty() {
+        number
+    } else if unit.starts_with('%') || unit.starts_with('\u{b0}') {
+        format!("{number}{unit}")
+    } else {
+        format!("{number} {unit}")
+    }
+}
+
+/// `value` with the tag's decimals and unit, e.g. `2.60 m` or `85.0%`.
+pub fn format_reading(value: f64, decimals: i64, unit: &str) -> String {
+    with_unit(format_number(value, shown_decimals(decimals)), unit)
+}
+
+/// An alarm limit with its unit, with at least the tag's decimals and as
+/// many more as the limit needs (up to 6).
+pub fn format_limit(threshold: f64, decimals: i64, unit: &str) -> String {
+    with_unit(
+        format_number(threshold, limit_decimals(threshold, decimals)),
+        unit,
+    )
+}
+
+/// The text of an alarm raised on `ds`: its value and the limit it crossed,
+/// both with the tag's decimals and unit.
+pub fn alarm_message(
+    ds: &DataSource,
+    severity: &str,
+    alarm_type: &str,
+    value: f64,
+    threshold: f64,
+) -> String {
+    let reading = format_reading(value, ds.decimals, &ds.unit);
+    let limit = format_limit(threshold, ds.decimals, &ds.unit);
+    if alarm_type == "low" {
+        format!("{} dropped to {reading} ({severity} low: {limit})", ds.name)
+    } else {
+        format!("{} reached {reading} ({severity}: {limit})", ds.name)
+    }
+}
+
+/// An unresolved alarm raised by limit evaluation: what is needed to tell
+/// whether the limit it was raised on still exists.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActiveLimitAlarm {
+    pub id: i64,
+    pub source_key: String,
+    /// "warning" or "critical".
+    pub severity: String,
+    /// "high" or "low".
+    pub alarm_type: String,
+    /// The limit the alarm was raised on.
+    pub threshold: f64,
+    /// The deadband stored with the alarm when it was raised.
+    pub deadband: f64,
+}
+
+/// Why an active limit alarm is resolved although its value never came back
+/// inside the limit it was raised on.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StaleAlarm {
+    pub alarm_id: i64,
+    /// `limit_removed`, `limit_changed`, `tag_deleted` or `not_alarmed`.
+    pub reason: &'static str,
+    /// What happened, for the alarm's audit trail.
+    pub message: String,
+    /// The tag's value when it was judged, if it had a good one.
+    pub value: Option<f64>,
+}
+
+/// The limit of `thresholds` an alarm of this direction and severity is
+/// raised on. `Err` for a severity limit evaluation never raises.
+fn limit_for(thresholds: &Thresholds, alarm_type: &str, severity: &str) -> Result<Option<f64>, ()> {
+    match (alarm_type, severity) {
+        ("high", "critical") => Ok(thresholds.high_crit),
+        ("high", "warning") => Ok(thresholds.high_warn),
+        ("low", "critical") => Ok(thresholds.low_crit),
+        ("low", "warning") => Ok(thresholds.low_warn),
+        _ => Err(()),
+    }
+}
+
+/// The active limit alarms whose condition no longer exists because the tag
+/// changed, not its value: the limit was removed (or disabled), moved past
+/// the current value, or the tag was deleted or no longer reads a device.
+/// Alarms whose limit is unchanged are left to normal evaluation, which
+/// clears them with deadband hysteresis once the value is back.
+///
+/// A removed limit or a deleted tag clears the alarm whatever the tag's
+/// value; a changed limit needs a good value inside the new limit (with the
+/// deadband stored on the alarm) to clear it. On a tag with an off delay
+/// (ISA-18.2), the value must stay inside the changed limit for that long:
+/// `inside_since` keeps, per alarm id, when it was first seen inside (Unix
+/// seconds, `now` is the current time); an alarm whose value went back out
+/// loses its entry, so a noisy value at the new limit does not clear and
+/// re-raise the alarm on every pass.
+pub fn stale_alarms(
+    active: &[ActiveLimitAlarm],
+    sources: &[DataSource],
+    snapshots: &[DeviceSnapshot],
+    inside_since: &mut HashMap<i64, i64>,
+    now: i64,
+) -> Vec<StaleAlarm> {
+    let mut by_key: HashMap<&str, Vec<&DataSource>> = HashMap::new();
+    for ds in sources {
+        by_key.entry(ds.key.as_str()).or_default().push(ds);
+    }
+    let mut still_inside = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for alarm in active {
+        let same_key: &[&DataSource] = by_key
+            .get(alarm.source_key.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let tags: Vec<&DataSource> = same_key
+            .iter()
+            .copied()
+            .filter(|ds| is_device_source_type(&ds.source_type))
+            .collect();
+        let stale = |reason, message: String, value| StaleAlarm {
+            alarm_id: alarm.id,
+            reason,
+            message,
+            value,
+        };
+        let Some(first) = tags.first() else {
+            out.push(if same_key.is_empty() {
+                stale(
+                    "tag_deleted",
+                    format!("Tag {} was deleted", alarm.source_key),
+                    None,
+                )
+            } else {
+                stale(
+                    "not_alarmed",
+                    format!(
+                        "{} is no longer read from a device, so it raises no limit alarms",
+                        same_key[0].name
+                    ),
+                    None,
+                )
+            });
+            continue;
+        };
+        let direction = if alarm.alarm_type == "low" {
+            "low"
+        } else {
+            "high"
+        };
+        let label = format!("{direction} {} limit", alarm.severity);
+        let was = format_limit(alarm.threshold, first.decimals, &first.unit);
+        // Alarms are keyed by tag key only; with several device tags sharing a
+        // key, a limit still exists while any of them has it.
+        let mut limits = Vec::new();
+        let mut known = true;
+        for tag in &tags {
+            match limit_for(&Thresholds::of(tag), &alarm.alarm_type, &alarm.severity) {
+                Ok(limit) => limits.push(limit),
+                Err(()) => known = false,
+            }
+        }
+        if !known {
+            continue;
+        }
+        if limits.iter().all(Option::is_none) {
+            out.push(stale(
+                "limit_removed",
+                format!("{}: {label} removed (was {was})", first.name),
+                alarmable(resolve(first, snapshots)),
+            ));
+            continue;
+        }
+        let [tag] = tags.as_slice() else { continue };
+        let Some(Some(limit)) = limits.first().copied() else {
+            continue;
+        };
+        if limit == alarm.threshold {
+            continue;
+        }
+        let Some(value) = alarmable(resolve(tag, snapshots)) else {
+            continue;
+        };
+        let cleared = if direction == "low" {
+            value > limit + alarm.deadband
+        } else {
+            value < limit - alarm.deadband
+        };
+        if !cleared {
+            continue;
+        }
+        let off_delay = tag.off_delay_secs.max(0);
+        if off_delay > 0 {
+            still_inside.insert(alarm.id);
+            let since = *inside_since.entry(alarm.id).or_insert(now);
+            if now - since < off_delay {
+                continue;
+            }
+        }
+        out.push(stale(
+            "limit_changed",
+            format!(
+                "{}: {label} changed from {was} to {}; {} is inside it",
+                tag.name,
+                format_limit(limit, tag.decimals, &tag.unit),
+                format_reading(value, tag.decimals, &tag.unit)
+            ),
+            Some(value),
+        ));
+    }
+    inside_since
+        .retain(|id, _| still_inside.contains(id) && !out.iter().any(|s| s.alarm_id == *id));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alarm_messages_use_the_tag_decimals_and_unit() {
+        let mut tag = ds("wtp.filter1_headloss", 2.2, 2.6, serde_json::json!({}));
+        tag.name = "Filter F-301 Headloss".into();
+        tag.unit = "m".into();
+        tag.decimals = 2;
+        assert_eq!(
+            alarm_message(&tag, "critical", "high", 2.602250099182129, 2.6),
+            "Filter F-301 Headloss reached 2.60 m (critical: 2.60 m)"
+        );
+        tag.unit = "%".into();
+        tag.decimals = 1;
+        assert_eq!(
+            alarm_message(&tag, "warning", "low", 19.94999, 20.0),
+            "Filter F-301 Headloss dropped to 19.9% (warning low: 20.0%)"
+        );
+        tag.unit = String::new();
+        tag.decimals = 0;
+        assert_eq!(
+            alarm_message(&tag, "critical", "high", 1.0, 1.0),
+            "Filter F-301 Headloss reached 1 (critical: 1)"
+        );
+    }
+
+    #[test]
+    fn readings_round_to_sane_decimals() {
+        assert_eq!(
+            format_reading(2.602250099182129, 99, "mg/L"),
+            "2.602250 mg/L"
+        );
+        assert_eq!(format_reading(2.6, -3, "\u{b0}C"), "3\u{b0}C");
+        assert_eq!(round_to_decimals(2.602250099182129, 2), 2.6);
+        assert_eq!(round_to_decimals(1234.5678, 1), 1234.6);
+        assert_eq!(round_to_decimals(f64::MAX, 6), f64::MAX);
+    }
+
+    #[test]
+    fn halves_round_away_from_zero_like_the_browser() {
+        // Exact binary halves: `{:.N}` would give 2, 0.12, -2 (half to even).
+        assert_eq!(format_number(2.5, 0), "3");
+        assert_eq!(format_number(0.125, 2), "0.13");
+        assert_eq!(format_number(-2.5, 0), "-3");
+        assert_eq!(format_number(9.995, 2), "9.99"); // 9.99499999... in binary
+        assert_eq!(format_number(99.95, 1), "100.0"); // 99.950000000000003
+        assert_eq!(format_number(999.5, 0), "1000");
+        assert_eq!(round_to_decimals(0.125, 2), 0.13);
+    }
+
+    #[test]
+    fn negative_readings_and_negative_zero() {
+        assert_eq!(format_reading(-12.345, 1, "\u{b0}C"), "-12.3\u{b0}C");
+        assert_eq!(format_reading(-0.001, 2, "bar"), "0.00 bar");
+        assert_eq!(format_reading(-0.0, 1, ""), "0.0");
+        assert_eq!(format_number(-0.4, 0), "0");
+        assert_eq!(round_to_decimals(-0.001, 2).to_string(), "0");
+        let mut tag = ds("t", -5.0, -10.0, serde_json::json!({}));
+        tag.unit = "\u{b0}C".into();
+        tag.decimals = 1;
+        assert_eq!(
+            alarm_message(&tag, "critical", "low", -10.04, -10.0),
+            "t dropped to -10.0\u{b0}C (critical low: -10.0\u{b0}C)"
+        );
+    }
+
+    #[test]
+    fn non_finite_readings_do_not_panic() {
+        assert_eq!(format_reading(f64::NAN, 2, "m"), "NaN m");
+        assert_eq!(format_reading(f64::INFINITY, 2, ""), "inf");
+        assert_eq!(format_limit(f64::NEG_INFINITY, 2, "%"), "-inf%");
+        assert!(round_to_decimals(f64::NAN, 2).is_nan());
+        assert_eq!(round_limit(f64::INFINITY, 1), f64::INFINITY);
+        let mut tag = ds("t", 1.0, 2.0, serde_json::json!({}));
+        tag.decimals = 1;
+        assert_eq!(
+            alarm_message(&tag, "warning", "high", f64::NAN, 1.0),
+            "t reached NaN (warning: 1.0)"
+        );
+    }
+
+    #[test]
+    fn limits_finer_than_the_tag_decimals_keep_their_digits() {
+        let mut tag = ds("ph", 0.5, 0.05, serde_json::json!({}));
+        tag.decimals = 0;
+        assert_eq!(
+            alarm_message(&tag, "warning", "high", 0.7, 0.5),
+            "ph reached 1 (warning: 0.5)"
+        );
+        tag.decimals = 1;
+        assert_eq!(
+            alarm_message(&tag, "critical", "low", 0.04, 0.05),
+            "ph dropped to 0.0 (critical low: 0.05)"
+        );
+        // A limit never prints more than six decimals, nor fewer than the tag's.
+        assert_eq!(format_limit(0.1 + 0.2, 1, ""), "0.300000");
+        assert_eq!(format_limit(2.0, 2, "m"), "2.00 m");
+        assert_eq!(round_limit(0.05, 1), 0.05);
+    }
 
     fn ds(key: &str, warn: f64, crit: f64, cfg: serde_json::Value) -> DataSource {
         serde_json::from_value(serde_json::json!({
@@ -472,5 +875,170 @@ mod tests {
             cache_location(&tag),
             Some(("enip_4".to_string(), "Count".to_string()))
         );
+    }
+
+    fn active(id: i64, severity: &str, alarm_type: &str, threshold: f64) -> ActiveLimitAlarm {
+        ActiveLimitAlarm {
+            id,
+            source_key: "plc.flow".into(),
+            severity: severity.into(),
+            alarm_type: alarm_type.into(),
+            threshold,
+            deadband: 0.0,
+        }
+    }
+
+    /// [`stale_alarms`] for tags without an off delay.
+    fn stale_now(
+        active: &[ActiveLimitAlarm],
+        sources: &[DataSource],
+        snapshots: &[DeviceSnapshot],
+    ) -> Vec<StaleAlarm> {
+        stale_alarms(active, sources, snapshots, &mut HashMap::new(), 0)
+    }
+
+    fn flow_tag(warn: f64, crit: f64, cfg: serde_json::Value) -> DataSource {
+        let mut tag = ds("plc.flow", warn, crit, cfg);
+        tag.name = "Intake Flow".into();
+        tag.unit = "m³/h".into();
+        tag.decimals = 0;
+        tag
+    }
+
+    #[test]
+    fn a_removed_limit_clears_its_alarm_whatever_the_value() {
+        let alarms = [active(7, "critical", "high", 90.0)];
+        let tag = flow_tag(0.0, 0.0, serde_json::json!({}));
+        let snaps = [snap(&[("flow", 1178.0)], &[], true)];
+        let stale = stale_now(&alarms, std::slice::from_ref(&tag), &snaps);
+        assert_eq!(
+            stale,
+            vec![StaleAlarm {
+                alarm_id: 7,
+                reason: "limit_removed",
+                message: "Intake Flow: high critical limit removed (was 90 m³/h)".into(),
+                value: Some(1178.0),
+            }]
+        );
+        // No good value (device offline) does not keep it: the limit is gone.
+        let offline = [snap(&[("flow", 1178.0)], &[], false)];
+        let stale = stale_now(&alarms, std::slice::from_ref(&tag), &offline);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].value, None);
+        // Switched off with the enabled flag counts as removed too.
+        let disabled = flow_tag(0.0, 90.0, serde_json::json!({"crit_enabled": false}));
+        assert_eq!(
+            stale_now(&alarms, &[disabled], &snaps)[0].reason,
+            "limit_removed"
+        );
+    }
+
+    #[test]
+    fn a_removed_low_limit_clears_its_alarm() {
+        let alarms = [active(3, "warning", "low", 20.0)];
+        let tag = flow_tag(0.0, 0.0, serde_json::json!({"low_crit": 10.0}));
+        let stale = stale_now(&alarms, &[tag], &[snap(&[("flow", 15.0)], &[], true)]);
+        assert_eq!(stale[0].reason, "limit_removed");
+        assert_eq!(
+            stale[0].message,
+            "Intake Flow: low warning limit removed (was 20 m³/h)"
+        );
+    }
+
+    #[test]
+    fn a_limit_raised_above_the_value_clears_its_alarm() {
+        let alarms = [active(7, "critical", "high", 90.0)];
+        let snaps = [snap(&[("flow", 1178.0)], &[], true)];
+        let raised = flow_tag(0.0, 2000.0, serde_json::json!({}));
+        let stale = stale_now(&alarms, &[raised], &snaps);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].reason, "limit_changed");
+        assert_eq!(
+            stale[0].message,
+            "Intake Flow: high critical limit changed from 90 m³/h to 2000 m³/h; 1178 m³/h is inside it"
+        );
+        // Raised, but the value is still over it: the alarm stays.
+        let still_over = flow_tag(0.0, 1000.0, serde_json::json!({}));
+        assert!(stale_now(&alarms, &[still_over], &snaps).is_empty());
+        // Inside the new limit but not by the alarm's deadband: it stays. The
+        // deadband stored with the alarm counts, not the tag's current one.
+        let mut banded = alarms.clone();
+        banded[0].deadband = 5.0;
+        let in_band = flow_tag(0.0, 1180.0, serde_json::json!({}));
+        assert!(stale_now(&banded, &[in_band], &snaps).is_empty());
+        let tag_band_only = flow_tag(0.0, 1180.0, serde_json::json!({"deadband": 5.0}));
+        assert_eq!(stale_now(&alarms, &[tag_band_only], &snaps).len(), 1);
+        // Without a good value a changed limit is not judged.
+        let raised = flow_tag(0.0, 2000.0, serde_json::json!({}));
+        let bad = [snap(&[("flow", 1178.0)], &[("flow", Quality::Bad)], true)];
+        assert!(stale_now(&alarms, &[raised], &bad).is_empty());
+    }
+
+    #[test]
+    fn a_lowered_low_limit_clears_its_alarm() {
+        let alarms = [active(4, "critical", "low", 10.0)];
+        let tag = flow_tag(0.0, 0.0, serde_json::json!({"low_crit": 5.0}));
+        let stale = stale_now(&alarms, &[tag], &[snap(&[("flow", 8.0)], &[], true)]);
+        assert_eq!(stale[0].reason, "limit_changed");
+    }
+
+    #[test]
+    fn an_unchanged_limit_is_left_to_normal_evaluation() {
+        let alarms = [active(7, "critical", "high", 90.0)];
+        let tag = flow_tag(0.0, 90.0, serde_json::json!({}));
+        let snaps = [snap(&[("flow", 50.0)], &[], true)];
+        assert!(stale_now(&alarms, &[tag], &snaps).is_empty());
+    }
+
+    #[test]
+    fn a_deleted_or_unpolled_tag_clears_its_alarms() {
+        let alarms = [active(7, "warning", "high", 80.0)];
+        let stale = stale_now(&alarms, &[], &[]);
+        assert_eq!(stale[0].reason, "tag_deleted");
+        assert_eq!(stale[0].message, "Tag plc.flow was deleted");
+
+        let mut simulated = flow_tag(80.0, 90.0, serde_json::json!({}));
+        simulated.source_type = "random_walk".into();
+        let stale = stale_now(&alarms, &[simulated], &[]);
+        assert_eq!(stale[0].reason, "not_alarmed");
+    }
+
+    #[test]
+    fn a_limit_kept_by_another_tag_with_the_same_key_keeps_the_alarm() {
+        let alarms = [active(7, "critical", "high", 90.0)];
+        let without = flow_tag(0.0, 0.0, serde_json::json!({}));
+        let mut with = flow_tag(0.0, 90.0, serde_json::json!({}));
+        with.id = 2;
+        let snaps = [snap(&[("flow", 1178.0)], &[], true)];
+        assert!(stale_now(&alarms, &[without, with], &snaps).is_empty());
+    }
+
+    #[test]
+    fn a_changed_limit_waits_for_the_off_delay() {
+        let alarms = [active(7, "critical", "high", 90.0)];
+        let mut tag = flow_tag(0.0, 1180.0, serde_json::json!({}));
+        tag.off_delay_secs = 30;
+        let inside = [snap(&[("flow", 1178.0)], &[], true)];
+        let outside = [snap(&[("flow", 1181.0)], &[], true)];
+        let mut since = HashMap::new();
+        let tags = std::slice::from_ref(&tag);
+        // Just inside the raised limit: the delay starts, nothing clears yet.
+        assert!(stale_alarms(&alarms, tags, &inside, &mut since, 100).is_empty());
+        assert!(stale_alarms(&alarms, tags, &inside, &mut since, 120).is_empty());
+        // Noise takes it back over the limit: the delay starts again.
+        assert!(stale_alarms(&alarms, tags, &outside, &mut since, 125).is_empty());
+        assert!(since.is_empty());
+        assert!(stale_alarms(&alarms, tags, &inside, &mut since, 130).is_empty());
+        assert!(stale_alarms(&alarms, tags, &inside, &mut since, 159).is_empty());
+        // Inside for the whole off delay: it clears, and its entry goes.
+        let stale = stale_alarms(&alarms, tags, &inside, &mut since, 160);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].reason, "limit_changed");
+        assert!(since.is_empty());
+        // A removed limit still clears at once, delay or not.
+        let mut removed = flow_tag(0.0, 0.0, serde_json::json!({}));
+        removed.off_delay_secs = 30;
+        let stale = stale_alarms(&alarms, &[removed], &inside, &mut since, 200);
+        assert_eq!(stale[0].reason, "limit_removed");
     }
 }

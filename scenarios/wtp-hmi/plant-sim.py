@@ -14,6 +14,18 @@ write puts that tag in manual until it is written again. Setpoints (SETPOINTS)
 are writable too: a write is clamped to the setpoint's range and the process
 follows it (cl2_dose_sp sets the hypochlorite dose, so the chlorine residual
 drifts towards the new level over a few minutes).
+
+The same port also serves, read-only:
+- the four vertical demo sites from verticals.py (solar, genset, energy meters,
+  booster pumps), each in its own float32 block at 1000, 2000, 3000 and 4000;
+- the solar site's Victron ESS the way a Cerbo GX does: unit IDs 100 (system),
+  227 (VE.Bus) and 225 (BMS), int16/uint16 registers at Victron's addresses;
+- the Mitsubishi iQ-R labeller of the packaging line (line.py) at D5000.
+Other than the Victron unit IDs, the unit id is ignored.
+
+The packaging line's other PLCs speak their own protocols on their own ports:
+S7 for the S7-1500 filler (--s7-filler, 5102) and the S7-1200 case packer
+(--s7-packer, 5103), EtherNet/IP for the Omron NJ capper (--enip, 5144).
 """
 import argparse
 import asyncio
@@ -21,6 +33,9 @@ import math
 import random
 import struct
 import time
+
+import line as packaging
+from verticals import DEVICES as VERTICAL_DEVICES, Verticals, gx_words
 
 TAGS = [
     # Intake
@@ -66,6 +81,8 @@ class Plant:
                  energy_kwh=184_220.0, fcv201_pos=46.0, p301a_speed=48.5, chlorine_residual=1.15,
                  cl2_dose_sp=1.7)
         self.backwash_left = [0.0, 0.0, 0.0]
+        self.vert = Verticals()
+        self.line = packaging.Line()
 
     def cmd(self, name: str, auto: float) -> float:
         return self.manual.get(name, auto)
@@ -164,25 +181,46 @@ class Plant:
         v['bus_voltage'] = 400 + 3 * math.sin(t / 50) + n(0.4)
         v['power_factor'] = 0.93 + 0.02 * math.sin(t / 120) + n(0.002)
 
-    def registers(self) -> list[int]:
-        words = []
-        for name in TAGS:
-            words.extend(struct.unpack('>HH', struct.pack('>f', self.v[name])))
-        return words
+        self.vert.step(DT)
+        self.line.step(DT)
+
+    def read(self, addr: int, qty: int, unit: int = 1) -> list[int] | None:
+        """Words for a read that falls inside one block (the WTP at 0, one vertical site, a Victron service or the
+        Mitsubishi PLC), else None. Gaps inside a Victron or Mitsubishi block read as 0."""
+        for words in (gx_words(unit, self.vert.v), packaging.melsec_words(self.line.v) if unit not in (100, 225, 227) else None):
+            if words:
+                lo, hi = min(words), max(words)
+                if lo <= addr and addr + qty - 1 <= hi:
+                    return [words.get(a, 0) for a in range(addr, addr + qty)]
+                if unit in (100, 225, 227):
+                    return None
+        for base, names, values in self.blocks():
+            if base <= addr and addr + qty <= base + 2 * len(names):
+                first, last = (addr - base) // 2, (addr + qty - base - 1) // 2
+                words = []
+                for name in names[first:last + 1]:
+                    words.extend(struct.unpack('>HH', struct.pack('>f', values[name])))
+                skip = (addr - base) % 2
+                return words[skip:skip + qty]
+        return None
+
+    def blocks(self):
+        yield 0, TAGS, self.v
+        for d in VERTICAL_DEVICES.values():
+            yield d['base'], d['tags'], self.vert.v
 
 
 def clamp(x, lo, hi):
     return max(lo, min(hi, x))
 
 
-def handle_pdu(plant: Plant, pdu: bytes) -> bytes:
+def handle_pdu(plant: Plant, pdu: bytes, unit: int = 1) -> bytes:
     fc = pdu[0]
-    regs = plant.registers()
     if fc in (3, 4):
         addr, qty = struct.unpack('>HH', pdu[1:5])
-        if qty < 1 or addr + qty > len(regs):
+        data = plant.read(addr, qty, unit) if 1 <= qty <= 125 else None
+        if data is None:
             return bytes([fc | 0x80, 2])
-        data = regs[addr:addr + qty]
         return bytes([fc, qty * 2]) + struct.pack(f'>{qty}H', *data)
     if fc == 6:
         addr, word = struct.unpack('>HH', pdu[1:5])
@@ -210,7 +248,7 @@ async def serve(plant: Plant, reader: asyncio.StreamReader, writer: asyncio.Stre
             header = await reader.readexactly(7)
             tid, pid, length, uid = struct.unpack('>HHHB', header)
             pdu = await reader.readexactly(length - 1)
-            resp = handle_pdu(plant, pdu)
+            resp = handle_pdu(plant, pdu, uid)
             writer.write(struct.pack('>HHHB', tid, pid, len(resp) + 1, uid) + resp)
             await writer.drain()
     except (asyncio.IncompleteReadError, ConnectionError):
@@ -222,6 +260,9 @@ async def serve(plant: Plant, reader: asyncio.StreamReader, writer: asyncio.Stre
 async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--port', type=int, default=5030)
+    ap.add_argument('--s7-filler', type=int, default=5102, help='S7 port of the S7-1500 filler PLC')
+    ap.add_argument('--s7-packer', type=int, default=5103, help='S7 port of the S7-1200 case packer PLC')
+    ap.add_argument('--enip', type=int, default=5144, help='EtherNet/IP port of the Omron NJ capper PLC')
     args = ap.parse_args()
     plant = Plant()
 
@@ -232,8 +273,11 @@ async def main():
 
     server = await asyncio.start_server(lambda r, w: serve(plant, r, w), '127.0.0.1', args.port)
     print(f'WTP plant sim on 127.0.0.1:{args.port} — {len(TAGS)} float32 tags, holding regs 0..{len(TAGS) * 2 - 1}', flush=True)
+    for dev_id, d in VERTICAL_DEVICES.items():
+        print(f'  {dev_id}: {len(d["tags"])} tags at {d["base"]}..{d["base"] + 2 * len(d["tags"]) - 1}', flush=True)
     async with server:
-        await asyncio.gather(server.serve_forever(), ticker())
+        await asyncio.gather(server.serve_forever(), ticker(),
+                             packaging.serve_plcs(plant.line, '127.0.0.1', args.s7_filler, args.s7_packer, args.enip))
 
 
 if __name__ == '__main__':

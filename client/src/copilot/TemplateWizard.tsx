@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useAiTemplates, useGenerateFromTemplate } from '../queries/copilot'
+import { GenerationError } from './GenerationError'
 
 export function TemplateWizard({ onProposal }: { onProposal: () => void }) {
   const [industry, setIndustry] = useState<string>('')
@@ -16,6 +17,8 @@ export function TemplateWizard({ onProposal }: { onProposal: () => void }) {
     try {
       await gen.mutateAsync({ template_id: templateId, device_id: deviceId || undefined, prefix: prefix || undefined })
       onProposal()
+    } catch {
+      // Shown below from gen.error.
     } finally { setLoading(false) }
   }
 
@@ -34,8 +37,8 @@ export function TemplateWizard({ onProposal }: { onProposal: () => void }) {
       </div>
 
       <div>
-        <label style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Device ID (optional)</label>
-        <input type="text" value={deviceId} onChange={e => setDeviceId(e.target.value)} placeholder="Link to an existing device"
+        <label style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Modbus device ID</label>
+        <input type="text" value={deviceId} onChange={e => setDeviceId(e.target.value)} placeholder="The existing Modbus device the tags belong to"
           style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', boxSizing: 'border-box' }} />
       </div>
 
@@ -44,6 +47,8 @@ export function TemplateWizard({ onProposal }: { onProposal: () => void }) {
         <input type="text" value={prefix} onChange={e => setPrefix(e.target.value)} placeholder="e.g. PU-101"
           style={{ width: '100%', padding: '8px 12px', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', boxSizing: 'border-box' }} />
       </div>
+
+      <GenerationError error={gen.error} />
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {(templates || []).map(t => (
