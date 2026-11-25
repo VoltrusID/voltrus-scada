@@ -234,6 +234,50 @@ impl Storage {
         .context("Task join failed")?
     }
 
+    /// One alarm by id, `None` if there is no such alarm. `source_name` is
+    /// what is stored with the alarm, not looked up from its tag.
+    pub async fn get_alarm(&self, id: i64) -> Result<Option<Alarm>> {
+        use rusqlite::OptionalExtension;
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            conn.query_row(
+                "SELECT id, source_key, COALESCE(source_name, ''), severity, COALESCE(priority, severity), value, threshold, message,
+                        triggered_at, resolved_at, acknowledged_at, acknowledged_by, cooldown_until,
+                        shelved_until, shelved_by, shelved_reason, COALESCE(deadband, 0), COALESCE(state, 'active'), COALESCE(alarm_type, 'high')
+                 FROM alarms WHERE id = ?1",
+                rusqlite::params![id],
+                |row| {
+                    Ok(Alarm {
+                        id: row.get(0)?,
+                        source_key: row.get(1)?,
+                        source_name: row.get(2)?,
+                        severity: row.get(3)?,
+                        priority: row.get(4)?,
+                        value: row.get(5)?,
+                        threshold: row.get(6)?,
+                        message: row.get(7)?,
+                        triggered_at: row.get(8)?,
+                        resolved_at: row.get(9)?,
+                        acknowledged_at: row.get(10)?,
+                        acknowledged_by: row.get(11)?,
+                        cooldown_until: row.get(12)?,
+                        shelved_until: row.get(13)?,
+                        shelved_by: row.get(14)?,
+                        shelved_reason: row.get(15)?,
+                        deadband: row.get(16)?,
+                        state: row.get(17)?,
+                        alarm_type: row.get(18)?,
+                    })
+                },
+            )
+            .optional()
+            .context("Read alarm failed")
+        })
+        .await
+        .context("Task join failed")?
+    }
+
     /// Alarms raised in `[from, to)` (Unix seconds), newest first, with no row cap.
     pub async fn list_alarms_between(&self, from: i64, to: i64) -> Result<Vec<Alarm>> {
         let conn = self.conn.clone();

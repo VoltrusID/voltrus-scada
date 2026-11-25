@@ -7,6 +7,7 @@ fn community_has_no_addon_features() {
     assert!(!t.theme_full());
     assert!(!t.pdf_reporting());
     assert!(!t.chat_notifications());
+    assert!(!t.mobile_push());
     assert!(!t.multi_site());
     assert!(!t.sso());
     assert!(!t.sso_saml());
@@ -23,6 +24,7 @@ fn integrator_unlocks_branding_reports_and_hub_only() {
     assert!(t.theme_full());
     assert!(t.pdf_reporting());
     assert!(t.chat_notifications());
+    assert!(t.mobile_push());
     assert!(t.multi_site());
     assert!(!t.sso());
     assert!(!t.sso_saml());
@@ -36,7 +38,7 @@ fn integrator_unlocks_branding_reports_and_hub_only() {
 fn enterprise_unlocks_everything() {
     let t = LicenseTier::Enterprise;
     assert!(t.white_label() && t.theme_full() && t.pdf_reporting());
-    assert!(t.chat_notifications() && t.multi_site());
+    assert!(t.chat_notifications() && t.mobile_push() && t.multi_site());
     assert!(t.sso() && t.sso_saml() && t.cfr_part_11());
     assert!(t.iec_62443() && t.ha() && t.rtsp_video());
 }
@@ -90,6 +92,7 @@ fn feature_flags_have_exactly_the_documented_keys() {
             "chat_notifications",
             "ha",
             "iec_62443",
+            "mobile_push",
             "multi_site",
             "pdf_reporting",
             "rtsp_video",

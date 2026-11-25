@@ -29,6 +29,7 @@ mod login_lockout;
 mod login_rate_limit;
 #[cfg(feature = "mcp")]
 mod mcp;
+mod mobile;
 mod mqtt_broker;
 mod naming_convention;
 mod notifications;

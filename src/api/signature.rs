@@ -256,6 +256,7 @@ pub async fn authorize_requirement(
             ActionOrigin::ApiKey => "an API key",
             ActionOrigin::Mcp => "an MCP client",
             ActionOrigin::Flow => "a flow",
+            ActionOrigin::Mobile => "the phone app",
             _ => "this client",
         };
         return Err(SignatureError::NotPossible(format!(

@@ -67,6 +67,14 @@ impl LicenseTier {
         self.integrator_or_above()
     }
 
+    /// Alarm push to the Voltrus SCADA phone app through the Voltrus push
+    /// relay, which also lets a paired phone reach the site from outside its
+    /// network. Without it the app still works read-only on the site's own
+    /// network.
+    pub fn mobile_push(&self) -> bool {
+        self.integrator_or_above()
+    }
+
     /// Multi-site hub.
     pub fn multi_site(&self) -> bool {
         self.integrator_or_above()
@@ -112,6 +120,7 @@ impl LicenseTier {
             "theme_full": self.theme_full(),
             "pdf_reporting": self.pdf_reporting(),
             "chat_notifications": self.chat_notifications(),
+            "mobile_push": self.mobile_push(),
             "multi_site": self.multi_site(),
             "sso": self.sso(),
             "sso_saml": self.sso_saml(),
