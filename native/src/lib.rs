@@ -22,9 +22,13 @@
 //! - [`mimic`]: HMI mimic screens: the server's SCADA rows, the editable
 //!   screen model, the symbol library's geometry, live states, connection
 //!   routes and the faceplate's command rules.
+//! - [`designer`]: the Designer's document rules shared with the web
+//!   Designer: binding expressions, property bindings, its edits and the
+//!   rows it saves.
 //! - [`station`]: the local station (the server installed on this computer
 //!   as a service): its directory, its credential and its setup commands.
 pub mod api;
+pub mod designer;
 pub mod device_file;
 pub mod mimic;
 pub mod perf;

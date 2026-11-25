@@ -31,6 +31,7 @@
 
 mod inspector;
 mod palette;
+mod panes;
 mod stage;
 
 use std::rc::Rc;
@@ -44,6 +45,7 @@ use gpui::{
 };
 use serde::de::IgnoredAny;
 use voltrus_scada_native::api::Method;
+use voltrus_scada_native::designer;
 use voltrus_scada_native::mimic::edit::{
     self, Clip, Edit, Guide, Handle, History, PASTE_OFFSET, Placing, Rect, Snapping,
 };
@@ -94,6 +96,9 @@ actions!(
         MimicEditFind,
         MimicEditNext,
         MimicEditPrevious,
+        DesignerProject,
+        DesignerTags,
+        DesignerComponents,
     ]
 );
 
@@ -103,7 +108,7 @@ actions!(
 pub struct MimicEditNudge(pub i32, pub i32);
 
 /// The palette's width (`PANEL_WIDTH`).
-const PALETTE_WIDTH: Pixels = px(252.0);
+const PALETTE_WIDTH: Pixels = px(288.0);
 /// The inspector's width (`INSPECTOR_WIDTH`).
 pub(crate) const INSPECTOR_WIDTH: Pixels = px(288.0);
 /// Window pixels around a handle that grab it.
@@ -134,6 +139,11 @@ enum Slot {
     Width,
     Height,
     Config(&'static str),
+    /// `config.label`, for a type whose settings have none (the Designer
+    /// lists a label for every component).
+    Label,
+    /// The label's expression binding (`config.bindings.label`).
+    LabelExpr,
 }
 
 /// What the inspector's tag search binds.
@@ -223,6 +233,7 @@ enum Cmd {
     Grid,
     Find,
     Step(bool),
+    Pane(panes::Pane),
 }
 
 /// The edit mode asked for before the screen was in (`--edit`, E, the
@@ -230,6 +241,9 @@ enum Cmd {
 #[derive(Default)]
 pub(crate) struct Launch {
     edit: bool,
+    /// `--screen` with `--page mimic`: its id or position (1 is the
+    /// overview), shown before editing.
+    screen: Option<String>,
     queued: Vec<Cmd>,
 }
 
@@ -269,6 +283,9 @@ pub(crate) struct Editor {
     window: Option<AnyWindowHandle>,
     query: Entity<TextInput>,
     tag_query: Entity<TextInput>,
+    /// The Designer's left column: its tab and the tag browser's search.
+    pane: panes::Pane,
+    tag_filter: Entity<TextInput>,
     picking: Option<Pick>,
     /// The inspector's fields and the widget they were made for.
     fields: Vec<(Slot, Entity<TextInput>)>,
@@ -323,8 +340,33 @@ pub(crate) fn editing(console: &Console) -> bool {
 }
 
 /// `--edit` with `--page mimic`: edit once the screen is in.
-pub(crate) fn launch(console: &mut Console, edit: bool) {
-    console.state::<Launch>().edit = edit;
+pub(crate) fn launch(console: &mut Console, edit: bool, screen: Option<String>) {
+    let launch = console.state::<Launch>();
+    launch.edit = edit;
+    launch.screen = screen;
+}
+
+/// Show the `--screen` asked for, once the screen list is in.
+fn launch_screen(console: &mut Console) {
+    let Some(screens) = console
+        .state_ref::<Screens>()
+        .filter(|screens| screens.listed)
+    else {
+        return;
+    };
+    let ids = screens.ids();
+    let Some(wanted) = console.state::<Launch>().screen.take() else {
+        return;
+    };
+    let target = wanted
+        .parse::<usize>()
+        .ok()
+        .and_then(|position| ids.get(position.checked_sub(1)?).cloned())
+        .or_else(|| ids.contains(&wanted).then_some(wanted));
+    if let Some(id) = target {
+        crate::console::screens::select(console, &id);
+        super::sync(console);
+    }
 }
 
 /// Enter the edit mode asked for, once the active screen's mimic is in
@@ -334,6 +376,17 @@ pub(super) fn launch_ready(console: &mut Console, window: &mut Window, cx: &mut 
         .state_ref::<Launch>()
         .is_some_and(|launch| launch.edit);
     if !wanted || console.page != Page::Mimic || console.phase != Phase::Console {
+        return;
+    }
+    if console
+        .state_ref::<Launch>()
+        .is_some_and(|launch| launch.screen.is_some())
+    {
+        // No REST from render: switch (and fetch) after this frame.
+        cx.defer_in(window, |console, _, cx| {
+            launch_screen(console);
+            cx.notify();
+        });
         return;
     }
     let screen = active(console);
@@ -363,6 +416,7 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
     };
     let query = cx.new(|cx| TextInput::new(cx).placeholder("Search symbols and widgets"));
     let tag_query = cx.new(|cx| TextInput::new(cx).placeholder("Find a tag by name or key"));
+    let tag_filter = cx.new(|cx| TextInput::new(cx).placeholder("Search tags"));
     let subscriptions = vec![
         cx.subscribe_in(
             &query,
@@ -395,6 +449,14 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
                 InputEvent::Blurred => {}
             },
         ),
+        cx.subscribe_in(
+            &tag_filter,
+            window,
+            |console, _, event: &InputEvent, window, cx| match event {
+                InputEvent::Cancelled => focus_stage(console, window, cx),
+                _ => cx.notify(),
+            },
+        ),
     ];
     let editor = Editor {
         screen,
@@ -422,6 +484,8 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
         window: Some(window.window_handle()),
         query,
         tag_query,
+        pane: panes::Pane::default(),
+        tag_filter,
         picking: None,
         fields: Vec::new(),
         fields_for: None,
@@ -679,7 +743,9 @@ fn save(console: &mut Console, after: Option<Leave>, cx: &mut Context<Console>) 
     }
     let screen = editor.screen.clone();
     let snapshot = editor.layout().clone();
-    let named = edit::named(&snapshot, |tag| {
+    // Named as the web Designer saves (`saveLayoutToAPI`): the label, the
+    // stored name, the primary tag's name, the type.
+    let named = designer::named(&snapshot, &|tag| {
         console.store.get(tag).map(|tag| tag.info.name.clone())
     });
     let (rows, lines) = mimic::to_rows(&named);
@@ -849,6 +915,15 @@ pub(crate) fn actions(root: Stateful<Div>, cx: &Context<Console>) -> Stateful<Di
     .on_action(cx.listener(|console, nudge: &MimicEditNudge, window, cx| {
         run(console, Cmd::Nudge(nudge.0, nudge.1), window, cx);
     }))
+    .on_action(cx.listener(|console, _: &DesignerProject, window, cx| {
+        run(console, Cmd::Pane(panes::Pane::Project), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerTags, window, cx| {
+        run(console, Cmd::Pane(panes::Pane::Tags), window, cx);
+    }))
+    .on_action(cx.listener(|console, _: &DesignerComponents, window, cx| {
+        run(console, Cmd::Pane(panes::Pane::Components), window, cx);
+    }))
 }
 
 fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Console>) {
@@ -870,6 +945,12 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
     }
     match cmd {
         Cmd::Save => save(console, None, cx),
+        Cmd::Pane(pane) => {
+            if let Some(editor) = edits(console) {
+                editor.pane = pane;
+            }
+            cx.notify();
+        }
         Cmd::Find => {
             if let Some(editor) = edits(console) {
                 let query = editor.query.clone();
@@ -1567,6 +1648,7 @@ pub(super) fn render(
     .size_full();
 
     let bar = toolbar(&theme, &screen, bar, console, cx);
+    let left = panes::render(console, AnyView::from(palette_view), window, cx);
     let stage_bg = anim::mix(theme.bg, hmi.stage, 0.35);
     let body = if loaded || !stale {
         div()
@@ -1604,6 +1686,9 @@ pub(super) fn render(
             )
             .on_drop(cx.listener(|console, placing: &Placing, window, cx| {
                 on_drop(console, *placing, window, cx);
+            }))
+            .on_drop(cx.listener(|console, tag: &panes::TagDrag, window, cx| {
+                panes::drop_tag(console, tag, window, cx);
             }))
             .child(stage_canvas)
             .when_some(connect_hint, |this, hint| {
@@ -1683,10 +1768,7 @@ pub(super) fn render(
                 .flex()
                 .flex_1()
                 .min_h_0()
-                .child(
-                    AnyView::from(palette_view)
-                        .cached(div().flex_none().w(PALETTE_WIDTH).h_full().style().clone()),
-                )
+                .child(div().flex_none().w(PALETTE_WIDTH).h_full().child(left))
                 .child(body)
                 .child(
                     AnyView::from(inspector_view).cached(
@@ -1878,7 +1960,7 @@ fn toolbar(
                 .text_size(FONT_CAPTION)
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme.accent)
-                .child("EDITING"),
+                .child("DESIGNER"),
         )
         .child(
             div()
@@ -1961,7 +2043,7 @@ fn toolbar(
             Button::new("mimic-edit-done", "Done")
                 .icon(Icon::Check)
                 .compact()
-                .tooltip("Leave edit mode  E")
+                .tooltip("Close the Designer  E")
                 .on_click(
                     cx.listener(|console, _, window, cx| run(console, Cmd::Toggle, window, cx)),
                 ),
@@ -1971,10 +2053,10 @@ fn toolbar(
 
 /// The bar's Edit button in the viewer (operators).
 pub(super) fn edit_button(cx: &mut Context<Console>) -> AnyElement {
-    Button::new("mimic-edit", "Edit")
+    Button::new("mimic-edit", "Designer")
         .icon(Icon::Pencil)
         .compact()
-        .tooltip("Edit the screen  E")
+        .tooltip("Open the screen in the Designer  E")
         .on_click(cx.listener(|console, _, window, cx| run(console, Cmd::Toggle, window, cx)))
         .into_any_element()
 }

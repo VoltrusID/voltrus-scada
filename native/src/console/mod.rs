@@ -640,6 +640,9 @@ impl Console {
         } else if launch.local_station {
             station::open(&mut console, cx);
         }
+        let mimic_screen = (launch.page == Some(Page::Mimic))
+            .then(|| launch.screen.clone())
+            .flatten();
         views::dashboard::launch(&mut console, launch.screen, launch.edit);
         if let Some(section) = launch.section.as_deref() {
             views::data_manager::launch(&mut console, section);
@@ -647,6 +650,7 @@ impl Console {
         views::mimic::editor::launch(
             &mut console,
             launch.edit && launch.page == Some(Page::Mimic),
+            mimic_screen,
         );
         shell::init(&mut console, launch.appearance, window, cx);
         console

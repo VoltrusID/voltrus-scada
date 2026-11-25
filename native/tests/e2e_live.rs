@@ -3065,3 +3065,102 @@ async fn live_data_manager_insights() {
         "the recipe is gone"
     );
 }
+
+/// The Designer's save through the live server: the WTP fixture rows with
+/// Designer edits (a move, a label, a primary tag rebind that drops the
+/// stored name, a label expression) saved as `designer::rows` writes them
+/// to a screen of its own, read back the same, and the screen deleted.
+#[tokio::test]
+async fn live_designer_save() {
+    use serde::de::IgnoredAny;
+    use voltrus_scada_native::api::Method;
+    use voltrus_scada_native::designer::{self, Binding};
+    use voltrus_scada_native::mimic::edit::{Edit, History};
+    use voltrus_scada_native::mimic::{
+        self, ConnectionRow, EquipmentRow, Items, connections_path, equipment_path,
+    };
+    use voltrus_scada_native::screens::Screen;
+    let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
+        eprintln!("skipping: VOLTRUS_E2E_URL not set");
+        return;
+    };
+    let user = std::env::var("VOLTRUS_E2E_USERNAME").unwrap_or_else(|_| "admin".into());
+    let pass = std::env::var("VOLTRUS_E2E_PASSWORD").expect("VOLTRUS_E2E_PASSWORD");
+    let mut api = VoltrusApi::new(&url);
+    api.login(&user, &pass).await.expect("sign in");
+
+    #[derive(serde::Deserialize)]
+    struct Fixture {
+        equipment: Vec<EquipmentRow>,
+        connections: Vec<ConnectionRow>,
+    }
+    let fixture: Fixture =
+        serde_json::from_str(include_str!("fixtures/designer/wtp-rows.json")).expect("fixture");
+    let mut history = History::new(mimic::parse(&fixture.equipment, &fixture.connections));
+    let widget = |h: &History, id: &str| h.present().widget(id).expect(id).clone();
+    let edits = [
+        Edit::Move(vec![("e012".into(), 200.0, 180.0)]),
+        designer::set_label(&widget(&history, "e011"), "XV-101 Intake"),
+        designer::bind_primary(&widget(&history, "e003"), Some(7)),
+    ];
+    for edit in &edits {
+        assert!(history.apply(edit, None));
+    }
+    let expr = Binding::Expr {
+        expr: "text({wtp/raw_tank_level}, 1) + \" %\"".into(),
+    };
+    let bound = designer::set_binding(&widget(&history, "e016"), "label", Some(&expr));
+    assert!(history.apply(&bound, None));
+    let name = |_: i64| Some("Tag seven".to_owned());
+    let (rows, lines) = designer::rows(history.present(), &name);
+
+    let created: Screen = api
+        .send_json(
+            Method::POST,
+            "/api/v1/screens",
+            &serde_json::json!({ "name": format!("Native designer e2e {}", std::process::id()) }),
+        )
+        .await
+        .expect("POST /screens");
+    api.send_json::<_, IgnoredAny>(
+        Method::PUT,
+        &equipment_path(&created.id),
+        &Items { items: rows },
+    )
+    .await
+    .expect("PUT scada-equipment");
+    api.send_json::<_, IgnoredAny>(
+        Method::PUT,
+        &connections_path(&created.id),
+        &Items { items: lines },
+    )
+    .await
+    .expect("PUT scada-connections");
+    let saved: Items<EquipmentRow> = api
+        .get_json(&equipment_path(&created.id))
+        .await
+        .expect("the saved equipment");
+    let saved_lines: Items<ConnectionRow> = api
+        .get_json(&connections_path(&created.id))
+        .await
+        .expect("the saved connections");
+    api.send_empty::<IgnoredAny>(Method::DELETE, &format!("/api/v1/screens/{}", created.id))
+        .await
+        .expect("DELETE /screens/{id}");
+    let back = mimic::parse(&saved.items, &saved_lines.items);
+    assert_eq!(
+        back,
+        designer::named(history.present(), &name),
+        "the Designer's save reads back unchanged"
+    );
+    let kpi = back.widget("e003").expect("e003");
+    assert_eq!(kpi.name, "Tag seven", "the name follows the new tag");
+    assert!(
+        designer::bindings::binding_of(&back.widget("e016").expect("e016").config, "label")
+            .is_some()
+    );
+    println!(
+        "designer save: {} rows read back unchanged",
+        back.widgets.len()
+    );
+}

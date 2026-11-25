@@ -10,6 +10,7 @@ use gpui::{
     AnyElement, Context, ElementId, Focusable, FontWeight, Hsla, SharedString, Window, div, px,
 };
 use serde_json::Value;
+use voltrus_scada_native::designer::{self, Binding, bindings, expr};
 use voltrus_scada_native::mimic::edit::{self, Edit, Field, FieldKind};
 use voltrus_scada_native::mimic::{self, Widget, WidgetKind};
 use vt_ui::Icon;
@@ -37,6 +38,11 @@ fn text_of(widget: &Widget, slot: Slot) -> String {
         Slot::Config(key) => field_of(widget, key)
             .map(|field| edit::value_text(&edit::field_value(widget, &field)))
             .unwrap_or_default(),
+        Slot::Label => widget.text("label").unwrap_or_default().to_owned(),
+        Slot::LabelExpr => match bindings::binding_of(&widget.config, "label") {
+            Some(Binding::Expr { expr }) => expr,
+            _ => String::new(),
+        },
     }
 }
 
@@ -101,6 +107,11 @@ fn make_fields(
             })
             .map(|field| Slot::Config(field.key)),
     );
+    // The Designer lists a label for every component, and its expression.
+    if field_of(widget, "label").is_none() {
+        slots.push(Slot::Label);
+    }
+    slots.push(Slot::LabelExpr);
     let mut fields = Vec::with_capacity(slots.len());
     let mut subscriptions = Vec::with_capacity(slots.len());
     for slot in slots {
@@ -137,7 +148,8 @@ fn is_numeric(widget: &Widget, slot: Slot) -> bool {
     match slot {
         Slot::Config(key) => field_of(widget, key)
             .is_some_and(|field| matches!(field.kind, FieldKind::Number { .. })),
-        _ => true,
+        Slot::Label | Slot::LabelExpr => false,
+        Slot::X | Slot::Y | Slot::Width | Slot::Height => true,
     }
 }
 
@@ -193,15 +205,28 @@ fn on_field(
     let text = field.read(cx).value().to_owned();
     match event {
         InputEvent::Changed if !numeric => {
-            if let Slot::Config(key) = slot {
-                let typed = Edit::Config {
-                    id: widget.id.clone(),
-                    key: key.to_owned(),
-                    value: Value::from(text),
-                };
-                let coalesce = format!("{}:{key}", widget.id);
-                apply(console, &typed, Some(coalesce.as_str()), window, cx);
-            }
+            let (typed, key) = match slot {
+                Slot::Config(key) => (
+                    Edit::Config {
+                        id: widget.id.clone(),
+                        key: key.to_owned(),
+                        value: Value::from(text),
+                    },
+                    key,
+                ),
+                Slot::Label => (designer::set_label(&widget, &text), "label"),
+                Slot::LabelExpr => {
+                    let binding =
+                        (!text.trim().is_empty()).then(|| Binding::Expr { expr: text.clone() });
+                    (
+                        designer::set_binding(&widget, "label", binding.as_ref()),
+                        "bindings.label",
+                    )
+                }
+                _ => return,
+            };
+            let coalesce = format!("{}:{key}", widget.id);
+            apply(console, &typed, Some(coalesce.as_str()), window, cx);
         }
         InputEvent::Submitted | InputEvent::Blurred if numeric => {
             match commit_number(&widget, slot, &text) {
@@ -228,6 +253,7 @@ fn on_field(
 fn commit_number(widget: &Widget, slot: Slot, text: &str) -> Option<Edit> {
     let kind = match slot {
         Slot::Config(key) => field_of(widget, key)?.kind,
+        Slot::Label | Slot::LabelExpr => return None,
         _ => FieldKind::Number {
             min: None,
             max: None,
@@ -252,6 +278,7 @@ fn commit_number(widget: &Widget, slot: Slot, text: &str) -> Option<Edit> {
             key: key.to_owned(),
             value: edit::number_value(value),
         },
+        Slot::Label | Slot::LabelExpr => return None,
     })
 }
 
@@ -300,10 +327,8 @@ fn pick(console: &mut Console, tag: i64, window: &mut Window, cx: &mut Context<C
         return;
     };
     let bound = match pick {
-        Pick::Primary => Edit::Bind {
-            id: widget.id,
-            tags: vec![tag],
-        },
+        // The saved name follows the new tag, as in the web Designer.
+        Pick::Primary => designer::bind_primary(&widget, Some(tag)),
         Pick::Add => {
             let mut tags = widget.tags.clone();
             if !tags.contains(&tag) {
@@ -854,10 +879,7 @@ fn widget_panel(
                 empty,
                 "primary",
                 Pick::Primary,
-                Some(Edit::Bind {
-                    id: widget.id.clone(),
-                    tags: Vec::new(),
-                }),
+                Some(designer::bind_primary(widget, None)),
                 theme,
                 cx,
             ));
@@ -986,6 +1008,12 @@ fn widget_panel(
         header(edit::title(widget), widget.id.clone(), theme),
         section("Tag binding", binding, theme, cx),
         section("Position & size", position, theme, cx),
+        section(
+            "Label & bindings",
+            label_panel(console, widget, theme, cx),
+            theme,
+            cx,
+        ),
     ];
     if !settings.is_empty() {
         panel.push(section("Appearance & behaviour", settings, theme, cx));
@@ -1160,4 +1188,151 @@ fn screen_panel(
         section("Build", vec![caption(build, theme)], theme, cx),
         section("Shortcuts", keys, theme, cx),
     ]
+}
+
+// ── The Designer's label and bindings ─────────────────────────────────────
+
+/// Value of a tag ref in the store (`device/key`), for a binding preview.
+fn store_reader(console: &Console) -> impl Fn(&str) -> Option<f64> + '_ {
+    move |reference: &str| {
+        console
+            .store
+            .tags
+            .iter()
+            .find(|tag| bindings::tag_ref(&tag.info.device_id, &tag.info.key) == reference)
+            .map(|tag| tag.value)
+            .filter(|value| value.is_finite())
+    }
+}
+
+/// The label, its expression (with the live result or the error), and the
+/// other bindings with their unbind buttons.
+fn label_panel(
+    console: &Console,
+    widget: &Widget,
+    theme: &Theme,
+    cx: &mut Context<Console>,
+) -> Vec<AnyElement> {
+    let Some(editor) = edits_ref(console) else {
+        return Vec::new();
+    };
+    let input = |slot: Slot| {
+        editor
+            .fields
+            .iter()
+            .find(|(at, _)| *at == slot)
+            .map(|(_, field)| field.clone())
+    };
+    let mut out = Vec::new();
+    if let Some(label) = input(Slot::Label) {
+        out.push(labelled("Label", label, theme));
+    }
+    if let Some(field) = input(Slot::LabelExpr) {
+        out.push(labelled("Label expression", field, theme));
+    }
+    let read = store_reader(console);
+    let known = |reference: &str| {
+        read(reference).is_some()
+            || console
+                .store
+                .tags
+                .iter()
+                .any(|tag| bindings::tag_ref(&tag.info.device_id, &tag.info.key) == reference)
+    };
+    let all = bindings::bindings_of(&widget.config);
+    let types = designer::prop_types(widget);
+    let mut cache = expr::Cache::default();
+    for (prop, binding) in &all {
+        let errors = bindings::binding_errors(binding, &known);
+        let kind = types.get(prop.as_str()).copied();
+        let result = bindings::evaluate_binding(binding, &read, kind, &mut cache);
+        let (text, color) = if let Some(error) = errors.first() {
+            (error.clone(), theme.danger)
+        } else {
+            match result {
+                Some(value) => (format!("= {}", edit::value_text(&value)), theme.success),
+                None => ("no value: the fixed value shows".to_owned(), theme.fg_dim),
+            }
+        };
+        let unbind = designer::set_binding(widget, prop, None);
+        out.push(
+            div()
+                .flex()
+                .items_start()
+                .gap(SPACE_3)
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .text_size(FONT_SMALL)
+                                .text_color(theme.fg_muted)
+                                .child(format!("{prop} ← {}", kind_name(binding))),
+                        )
+                        .child(
+                            div()
+                                .text_size(FONT_CAPTION)
+                                .font_family(MONO)
+                                .text_color(theme.fg)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(bindings::describe(binding)),
+                        )
+                        .child(
+                            div()
+                                .text_size(FONT_CAPTION)
+                                .font_family(MONO)
+                                .text_color(color)
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(text),
+                        ),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("designer-unbind-{prop}")), "×")
+                        .compact()
+                        .ghost()
+                        .tooltip("Unbind: the fixed value shows")
+                        .on_click(cx.listener(move |console, _, window, cx| {
+                            unbind_property(console, &unbind, window, cx);
+                        })),
+                )
+                .into_any_element(),
+        );
+    }
+    if all.is_empty() {
+        out.push(caption(
+            "Type an expression to bind the label, e.g. {wtp/raw_tank_level} > 85 ? \"HIGH\" : \"OK\". Other properties bound in the web Designer show here.",
+            theme,
+        ));
+    }
+    out
+}
+
+fn kind_name(binding: &Binding) -> &'static str {
+    match binding {
+        Binding::Tag { .. } => "tag",
+        Binding::Expr { .. } => "expression",
+        Binding::Map { .. } => "state map",
+    }
+}
+
+fn unbind_property(
+    console: &mut Console,
+    unbound: &Edit,
+    window: &mut Window,
+    cx: &mut Context<Console>,
+) {
+    apply(console, unbound, None, window, cx);
+    // The label expression's field shows the binding: it follows.
+    if let Some(editor) = edits(console) {
+        editor.fields_for = None;
+    }
+    sync(console, window, cx);
 }

@@ -1023,6 +1023,10 @@ pub enum Edit {
     },
     /// Rebind a widget's tags; the first is the primary one.
     Bind { id: String, tags: Vec<i64> },
+    /// Set the stored `equipment_name` (empty: the save names it). The
+    /// Designer clears it when the primary tag changes, as the web
+    /// Designer's `bindPrimaryPatch` does, so the saved name follows the tag.
+    Name { id: String, name: String },
     /// Change a connection's type.
     Line { id: String, kind: String },
     /// Bring widgets to the front or send them to the back, keeping their
@@ -1117,6 +1121,16 @@ impl Edit {
                     return false;
                 }
                 widget.tags.clone_from(tags);
+                true
+            }
+            Self::Name { id, name } => {
+                let Some(widget) = layout.widgets.iter_mut().find(|w| w.id == *id) else {
+                    return false;
+                };
+                if widget.name == *name {
+                    return false;
+                }
+                widget.name.clone_from(name);
                 true
             }
             Self::Line { id, kind } => {

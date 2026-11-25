@@ -34,7 +34,7 @@ mod scene;
 mod symbols;
 mod widgets;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
@@ -46,6 +46,7 @@ use gpui::{
     Hsla, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, ScrollDelta,
     ScrollWheelEvent, SharedString, WeakEntity, Window, actions, canvas, div, px,
 };
+use voltrus_scada_native::designer::{self, bindings, expr};
 use voltrus_scada_native::mimic::{
     self, Armed, Camera, ConnectionRow, Direction, EquipmentRow, Items, Layout, LineKind, Widget,
     WidgetKind, connections_path, equipment_path,
@@ -185,6 +186,8 @@ pub(crate) struct State {
     pending: Option<Pending>,
     /// The editor, in edit mode.
     edit: Option<Box<editor::Editor>>,
+    /// Parsed binding expressions, by text.
+    exprs: RefCell<expr::Cache>,
 }
 
 impl Default for State {
@@ -217,6 +220,7 @@ impl Default for State {
             window_height: 0.0,
             pending: None,
             edit: None,
+            exprs: RefCell::new(expr::Cache::default()),
         }
     }
 }
@@ -1088,6 +1092,22 @@ fn shown_multi(store: &crate::console::store::Store, widget: &Widget) -> Vec<i64
 /// A widget prepared for drawing.
 fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
     let store = &console.store;
+    // Designer bindings (`config.bindings`): the widget as its live values
+    // draw it, as the web's `applyBindings`.
+    let bound = if bindings::has_bindings(&widget.config) {
+        let read = |reference: &str| {
+            store
+                .tags
+                .iter()
+                .find(|tag| is_ref(reference, &tag.info.device_id, &tag.info.key))
+                .map(|tag| tag.value)
+                .filter(|value| value.is_finite())
+        };
+        designer::bound(widget, &read, &mut state.exprs.borrow_mut())
+    } else {
+        None
+    };
+    let widget = bound.as_ref().unwrap_or(widget);
     let samples = samples_for(widget);
     let primary = widget
         .tag()
@@ -1124,6 +1144,14 @@ fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
         cursor: state.cursor.as_deref() == Some(widget.id.as_str()),
         hovered: state.hover.as_deref() == Some(widget.id.as_str()),
     }
+}
+
+/// Whether `reference` is the ref `device/key` (no allocation per tag).
+fn is_ref(reference: &str, device: &str, key: &str) -> bool {
+    reference.len() == device.len() + 1 + key.len()
+        && reference.starts_with(device)
+        && reference.as_bytes()[device.len()] == b'/'
+        && reference.ends_with(key)
 }
 
 /// A connection to draw: its route on the stage and how.
@@ -1230,6 +1258,8 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                         || state.cursor.as_deref() == Some(w.id.as_str())
                 })
                 .map(|w| prepare(console, w, state))
+                // Hidden by the Designer's `visible` (fixed or bound).
+                .filter(|item| designer::visible(&item.widget))
                 .collect();
             let values = StoreValues(&console.store);
             let wires: Vec<Wire> = layout

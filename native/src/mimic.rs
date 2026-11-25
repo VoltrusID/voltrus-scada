@@ -419,6 +419,11 @@ pub fn parse(equipment: &[EquipmentRow], connections: &[ConnectionRow]) -> Layou
                 Ok(Value::Object(map)) => map,
                 _ => Map::new(),
             };
+            // Rows written by the API or a project file may carry the
+            // rotation only in its column (`loadLayoutFromAPI`).
+            if config.get("rotation").is_none_or(Value::is_null) && row.rotation != 0.0 {
+                config.insert("rotation".to_owned(), Value::from(row.rotation));
+            }
             #[allow(clippy::cast_precision_loss)]
             let z = config
                 .remove("z")
