@@ -4,7 +4,10 @@
 //! tools call), so it gets their validation and side effects: poller restart,
 //! naming convention, flow graph checks, flow engine reload. Each apply checks
 //! every item first and then writes; if a write still fails, the writes made
-//! before it are undone, so a proposal is applied whole or not at all.
+//! before it are undone, so a proposal is applied whole or not at all. When
+//! the undo fails as well, the error carries [`UndoFailed`] and the proposal
+//! is marked `failed` (see `proposals::apply_proposal`, which also marks a
+//! proposal `applying` for the length of the writes).
 
 use std::collections::HashSet;
 
@@ -243,6 +246,26 @@ async fn call<R: IntoResponse>(result: Result<R, AppError>) -> Result<Value, Ref
     Err(Refused { status, message })
 }
 
+/// Attached to an apply error when undoing the writes made before the
+/// failure failed too: the configuration may now hold part of the proposal.
+#[derive(Debug)]
+pub(crate) struct UndoFailed(pub Vec<String>);
+
+impl std::fmt::Display for UndoFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Undoing the changes made before the failure also failed, so part of the proposal may be in the configuration; check it ({})",
+            self.0.join("; ")
+        )
+    }
+}
+
+/// What could not be undone after a failed apply, if anything.
+pub(crate) fn undo_failures(err: &AppError) -> Option<&[String]> {
+    err.0.downcast_ref::<UndoFailed>().map(|u| u.0.as_slice())
+}
+
 /// `err` with the outcome of undoing the writes made before it.
 fn rolled_back(err: AppError, undo_failures: Vec<String>) -> AppError {
     if undo_failures.is_empty() {
@@ -252,10 +275,7 @@ fn rolled_back(err: AppError, undo_failures: Vec<String>) -> AppError {
         "AI proposal apply: undoing a partial apply failed: {}",
         undo_failures.join("; ")
     );
-    AppError(err.0.context(format!(
-        "Undoing the changes made before the failure also failed; check the configuration ({})",
-        undo_failures.join("; ")
-    )))
+    AppError(err.0.context(UndoFailed(undo_failures)))
 }
 
 async fn update_tag(state: &AppState, id: i64, body: Value) -> Result<Value, Refused> {
@@ -264,10 +284,6 @@ async fn update_tag(state: &AppState, id: i64, body: Value) -> Result<Value, Ref
             .await,
     )
     .await
-}
-
-async fn delete_tag(state: &AppState, id: i64) -> Result<Value, Refused> {
-    call(super::super::data_sources::delete_data_source(State(state.clone()), Path(id)).await).await
 }
 
 async fn create_tag(state: &AppState, body: Value) -> Result<i64, Refused> {
@@ -281,6 +297,28 @@ async fn create_tag(state: &AppState, body: Value) -> Result<i64, Refused> {
     })
 }
 
+/// Put a tag's old values back, straight through storage: they were valid
+/// when written, and going through the tag route would check the old name
+/// against today's naming convention, which may refuse it.
+async fn restore_tag(state: &AppState, id: i64, label: &str, old: &Value) -> Result<(), String> {
+    match state.storage.update_data_source(id, old).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!("tag '{label}': it no longer exists")),
+        Err(e) => Err(format!("tag '{label}': {e:#}")),
+    }
+}
+
+/// Delete tags made by a failed apply, newest first; returns what failed.
+async fn delete_tags(state: &AppState, ids: &[i64]) -> Vec<String> {
+    let mut failures = Vec::new();
+    for id in ids.iter().rev() {
+        if let Err(e) = state.storage.delete_data_source(*id).await {
+            failures.push(format!("tag {id}: {e:#}"));
+        }
+    }
+    failures
+}
+
 /// Check tag names against the naming convention before anything is written.
 async fn check_tag_names(state: &AppState, names: Vec<String>) -> Result<(), AppError> {
     for name in &names {
@@ -291,18 +329,21 @@ async fn check_tag_names(state: &AppState, names: Vec<String>) -> Result<(), App
     Ok(())
 }
 
-/// Update tags one after the other (`(id, label, new, old)`); on a failure,
-/// put back the ones already changed.
+/// A tag update: `(id, label, new, old)`.
+pub(in crate::api) type TagChange = (i64, String, Value, Value);
+
+/// Update tags one after the other; on a failure, put back the ones already
+/// changed.
 pub(in crate::api) async fn update_tags_all_or_nothing(
     state: &AppState,
-    plan: &[(i64, String, Value, Value)],
+    plan: &[TagChange],
 ) -> Result<(), AppError> {
     for (done, (id, label, new, _)) in plan.iter().enumerate() {
         if let Err(e) = update_tag(state, *id, new.clone()).await {
             let mut undo_failures = Vec::new();
             for (id, label, _, old) in plan[..done].iter().rev() {
-                if let Err(u) = update_tag(state, *id, old.clone()).await {
-                    undo_failures.push(format!("tag '{label}': {}", u.message));
+                if let Err(u) = restore_tag(state, *id, label, old).await {
+                    undo_failures.push(u);
                 }
             }
             return Err(rolled_back(
@@ -314,23 +355,28 @@ pub(in crate::api) async fn update_tags_all_or_nothing(
     Ok(())
 }
 
+/// Each tag's values before and after, for the audit log (and to undo by hand).
+fn tag_changes(plan: &[TagChange]) -> Value {
+    plan.iter()
+        .map(|(id, label, new, old)| json!({"tag_id": id, "tag": label, "before": old, "after": new}))
+        .collect()
+}
+
 /// Create tags one after the other; on a failure, delete the ones created.
 pub(in crate::api) async fn create_tags_all_or_nothing(
     state: &AppState,
     bodies: Vec<(String, Value)>,
-) -> Result<Vec<i64>, (AppError, Vec<String>)> {
+) -> Result<Vec<i64>, AppError> {
     let mut created = Vec::new();
     for (label, body) in bodies {
         match create_tag(state, body).await {
             Ok(id) => created.push(id),
             Err(e) => {
-                let mut undo_failures = Vec::new();
-                for id in created.into_iter().rev() {
-                    if let Err(u) = delete_tag(state, id).await {
-                        undo_failures.push(format!("tag {id}: {}", u.message));
-                    }
-                }
-                return Err((e.about(&format!("tag '{label}'")), undo_failures));
+                let undo_failures = delete_tags(state, &created).await;
+                return Err(rolled_back(
+                    e.about(&format!("tag '{label}'")),
+                    undo_failures,
+                ));
             }
         }
     }
@@ -342,6 +388,10 @@ pub(in crate::api) async fn create_tags_all_or_nothing(
 /// Add the proposed registers to an existing Modbus device (through the
 /// register route, which validates them and restarts the poller) and create
 /// a modbus tag for each register that has none, so its value shows up.
+///
+/// The tags are created first and the registers written last: a failure
+/// then only has tags to delete, and the poller is restarted once, by the
+/// write that succeeds.
 #[cfg(feature = "modbus")]
 pub(crate) async fn apply_register_map(
     state: &AppState,
@@ -415,16 +465,6 @@ pub(crate) async fn apply_register_map(
         }
         r
     }));
-    let set_registers = |list: Vec<Value>| {
-        replace_registers(
-            State(state.clone()),
-            Path(device_id.to_string()),
-            Json(json!({ "registers": list })),
-        )
-    };
-    call(set_registers(all_registers).await)
-        .await
-        .map_err(|e| e.about(&format!("registers of device '{device_id}'")))?;
 
     let bodies = needs_tag
         .iter()
@@ -441,18 +481,31 @@ pub(crate) async fn apply_register_map(
             (name, body)
         })
         .collect();
-    match create_tags_all_or_nothing(state, bodies).await {
-        Ok(created) => Ok(json!({
-            "registers_added": registers.len(),
-            "tags_created": created.len(),
-        })),
-        Err((err, mut undo_failures)) => {
-            if let Err(u) = call(set_registers(old_registers).await).await {
-                undo_failures.push(format!("registers of device '{device_id}': {}", u.message));
-            }
-            Err(rolled_back(err, undo_failures))
-        }
+    let created = create_tags_all_or_nothing(state, bodies).await?;
+
+    let written = call(
+        replace_registers(
+            State(state.clone()),
+            Path(device_id.to_string()),
+            Json(json!({ "registers": all_registers })),
+        )
+        .await,
+    )
+    .await;
+    if let Err(e) = written {
+        let undo_failures = delete_tags(state, &created).await;
+        return Err(rolled_back(
+            e.about(&format!("registers of device '{device_id}'")),
+            undo_failures,
+        ));
     }
+    Ok(json!({
+        "device_id": device_id,
+        "registers_added": registers.len(),
+        "tags_created": created.len(),
+        "tag_ids": created,
+        "previous_registers": old_registers,
+    }))
 }
 
 #[cfg(not(feature = "modbus"))]
@@ -512,11 +565,12 @@ pub(crate) async fn apply_alarm_thresholds(
         ));
     }
     update_tags_all_or_nothing(state, &plan).await?;
-    Ok(json!({"tags_updated": plan.len()}))
+    Ok(json!({"tags_updated": plan.len(), "changes": tag_changes(&plan)}))
 }
 
-/// Rename tags. Each `current` must name one tag exactly (by key, else by
-/// name), and every new name must pass the naming convention.
+/// Rename tags. Each entry names its tag by `tag_id` (whose key or name must
+/// be `current`), else `current` must name one tag exactly (by key, else by
+/// name); every new name must pass the naming convention.
 pub(crate) async fn apply_tag_rename(state: &AppState, config: &Value) -> Result<Value, AppError> {
     let renames = parser::parse_tag_rename(&config.to_string())
         .map_err(|e| AppError::bad_request(e.to_string()))?;
@@ -532,10 +586,23 @@ pub(crate) async fn apply_tag_rename(state: &AppState, config: &Value) -> Result
                 "Every rename needs a non-empty 'current' and 'proposed'",
             ));
         }
-        let ds = if tags.iter().any(|d| d.key == current) {
-            unique_by(&tags, |d| d.key == current, current, "key")?
-        } else {
-            unique_by(&tags, |d| d.name == current, current, "name")?
+        let ds = match entry.get("tag_id").and_then(Value::as_i64) {
+            Some(id) => {
+                let ds = tags.iter().find(|d| d.id == id).ok_or_else(|| {
+                    AppError::bad_request(format!("Tag {id} ('{current}') no longer exists"))
+                })?;
+                if ds.key != current && ds.name != current {
+                    return Err(AppError::bad_request(format!(
+                        "Tag {id} is '{}' (key '{}'), not '{current}'; regenerate the proposal",
+                        ds.name, ds.key
+                    )));
+                }
+                ds
+            }
+            None if tags.iter().any(|d| d.key == current) => {
+                unique_by(&tags, |d| d.key == current, current, "key")?
+            }
+            None => unique_by(&tags, |d| d.name == current, current, "name")?,
         };
         if !seen.insert(ds.id) {
             return Err(AppError::bad_request(format!(
@@ -555,10 +622,11 @@ pub(crate) async fn apply_tag_rename(state: &AppState, config: &Value) -> Result
         .collect();
     check_tag_names(state, names).await?;
     update_tags_all_or_nothing(state, &plan).await?;
-    Ok(json!({"tags_renamed": plan.len()}))
+    Ok(json!({"tags_renamed": plan.len(), "changes": tag_changes(&plan)}))
 }
 
 /// Save the proposed layout on an existing screen through the layouts route.
+/// The result keeps the screen's layouts from before, so they can be put back.
 pub(crate) async fn apply_dashboard_layout(
     state: &AppState,
     config: &Value,
@@ -603,6 +671,17 @@ pub(crate) async fn apply_dashboard_layout(
         }
     }
 
+    let previous: serde_json::Map<String, Value> = state
+        .storage
+        .get_layouts(screen_id)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let layout = serde_json::from_str(&row.layout).unwrap_or(Value::String(row.layout));
+            (row.breakpoint, layout)
+        })
+        .collect();
+
     call(
         super::super::layouts::save_layouts(
             State(state.clone()),
@@ -613,7 +692,11 @@ pub(crate) async fn apply_dashboard_layout(
     )
     .await
     .map_err(|e| e.about(&format!("layout of screen '{screen_id}'")))?;
-    Ok(json!({"screen_id": screen_id, "items": layout.len()}))
+    Ok(json!({
+        "screen_id": screen_id,
+        "items": layout.len(),
+        "previous_layouts": previous,
+    }))
 }
 
 /// Create the proposed flow, disabled, through the flows route (graph checks,
@@ -651,46 +734,63 @@ pub(crate) async fn apply_flow_rule(
     Ok(json!({"flow_id": id}))
 }
 
-/// Create the template's tags through the tag route. They are modbus tags of
-/// the device (key = tag name); the register area and default type are kept
-/// in `source_config` until the registers are mapped.
+/// The device an equipment template is instantiated on must be an existing
+/// Modbus device: its tags are modbus tags, read by that device's poller.
+#[cfg(feature = "modbus")]
+async fn check_template_device(state: &AppState, device_id: &str) -> Result<(), AppError> {
+    if state.storage.get_modbus_device(device_id).await?.is_none() {
+        return Err(AppError::bad_request(format!(
+            "Modbus device '{device_id}' does not exist; create it first"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "modbus"))]
+async fn check_template_device(_state: &AppState, _device_id: &str) -> Result<(), AppError> {
+    Err(AppError::bad_request("Modbus support is not built in"))
+}
+
+/// Create the template's tags through the tag route, on the target Modbus
+/// device. They are modbus tags keyed by the tag name, the key the poller
+/// gives a register's value (as for the tags of a register map), so they
+/// show the value once a register of that name is mapped; the register area
+/// and default type are kept in `source_config` until then.
 pub(crate) async fn apply_equipment_template(
     state: &AppState,
     config: &Value,
     device_id: &Option<String>,
 ) -> Result<Value, AppError> {
-    let Some(tags) = config["tags"].as_array() else {
-        return Ok(json!({"tags_created": 0}));
-    };
-    let prefix = config["prefix"].as_str().unwrap_or("equip");
-    let dev_id = device_id.as_deref().unwrap_or(prefix);
+    let tags = parser::check_equipment_template(config).map_err(AppError::bad_request)?;
+    let dev_id = device_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| {
+            AppError::bad_request(
+                "This equipment template has no target device. Create the Modbus device first, then instantiate the template with its device id.",
+            )
+        })?;
+    check_template_device(state, dev_id).await?;
 
-    let mut keys = HashSet::new();
-    let mut bodies = Vec::with_capacity(tags.len());
-    for tag in tags {
-        let name = tag["name_pattern"]
-            .as_str()
-            .unwrap_or("TAG")
-            .replace("{n}", "1");
-        if !keys.insert(name.clone()) {
-            return Err(AppError::bad_request(format!(
-                "The template makes the tag '{name}' twice"
-            )));
-        }
-        let body = json!({
-            "key": name,
-            "name": name,
-            "unit": tag["unit"].as_str().unwrap_or(""),
-            "source_type": "modbus",
-            "source_config": {
-                "register_area": tag["register_area"].as_str().unwrap_or("holding"),
-                "default_type": tag["default_type"].as_str().unwrap_or("float32"),
-            },
-            "device_id": dev_id,
-            "chart_type": "gauge",
-        });
-        bodies.push((name, body));
-    }
+    let bodies: Vec<(String, Value)> = tags
+        .into_iter()
+        .map(|(name, tag)| {
+            let body = json!({
+                "key": name,
+                "name": name,
+                "unit": tag["unit"].as_str().unwrap_or(""),
+                "source_type": "modbus",
+                "source_config": {
+                    "register_area": tag["register_area"].as_str().unwrap_or("holding"),
+                    "default_type": tag["default_type"].as_str().unwrap_or("float32"),
+                },
+                "device_id": dev_id,
+                "chart_type": "gauge",
+            });
+            (name, body)
+        })
+        .collect();
     let existing = state.storage.list_data_sources(None).await?;
     if let Some((name, _)) = bodies.iter().find(|(name, _)| {
         existing
@@ -702,10 +802,8 @@ pub(crate) async fn apply_equipment_template(
         )));
     }
     check_tag_names(state, bodies.iter().map(|(name, _)| name.clone()).collect()).await?;
-    let created = create_tags_all_or_nothing(state, bodies)
-        .await
-        .map_err(|(err, undo_failures)| rolled_back(err, undo_failures))?;
-    Ok(json!({"tags_created": created.len()}))
+    let created = create_tags_all_or_nothing(state, bodies).await?;
+    Ok(json!({"device_id": dev_id, "tags_created": created.len(), "tag_ids": created}))
 }
 
 pub(crate) fn chrono_like_id() -> i64 {

@@ -313,15 +313,75 @@ pub fn check_proposal_config(proposal_type: &str, config: &Value) -> Result<(), 
         "flow_rule" => parse_flow_rule(&config.to_string())
             .map(drop)
             .map_err(|e| e.to_string()),
-        "equipment_template" => {
-            if config.is_object() {
-                Ok(())
-            } else {
-                Err("An equipment template must be a JSON object".into())
-            }
-        }
+        "equipment_template" => check_equipment_template(config).map(drop),
         other => Err(format!("Unknown proposal type: {other}")),
     }
+}
+
+/// Check an equipment template proposal and return the tags it makes as
+/// `(name, tag)`: a JSON object whose `tags` is a non-empty array, each tag an
+/// object with a non-empty `name_pattern` (`{n}` becomes 1) and, when given,
+/// a string `unit`, a Modbus `register_area` and a Modbus `default_type`. Two
+/// tags with one name are an error.
+pub fn check_equipment_template(config: &Value) -> Result<Vec<(String, Value)>, String> {
+    use crate::models::{REGISTER_AREAS, RegisterType};
+
+    let obj = config
+        .as_object()
+        .ok_or("An equipment template must be a JSON object")?;
+    let tags = obj
+        .get("tags")
+        .and_then(Value::as_array)
+        .ok_or("The equipment template has no 'tags' array")?;
+    if tags.is_empty() {
+        return Err("The equipment template has no tags".into());
+    }
+    let mut names = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(tags.len());
+    for (i, tag) in tags.iter().enumerate() {
+        let n = i + 1;
+        let t = tag
+            .as_object()
+            .ok_or_else(|| format!("tag {n}: must be a JSON object"))?;
+        let name = t
+            .get("name_pattern")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .ok_or_else(|| format!("tag {n}: 'name_pattern' is missing or empty"))?
+            .replace("{n}", "1");
+        let text = |key: &str| -> Result<Option<String>, String> {
+            match t.get(key) {
+                None | Some(Value::Null) => Ok(None),
+                Some(Value::String(s)) => Ok(Some(s.trim().to_string())),
+                Some(v) => Err(format!(
+                    "tag {n} ('{name}'): '{key}' must be a string, not {v}"
+                )),
+            }
+        };
+        text("unit")?;
+        if let Some(area) = text("register_area")?
+            && !REGISTER_AREAS.contains(&area.to_ascii_lowercase().as_str())
+        {
+            return Err(format!(
+                "tag {n} ('{name}'): register_area '{area}' is not supported; use one of {}",
+                REGISTER_AREAS.join(", ")
+            ));
+        }
+        if let Some(ty) = text("default_type")?
+            && !RegisterType::NAMES.contains(&ty.to_ascii_lowercase().as_str())
+        {
+            return Err(format!(
+                "tag {n} ('{name}'): default_type '{ty}' is not supported; use one of {}",
+                RegisterType::NAMES.join(", ")
+            ));
+        }
+        if !names.insert(name.clone()) {
+            return Err(format!("the template makes the tag '{name}' twice"));
+        }
+        out.push((name, tag.clone()));
+    }
+    Ok(out)
 }
 
 /// Parse tag rename mapping JSON.
@@ -339,6 +399,14 @@ pub fn parse_tag_rename(json: &str) -> Result<Vec<serde_json::Value>, super::err
         if entry.get("proposed").and_then(|n| n.as_str()).is_none() {
             return Err(super::error::AiError::MalformedResponse(
                 "Rename entry missing 'proposed' field".into(),
+            ));
+        }
+        if entry
+            .get("tag_id")
+            .is_some_and(|id| !id.is_null() && id.as_i64().is_none())
+        {
+            return Err(super::error::AiError::MalformedResponse(
+                "Rename entry 'tag_id' must be a whole number".into(),
             ));
         }
     }

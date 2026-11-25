@@ -49,7 +49,10 @@ pub async fn list_proposals(
 #[utoipa::path(
     get,
     path = "/api/v1/ai/proposals/{id}",
-    responses((status = 200, description = "Get AI proposal")),
+    responses(
+        (status = 200, description = "Get AI proposal"),
+        (status = 404, description = "No such proposal"),
+    ),
     tag = "AI Copilot",
     security(("api_key" = []), ("cookie_auth" = []))
 )]
@@ -61,7 +64,7 @@ pub async fn get_proposal(
         .storage
         .get_ai_proposal(id)
         .await?
-        .ok_or_else(|| AppError(anyhow::anyhow!("Proposal not found")))?;
+        .ok_or_else(|| AppError::not_found("Proposal not found"))?;
 
     Ok(Json(proposal))
 }
@@ -170,6 +173,11 @@ pub async fn apply_proposal(
         .await?
         .ok_or_else(|| AppError::not_found("Proposal not found"))?;
 
+    if proposal.status == "applying" {
+        return Err(conflict(
+            "This proposal's last apply did not finish, so part of it may be in the configuration. Check the configuration; it will not be applied again.",
+        ));
+    }
     if proposal.status != "approved" {
         return Err(AppError::bad_request(format!(
             "Only an approved proposal can be applied; this one is {}",
@@ -184,50 +192,127 @@ pub async fn apply_proposal(
     crate::ai_copilot::parser::check_proposal_config(&proposal.proposal_type, config_to_apply)
         .map_err(AppError::bad_request)?;
 
+    // Marked `applying` before the first write and settled after the last
+    // one: a crash in between leaves it `applying`, which is never applied
+    // again and is flagged at the next start.
+    if !state.storage.begin_ai_proposal_apply(id).await? {
+        return Err(conflict("The proposal is no longer approved"));
+    }
+
     // Each apply goes through the REST handlers and is all or nothing.
     let target = &proposal.target_entity_id;
-    let result = match proposal.proposal_type.as_str() {
-        "register_map" => {
-            super::helpers::apply_register_map(&state, config_to_apply, target).await?
-        }
-        "alarm_thresholds" => {
-            super::helpers::apply_alarm_thresholds(&state, config_to_apply).await?
-        }
-        "tag_rename" => super::helpers::apply_tag_rename(&state, config_to_apply).await?,
+    let applied = match proposal.proposal_type.as_str() {
+        "register_map" => super::helpers::apply_register_map(&state, config_to_apply, target).await,
+        "alarm_thresholds" => super::helpers::apply_alarm_thresholds(&state, config_to_apply).await,
+        "tag_rename" => super::helpers::apply_tag_rename(&state, config_to_apply).await,
         "dashboard_layout" => {
-            super::helpers::apply_dashboard_layout(&state, config_to_apply, target).await?
+            super::helpers::apply_dashboard_layout(&state, config_to_apply, target).await
         }
-        "flow_rule" => super::helpers::apply_flow_rule(&state, &auth, config_to_apply).await?,
+        "flow_rule" => super::helpers::apply_flow_rule(&state, &auth, config_to_apply).await,
         "equipment_template" => {
-            super::helpers::apply_equipment_template(&state, config_to_apply, target).await?
+            super::helpers::apply_equipment_template(&state, config_to_apply, target).await
         }
-        other => {
-            return Err(AppError::bad_request(format!(
-                "Unknown proposal type: {other}"
-            )));
+        other => Err(AppError::bad_request(format!(
+            "Unknown proposal type: {other}"
+        ))),
+    };
+    let audit = |action: &str, details: serde_json::Value| {
+        let mut d = json!({
+            "proposal_id": id,
+            "proposal_type": proposal.proposal_type,
+            "source": "ai-assist",
+            "title": proposal.title,
+        });
+        if let (Some(d), Some(extra)) = (d.as_object_mut(), details.as_object()) {
+            d.extend(extra.clone());
+        }
+        state.audit_logger.log(AuditEvent {
+            action: action.into(),
+            username: auth.username.clone(),
+            resource: "ai_copilot".into(),
+            details: Some(d.to_string()),
+        });
+    };
+
+    let result = match applied {
+        Ok(result) => result,
+        Err(err) => {
+            let message = format!("{:#}", err.0);
+            return Err(match super::helpers::undo_failures(&err) {
+                // Nothing was changed: the proposal can be fixed and applied again.
+                None => {
+                    audit(
+                        "ai_proposal_apply_failed",
+                        json!({"error": message, "undo": "nothing to undo or fully undone"}),
+                    );
+                    if let Err(e) = state
+                        .storage
+                        .end_ai_proposal_apply(id, "approved", None)
+                        .await
+                    {
+                        tracing::error!(
+                            "AI proposal {id}: could not set it back to approved: {e:#}"
+                        );
+                        AppError(anyhow::anyhow!(
+                            "{message}. Nothing was changed, but the proposal could not be set back to approved ({e:#}); it stays 'applying' and is marked failed at the next start"
+                        ))
+                    } else {
+                        err
+                    }
+                }
+                // Part of it may be in the configuration: a person has to look.
+                Some(failures) => {
+                    audit(
+                        "ai_proposal_apply_failed",
+                        json!({"error": message, "undo": "failed", "undo_failures": failures}),
+                    );
+                    if let Err(e) = state
+                        .storage
+                        .end_ai_proposal_apply(id, "failed", Some(&message))
+                        .await
+                    {
+                        tracing::error!("AI proposal {id}: could not mark it failed: {e:#}");
+                    }
+                    AppError(anyhow::anyhow!("{message}"))
+                }
+            });
         }
     };
 
-    state
+    if let Err(e) = state
         .storage
         .mark_ai_proposal_applied(id, Some(&config_to_apply.to_string()))
-        .await?;
+        .await
+    {
+        // The changes are in; only the record of it failed. It must not be
+        // applied a second time.
+        let message = format!(
+            "The proposal was applied, but its status could not be saved ({e:#}); it will not be applied again. Check the configuration."
+        );
+        tracing::error!("AI proposal {id}: {message}");
+        audit(
+            "ai_proposal_applied",
+            json!({"result": result, "status_saved": false, "error": message}),
+        );
+        if let Err(e2) = state
+            .storage
+            .end_ai_proposal_apply(id, "failed", Some(&message))
+            .await
+        {
+            tracing::error!("AI proposal {id}: could not mark it failed either: {e2:#}");
+        }
+        return Err(AppError(anyhow::anyhow!("{message}")));
+    }
 
-    state.audit_logger.log(AuditEvent {
-        action: "ai_proposal_applied".into(),
-        username: auth.username.clone(),
-        resource: "ai_copilot".into(),
-        details: Some(
-            json!({
-                "proposal_id": id,
-                "proposal_type": proposal.proposal_type,
-                "source": "ai-assist",
-                "title": proposal.title,
-                "result": result,
-            })
-            .to_string(),
-        ),
-    });
+    audit("ai_proposal_applied", json!({"result": result}));
 
     Ok(Json(json!({"ok": true, "result": result})))
+}
+
+/// An error answered with 409 and `{"error": message}`.
+fn conflict(message: &str) -> AppError {
+    AppError(anyhow::Error::new(super::super::Rejected(
+        axum::http::StatusCode::CONFLICT,
+        message.to_string(),
+    )))
 }

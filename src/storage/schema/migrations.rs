@@ -570,6 +570,9 @@ pub(super) fn run_migrations(conn: &Connection) {
     // flow's webhook token (the token itself is shown once and not stored).
     let _ = conn.execute_batch("ALTER TABLE flow_runs ADD COLUMN trace TEXT");
     let _ = conn.execute_batch("ALTER TABLE flows ADD COLUMN webhook_token_hash TEXT");
+
+    // Migration: why an AI proposal's apply failed (status 'failed').
+    let _ = conn.execute_batch("ALTER TABLE ai_proposals ADD COLUMN error_message TEXT");
 }
 
 /// Migration: failed sign-ins counted per (account, client address) instead

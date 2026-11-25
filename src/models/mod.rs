@@ -354,6 +354,8 @@ pub struct AiProposal {
     pub applied_config: Option<serde_json::Value>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Why the last apply failed, for a `failed` proposal.
+    pub error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
