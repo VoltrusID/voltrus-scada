@@ -164,15 +164,20 @@ impl Storage {
 
     /// Revoke (delete) an API key by id.
     pub async fn revoke_api_key(&self, id: i64) -> Result<bool> {
-        let conn = self.conn.clone();
-        tokio::task::spawn_blocking(move || {
-            let conn = conn.lock().unwrap();
-            let affected = conn
-                .execute("DELETE FROM api_keys WHERE id = ?1", rusqlite::params![id])
-                .context("Delete api_key failed")?;
-            Ok(affected > 0)
-        })
-        .await
-        .context("Task join failed")?
+        let r: Result<_> = async {
+            let conn = self.conn.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = conn.lock().unwrap();
+                let affected = conn
+                    .execute("DELETE FROM api_keys WHERE id = ?1", rusqlite::params![id])
+                    .context("Delete api_key failed")?;
+                Ok(affected > 0)
+            })
+            .await
+            .context("Task join failed")?
+        }
+        .await;
+        super::access_changed();
+        r
     }
 }

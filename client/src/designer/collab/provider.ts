@@ -9,7 +9,9 @@ import * as decoding from 'lib0/decoding'
 import * as syncProtocol from 'y-protocols/sync'
 import * as awarenessProtocol from 'y-protocols/awareness'
 import type { DesignClientMessage, DesignLimits, DesignServerMessage, DesignSessionInfo } from '../../api/websocket'
-import { connectionsOf, touchedKeys, widgetsOf } from './ydoc.ts'
+import { CONNECTIONS, connectionsOf, WIDGETS, widgetsOf } from './ydoc.ts'
+import { applyReplay, captureReplay, objectsOf, recordEvents, Touched, type ReplayOp } from './replay.ts'
+import { splitUpdate } from './updates.ts'
 
 export const PROTOCOL = 1
 /** Origin of edits made here: the undo manager tracks it. */
@@ -24,7 +26,12 @@ export const FIRST_JOIN_MS = 6000
 /** Cursor and viewport changes reach the others at most this often. */
 export const AWARENESS_EVERY_MS = 50
 
-export const DEFAULT_LIMITS: DesignLimits = { max_update: 256 * 1024, max_rate: 50, max_doc: 5 * 1024 * 1024, max_awareness: 4096, flush_ms: 2000 }
+export const DEFAULT_LIMITS: DesignLimits = { max_update: 256 * 1024, max_rate: 50, max_doc: 5 * 1024 * 1024, max_awareness: 4096, flush_ms: 2000, idle_ms: 120_000 }
+/** Errors (reload: false) after which this connection is no longer a member: join again, keeping the document. */
+const REJOIN = new Set(['resync', 'not_joined', 'rate_limited', 'idle'])
+/** Waits before joining again after `rate_limited` (doubling), and the most. */
+export const REJOIN_BACKOFF_MS = 1000
+const REJOIN_BACKOFF_MAX_MS = 8000
 
 /** What the provider needs of the WebSocket (VoltrusWebSocket has it all). */
 export interface DesignSocket {
@@ -62,36 +69,14 @@ export interface ProviderEvents {
   /** Collaboration is not available: `disabled`, `forbidden` or `protocol`. */
   fallback: { code: string; message: string }
   error: { code: string; message: string }
+  /** Dropped from the session (`resync`, `idle`, …): joining again, edits kept. */
+  rejoin: { code: string; message: string }
+  /** After a session restart, this many objects' unsaved edits were written again. */
+  replayed: { objects: number }
   pending: boolean
 }
 
 type Listener<K extends keyof ProviderEvents> = (v: ProviderEvents[K]) => void
-
-interface Snapshot { kind: 'widget' | 'connection'; id: string; json: Record<string, any> | null }
-
-function snapshotMap(m: Y.Map<any>): Record<string, any> {
-  const out: Record<string, any> = {}
-  m.forEach((v, k) => { out[k] = v instanceof Y.AbstractType ? { __ymap: v instanceof Y.Map, value: v.toJSON() } : v })
-  return out
-}
-
-function restoreMap(json: Record<string, any>): Y.Map<any> {
-  const m = new Y.Map<any>()
-  for (const [k, v] of Object.entries(json)) {
-    if (v && typeof v === 'object' && '__ymap' in v) {
-      const nested = new Y.Map<any>()
-      for (const [nk, nv] of Object.entries(v.value as Record<string, any>)) {
-        if (nk === 'bindings' && nv && typeof nv === 'object' && !Array.isArray(nv)) {
-          const b = new Y.Map<any>()
-          for (const [p, bv] of Object.entries(nv)) b.set(p, bv)
-          nested.set(nk, b)
-        } else nested.set(nk, nv)
-      }
-      m.set(k, nested)
-    } else m.set(k, v)
-  }
-  return m
-}
 
 export class CollabProvider {
   doc: Y.Doc
@@ -102,22 +87,35 @@ export class CollabProvider {
   user = ''
   color = '#888'
   limits: DesignLimits = DEFAULT_LIMITS
-  /** Local updates not sent yet. */
+  /** Local updates not sent yet (or parts of one left for the next second). */
   private queue: Uint8Array[] = []
   private sendTimer: ReturnType<typeof setTimeout> | null = null
   private awarenessTimer: ReturnType<typeof setTimeout> | null = null
   private firstJoinTimer: ReturnType<typeof setTimeout> | null = null
+  private rejoinTimer: ReturnType<typeof setTimeout> | null = null
+  private keepTimer: ReturnType<typeof setTimeout> | null = null
   /** Whether a join ever completed: afterwards a lost socket means offline, not unavailable. */
   private everSynced = false
   private awarenessDirty = false
+  /** Send times of the DesignSync messages of the last second. */
   private sent: number[] = []
-  /** Sent edits the server has not written to the draft yet. */
-  unflushed = false
-  /** Objects changed while not live (kept over a resync). */
-  private offlineTouched = { widgets: new Set<string>(), connections: new Set<string>() }
+  private lastSent = 0
+  /** DesignSync messages sent since the latest DesignJoined (the server counts the same). */
+  private msgNo = 0
+  /** Fields changed here and not in a sent message yet (offline ones too). */
+  private unsent = new Touched()
+  /** Sent messages that carried local edits, by number, until a DesignFlushed `acked` covers them. */
+  private inflight: { n: number; touched: Touched }[] = []
+  /** Unwritten edits of the previous membership, for the step 2 reply of a same-epoch join. */
+  private carry: Touched | null = null
+  /** Unwritten edits of a session that is gone, written into the new document once it arrives. */
+  private replay: ReplayOp[] | null = null
+  /** A join was asked for (or is about to be) and DesignJoined has not come. */
+  private joining = false
+  private backoff = 0
+  private lastRateLimited = -Infinity
   private listeners = new Map<keyof ProviderEvents, Set<(v: any) => void>>()
   private stopped = false
-  private replay: Snapshot[] | null = null
 
   private socket: DesignSocket
   readonly screen: string
@@ -154,7 +152,8 @@ export class CollabProvider {
 
   /** Whether local edits wait to be sent or to be written to the draft. */
   get pending(): boolean {
-    return this.queue.length > 0 || this.unflushed || (this.status !== 'live' && (this.offlineTouched.widgets.size + this.offlineTouched.connections.size) > 0)
+    return this.queue.length > 0 || this.unsent.size > 0 || this.inflight.length > 0
+      || (this.carry?.size ?? 0) > 0 || (this.replay?.length ?? 0) > 0
   }
 
   start(): void {
@@ -176,9 +175,7 @@ export class CollabProvider {
     this.socket.offDesign(this.onMessage)
     this.socket.offConnect(this.onConnect)
     this.socket.offDisconnect(this.onDisconnect)
-    if (this.sendTimer) clearTimeout(this.sendTimer)
-    if (this.awarenessTimer) clearTimeout(this.awarenessTimer)
-    if (this.firstJoinTimer) clearTimeout(this.firstJoinTimer)
+    for (const t of [this.sendTimer, this.awarenessTimer, this.firstJoinTimer, this.rejoinTimer, this.keepTimer]) if (t) clearTimeout(t)
     this.awareness.destroy()
     this.status = 'off'
   }
@@ -208,23 +205,24 @@ export class CollabProvider {
 
   private onUpdate = (update: Uint8Array, origin: unknown) => {
     if (origin === REMOTE || origin === RESET) return
-    if (this.status !== 'live') return
-    this.queue.push(update)
-    this.scheduleSend()
+    // Not live: the sync exchange of the next join carries it.
+    if (this.status === 'live') {
+      this.queue.push(update)
+      this.scheduleSend()
+    }
     this.emit('pending', true)
   }
 
   private onWidgets = (events: Y.YEvent<any>[], txn: Y.Transaction) => {
-    if (txn.origin === REMOTE || txn.origin === RESET || this.status === 'live') return
-    touchedKeys(events).forEach(k => this.offlineTouched.widgets.add(k))
+    if (txn.origin !== REMOTE && txn.origin !== RESET) recordEvents(WIDGETS, events, this.unsent)
   }
 
   private onConnections = (events: Y.YEvent<any>[], txn: Y.Transaction) => {
-    if (txn.origin === REMOTE || txn.origin === RESET || this.status === 'live') return
-    touchedKeys(events).forEach(k => this.offlineTouched.connections.add(k))
+    if (txn.origin !== REMOTE && txn.origin !== RESET) recordEvents(CONNECTIONS, events, this.unsent)
   }
 
   private onAwareness = ({ added, updated, removed }: { added: number[]; updated: number[]; removed: number[] }, origin: unknown) => {
+    // y-protocols renews the local state every 15 s with origin 'local': it goes out too.
     if (origin === 'local') {
       this.awarenessDirty = true
       this.scheduleAwareness()
@@ -256,34 +254,60 @@ export class CollabProvider {
     this.emit('doc', this.doc)
   }
 
-  /** The objects changed while offline, as they are here (null: removed). */
-  private captureOffline(): Snapshot[] {
-    const out: Snapshot[] = []
-    const ws = widgetsOf(this.doc), cs = connectionsOf(this.doc)
-    for (const id of this.offlineTouched.widgets) { const m = ws.get(id); out.push({ kind: 'widget', id, json: m instanceof Y.Map ? snapshotMap(m) : null }) }
-    for (const id of this.offlineTouched.connections) { const m = cs.get(id); out.push({ kind: 'connection', id, json: m instanceof Y.Map ? snapshotMap(m) : null }) }
-    return out
+  /** Every local edit not written to the draft yet; forgotten here. */
+  private takeUnwritten(): Touched {
+    const t = new Touched()
+    for (const e of this.inflight) t.addAll(e.touched)
+    t.addAll(this.carry)
+    t.addAll(this.unsent)
+    this.inflight = []
+    this.carry = null
+    this.unsent = new Touched()
+    return t
   }
 
-  private applyReplay(snaps: Snapshot[]) {
-    if (!snaps.length) return
-    this.doc.transact(() => {
-      const ws = widgetsOf(this.doc), cs = connectionsOf(this.doc)
-      for (const s of snaps) {
-        const map = s.kind === 'widget' ? ws : cs
-        if (s.json) map.set(s.id, restoreMap(s.json))
-        else map.delete(s.id)
-      }
-    }, LOCAL)
+  /** Drop the document and every unwritten edit, and join afresh. */
+  private reset() {
+    this.epoch = null
+    this.replay = null
+    this.takeUnwritten()
+    this.replaceDoc()
+    this.join()
   }
 
   // ── Socket ──
 
   private join() {
+    if (this.rejoinTimer) { clearTimeout(this.rejoinTimer); this.rejoinTimer = null }
     if (this.stopped) return
     this.synced = false
+    this.joining = true
     this.setStatus('connecting')
-    if (!this.socket.sendDesign({ type: 'DesignJoin', screen: this.screen, protocol: PROTOCOL, epoch: this.epoch })) this.setStatus('offline')
+    if (!this.socket.sendDesign({ type: 'DesignJoin', screen: this.screen, protocol: PROTOCOL, epoch: this.epoch })) {
+      this.joining = false
+      this.setStatus('offline')
+    }
+  }
+
+  /** No longer a member: join again, keeping the document and the epoch. */
+  private rejoin(code: string, message: string) {
+    if (this.stopped || this.status === 'off' || this.status === 'offline') return
+    // While joining, only a refused join matters (the session closed under it);
+    // errors about messages sent before the join are stale.
+    if (this.joining && (code !== 'resync' || this.rejoinTimer)) return
+    const now = this.now()
+    let wait = 0
+    if (code === 'rate_limited' || this.joining) {
+      this.backoff = now - this.lastRateLimited < 30_000 ? Math.min(REJOIN_BACKOFF_MAX_MS, Math.max(REJOIN_BACKOFF_MS, this.backoff * 2)) : REJOIN_BACKOFF_MS
+      this.lastRateLimited = now
+      wait = this.backoff
+    }
+    if (!this.joining) this.emit('rejoin', { code, message })
+    this.joining = true
+    this.synced = false
+    this.setStatus('connecting')
+    if (wait) this.rejoinTimer = setTimeout(() => { this.rejoinTimer = null; this.join() }, wait)
+    else this.join()
   }
 
   private onConnect = () => { if (!this.stopped && this.status !== 'off') this.join() }
@@ -291,6 +315,8 @@ export class CollabProvider {
   private onDisconnect = () => {
     if (this.stopped || this.status === 'off') return
     this.synced = false
+    this.joining = false
+    if (this.rejoinTimer) { clearTimeout(this.rejoinTimer); this.rejoinTimer = null }
     this.setStatus('offline')
     const others = [...this.awareness.getStates().keys()].filter(id => id !== this.doc.clientID)
     awarenessProtocol.removeAwarenessStates(this.awareness, others, REMOTE)
@@ -298,9 +324,12 @@ export class CollabProvider {
     this.queue = []
   }
 
-  private sendSync(bytes: Uint8Array) {
+  /** Send a y-sync message; its number since the latest join. */
+  private sendSync(bytes: Uint8Array): number {
     this.socket.sendDesign({ type: 'DesignSync', screen: this.screen, data: bytes })
     this.sent.push(this.now())
+    this.lastSent = this.now()
+    return ++this.msgNo
   }
 
   private onMessage = (msg: DesignServerMessage) => {
@@ -310,10 +339,18 @@ export class CollabProvider {
     switch (msg.type) {
       case 'DesignJoined': {
         if (msg.protocol !== PROTOCOL) { this.fallBack('protocol', 'The server speaks another collaboration protocol; reload the page'); return }
+        this.joining = false
         const changedEpoch = this.epoch != null && this.epoch !== msg.epoch
+        const unwritten = this.takeUnwritten()
+        this.msgNo = 0
+        this.queue = []
         if (msg.resync || changedEpoch) {
-          this.replay = this.captureOffline()
+          // The session the edits went to is gone: write them again into the new one.
+          this.replay = [...(this.replay ?? []), ...captureReplay(this.doc, unwritten)]
           this.replaceDoc()
+        } else if (unwritten.size) {
+          // Same session: the step 2 reply carries whatever the server lacks.
+          this.carry = unwritten
         }
         this.epoch = msg.epoch
         this.user = msg.user
@@ -325,6 +362,7 @@ export class CollabProvider {
         this.sendSync(encoding.toUint8Array(enc))
         const cur = this.awareness.getLocalState() ?? {}
         this.awareness.setLocalState({ ...cur, user: { name: msg.user, color: msg.color } })
+        this.keepAlive()
         return
       }
       case 'DesignSync': {
@@ -337,15 +375,24 @@ export class CollabProvider {
           console.warn('collab: bad sync message', e)
           return
         }
-        if (encoding.length(enc) > 0) this.sendSync(encoding.toUint8Array(enc))
+        if (encoding.length(enc) > 0) {
+          const n = this.sendSync(encoding.toUint8Array(enc))
+          if (type === syncProtocol.messageYjsSyncStep1 && this.carry) {
+            this.inflight.push({ n, touched: this.carry })
+            this.carry = null
+          }
+        }
         if (type === syncProtocol.messageYjsSyncStep2 && !this.synced) {
           this.synced = true
           this.everSynced = true
           const replay = this.replay
           this.replay = null
-          if (replay) this.applyReplay(replay)
-          this.offlineTouched = { widgets: new Set(), connections: new Set() }
+          if (replay?.length) {
+            applyReplay(this.doc, replay, LOCAL)
+            this.emit('replayed', { objects: objectsOf(replay) })
+          }
           this.emit('synced', true)
+          this.emit('pending', this.pending)
         }
         return
       }
@@ -354,21 +401,21 @@ export class CollabProvider {
         return
       case 'DesignError':
         if (msg.code === 'disabled' || msg.code === 'forbidden' || msg.code === 'protocol') { this.fallBack(msg.code, msg.message); return }
-        this.emit('error', { code: msg.code, message: msg.message })
         if (msg.reload) {
-          this.epoch = null
-          this.replay = null
-          this.offlineTouched = { widgets: new Set(), connections: new Set() }
-          this.replaceDoc()
-          this.join()
-        }
+          this.emit('error', { code: msg.code, message: msg.message })
+          this.reset()
+        } else if (REJOIN.has(msg.code)) this.rejoin(msg.code, msg.message)
+        else this.emit('error', { code: msg.code, message: msg.message })
         return
       case 'DesignRejected': this.emit('rejected', msg); return
-      case 'DesignFlushed':
-        if (!this.queue.length) this.unflushed = false
+      case 'DesignFlushed': {
+        const acked = msg.acked
+        if (typeof acked === 'number') this.inflight = this.inflight.filter(e => e.n > acked)
+        else if (!this.queue.length) this.inflight = []
         this.emit('flushed', msg)
         this.emit('pending', this.pending)
         return
+      }
       case 'DesignComment': this.emit('comment', msg); return
     }
   }
@@ -380,9 +427,9 @@ export class CollabProvider {
 
   // ── Sending ──
 
-  private scheduleSend() {
+  private scheduleSend(ms = SEND_EVERY_MS) {
     if (this.sendTimer) return
-    this.sendTimer = setTimeout(() => { this.sendTimer = null; this.sendQueued() }, SEND_EVERY_MS)
+    this.sendTimer = setTimeout(() => { this.sendTimer = null; this.sendQueued() }, ms)
   }
 
   /** Sync messages sent within the last second. */
@@ -392,19 +439,35 @@ export class CollabProvider {
     return this.sent.length
   }
 
+  /** Until the oldest message of the last second leaves the window. */
+  private untilRoom(): number {
+    return Math.max(SEND_EVERY_MS, (this.sent[0] ?? this.now()) + 1001 - this.now())
+  }
+
   private sendQueued() {
     if (!this.queue.length || this.status !== 'live') return
-    // Leave room for the sync handshake and awareness under the server's limit.
-    if (this.rate() >= Math.max(1, this.limits.max_rate - 10)) { this.scheduleSend(); return }
-    const merged = Y.mergeUpdates(this.queue)
-    const parts = merged.length + 16 <= this.limits.max_update ? [merged] : this.queue
-    this.queue = []
-    for (const u of parts) {
-      const enc = encoding.createEncoder()
-      syncProtocol.writeUpdate(enc, u)
-      this.sendSync(encoding.toUint8Array(enc))
+    // Leave room for the sync handshake under the server's limit.
+    let room = Math.max(1, this.limits.max_rate - 10) - this.rate()
+    if (room <= 0) { this.scheduleSend(this.untilRoom()); return }
+    const max = this.limits.max_update - 64
+    const parts = splitUpdate(this.queue.length === 1 ? this.queue[0] : Y.mergeUpdates(this.queue), max)
+    if (!parts) {
+      this.emit('error', { code: 'too_large', message: `a change is over the ${Math.round(this.limits.max_update / 1024)} KB limit and was not saved; the screen was reloaded` })
+      this.reset()
+      return
     }
-    this.unflushed = true
+    let n = 0, i = 0
+    for (; i < parts.length && room > 0; i++, room--) {
+      const enc = encoding.createEncoder()
+      syncProtocol.writeUpdate(enc, parts[i])
+      n = this.sendSync(encoding.toUint8Array(enc))
+    }
+    this.queue = parts.slice(i)
+    if (this.queue.length) this.scheduleSend(this.untilRoom())
+    else if (this.unsent.size) {
+      this.inflight.push({ n, touched: this.unsent })
+      this.unsent = new Touched()
+    }
     this.emit('pending', this.pending)
   }
 
@@ -415,7 +478,22 @@ export class CollabProvider {
       if (!this.awarenessDirty || this.status !== 'live') return
       this.awarenessDirty = false
       const update = awarenessProtocol.encodeAwarenessUpdate(this.awareness, [this.doc.clientID])
-      if (update.length <= this.limits.max_awareness + 64) this.socket.sendDesign({ type: 'DesignAwareness', screen: this.screen, data: update })
+      if (update.length <= this.limits.max_awareness + 64) {
+        this.socket.sendDesign({ type: 'DesignAwareness', screen: this.screen, data: update })
+        this.lastSent = this.now()
+      }
     }, AWARENESS_EVERY_MS)
+  }
+
+  /** The server drops a member silent for `idle_ms`: renew the presence well before. */
+  private keepAlive() {
+    if (this.keepTimer) clearTimeout(this.keepTimer)
+    const every = Math.max(500, Math.floor((this.limits.idle_ms ?? DEFAULT_LIMITS.idle_ms!) / 6))
+    this.keepTimer = setTimeout(() => {
+      this.keepTimer = null
+      if (this.stopped) return
+      if (this.status === 'live' && this.now() - this.lastSent >= every) this.awareness.setLocalState(this.awareness.getLocalState() ?? {})
+      this.keepAlive()
+    }, every)
   }
 }

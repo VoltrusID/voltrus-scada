@@ -186,11 +186,18 @@ pub enum ServerMessage {
         screen: String,
         objects: Vec<DesignRejectedObject>,
     },
+    /// The screen's edits were written to its draft (`seq` the change-log
+    /// head, `users` whose edits it holds: empty for an acknowledgement
+    /// alone). `acked`: how many of this connection's `DesignSync` messages
+    /// since its latest `DesignJoined` the written state covers (missing on
+    /// older servers).
     DesignFlushed {
         screen: String,
         seq: i64,
         at_ms: i64,
         users: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acked: Option<u64>,
     },
     DesignSessions {
         sessions: Vec<DesignSessionInfo>,
@@ -210,6 +217,10 @@ pub struct DesignLimits {
     pub max_doc: usize,
     pub max_awareness: usize,
     pub flush_ms: u64,
+    /// A member that sends nothing this long is removed (`DesignError`
+    /// `idle`), ms; 0 (an older server) means 120 000.
+    #[serde(default)]
+    pub idle_ms: u64,
 }
 
 /// An object a flush put back, and why.

@@ -40,6 +40,11 @@ jobs:
       - name: Test
         run: cargo test
 
+      # A build without the default protocol features: a module gated on the
+      # wrong feature only shows up here.
+      - name: Build without default features
+        run: cargo check --no-default-features --features modbus
+
       # The collaboration document shared by the server and the native console.
       - name: Collaboration crate (clippy, test)
         run: |

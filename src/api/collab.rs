@@ -40,6 +40,8 @@ fn comment_error(e: anyhow::Error) -> AppError {
         Some(CommentRefusal::Invalid(m)) => AppError::bad_request(m.clone()),
         Some(CommentRefusal::Forbidden(m)) => AppError::forbidden(m.clone()),
         Some(CommentRefusal::NotFound) => AppError::not_found("comment not found"),
+        Some(CommentRefusal::NoScreen) => AppError::not_found("screen not found"),
+        Some(CommentRefusal::TooMany(m)) => AppError::too_many_requests(m.clone()),
         None => AppError(e),
     }
 }

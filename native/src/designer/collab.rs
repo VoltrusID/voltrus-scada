@@ -17,9 +17,23 @@
 //!   undo item ([`Session::local`] with `new_step`), steps of one key within
 //!   [`edit::COALESCE`] are one item.
 //! - **Joining** with edits not yet in the session (unsaved work when the
-//!   Designer opened, edits made while the link was down and the server
-//!   restarted meanwhile): once the server's document is in, the objects the
-//!   console changed are written into it again as one edit.
+//!   Designer opened, edits made while waiting for the server's document):
+//!   once the server's document is in, what the editor changed since the
+//!   session last saw it is written into it as one edit.
+//! - **Unflushed edits.** Every `DesignSync` sent since the latest
+//!   `DesignJoined` is numbered; the objects and fields each local or undo
+//!   transaction changed ([`document::touched_between`]) ride with the
+//!   message that carried them until a `DesignFlushed` whose `acked` covers
+//!   it. A same-epoch rejoin carries what is unacked on the step 2 sent
+//!   after it; a new epoch (the server restarted) or `resync` starts from the
+//!   server's document and writes them again ([`document::replay`]).
+//! - **Membership lost** (`DesignError` `resync`, `not_joined`,
+//!   `rate_limited`, `idle`, reload false): join again keeping the document
+//!   and epoch, after a back-off that grows while it keeps happening.
+//! - **Pacing.** Every `DesignSync` sent counts toward a rolling second kept
+//!   under `max_rate - 10`; a merged update stays under `max_update - 64`
+//!   (fewer queued updates per frame); presence goes out at least every
+//!   third of `idle_ms` as a keepalive.
 //! - **Older servers**, or collaboration turned off: no `DesignJoined`
 //!   within [`JOIN_TIMEOUT`], or `DesignError disabled`/`forbidden`, and the
 //!   session is [`Phase::Off`]: the editor saves whole layouts as before.
@@ -27,11 +41,14 @@
 //! [`edit::COALESCE`]: crate::mimic::edit::COALESCE
 
 use std::collections::{BTreeMap, VecDeque};
+use std::mem;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use voltrus_collab::document::{self, ConnectionRow as CRow, Rows, WidgetRow};
+use voltrus_collab::document::{
+    self, ConnectionRow as CRow, ObjectKind, Rows, Screen, Touched, WidgetRow,
+};
 use voltrus_collab::wire::{self, Handled, Presence};
 use voltrus_collab::yrs::undo::{Options as UndoOptions, UndoManager};
 use voltrus_collab::yrs::{Doc, Origin, Transact};
@@ -50,11 +67,23 @@ pub const BATCH: Duration = Duration::from_millis(40);
 pub const PRESENCE_EVERY: Duration = Duration::from_millis(50);
 /// A server that has not answered `DesignJoin` by then has no sessions.
 pub const JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+/// `DesignLimits::idle_ms` when the server sends none (an older server).
+pub const IDLE: Duration = Duration::from_secs(120);
+/// Room left under the server's `max_rate` (sync messages per second).
+const RATE_MARGIN: u32 = 10;
+/// Room left under the server's `max_update` for the message's framing.
+const UPDATE_MARGIN: usize = 64;
+/// The longest wait before joining again after the server dropped this
+/// console.
+const REJOIN_MAX: Duration = Duration::from_secs(32);
+/// Without a dropped membership for this long, the back-off starts over.
+const REJOIN_CALM: Duration = Duration::from_secs(30);
 
 /// Where the session stands.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Phase {
-    /// `DesignJoin` sent, no answer yet.
+    /// `DesignJoin` sent (or due), no answer yet. Once the server's
+    /// document is in, edits continue into it and go out after joining.
     Joining { since: Instant },
     /// In the session.
     Live,
@@ -112,8 +141,30 @@ pub struct Session {
     pub phase: Phase,
     doc: Doc,
     undo: UndoManager<()>,
-    /// Updates of local and undo transactions, not sent yet.
+    /// Updates of local and undo transactions, not sent yet, each with the
+    /// objects and fields it changed.
     outbox: Outbox,
+    /// What edits whose updates left the outbox unsent changed (offline, a
+    /// rejoin): the next step 2 this console sends carries them.
+    carry: Touched,
+    /// `DesignSync` messages sent since the latest `DesignJoined`.
+    numbered: u64,
+    /// Sent and not covered by a `DesignFlushed` yet: the message's number
+    /// and what it changed.
+    inflight: VecDeque<(u64, Touched)>,
+    /// The server rebuilt the document: what to write again once its copy
+    /// is in, the console's copy to take the values from, and whether the
+    /// server restarted (the user is told).
+    replay: Option<(Touched, Screen, bool)>,
+    /// A join due then (after a dropped membership).
+    rejoin_at: Option<Instant>,
+    /// Memberships dropped in a row, and when the last was.
+    strikes: u32,
+    last_strike: Option<Instant>,
+    /// Something to tell the user outside a server frame.
+    notice: Option<(String, bool)>,
+    /// The latest time the editor gave.
+    now: Instant,
     epoch: Option<String>,
     /// The signed-in user and colour the server gave.
     pub user: String,
@@ -124,9 +175,6 @@ pub struct Session {
     layout: Layout,
     /// The server's document is in (its step 2 arrived).
     synced: bool,
-    /// Rows the console's own edits started from, to write again once the
-    /// server's document is in.
-    replay_base: Option<Rows>,
     last_send: Option<Instant>,
     sent: VecDeque<Instant>,
     clock: u32,
@@ -286,8 +334,33 @@ fn peer_of(p: &Presence) -> Option<Peer> {
     })
 }
 
-/// Updates waiting to go out.
-type Outbox = Arc<Mutex<Vec<Vec<u8>>>>;
+/// Updates waiting to go out, each with what it changed.
+type Outbox = Arc<Mutex<Vec<(Vec<u8>, Touched)>>>;
+
+/// The touched sets of the outbox, which is emptied.
+fn drain(outbox: &Outbox) -> Touched {
+    let mut t = Touched::default();
+    if let Ok(mut out) = outbox.lock() {
+        for (_, touched) in out.drain(..) {
+            t.merge(&touched);
+        }
+    }
+    t
+}
+
+/// A size as people read it.
+fn size_text(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} bytes")
+    } else {
+        format!("{} KB", bytes.div_ceil(1024))
+    }
+}
+
+/// Remove `object` from `t`.
+fn forget(t: &mut Touched, object: &(ObjectKind, String)) {
+    t.0.remove(object);
+}
 
 fn fresh_doc() -> (Doc, UndoManager<()>, Outbox) {
     let doc = Doc::new();
@@ -300,7 +373,7 @@ fn fresh_doc() -> (Doc, UndoManager<()>, Outbox) {
         if txn.origin() != Some(&remote)
             && let Ok(mut out) = sink.lock()
         {
-            out.push(e.update.clone());
+            out.push((e.update.clone(), Touched::default()));
         }
     });
     let mut undo = UndoManager::with_options(UndoOptions {
@@ -331,7 +404,15 @@ impl Session {
             user: String::new(),
             color: String::new(),
             limits: None,
-            replay_base: Some(rows.clone()),
+            carry: Touched::default(),
+            numbered: 0,
+            inflight: VecDeque::new(),
+            replay: None,
+            rejoin_at: None,
+            strikes: 0,
+            last_strike: None,
+            notice: None,
+            now,
             rows,
             layout: layout.clone(),
             synced: false,
@@ -358,7 +439,7 @@ impl Session {
 
     /// Whether edits go through the session (not whole-layout saves).
     pub fn active(&self) -> bool {
-        self.synced && matches!(self.phase, Phase::Live | Phase::Offline)
+        self.synced && !self.off()
     }
 
     /// Whether the session gave up (the editor saves whole layouts).
@@ -374,6 +455,126 @@ impl Session {
     /// Local edits not sent yet.
     pub fn unsent(&self) -> bool {
         self.outbox.lock().is_ok_and(|o| !o.is_empty())
+            || !self.carry.is_empty()
+            || self.replay.is_some()
+    }
+
+    /// Edits of this console the server has not written to the draft yet:
+    /// queued, sent but not acknowledged by a `DesignFlushed`, made offline
+    /// or waiting to be written again into a rebuilt document. Leaving the
+    /// Designer with any asks first.
+    pub fn unflushed(&self) -> bool {
+        !self.off() && (self.unsent() || !self.inflight.is_empty())
+    }
+
+    /// Something to tell the user that came of [`Self::outgoing`].
+    pub fn take_notice(&mut self) -> Option<(String, bool)> {
+        self.notice.take()
+    }
+
+    /// The server's idle limit: a member that sends nothing that long is
+    /// removed.
+    fn idle(&self) -> Duration {
+        match self.limits.as_ref().map(|l| l.idle_ms) {
+            Some(ms) if ms > 0 => Duration::from_millis(ms),
+            _ => IDLE,
+        }
+    }
+
+    /// `DesignSync` messages this console sends in any second.
+    fn budget(&self) -> usize {
+        self.limits.as_ref().map_or(20, |l| {
+            l.max_rate.saturating_sub(RATE_MARGIN).max(1) as usize
+        })
+    }
+
+    /// A `DesignSync` frame goes out: numbered, counted toward the rate,
+    /// and what it carries kept until a flush acknowledges it.
+    fn sync_frame(&mut self, data: Vec<u8>, touched: Touched) -> ClientMessage {
+        self.numbered += 1;
+        self.sent.push_back(self.now);
+        if !touched.is_empty() {
+            self.inflight.push_back((self.numbered, touched));
+        }
+        ClientMessage::DesignSync {
+            screen: self.screen.clone(),
+            data,
+        }
+    }
+
+    /// Everything not written to the draft yet, as one set (the outbox is
+    /// emptied).
+    fn unacked(&mut self) -> Touched {
+        let mut t = mem::take(&mut self.carry);
+        for (_, touched) in self.inflight.drain(..) {
+            t.merge(&touched);
+        }
+        t.merge(&drain(&self.outbox));
+        t
+    }
+
+    /// Run `f` (a local or undo transaction) and keep what it changed with
+    /// the update it queued.
+    fn tracked<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
+        let before = document::read(&self.doc.transact());
+        let queued = self.outbox.lock().map_or(0, |o| o.len());
+        let r = f(self);
+        let after = document::read(&self.doc.transact());
+        let touched = document::touched_between(&before, &after);
+        if !touched.is_empty() {
+            let mut kept = false;
+            if let Ok(mut out) = self.outbox.lock()
+                && let Some((_, t)) = out.get_mut(queued..).and_then(<[_]>::first_mut)
+            {
+                t.merge(&touched);
+                kept = true;
+            }
+            if !kept {
+                self.carry.merge(&touched);
+            }
+        }
+        r
+    }
+
+    /// The server dropped this console's membership (or its last message):
+    /// join again, keeping the document and epoch, after a back-off that
+    /// grows while it keeps happening. The join frame when due now.
+    fn rejoin(&mut self, rate_limited: bool) -> Option<ClientMessage> {
+        let now = self.now;
+        if self
+            .last_strike
+            .is_some_and(|t| now.saturating_duration_since(t) > REJOIN_CALM)
+        {
+            self.strikes = 0;
+        }
+        self.strikes += 1;
+        self.last_strike = Some(now);
+        let mut delay = if rate_limited {
+            Duration::from_secs(1)
+        } else {
+            Duration::ZERO
+        };
+        if self.strikes > 1 {
+            let backoff = Duration::from_secs(1 << (self.strikes - 2).min(5));
+            delay = delay.max(backoff).min(REJOIN_MAX);
+        }
+        self.phase = Phase::Joining { since: now };
+        self.peers.clear();
+        if delay.is_zero() {
+            self.rejoin_at = None;
+            Some(self.join_frame())
+        } else {
+            self.rejoin_at = Some(now + delay);
+            None
+        }
+    }
+
+    /// Start again from the server's copy, writing `touched` (values from
+    /// `mine`) into it once it is in. `restarted`: the server's session
+    /// started over (the user is told how many changes were written again).
+    fn rebuild(&mut self, touched: Touched, mine: Screen, restarted: bool) {
+        self.reset_doc();
+        self.replay = (!touched.is_empty()).then_some((touched, mine, restarted));
     }
 
     pub fn can_undo(&self) -> bool {
@@ -384,15 +585,13 @@ impl Session {
         self.active() && self.undo.can_redo()
     }
 
-    /// The link dropped: edits continue into the document; the objects
-    /// changed from here are written again if the server lost the session.
+    /// The link dropped: edits continue into the document; what is not
+    /// flushed yet is written again if the server lost the session.
     pub fn offline(&mut self) {
         if self.off() {
             return;
         }
-        if self.synced && self.replay_base.is_none() {
-            self.replay_base = Some(self.rows.clone());
-        }
+        self.rejoin_at = None;
         if self.synced {
             self.phase = Phase::Offline;
         }
@@ -405,13 +604,14 @@ impl Session {
         if self.off() {
             return None;
         }
+        self.now = self.now.max(now);
         if !self.synced {
             self.phase = Phase::Joining { since: now };
         }
-        if let Ok(mut out) = self.outbox.lock() {
-            // The step 2 of the exchange carries them.
-            out.clear();
-        }
+        self.rejoin_at = None;
+        // The step 2 of the exchange carries them.
+        let queued = drain(&self.outbox);
+        self.carry.merge(&queued);
         self.presence_dirty = true;
         Some(self.join_frame())
     }
@@ -421,6 +621,7 @@ impl Session {
     pub fn expire(&mut self, now: Instant) -> bool {
         if let Phase::Joining { since } = self.phase
             && !self.synced
+            && self.rejoin_at.is_none()
             && now.saturating_duration_since(since) > JOIN_TIMEOUT
         {
             self.phase = Phase::Off("The server has no live sessions".into());
@@ -466,24 +667,30 @@ impl Session {
                 ..
             } if *screen == self.screen => {
                 let same = self.epoch.as_deref() == Some(epoch.as_str()) && !resync;
+                // Numbering starts over; what was sent before and not
+                // acknowledged rides on the step 2 sent after this join.
+                let unacked = self.unacked();
+                self.numbered = 0;
                 if !same && self.synced {
                     // The server rebuilt the document: start from its copy
-                    // and write the console's changes again.
-                    if self.replay_base.is_none() {
-                        self.replay_base = Some(self.rows.clone());
-                    }
-                    self.reset_doc();
+                    // and write the console's unflushed edits again.
+                    let mine = document::read(&self.doc.transact());
+                    self.rebuild(unacked, mine, true);
+                } else if let Some((t, _, _)) = self.replay.as_mut() {
+                    // Still waiting for the copy to replay into.
+                    t.merge(&unacked);
+                } else {
+                    self.carry = unacked;
                 }
                 self.epoch = Some(epoch.clone());
                 self.user = user.clone();
                 self.color = color.clone();
                 self.limits = Some(limits.clone());
                 self.phase = Phase::Live;
+                self.rejoin_at = None;
                 self.presence_dirty = true;
-                r.send.push(ClientMessage::DesignSync {
-                    screen: self.screen.clone(),
-                    data: wire::step1(&self.doc),
-                });
+                let step1 = wire::step1(&self.doc);
+                r.send.push(self.sync_frame(step1, Touched::default()));
             }
             ServerMessage::DesignSync { screen, data } if *screen == self.screen => {
                 let Ok(msg) = wire::decode(data) else {
@@ -491,26 +698,19 @@ impl Session {
                 };
                 let step2 = matches!(msg, wire::Sync::SyncStep2(_));
                 match wire::handle(&self.doc, REMOTE, msg) {
-                    Ok(Handled::Reply(reply)) => r.send.push(ClientMessage::DesignSync {
-                        screen: self.screen.clone(),
-                        data: reply,
-                    }),
+                    Ok(Handled::Reply(reply)) => {
+                        // The step 2 after a join: it holds every edit the
+                        // server may lack.
+                        let carried = mem::take(&mut self.carry);
+                        r.send.push(self.sync_frame(reply, carried));
+                    }
                     Ok(Handled::Applied) => {
                         if step2 && !self.synced {
                             self.synced = true;
                             if matches!(self.phase, Phase::Offline) {
                                 self.phase = Phase::Live;
                             }
-                            self.refresh();
-                            if let Some(base) = self.replay_base.take() {
-                                let theirs = self.layout.clone();
-                                let mine_rows = rows_of(&theirs, mine, tag_name);
-                                self.apply_local(&base, &mine_rows);
-                                // Joining is not an undo step of the user's.
-                                self.undo.clear_all();
-                            }
-                        } else if step2 {
-                            self.replay_base = None;
+                            r.toast = self.first_sync(mine, tag_name);
                         }
                         if self.synced {
                             r.layout = Some(self.refresh());
@@ -558,18 +758,48 @@ impl Session {
                 _ if *reload => {
                     // The server could not take the document as it is:
                     // start again from its copy.
-                    self.replay_base = None;
                     self.epoch = None;
                     self.reset_doc();
-                    self.phase = Phase::Joining {
-                        since: Instant::now(),
-                    };
+                    self.replay = None;
+                    self.carry = Touched::default();
+                    self.inflight.clear();
+                    self.rejoin_at = None;
+                    self.phase = Phase::Joining { since: self.now };
                     r.send.push(self.join_frame());
                     r.toast = Some((format!("Live session reloaded: {message}"), true));
+                }
+                "resync" | "not_joined" | "rate_limited" | "idle" => {
+                    let rate_limited = code == "rate_limited";
+                    if let Some(join) = self.rejoin(rate_limited) {
+                        r.send.push(join);
+                    }
+                    if rate_limited {
+                        r.toast = Some((
+                            "Live session: too many edits at once; rejoining".into(),
+                            false,
+                        ));
+                    }
                 }
                 _ => r.toast = Some((message.clone(), true)),
             },
             ServerMessage::DesignRejected { screen, objects } if *screen == self.screen => {
+                // Put back by the server: not written again later.
+                for o in objects {
+                    let kind = match o.object_type.as_str() {
+                        "connection" => ObjectKind::Connection,
+                        _ => ObjectKind::Widget,
+                    };
+                    let object = (kind, o.object_id.clone());
+                    forget(&mut self.carry, &object);
+                    for (_, t) in &mut self.inflight {
+                        forget(t, &object);
+                    }
+                    if let Ok(mut out) = self.outbox.lock() {
+                        for (_, t) in out.iter_mut() {
+                            forget(t, &object);
+                        }
+                    }
+                }
                 let list: Vec<String> = objects
                     .iter()
                     .map(|o| format!("{} ({})", o.object_id, o.reason))
@@ -577,21 +807,74 @@ impl Session {
                 r.toast = Some((format!("Put back by the server: {}", list.join("; ")), true));
             }
             ServerMessage::DesignFlushed {
-                screen, seq, users, ..
+                screen,
+                seq,
+                users,
+                acked,
+                ..
             } if *screen == self.screen => {
                 self.flushed = Some((*seq, users.clone()));
+                match acked {
+                    Some(n) => self.inflight.retain(|(k, _)| k > n),
+                    // An older server: what was sent before it counts as
+                    // written.
+                    None => self.inflight.clear(),
+                }
             }
             _ => {}
         }
         r
     }
 
+    /// The server's document just came in: write into it the unflushed
+    /// edits of a rebuilt session, then what the editor changed since the
+    /// session last saw it (`mine`). What to tell the user.
+    fn first_sync(
+        &mut self,
+        mine: &Layout,
+        tag_name: &dyn Fn(i64) -> Option<String>,
+    ) -> Option<(String, bool)> {
+        let base_rows = self.rows.clone();
+        let base_layout = self.layout.clone();
+        self.refresh();
+        let mut toast = None;
+        let mut wrote = false;
+        if let Some((touched, theirs, restarted)) = self.replay.take() {
+            self.tracked(|s| {
+                let mut txn = s.doc.transact_mut_with(Origin::from(LOCAL));
+                document::replay(&mut txn, &touched, &theirs);
+            });
+            self.refresh();
+            wrote = true;
+            let n = touched.len();
+            toast = restarted.then(|| {
+                (
+                    format!(
+                        "The live session restarted; {n} unsaved change{} applied again",
+                        if n == 1 { " was" } else { "s were" }
+                    ),
+                    false,
+                )
+            });
+        }
+        if *mine != base_layout {
+            let mine_rows = rows_of(&base_layout, mine, tag_name);
+            self.apply_local(&base_rows, &mine_rows);
+            wrote = true;
+        }
+        if wrote {
+            // Joining is not an undo step of the user's.
+            self.undo.clear_all();
+        }
+        toast
+    }
+
     /// Apply `before` → `after` to the document as a local edit.
     fn apply_local(&mut self, before: &Rows, after: &Rows) {
-        {
-            let mut txn = self.doc.transact_mut_with(Origin::from(LOCAL));
+        self.tracked(|s| {
+            let mut txn = s.doc.transact_mut_with(Origin::from(LOCAL));
             document::apply_rows(&mut txn, before, after);
-        }
+        });
         self.refresh();
     }
 
@@ -618,11 +901,11 @@ impl Session {
 
     /// Undo this console's last edit; the layout after it.
     pub fn undo(&mut self) -> Option<Layout> {
-        (self.active() && self.undo.undo_blocking()).then(|| self.refresh())
+        (self.active() && self.tracked(|s| s.undo.undo_blocking())).then(|| self.refresh())
     }
 
     pub fn redo(&mut self) -> Option<Layout> {
-        (self.active() && self.undo.redo_blocking()).then(|| self.refresh())
+        (self.active() && self.tracked(|s| s.undo.redo_blocking())).then(|| self.refresh())
     }
 
     /// Where the pointer is, what is selected and what is in view.
@@ -655,14 +938,23 @@ impl Session {
         .to_string()
     }
 
-    /// Frames due now: the merged local updates (every [`BATCH`], within
-    /// the server's rate) and this console's presence.
+    /// Frames due now: a join after a dropped membership, the merged local
+    /// updates (every [`BATCH`], within the server's rate and update size)
+    /// and this console's presence (also as a keepalive).
     pub fn outgoing(&mut self, now: Instant) -> Vec<ClientMessage> {
         let mut out = Vec::new();
+        self.now = self.now.max(now);
+        if let Some(at) = self.rejoin_at
+            && now >= at
+        {
+            self.rejoin_at = None;
+            self.phase = Phase::Joining { since: now };
+            out.push(self.join_frame());
+            return out;
+        }
         if self.phase != Phase::Live {
             return out;
         }
-        let rate = self.limits.as_ref().map_or(20, |l| (l.max_rate / 2).max(1)) as usize;
         while self
             .sent
             .front()
@@ -673,28 +965,32 @@ impl Session {
         let due = self
             .last_send
             .is_none_or(|t| now.saturating_duration_since(t) >= BATCH);
-        if due && self.sent.len() < rate {
-            let updates = self
+        if due && self.sent.len() < self.budget() {
+            let queued = self
                 .outbox
                 .lock()
-                .map(|mut o| std::mem::take(&mut *o))
+                .map(|mut o| mem::take(&mut *o))
                 .unwrap_or_default();
-            if !updates.is_empty() {
-                let merged = if updates.len() == 1 {
-                    updates.into_iter().next().unwrap_or_default()
-                } else {
-                    voltrus_collab::yrs::merge_updates_v1(&updates).unwrap_or_else(|_| {
-                        // Unmergeable (never expected): the whole state.
-                        wire::state(&self.doc)
-                    })
-                };
-                out.push(ClientMessage::DesignSync {
-                    screen: self.screen.clone(),
-                    data: wire::update(merged),
-                });
-                self.last_send = Some(now);
-                self.sent.push_back(now);
+            if !queued.is_empty() {
+                match self.merge_queued(queued) {
+                    Some((merged, touched)) => {
+                        out.push(self.sync_frame(wire::update(merged), touched));
+                        self.last_send = Some(now);
+                    }
+                    None => {
+                        out.push(self.join_frame());
+                        return out;
+                    }
+                }
             }
+        }
+        if self.phase == Phase::Live
+            && self
+                .last_presence
+                .is_some_and(|t| now.saturating_duration_since(t) >= self.idle() / 3)
+        {
+            // A keepalive: the server removes members that stay silent.
+            self.presence_dirty = true;
         }
         let presence_due = self
             .last_presence
@@ -713,6 +1009,69 @@ impl Session {
             self.last_presence = Some(now);
         }
         out
+    }
+
+    /// Merge as many queued updates (oldest first) as fit in one message;
+    /// the rest go back to the outbox. A single update too large to send:
+    /// it is taken back (the session starts again from the server's copy,
+    /// writing this console's other unflushed edits again: join again) and
+    /// there is nothing to send.
+    fn merge_queued(&mut self, mut queued: Vec<(Vec<u8>, Touched)>) -> Option<(Vec<u8>, Touched)> {
+        let limit = self.limits.as_ref().map_or(usize::MAX, |l| {
+            l.max_update.saturating_sub(UPDATE_MARGIN).max(1)
+        });
+        let merge = |part: &[(Vec<u8>, Touched)], doc: &Doc| -> Vec<u8> {
+            if let [(one, _)] = part {
+                return one.clone();
+            }
+            let updates: Vec<&[u8]> = part.iter().map(|(u, _)| u.as_slice()).collect();
+            voltrus_collab::yrs::merge_updates_v1(&updates).unwrap_or_else(|_| {
+                // Unmergeable (never expected): the whole state.
+                wire::state(doc)
+            })
+        };
+        let mut take = queued.len();
+        let merged = loop {
+            let merged = merge(&queued[..take], &self.doc);
+            if merged.len() <= limit || take == 1 {
+                break merged;
+            }
+            take = take.div_ceil(2).min(take - 1);
+        };
+        let rest = queued.split_off(take);
+        if merged.len() > limit {
+            let mut others = self.unacked();
+            for (_, t) in &rest {
+                others.merge(t);
+            }
+            for (_, t) in &queued {
+                for object in t.0.keys() {
+                    forget(&mut others, object);
+                }
+            }
+            let mine = document::read(&self.doc.transact());
+            self.rebuild(others, mine, false);
+            self.phase = Phase::Joining { since: self.now };
+            self.notice = Some((
+                format!(
+                    "This change is too large to share live ({}, the limit is {}): it was taken back",
+                    size_text(merged.len()),
+                    size_text(limit)
+                ),
+                true,
+            ));
+            return None;
+        }
+        if let Ok(mut out) = self.outbox.lock() {
+            let newer = mem::take(&mut *out);
+            *out = rest;
+            out.extend(newer);
+        }
+        let mut touched = Touched::default();
+        for (_, t) in &queued {
+            touched.merge(t);
+        }
+        Some((merged, touched))
     }
 
     /// ⌘S in a session: write the pending edits to the draft now.

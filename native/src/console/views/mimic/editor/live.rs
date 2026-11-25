@@ -17,12 +17,15 @@ use voltrus_scada_native::runtime::{Command, Link};
 use voltrus_scada_native::ws_types::ServerMessage;
 use vt_ui::theme::*;
 
-use super::{Editor, State, edits, edits_ref, inspector};
+use super::{Editor, Leave, State, edits, edits_ref, inspector};
 use crate::console::Console;
 
 /// The session of an open editor, and the task that drives it.
 pub(super) struct Live {
     pub(super) session: Session,
+    /// Leaving once the server has written this console's edits (the
+    /// unsaved dialog's Save).
+    leaving: Option<Leave>,
     _task: Task<()>,
 }
 
@@ -56,6 +59,7 @@ pub(super) fn start(console: &mut Console, window: &mut Window, cx: &mut Context
     });
     editor.live = Some(Live {
         session,
+        leaving: None,
         _task: task,
     });
     console.send(Command::Design(join));
@@ -90,8 +94,12 @@ pub(super) fn tick(console: &mut Console, cx: &mut Context<Console>) -> bool {
     let selection = editor.selection.clone();
     live.session.set_presence(cursor, &selection, viewport);
     let frames = live.session.outgoing(now);
+    let notice = live.session.take_notice();
     for frame in frames {
         console.send(Command::Design(frame));
+    }
+    if let Some((text, error)) = notice {
+        console.show_toast(text, error, cx);
     }
     if changed {
         cx.notify();
@@ -159,6 +167,12 @@ pub(crate) fn on_server(
         .session
         .on_server(message, editor.history.present(), &tag_name);
     let joined = !was_active && live.session.active();
+    let leave =
+        if matches!(message, ServerMessage::DesignFlushed { .. }) && !live.session.unflushed() {
+            live.leaving.take()
+        } else {
+            None
+        };
     if let Some(layout) = reaction.layout {
         editor.history.rebase(layout);
         editor.prune();
@@ -174,6 +188,9 @@ pub(crate) fn on_server(
     }
     inspector::sync(console, window, cx);
     cx.notify();
+    if let Some(leave) = leave {
+        super::proceed(console, leave, window, cx);
+    }
 }
 
 /// The link went down or came back.
@@ -191,6 +208,29 @@ pub(crate) fn on_link(console: &mut Console, link: &Link) {
     if let Some(frame) = frame {
         console.send(Command::Design(frame));
     }
+}
+
+/// Whether the session holds edits the server has not written to the
+/// draft yet (leaving asks first).
+pub(super) fn unflushed(editor: &Editor) -> bool {
+    editor
+        .live
+        .as_ref()
+        .is_some_and(|live| live.session.unflushed())
+}
+
+/// The unsaved dialog's Save in a session: ask the server to write the
+/// edits now, and leave once a `DesignFlushed` covers them all.
+pub(super) fn save_and_leave(console: &mut Console, leave: Leave, cx: &mut Context<Console>) {
+    save(console, cx);
+    if let Some(live) = edits(console).and_then(|editor| editor.live.as_mut()) {
+        live.leaving = Some(leave);
+    }
+    console.show_toast(
+        "Writing your edits; the Designer closes once the server has them",
+        false,
+        cx,
+    );
 }
 
 /// The running session, when edits go through it.

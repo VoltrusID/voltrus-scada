@@ -13,6 +13,13 @@ use super::Storage;
 pub const MAX_BODY: usize = 4000;
 /// Most comments on one screen.
 pub const MAX_PER_SCREEN: i64 = 5000;
+/// Most `@name` mentions of one comment that are looked up and notified.
+pub const MAX_MENTIONS: usize = 10;
+/// Most comments one user writes per [`RATE_WINDOW_MS`].
+pub const MAX_COMMENTS_PER_WINDOW: i64 = 30;
+/// Most mention notifications one user's comments send per [`RATE_WINDOW_MS`].
+pub const MAX_MENTION_NOTES_PER_WINDOW: i64 = 30;
+pub const RATE_WINDOW_MS: i64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Comment {
@@ -72,13 +79,20 @@ pub enum CommentRefusal {
     Invalid(String),
     Forbidden(String),
     NotFound,
+    /// The screen does not exist.
+    NoScreen,
+    /// Too many comments in a short time.
+    TooMany(String),
 }
 
 impl std::fmt::Display for CommentRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CommentRefusal::Invalid(m) | CommentRefusal::Forbidden(m) => f.write_str(m),
+            CommentRefusal::Invalid(m)
+            | CommentRefusal::Forbidden(m)
+            | CommentRefusal::TooMany(m) => f.write_str(m),
             CommentRefusal::NotFound => f.write_str("comment not found"),
+            CommentRefusal::NoScreen => f.write_str("screen not found"),
         }
     }
 }
@@ -131,17 +145,23 @@ pub fn list(conn: &Connection, screen_id: &str, resolved: bool) -> Result<Vec<Co
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// `@name` tokens of `body` that name an existing user.
+/// `@name` tokens of `body` that name an existing user (the first
+/// [`MAX_MENTIONS`] names).
 pub fn mentions(conn: &Connection, body: &str) -> Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
+    let mut looked: Vec<&str> = Vec::new();
     for token in body.split(|c: char| c.is_whitespace() || ",;:()[]!?\"'".contains(c)) {
         let Some(name) = token.strip_prefix('@') else {
             continue;
         };
         let name = name.trim_end_matches('.');
-        if name.is_empty() || out.iter().any(|n| n == name) {
+        if name.is_empty() || name.len() > 128 || looked.contains(&name) {
             continue;
         }
+        if looked.len() >= MAX_MENTIONS {
+            break;
+        }
+        looked.push(name);
         let exists: Option<i64> = conn
             .query_row("SELECT id FROM users WHERE username = ?1", [name], |r| {
                 r.get(0)
@@ -167,6 +187,11 @@ fn check_body(body: &str) -> std::result::Result<String, CommentRefusal> {
     Ok(body.to_string())
 }
 
+/// Send `mention` notifications for comment `c` to `users`: once per user
+/// and comment (an edit that keeps or re-adds a name does not notify again),
+/// only to users who can open the comment (roles that may configure; not
+/// disabled), and at most [`MAX_MENTION_NOTES_PER_WINDOW`] per author and
+/// window (more are dropped).
 fn notify(conn: &Connection, author: &str, users: &[String], c: &Comment) -> Result<()> {
     let from: Option<i64> = conn
         .query_row("SELECT id FROM users WHERE username = ?1", [author], |r| {
@@ -176,32 +201,53 @@ fn notify(conn: &Connection, author: &str, users: &[String], c: &Comment) -> Res
     let Some(from) = from else {
         return Ok(());
     };
+    let now_ms = crate::timeutil::now_millis();
+    let mut sent: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM design_comment_mentions WHERE author = ?1 AND at_ms > ?2",
+        params![author, now_ms - RATE_WINDOW_MS],
+        |r| r.get(0),
+    )?;
     let mut snippet: String = c.body.chars().take(140).collect();
     if c.body.chars().count() > 140 {
         snippet.push('…');
     }
     for name in users {
-        if name == author {
+        if name == author || sent >= MAX_MENTION_NOTES_PER_WINDOW {
             continue;
         }
-        let to: Option<i64> = conn
-            .query_row("SELECT id FROM users WHERE username = ?1", [name], |r| {
-                r.get(0)
-            })
+        let to: Option<(i64, String, bool)> = conn
+            .query_row(
+                "SELECT id, role, disabled FROM users WHERE username = ?1",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)),
+            )
             .optional()?;
-        if let Some(to) = to {
-            conn.execute(
-                "INSERT INTO user_notifications (user_id, from_user_id, notification_type, message, reference_id, read, created_at)
-                 VALUES (?1, ?2, 'mention', ?3, ?4, 0, ?5)",
-                params![
-                    to,
-                    from,
-                    format!("{author} mentioned you on screen {}: {snippet}", c.screen_id),
-                    c.id,
-                    crate::timeutil::now_secs()
-                ],
-            )?;
+        let Some((to, role, disabled)) = to else {
+            continue;
+        };
+        if disabled || !crate::api::role_allows_configuration(&role) {
+            continue;
         }
+        let first = conn.execute(
+            "INSERT OR IGNORE INTO design_comment_mentions (comment_id, username, author, at_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![c.id, name, author, now_ms],
+        )? > 0;
+        if !first {
+            continue;
+        }
+        sent += 1;
+        conn.execute(
+            "INSERT INTO user_notifications (user_id, from_user_id, notification_type, message, reference_id, read, created_at)
+             VALUES (?1, ?2, 'mention', ?3, ?4, 0, ?5)",
+            params![
+                to,
+                from,
+                format!("{author} mentioned you on screen {}: {snippet}", c.screen_id),
+                c.id,
+                crate::timeutil::now_secs()
+            ],
+        )?;
     }
     Ok(())
 }
@@ -210,6 +256,24 @@ fn notify(conn: &Connection, author: &str, users: &[String], c: &Comment) -> Res
 /// a reply joins the root) and takes its pin.
 pub fn create(conn: &Connection, screen_id: &str, author: &str, n: &NewComment) -> Result<Comment> {
     let body = check_body(&n.body)?;
+    let screen_exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM devices WHERE id = ?1)",
+        [screen_id],
+        |r| r.get(0),
+    )?;
+    if !screen_exists {
+        bail!(CommentRefusal::NoScreen);
+    }
+    let recent: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM design_comments WHERE author = ?1 AND created_at_ms > ?2",
+        params![author, crate::timeutil::now_millis() - RATE_WINDOW_MS],
+        |r| r.get(0),
+    )?;
+    if recent >= MAX_COMMENTS_PER_WINDOW {
+        bail!(CommentRefusal::TooMany(format!(
+            "at most {MAX_COMMENTS_PER_WINDOW} comments a minute; try again shortly"
+        )));
+    }
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM design_comments WHERE screen_id = ?1",
         [screen_id],
@@ -307,17 +371,13 @@ pub fn update(
         }
         let body = check_body(body)?;
         let mentioned = mentions(conn, &body)?;
-        let new: Vec<String> = mentioned
-            .iter()
-            .filter(|m| !c.mentions.contains(m))
-            .cloned()
-            .collect();
         conn.execute(
             "UPDATE design_comments SET body = ?1, mentions = ?2, updated_at_ms = ?3 WHERE id = ?4",
             params![body, serde_json::to_string(&mentioned)?, now, id],
         )?;
         let c = get(conn, screen_id, id)?.context("comment just written")?;
-        notify(conn, actor, &new, &c)?;
+        // Only names not notified for this comment before get a notification.
+        notify(conn, actor, &mentioned, &c)?;
     }
     if let Some(resolved) = p.resolved {
         let root = c.parent_id.unwrap_or(c.id);
@@ -352,6 +412,11 @@ pub fn delete(
             "only its author or an administrator deletes a comment".into()
         ));
     }
+    conn.execute(
+        "DELETE FROM design_comment_mentions WHERE comment_id IN
+           (SELECT id FROM design_comments WHERE id = ?1 OR parent_id = ?1)",
+        [id],
+    )?;
     conn.execute(
         "DELETE FROM design_comments WHERE id = ?1 OR parent_id = ?1",
         [id],

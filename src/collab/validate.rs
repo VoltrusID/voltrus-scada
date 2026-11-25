@@ -2,7 +2,9 @@
 //! objects that changed since the last write must be rows a REST write or a
 //! project import would accept. Only what a change introduces is held
 //! against it: a binding to a tag deleted long ago does not stop someone
-//! from moving the widget.
+//! from moving the widget. Without a [`Ctx`] only the shape is checked
+//! (what each update gets as it arrives); references are checked when the
+//! edits are written.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -109,7 +111,13 @@ fn binding_refs(config: &Value) -> Vec<String> {
         .collect()
 }
 
-fn check_widget(w: &WidgetRow, prev: Option<&WidgetRow>, ctx: &Ctx) -> Result<(), String> {
+/// Whether a widget row may be written (`prev`: as it was last written).
+/// `ctx: None` checks its shape only.
+pub fn check_widget(
+    w: &WidgetRow,
+    prev: Option<&WidgetRow>,
+    ctx: Option<&Ctx>,
+) -> Result<(), String> {
     if !id_ok(&w.id) {
         return Err("bad widget id".into());
     }
@@ -144,6 +152,18 @@ fn check_widget(w: &WidgetRow, prev: Option<&WidgetRow>, ctx: &Ctx) -> Result<()
     if !sensors.is_array() {
         return Err("tag bindings are not a list".into());
     }
+    let Some(ctx) = ctx else {
+        for (prop, refs) in config_binding_refs(&config) {
+            if let Err(e) = refs {
+                return Err(if prop.is_empty() {
+                    format!("bindings: {e}")
+                } else {
+                    format!("binding of {prop}: {e}")
+                });
+            }
+        }
+        return Ok(());
+    };
     let prev_parsed = prev.map(|p| {
         (
             serde_json::from_str::<Value>(&p.config).unwrap_or(Value::Null),
@@ -203,7 +223,8 @@ fn check_widget(w: &WidgetRow, prev: Option<&WidgetRow>, ctx: &Ctx) -> Result<()
     Ok(())
 }
 
-fn check_connection(c: &ConnectionRow) -> Result<(), String> {
+/// Whether a connection row may be written (its shape).
+pub fn check_connection(c: &ConnectionRow) -> Result<(), String> {
     if !id_ok(&c.id) {
         return Err("bad connection id".into());
     }
@@ -233,7 +254,7 @@ fn check_connection(c: &ConnectionRow) -> Result<(), String> {
 
 /// The problems of `next` against `prev` (the rows last written): changed
 /// widgets and connections that fail, and connections whose ends are gone.
-pub fn check(prev: &Rows, next: &Rows, ctx: &Ctx) -> Vec<Problem> {
+pub fn check(prev: &Rows, next: &Rows, ctx: Option<&Ctx>) -> Vec<Problem> {
     let mut out = Vec::new();
     let prev_w: BTreeMap<&str, &WidgetRow> =
         prev.widgets.iter().map(|w| (w.id.as_str(), w)).collect();
@@ -356,7 +377,7 @@ mod tests {
             ],
             connections: vec![c("c", "a", "b")],
         };
-        assert_eq!(check(&prev, &next, &ctx()), vec![]);
+        assert_eq!(check(&prev, &next, Some(&ctx())), vec![]);
     }
 
     #[test]
@@ -384,7 +405,7 @@ mod tests {
                     widgets: vec![row],
                     connections: vec![],
                 },
-                &ctx(),
+                Some(&ctx()),
             );
             assert_eq!(got.len(), 1, "{want}");
             assert!(got[0].reason.contains(want), "{} vs {want}", got[0].reason);
@@ -399,7 +420,7 @@ mod tests {
                     widgets: vec![s],
                     connections: vec![]
                 },
-                &ctx()
+                Some(&ctx())
             )[0]
             .reason
             .contains("tag 77")
@@ -423,7 +444,7 @@ mod tests {
             widgets: vec![moved],
             connections: vec![],
         };
-        assert!(check(&prev, &next, &ctx()).is_empty());
+        assert!(check(&prev, &next, Some(&ctx())).is_empty());
     }
 
     #[test]
@@ -436,7 +457,7 @@ mod tests {
             widgets: vec![w("a", "{}")],
             connections: vec![c("c", "a", "b")],
         };
-        let p = check(&prev, &next, &ctx());
+        let p = check(&prev, &next, Some(&ctx()));
         assert_eq!(p.len(), 1);
         assert!(p[0].remove && p[0].kind == ObjectKind::Connection);
         // A connection to a new widget that fails goes with it.
@@ -444,10 +465,26 @@ mod tests {
             widgets: vec![w("a", "{}"), w("b", "{}"), w("x", "[]")],
             connections: vec![c("c", "a", "b"), c("d", "a", "x")],
         };
-        let p = check(&prev, &next, &ctx());
+        let p = check(&prev, &next, Some(&ctx()));
         assert_eq!(
             p.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(),
             vec!["x", "d"]
         );
+    }
+
+    #[test]
+    fn without_a_context_only_the_shape_counts() {
+        let prev = Rows::default();
+        let unknown = w("u", r#"{"bindings":{"label":{"kind":"tag","tag":"d/zz"}}}"#);
+        let next = Rows {
+            widgets: vec![unknown],
+            connections: vec![],
+        };
+        assert!(check(&prev, &next, None).is_empty());
+        let next = Rows {
+            widgets: vec![w("k", r#"{"bindings":{"label":{"kind":"nope"}}}"#)],
+            connections: vec![],
+        };
+        assert_eq!(check(&prev, &next, None).len(), 1);
     }
 }

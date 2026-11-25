@@ -165,6 +165,7 @@ pub async fn screen_history(
     Path(id): Path<String>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    flush_live(&state, &id).await;
     Ok(Json(list_changes(&state, q.filter(Some(id))).await?))
 }
 
@@ -204,6 +205,7 @@ pub async fn screen_blame(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    flush_live(&state, &id).await;
     let objects = state.storage.design_tx(move |c| h::blame(c, &id)).await?;
     Ok(Json(json!({"objects": objects})))
 }
@@ -301,6 +303,15 @@ fn version_error(e: anyhow::Error) -> AppError {
     AppError(e)
 }
 
+/// Before reading a screen's draft or history: write a live session's
+/// pending edits, so what is read is what the editors see
+/// (docs/collaboration.md).
+pub(crate) async fn flush_live(state: &AppState, screen: &str) {
+    if let Err(e) = state.collab.flush(state, screen).await {
+        tracing::warn!("collab: writing screen {screen} before a read failed: {e:#}");
+    }
+}
+
 pub async fn create_version(
     state: &AppState,
     user: &AuthUser,
@@ -308,6 +319,9 @@ pub async fn create_version(
     body: CreateVersion,
 ) -> Result<h::Version, AppError> {
     check_text(body.name.as_deref(), &body.message)?;
+    // A version holds what the editors see: a live session's pending edits
+    // are written first, and none lands while the version is recorded.
+    let _collab = state.collab.before_write(state, screen).await;
     let screen = screen.to_string();
     let username = user.username.clone();
     let v = state
@@ -406,6 +420,7 @@ pub async fn get_state(
     Query(q): Query<StateQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let at = q.at.unwrap_or_else(|| "draft".into());
+    flush_live(&state, &id).await;
     let found = state
         .storage
         .design_tx(move |c| h::resolve_state(c, &id, &at))
@@ -437,6 +452,7 @@ pub async fn diff(
     to: &str,
     with_yaml: bool,
 ) -> Result<Value, AppError> {
+    flush_live(state, screen).await;
     let (screen, from, to) = (screen.to_string(), from.to_string(), to.to_string());
     let out = state
         .storage

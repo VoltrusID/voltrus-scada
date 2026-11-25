@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::Storage;
 use anyhow::{Context, Result};
 
@@ -295,6 +297,70 @@ pub(crate) fn write_layout_rows(
     }
     let after = design_history::read_objects(tx, design_history::Scope::Screen(screen_id))?;
     design_history::append(tx, design_history::diff_objects(&before, &after), actor)
+}
+
+/// Write only the given rows of a screen inside the caller's transaction
+/// (`None`: remove the row), binding instance symbols of the widgets
+/// written, and log each object's change under the actor `actor_of` gives
+/// for it (`(object_type, object_id)`), one batch per actor. What a live
+/// collaboration session writes (docs/collaboration.md).
+pub(crate) fn write_some_rows(
+    tx: &rusqlite::Connection,
+    screen_id: &str,
+    equipment: Vec<(String, Option<ScadaEquipment>)>,
+    connections: Vec<(String, Option<ScadaConnection>)>,
+    actor_of: &dyn Fn(&str, &str) -> DesignActor,
+) -> Result<()> {
+    let before = design_history::read_objects(tx, design_history::Scope::Screen(screen_id))?;
+    let mut rows: Vec<ScadaEquipment> = equipment.iter().filter_map(|(_, r)| r.clone()).collect();
+    super::equipment_types::bind_rows(tx, &mut rows)?;
+    for (id, _) in &equipment {
+        tx.execute(
+            "DELETE FROM scada_equipment WHERE screen_id = ?1 AND equipment_id = ?2",
+            rusqlite::params![screen_id, id],
+        )
+        .context("Delete scada equipment failed")?;
+    }
+    for item in &rows {
+        tx.execute(
+            "INSERT INTO scada_equipment (screen_id, equipment_id, equipment_type, equipment_name, x, y, width, height, rotation, sensor_bindings, config)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params![screen_id, item.equipment_id, item.equipment_type, item.equipment_name,
+                              item.x, item.y, item.width, item.height, item.rotation, item.sensor_bindings, item.config],
+        )
+        .context("Insert scada equipment failed")?;
+    }
+    for (id, c) in &connections {
+        tx.execute(
+            "DELETE FROM scada_connections WHERE screen_id = ?1 AND connection_id = ?2",
+            rusqlite::params![screen_id, id],
+        )
+        .context("Delete scada connection failed")?;
+        if let Some(c) = c {
+            tx.execute(
+                "INSERT INTO scada_connections (screen_id, connection_id, from_equipment, to_equipment, waypoints, connection_type)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![screen_id, c.connection_id, c.from_equipment, c.to_equipment,
+                                  c.waypoints, c.connection_type],
+            )
+            .context("Insert scada connection failed")?;
+        }
+    }
+    let after = design_history::read_objects(tx, design_history::Scope::Screen(screen_id))?;
+    let mut by_actor: BTreeMap<(String, String), (DesignActor, Vec<design_history::ObjChange>)> =
+        BTreeMap::new();
+    for c in design_history::diff_objects(&before, &after) {
+        let actor = actor_of(&c.key.object_type, &c.key.object_id);
+        by_actor
+            .entry((actor.username.clone(), actor.operation.clone()))
+            .or_insert_with(|| (actor, Vec::new()))
+            .1
+            .push(c);
+    }
+    for (_, (actor, changes)) in by_actor {
+        design_history::append(tx, changes, &actor)?;
+    }
+    Ok(())
 }
 
 /// Outcome of [`Storage::save_scada_layout`].

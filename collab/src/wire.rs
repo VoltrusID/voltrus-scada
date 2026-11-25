@@ -41,6 +41,8 @@ pub enum Handled {
 #[derive(Debug)]
 pub enum SyncError {
     Decode(read::Error),
+    /// Refused before decoding ([`crate::guard`]).
+    Refused(crate::guard::Refused),
     Apply(String),
 }
 
@@ -48,6 +50,7 @@ impl std::fmt::Display for SyncError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SyncError::Decode(e) => write!(f, "malformed sync message: {e}"),
+            SyncError::Refused(e) => write!(f, "update refused: {e}"),
             SyncError::Apply(e) => write!(f, "update not applied: {e}"),
         }
     }
@@ -56,7 +59,10 @@ impl std::fmt::Display for SyncError {
 impl std::error::Error for SyncError {}
 
 /// Answer or apply one sync message. Updates are applied in a transaction
-/// with `origin`, so observers can tell who made them.
+/// with `origin`, so observers can tell who made them. An update is checked
+/// ([`crate::guard::check_update`]) before it is decoded: one that nests
+/// values too deeply or holds what a screen document never does is refused
+/// whole and nothing is applied.
 pub fn handle(doc: &Doc, origin: &str, msg: SyncMessage) -> Result<Handled, SyncError> {
     match msg {
         SyncMessage::SyncStep1(sv) => {
@@ -64,6 +70,7 @@ pub fn handle(doc: &Doc, origin: &str, msg: SyncMessage) -> Result<Handled, Sync
             Ok(Handled::Reply(SyncMessage::SyncStep2(diff).encode_v1()))
         }
         SyncMessage::SyncStep2(u) | SyncMessage::Update(u) => {
+            crate::guard::check_update(&u).map_err(SyncError::Refused)?;
             let update = Update::decode_v1(&u).map_err(SyncError::Decode)?;
             let mut txn = doc.transact_mut_with(Origin::from(origin));
             txn.apply_update(update)
@@ -164,6 +171,30 @@ pub(crate) mod tests {
         assert!(decode(&[9, 9, 9]).is_err());
         assert!(decode(&[2, 3, 1, 2, 3]).is_ok_and(|m| handle(&Doc::new(), "x", m).is_err()));
         assert!(decode_awareness(&[200, 200, 200, 200, 200, 200]).is_err());
+    }
+
+    /// The review's stack bomb: one frame used to abort the server.
+    #[test]
+    fn a_stack_bomb_is_refused_not_a_crash() {
+        let bomb = crate::guard::tests::stack_bomb();
+        let msg = update(bomb);
+        assert!(msg.len() < 256 * 1024);
+        let doc = Doc::new();
+        let before = state(&doc);
+        // On a small stack, as a tokio worker's, so a recursive decode
+        // would overflow.
+        let r = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || {
+                matches!(
+                    handle(&doc, "x", decode(&msg).unwrap()),
+                    Err(SyncError::Refused(_))
+                ) && state(&doc) == before
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(r);
     }
 
     #[test]

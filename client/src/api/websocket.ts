@@ -52,7 +52,7 @@ export interface AlarmUpdateEvent {
 }
 
 /** Live collaboration frames from the server (docs/collaboration.md). */
-export interface DesignLimits { max_update: number; max_rate: number; max_doc: number; max_awareness: number; flush_ms: number }
+export interface DesignLimits { max_update: number; max_rate: number; max_doc: number; max_awareness: number; flush_ms: number; idle_ms?: number }
 export interface DesignUser { user: string; color: string }
 export interface DesignSessionInfo { screen: string; users: DesignUser[] }
 export type DesignServerMessage =
@@ -61,7 +61,7 @@ export type DesignServerMessage =
   | { type: 'DesignAwareness'; screen: string; data: Uint8Array }
   | { type: 'DesignError'; screen: string; code: string; message: string; reload: boolean }
   | { type: 'DesignRejected'; screen: string; objects: { object_type: string; object_id: string; reason: string }[] }
-  | { type: 'DesignFlushed'; screen: string; seq: number; at_ms: number; users: string[] }
+  | { type: 'DesignFlushed'; screen: string; seq: number; at_ms: number; users: string[]; acked?: number }
   | { type: 'DesignSessions'; sessions: DesignSessionInfo[] }
   | { type: 'DesignComment'; screen: string; event: 'created' | 'updated' | 'deleted'; comment: Record<string, unknown> }
 export type DesignClientMessage =

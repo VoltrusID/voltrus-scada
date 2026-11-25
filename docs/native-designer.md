@@ -240,8 +240,18 @@ What the console does (`native/src/designer/collab.rs`, the editor glue in
   and the merged update goes out (within the server's rate). Remote updates
   come back as a new layout; the selection, tool and gesture stay. ⌘S asks
   the server to write the draft now (`DesignFlush`) instead of a `PUT`; the
-  bar says *Live · with ana, bob*, there are no unsaved changes to ask about
-  when leaving, and Done sends `DesignLeave`.
+  bar says *Live · with ana, bob*, and Done sends `DesignLeave`. Updates go
+  out within `max(1, max_rate − 10)` sync messages a second (step messages
+  count), each under `max_update − 64` bytes (fewer queued updates are merged
+  per frame; one edit too large to send is taken back with an error).
+  Presence goes out at least every `idle_ms / 3` as a keepalive.
+* **Unwritten edits.** Every `DesignSync` the console sends is numbered from
+  its latest `DesignJoined`; each local, undo or redo edit records the
+  objects and fields it changed (`document::touched_between`) and that
+  record rides with its message until a `DesignFlushed` whose `acked`
+  covers the number. Leaving while anything is queued, sent but not
+  acknowledged, or offline opens *Edits not written yet*: Save flushes and
+  closes once the write covers everything, *Leave anyway* leaves.
 * **Undo** is `yrs`'s `UndoManager` scoped to the local origin: ⌘Z takes
   back this console's edits only, never someone else's. A new editor step
   starts a new undo item; the steps of one drag or one field's typing (one
@@ -251,11 +261,21 @@ What the console does (`native/src/designer/collab.rs`, the editor glue in
   initials in the bar, their cursors as coloured arrows with their names on
   the stage and their selections as outlines in their colour. Following
   another person's view is web-only for now.
-* **Offline and restarts.** While the link is down edits go on into the
-  document; back on the same session the y-sync exchange merges both sides.
-  When the server lost the session meanwhile (a restart: new epoch), the
-  console takes the server's document and writes the objects it changed
-  while offline into it again.
+* **Offline, dropped and restarts.** While the link is down edits go on
+  into the document; back on the same session the y-sync exchange merges
+  both sides. When the server drops the console from the session
+  (`DesignError` `resync`, `not_joined`, `idle` or `rate_limited`), it joins
+  again with the same document and epoch (at once, 1 s after
+  `rate_limited`; repeated drops back off up to 32 s), and its unwritten
+  edits ride on the step 2 it sends. When the server lost the session (a
+  restart: new epoch, or `resync: true`), the console takes the server's
+  document and writes every edit not yet acknowledged, sent or not, into it
+  again field by field (`document::replay`): an object someone else deleted
+  stays deleted and their edits to other fields stand. It says *The live
+  session restarted; N unsaved changes were applied again*. Incoming updates
+  pass the same structural check as on the server
+  (`voltrus_collab::guard`), so a deeply nested update is refused, not a
+  crash.
 * **Older servers** (no answer to `DesignJoin` within 5 s), collaboration
   turned off (`DesignError disabled`) or not allowed: the session is off and
   the editor saves whole layouts with the conflict check, as before.
@@ -264,8 +284,11 @@ Tests (no server, no GPU): `designer::collab::tests` runs consoles against
 a relay built from the shared crate (convergence of concurrent edits on
 different and on the same fields, remote updates, undo of own edits only,
 one drag as one undo item, work from before joining, offline edits through
-a reconnect and through a server restart, presence both ways, batching,
-fallbacks); the editor's `a_live_session_shares_edits_and_saves_through_the_server`
+a reconnect and through a server restart, sent but unwritten edits through a
+restart, acknowledgement by message number, rejoining after a drop and the
+back-off, pacing and splitting, an update too large to send, the keepalive,
+a stack bomb from the server, a reorder rewriting one index, presence both
+ways, batching, fallbacks); the editor's `a_live_session_shares_edits_and_saves_through_the_server`
 and `without_collaboration_the_editor_saves_layouts` drive the real editor;
 `tests/ws_roundtrip.rs` checks the frames against the server's
 `ws_types.rs`.

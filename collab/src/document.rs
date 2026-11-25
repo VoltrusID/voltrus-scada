@@ -562,7 +562,7 @@ fn connection_prelim(c: &Connection) -> MapPrelim {
 
 /// One field write of a widget.
 #[derive(Clone, Debug, PartialEq)]
-enum WidgetField {
+pub enum WidgetField {
     Top(&'static str, Value),
     /// A config key set (`Some`) or removed (`None`).
     Config(String, Option<Value>),
@@ -582,8 +582,54 @@ fn top_fields(w: &Widget) -> [(&'static str, Value); 7] {
     ]
 }
 
+impl WidgetField {
+    /// The field's path: `x`, `config.<key>`, `config.bindings.<prop>`.
+    pub fn path(&self) -> String {
+        match self {
+            WidgetField::Top(k, _) => (*k).to_string(),
+            WidgetField::Config(k, _) => format!("config.{k}"),
+            WidgetField::Binding(p, _) => format!("config.{BINDINGS}.{p}"),
+        }
+    }
+
+    /// `w` with this write made.
+    pub fn apply_to(&self, w: &mut Widget) {
+        match self {
+            WidgetField::Top(k, v) => {
+                let n = || v.as_f64().unwrap_or(0.0);
+                let t = || v.as_str().unwrap_or_default().to_string();
+                match *k {
+                    "type" => w.kind = t(),
+                    "name" => w.name = t(),
+                    "x" => w.x = n(),
+                    "y" => w.y = n(),
+                    "width" => w.width = n(),
+                    "height" => w.height = n(),
+                    "sensors" => w.sensors = v.clone(),
+                    _ => {}
+                }
+            }
+            WidgetField::Config(k, Some(v)) => {
+                w.config.insert(k.clone(), v.clone());
+            }
+            WidgetField::Config(k, None) => {
+                w.config.remove(k);
+            }
+            WidgetField::Binding(p, v) => {
+                let mut b = w.bindings().unwrap_or_default();
+                match v {
+                    Some(v) => b.insert(p.clone(), v.clone()),
+                    None => b.remove(p),
+                };
+                w.config.insert(BINDINGS.into(), Value::Object(b));
+                drop_empty_bindings(&mut w.config);
+            }
+        }
+    }
+}
+
 /// The writes that turn `from` into `to`, field by field.
-fn widget_changes(from: &Widget, to: &Widget) -> Vec<WidgetField> {
+pub fn widget_changes(from: &Widget, to: &Widget) -> Vec<WidgetField> {
     let mut out = Vec::new();
     for ((k, a), (_, b)) in top_fields(from).into_iter().zip(top_fields(to)) {
         if a != b {
@@ -654,7 +700,8 @@ fn apply_widget_changes(
     }
 }
 
-fn connection_changes(from: &Connection, to: &Connection) -> Vec<(&'static str, Value)> {
+/// The fields that differ between two connections, with `to`'s values.
+pub fn connection_changes(from: &Connection, to: &Connection) -> Vec<(&'static str, Value)> {
     let f = |c: &Connection| {
         [
             ("from", Value::String(c.from.clone())),
@@ -669,6 +716,46 @@ fn connection_changes(from: &Connection, to: &Connection) -> Vec<(&'static str, 
         .filter(|((_, a), (_, b))| a != b)
         .map(|(_, (k, b))| (k, b))
         .collect()
+}
+
+impl Connection {
+    /// `self` with one field (as [`connection_changes`] names it) set.
+    pub fn with_field(&self, k: &str, v: &Value) -> Connection {
+        let mut c = self.clone();
+        let t = || v.as_str().unwrap_or_default().to_string();
+        match k {
+            "from" => c.from = t(),
+            "to" => c.to = t(),
+            "type" => c.kind = t(),
+            "waypoints" => c.waypoints = v.clone(),
+            _ => {}
+        }
+        c
+    }
+}
+
+/// Write some fields of a widget that is in the document (nothing when it
+/// is not).
+pub fn write_widget_fields(txn: &mut TransactionMut, id: &str, changes: &[WidgetField]) {
+    let widgets = txn.get_or_insert_map(WIDGETS);
+    if let Some(Out::YMap(m)) = widgets.get(txn, id) {
+        let (current, _) = read_widget(txn, &m);
+        let mut target = current;
+        for c in changes {
+            c.apply_to(&mut target);
+        }
+        apply_widget_changes(txn, &m, changes, &target);
+    }
+}
+
+/// Write some fields of a connection that is in the document.
+pub fn write_connection_fields(txn: &mut TransactionMut, id: &str, changes: &[(&str, Value)]) {
+    let conns = txn.get_or_insert_map(CONNECTIONS);
+    if let Some(Out::YMap(m)) = conns.get(txn, id) {
+        for (k, v) in changes {
+            m.insert(txn, *k, json_to_any(v));
+        }
+    }
 }
 
 /// Fill an empty document with `rows`.
@@ -810,15 +897,318 @@ pub fn apply_rows(txn: &mut TransactionMut, before: &Rows, after: &Rows) -> Appl
     }
     let order_after = row_order(&after.widgets);
     if order_after != row_order(&before.widgets) {
-        let keys = fractional::n_keys_between(None, None, order_after.len());
-        for (id, key) in order_after.iter().zip(keys) {
-            if let Some(Out::YMap(m)) = widgets.get(txn, id) {
-                m.insert(txn, "zi", key);
-            }
-        }
+        restack(txn, &order_after);
         applied.reordered = true;
     }
     applied
+}
+
+/// Indexes into `seq` of one longest strictly increasing subsequence.
+fn lis(seq: &[usize]) -> BTreeSet<usize> {
+    let mut tails: Vec<usize> = Vec::new();
+    let mut prev: Vec<Option<usize>> = vec![None; seq.len()];
+    for (i, v) in seq.iter().enumerate() {
+        let at = tails.partition_point(|&t| seq[t] < *v);
+        if at > 0 {
+            prev[i] = Some(tails[at - 1]);
+        }
+        if at == tails.len() {
+            tails.push(i);
+        } else {
+            tails[at] = i;
+        }
+    }
+    let mut out = BTreeSet::new();
+    let mut k = tails.last().copied();
+    while let Some(i) = k {
+        out.insert(i);
+        k = prev[i];
+    }
+    out
+}
+
+/// Give the widgets of the document the stacking `order` (ids not in the
+/// document are skipped, widgets not in `order` keep their index). Only
+/// widgets whose place changed get a new index: those already in order (the
+/// longest such run) keep theirs, as the web Designer's `writeDiff` does.
+pub fn restack(txn: &mut TransactionMut, order: &[String]) {
+    let widgets = txn.get_or_insert_map(WIDGETS);
+    let screen = read(txn);
+    let ids: Vec<&String> = order
+        .iter()
+        .filter(|id| screen.widgets.contains_key(*id))
+        .collect();
+    let current: BTreeMap<&str, usize> = screen
+        .order()
+        .into_iter()
+        .enumerate()
+        .map(|(i, id)| {
+            (
+                screen
+                    .widgets
+                    .get_key_value(&id)
+                    .map(|(k, _)| k.as_str())
+                    .unwrap_or(""),
+                i,
+            )
+        })
+        .collect();
+    let positions: Vec<usize> = ids
+        .iter()
+        .map(|id| current.get(id.as_str()).copied().unwrap_or(0))
+        .collect();
+    let fixed = lis(&positions);
+    let zi_of = |id: &str| screen.widgets.get(id).map(|(_, z)| z.clone());
+    let mut i = 0;
+    while i < ids.len() {
+        if fixed.contains(&i) {
+            i += 1;
+            continue;
+        }
+        let mut j = i;
+        while j < ids.len() && !fixed.contains(&j) {
+            j += 1;
+        }
+        let lo = if i > 0 { zi_of(ids[i - 1]) } else { None };
+        let hi = ids.get(j).and_then(|id| zi_of(id));
+        let keys = fractional::n_keys_between(lo.as_deref(), hi.as_deref(), j - i);
+        for (id, key) in ids[i..j].iter().zip(keys) {
+            if let Some(Out::YMap(m)) = widgets.get(txn, id.as_str()) {
+                m.insert(txn, "zi", key);
+            }
+        }
+        i = j;
+    }
+}
+
+/// Spread the stacking indexes evenly again when one grew longer than
+/// `max_len` (many inserts at one place) or is not a valid index. Whether
+/// anything was rewritten.
+pub fn rebalance_zi(txn: &mut TransactionMut, max_len: usize) -> bool {
+    let screen = read(txn);
+    if screen
+        .widgets
+        .values()
+        .all(|(_, zi)| zi.len() <= max_len && fractional::is_valid(zi))
+    {
+        return false;
+    }
+    let order = screen.order();
+    let keys = fractional::n_keys_between(None, None, order.len());
+    let widgets = txn.get_or_insert_map(WIDGETS);
+    for (id, key) in order.iter().zip(keys) {
+        if let Some(Out::YMap(m)) = widgets.get(txn, id.as_str())
+            && screen.widgets.get(id).map(|(_, z)| z.as_str()) != Some(key.as_str())
+        {
+            m.insert(txn, "zi", key);
+        }
+    }
+    true
+}
+
+/// The keys a widget map holds.
+pub const WIDGET_KEYS: &[&str] = &[
+    "type", "name", "x", "y", "width", "height", "sensors", "zi", "config",
+];
+/// The keys a connection map holds.
+pub const CONNECTION_KEYS: &[&str] = &["from", "to", "type", "waypoints"];
+
+/// Remove what a screen document never holds from the given objects (all
+/// when `None`): entries of the roots that are not maps, and keys of
+/// widgets and connections other than [`WIDGET_KEYS`] and
+/// [`CONNECTION_KEYS`]. The number of entries removed.
+pub fn prune(txn: &mut TransactionMut, only: Option<&BTreeSet<(ObjectKind, String)>>) -> usize {
+    let mut removed = 0;
+    for (root, kind, allowed) in [
+        (WIDGETS, ObjectKind::Widget, WIDGET_KEYS),
+        (CONNECTIONS, ObjectKind::Connection, CONNECTION_KEYS),
+    ] {
+        let map = txn.get_or_insert_map(root);
+        let ids: Vec<String> = match only {
+            Some(set) => set
+                .iter()
+                .filter(|(k, _)| *k == kind)
+                .map(|(_, id)| id.clone())
+                .collect(),
+            None => map.keys(txn).map(str::to_string).collect(),
+        };
+        for id in ids {
+            match map.get(txn, &id) {
+                None => {}
+                Some(Out::YMap(m)) => {
+                    let junk: Vec<String> = m
+                        .keys(txn)
+                        .filter(|k| !allowed.contains(k))
+                        .map(str::to_string)
+                        .collect();
+                    for k in junk {
+                        m.remove(txn, &k);
+                        removed += 1;
+                    }
+                }
+                Some(_) => {
+                    map.remove(txn, &id);
+                    removed += 1;
+                }
+            }
+        }
+    }
+    removed
+}
+
+// ── Replaying a client's own edits ──
+
+/// What of one object a client changed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Fields {
+    /// Created or removed it.
+    Whole,
+    /// These fields ([`WidgetField::path`], `zi`, or a connection's field).
+    Some(BTreeSet<String>),
+}
+
+/// The objects and fields a client changed (and has not seen written yet),
+/// to be written again into a rebuilt document ([`replay`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Touched(pub BTreeMap<(ObjectKind, String), Fields>);
+
+impl Touched {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Add `other`'s objects and fields.
+    pub fn merge(&mut self, other: &Touched) {
+        for (k, f) in &other.0 {
+            self.add(k.0, &k.1, f.clone());
+        }
+    }
+
+    fn add(&mut self, kind: ObjectKind, id: &str, f: Fields) {
+        let e = self
+            .0
+            .entry((kind, id.to_string()))
+            .or_insert(Fields::Some(BTreeSet::new()));
+        match (e, f) {
+            (Fields::Whole, _) => {}
+            (e, Fields::Whole) => *e = Fields::Whole,
+            (Fields::Some(a), Fields::Some(b)) => a.extend(b),
+        }
+    }
+}
+
+/// What changed between two reads of a document, field by field.
+pub fn touched_between(before: &Screen, after: &Screen) -> Touched {
+    let mut t = Touched::default();
+    let ids: BTreeSet<&String> = before.widgets.keys().chain(after.widgets.keys()).collect();
+    for id in ids {
+        match (before.widgets.get(id), after.widgets.get(id)) {
+            (Some((a, az)), Some((b, bz))) => {
+                let mut f: BTreeSet<String> =
+                    widget_changes(a, b).iter().map(WidgetField::path).collect();
+                if az != bz {
+                    f.insert("zi".into());
+                }
+                if !f.is_empty() {
+                    t.add(ObjectKind::Widget, id, Fields::Some(f));
+                }
+            }
+            (None, None) => {}
+            _ => t.add(ObjectKind::Widget, id, Fields::Whole),
+        }
+    }
+    let ids: BTreeSet<&String> = before
+        .connections
+        .keys()
+        .chain(after.connections.keys())
+        .collect();
+    for id in ids {
+        match (before.connections.get(id), after.connections.get(id)) {
+            (Some(a), Some(b)) => {
+                let f: BTreeSet<String> = connection_changes(a, b)
+                    .into_iter()
+                    .map(|(k, _)| k.to_string())
+                    .collect();
+                if !f.is_empty() {
+                    t.add(ObjectKind::Connection, id, Fields::Some(f));
+                }
+            }
+            (None, None) => {}
+            _ => t.add(ObjectKind::Connection, id, Fields::Whole),
+        }
+    }
+    t
+}
+
+/// Write a client's own edits (`touched`, with their values in `mine`, the
+/// client's copy) into a document rebuilt from the rows, field by field: an
+/// object the client created comes back, one it removed goes, and only the
+/// fields it changed are written, so others' edits to other fields stand.
+/// An object someone else removed is not brought back for a field edit.
+pub fn replay(txn: &mut TransactionMut, touched: &Touched, mine: &Screen) {
+    for ((kind, id), fields) in &touched.0 {
+        match kind {
+            ObjectKind::Widget => {
+                let widgets = txn.get_or_insert_map(WIDGETS);
+                let there = matches!(widgets.get(txn, id), Some(Out::YMap(_)));
+                match (mine.widgets.get(id), fields, there) {
+                    (Some((w, zi)), Fields::Whole, _) => put_widget(txn, id, Some(w), Some(zi)),
+                    (None, Fields::Whole, true) => {
+                        widgets.remove(txn, id);
+                    }
+                    (Some((w, zi)), Fields::Some(paths), true) => {
+                        let Some(Out::YMap(m)) = widgets.get(txn, id) else {
+                            continue;
+                        };
+                        let (current, _) = read_widget(txn, &m);
+                        let changes: Vec<WidgetField> = widget_changes(&current, w)
+                            .into_iter()
+                            .filter(|c| paths.contains(&c.path()) || covers(paths, &c.path()))
+                            .collect();
+                        write_widget_fields(txn, id, &changes);
+                        if paths.contains("zi") {
+                            m.insert(txn, "zi", zi.as_str());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            ObjectKind::Connection => {
+                let conns = txn.get_or_insert_map(CONNECTIONS);
+                let there = matches!(conns.get(txn, id), Some(Out::YMap(_)));
+                match (mine.connections.get(id), fields, there) {
+                    (Some(c), Fields::Whole, _) => put_connection(txn, id, Some(c)),
+                    (None, Fields::Whole, true) => {
+                        conns.remove(txn, id);
+                    }
+                    (Some(c), Fields::Some(paths), true) => {
+                        let Some(Out::YMap(m)) = conns.get(txn, id) else {
+                            continue;
+                        };
+                        let current = read_connection(txn, &m);
+                        let changes: Vec<(&str, Value)> = connection_changes(&current, c)
+                            .into_iter()
+                            .filter(|(k, _)| paths.contains(*k))
+                            .collect();
+                        write_connection_fields(txn, id, &changes);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// Whether `paths` names a parent of `path` (`config.bindings` covers
+/// `config.bindings.label`).
+fn covers(paths: &BTreeSet<String>, path: &str) -> bool {
+    paths.iter().any(|p| {
+        path.len() > p.len() && path.starts_with(p.as_str()) && path.as_bytes()[p.len()] == b'.'
+    })
 }
 
 #[cfg(test)]
@@ -1012,5 +1402,151 @@ pub(crate) mod tests {
             any_to_json(&json_to_any(&serde_json::json!({"a": [1, 2.5]}))),
             serde_json::json!({"a": [1, 2.5]})
         );
+    }
+
+    fn zis(doc: &Doc) -> BTreeMap<String, String> {
+        read(&doc.transact())
+            .widgets
+            .into_iter()
+            .map(|(id, (_, z))| (id, z))
+            .collect()
+    }
+
+    #[test]
+    fn a_reorder_rewrites_only_the_moved_widget() {
+        let rows = Rows {
+            widgets: (0..6)
+                .map(|i| wrow(&format!("w{i}"), 0.0, &format!(r#"{{"z":{i}}}"#)))
+                .collect(),
+            connections: vec![],
+        };
+        let doc = doc_of(&rows);
+        let before = zis(&doc);
+        // w1 to the top.
+        let mut after = rows.clone();
+        after.widgets[1].config = r#"{"z":9}"#.into();
+        let applied = apply_rows(&mut doc.transact_mut(), &rows, &after);
+        assert!(applied.reordered);
+        let now = zis(&doc);
+        let moved: Vec<&String> = now.keys().filter(|id| now[*id] != before[*id]).collect();
+        assert_eq!(moved, vec!["w1"]);
+        assert_eq!(
+            read(&doc.transact()).order(),
+            vec!["w0", "w2", "w3", "w4", "w5", "w1"]
+        );
+    }
+
+    #[test]
+    fn long_stacking_indexes_are_rebalanced() {
+        let rows = sample();
+        let doc = doc_of(&rows);
+        assert!(!rebalance_zi(&mut doc.transact_mut(), 8));
+        {
+            let mut txn = doc.transact_mut();
+            let w = txn.get_or_insert_map(WIDGETS);
+            if let Some(Out::YMap(m)) = w.get(&txn, "a") {
+                m.insert(&mut txn, "zi", "V".repeat(40) + "1");
+            }
+        }
+        let order = read(&doc.transact()).order();
+        assert!(rebalance_zi(&mut doc.transact_mut(), 8));
+        assert_eq!(read(&doc.transact()).order(), order);
+        assert!(zis(&doc).values().all(|z| z.len() <= 8));
+    }
+
+    #[test]
+    fn prune_removes_junk() {
+        let rows = sample();
+        let doc = doc_of(&rows);
+        {
+            let mut txn = doc.transact_mut();
+            let w = txn.get_or_insert_map(WIDGETS);
+            w.insert(&mut txn, "junk", "not a map");
+            if let Some(Out::YMap(m)) = w.get(&txn, "a") {
+                m.insert(&mut txn, "padding", "x".repeat(1000));
+            }
+        }
+        let screen = read(&doc.transact());
+        assert_eq!(prune(&mut doc.transact_mut(), None), 2);
+        assert_eq!(read(&doc.transact()), screen);
+        let txn = doc.transact();
+        let w = txn.get_map(WIDGETS).unwrap();
+        assert!(w.get(&txn, "junk").is_none());
+    }
+
+    fn replica(of: &Doc) -> Doc {
+        use yrs::updates::decoder::Decode;
+        let d = Doc::new();
+        let u = of
+            .transact()
+            .encode_state_as_update_v1(&yrs::StateVector::default());
+        d.transact_mut()
+            .apply_update(yrs::Update::decode_v1(&u).unwrap())
+            .unwrap();
+        d
+    }
+
+    #[test]
+    fn replay_is_field_level_and_respects_deletes() {
+        let rows = Rows {
+            widgets: vec![
+                wrow("a", 0.0, r#"{"z":0}"#),
+                wrow("b", 0.0, r#"{"z":1}"#),
+                wrow("gone", 0.0, r#"{"z":2}"#),
+            ],
+            connections: vec![crow("c", "a", "b")],
+        };
+        // The client's copy: a moved, a label on b, a new widget n, c
+        // removed, gone's width changed.
+        let client = doc_of(&rows);
+        let before = read(&client.transact());
+        {
+            let mut txn = client.transact_mut();
+            let s = read(&txn);
+            let mut a = s.widgets["a"].0.clone();
+            a.x = 50.0;
+            put_widget(&mut txn, "a", Some(&a), None);
+            let mut b = s.widgets["b"].0.clone();
+            b.config.insert("label".into(), "B".into());
+            put_widget(&mut txn, "b", Some(&b), None);
+            put_widget(&mut txn, "n", Some(&a), None);
+            put_connection(&mut txn, "c", None);
+            let mut g = s.widgets["gone"].0.clone();
+            g.width = 1.0;
+            put_widget(&mut txn, "gone", Some(&g), None);
+        }
+        let mine = read(&client.transact());
+        let touched = touched_between(&before, &mine);
+        assert_eq!(touched.0[&(ObjectKind::Widget, "n".into())], Fields::Whole);
+        assert_eq!(
+            touched.0[&(ObjectKind::Widget, "a".into())],
+            Fields::Some(["x".to_string()].into())
+        );
+        // The rebuilt server document: someone else moved b and a down,
+        // removed gone.
+        let server = doc_of(&rows);
+        {
+            let mut txn = server.transact_mut();
+            let s = read(&txn);
+            let mut b = s.widgets["b"].0.clone();
+            b.y = 99.0;
+            put_widget(&mut txn, "b", Some(&b), None);
+            let mut a = s.widgets["a"].0.clone();
+            a.y = 77.0;
+            put_widget(&mut txn, "a", Some(&a), None);
+            put_widget(&mut txn, "gone", None, None);
+        }
+        let other = replica(&server);
+        replay(&mut server.transact_mut(), &touched, &mine);
+        let out = read(&server.transact());
+        assert_eq!((out.widgets["a"].0.x, out.widgets["a"].0.y), (50.0, 77.0));
+        assert_eq!(out.widgets["b"].0.y, 99.0);
+        assert_eq!(out.widgets["b"].0.config["label"], "B");
+        assert!(out.widgets.contains_key("n"));
+        assert!(!out.widgets.contains_key("gone"), "not brought back");
+        assert!(!out.connections.contains_key("c"));
+        // The replay is an ordinary update for the others.
+        crate::wire::tests::exchange(&server, &other);
+        assert_eq!(read(&other.transact()), out);
     }
 }

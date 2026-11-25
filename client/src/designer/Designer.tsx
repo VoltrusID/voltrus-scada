@@ -143,15 +143,25 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const hasPhase4 = status?.collaboration != null
   const wantCollab = !!status?.collaboration?.enabled && !collabFallback && canConfigure
   const nameOf = useCallback((w: WidgetInstance) => sensors.find(s => s.id === w.sensorId)?.name || widgetTitle(w), [sensors])
+  const lastRejoinToast = useRef(0)
   const collab = useCollab(screen, wantCollab, nameOf, {
     onFlushed: m => {
       baseSeq.current = m.seq
+      // Only an acknowledgement: nothing was written.
+      if (!m.users.length) return
       void invalidateDesign(qc, screen)
       void qc.invalidateQueries({ queryKey: queryKeys.scadaLayout(screen) })
     },
     onRejected: m => toast.error(`Not saved: ${m.objects.map(o => `${o.object_id} (${o.reason})`).join('; ')}. ${m.objects.length === 1 ? 'It was' : 'They were'} put back.`),
     onComment: m => applyCommentEvent(qc, screen, m.event, m.comment as unknown as DesignComment),
-    onError: e => { if (e.code !== 'resync') toast.error(`Live editing: ${e.message}`) },
+    onError: e => toast.error(`Live editing: ${e.message}`),
+    onRejoin: () => {
+      const now = Date.now()
+      if (now - lastRejoinToast.current < 30_000) return
+      lastRejoinToast.current = now
+      toast.info('Live editing: reconnecting to the session; your edits are kept')
+    },
+    onReplayed: ({ objects }) => toast.info(`The live session restarted; your unsaved changes to ${objects} object${objects === 1 ? '' : 's'} were applied again`),
     onFallback: e => {
       setCollabFallback(e.code)
       if (e.code === 'protocol') toast.error(`${e.message}`)
@@ -437,7 +447,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
       const screenOf = (l: { search: unknown }) => (l.search as { screen?: string } | undefined)?.screen ?? 'all'
       return !(next.pathname === current.pathname && screenOf(next) === screenOf(current))
     },
-    enableBeforeUnload: () => dirtyRef.current || (liveRef.current && collabRef.current.status !== 'live' && collabRef.current.pending),
+    enableBeforeUnload: () => dirtyRef.current || (liveRef.current && collabRef.current.hasUnsaved()),
     withResolver: true,
   })
 
@@ -1072,8 +1082,8 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
       )}
 
       {publishOpen && (
-        <PublishDialog screen={screen} status={status} versions={versions} version={publishOpen.version} dirty={dirty}
-          save={() => save()} baseSeq={() => (liveRef.current ? null : baseSeq.current)} onClose={() => setPublishOpen(null)}
+        <PublishDialog screen={screen} status={status} versions={versions} version={publishOpen.version} dirty={dirty} live={live}
+          save={() => save()} baseSeq={() => baseSeq.current} onClose={() => setPublishOpen(null)}
           onDone={() => { void invalidateDesign(qc, screen); invalidate(screen) }} />
       )}
 

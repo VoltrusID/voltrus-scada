@@ -26,14 +26,36 @@ What changes for people and API clients:
   `base_seq` or `base_revision` loaded before those edits gets a 409 (as if
   someone had saved), and a write without a base lands on top of them. The
   editors see the write at once. Revert and publish behave the same way.
+* **Older editors during a session.** A web Designer or native console from
+  before this release saves whole layouts with the base it loaded. While
+  someone edits that screen live, the session writes every few seconds, so
+  such a save almost always gets a 409 and its conflict dialog; reload it
+  (or update the console) to join the session instead.
+* **Reads and versions write the session first.** `GET …/state`, `…/diff`,
+  `…/blame`, `…/history` and creating a version (REST and MCP) write a live
+  session's pending edits before they read, so they show what the editors
+  see. Publishing while live sends the `seq` of the summary it showed as
+  `base_seq`; a draft that moved since gets a 409.
+* **Comments:** mentions notify each user once per comment (an edit does not
+  notify again), only users who may open comments (roles that configure), at
+  most 10 names per comment and 30 notifications a minute per author; a user
+  writes at most 30 comments a minute (429 beyond). Commenting on a screen
+  that does not exist is a 404. Deleting a screen deletes its comments and
+  ends its live session. The upgrade adds the table `design_comment_mentions`.
+* **Access changes take effect at once** for live sessions: changing a role,
+  a password, disabling or deleting a user, signing out and revoking a key
+  make open WebSockets check their grant immediately (not at the 30-second
+  re-check), and a session member's next message is checked again.
 * **Change log:** a session's writes are batches by each author with source
   `designer` and the note *Live session*. A screen edited by two people in one
   write gets two batches.
 * **Edits that fail validation are not written** (unknown tag in a new binding,
   an equipment instance or faceplate that does not exist, a connection whose
-  widget is gone, values out of range): they are put back for everyone, the
-  author is told, and the audit log has `design_collab_rejected`. The layout
-  `PUT`s are unchanged and still accept what they accepted before.
+  widget is gone, values out of range): the failing fields are put back for
+  everyone, everyone who changed the object since the last write is told, and
+  the audit log has `design_collab_rejected`. A connection that keeps sending
+  edits that fail is sent away. The layout `PUT`s are unchanged and still
+  accept what they accepted before.
 * **WebSocket:** new message types (`Design*`) on `/api/v1/ws`. Clients that
   ignore unknown `type`s are unaffected. The server-sent events fallback does
   not carry them: collaboration needs the WebSocket (the Designer saves whole

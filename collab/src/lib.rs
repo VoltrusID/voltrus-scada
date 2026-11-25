@@ -7,6 +7,7 @@
 
 pub mod document;
 pub mod fractional;
+pub mod guard;
 pub mod wire;
 
 pub use yrs;

@@ -325,6 +325,7 @@ fn design_frames_roundtrip_with_binary_payloads() {
                 max_doc: 3,
                 max_awareness: 4,
                 flush_ms: 5,
+                idle_ms: 6,
             },
         },
         ServerMessage::DesignAwareness {
@@ -350,6 +351,7 @@ fn design_frames_roundtrip_with_binary_payloads() {
             seq: 7,
             at_ms: 1,
             users: vec!["ana".into()],
+            acked: Some(3),
         },
         ServerMessage::DesignSessions { sessions: vec![] },
         ServerMessage::DesignComment {
@@ -382,7 +384,7 @@ fn design_frames_match_the_servers() {
         ),
         ("DesignError {", &["code", "message", "reload"][..]),
         ("DesignRejected {", &["objects"][..]),
-        ("DesignFlushed {", &["seq", "at_ms", "users"][..]),
+        ("DesignFlushed {", &["seq", "at_ms", "users", "acked"][..]),
         ("DesignSessions {", &["sessions"][..]),
         ("DesignComment {", &["event", "comment"][..]),
         (
@@ -393,6 +395,7 @@ fn design_frames_match_the_servers() {
                 "max_doc",
                 "max_awareness",
                 "flush_ms",
+                "idle_ms",
             ][..],
         ),
         (
@@ -416,4 +419,90 @@ fn design_frames_match_the_servers() {
             }
         }
     }
+}
+
+/// The fields newer servers add: kept when present, defaulted from an
+/// older server's frames (no `acked`, no `idle_ms`), and left out of the
+/// encoding when there is no `acked`.
+#[test]
+fn design_ack_and_idle_fields_roundtrip_and_default() {
+    use voltrus_scada_native::ws_types::DesignLimits;
+    let flushed = ServerMessage::DesignFlushed {
+        screen: "s1".into(),
+        seq: 9,
+        at_ms: 1,
+        users: vec![],
+        acked: Some(12),
+    };
+    let bytes = rmp_serde::to_vec_named(&flushed).unwrap();
+    match rmp_serde::from_slice(&bytes).unwrap() {
+        ServerMessage::DesignFlushed { acked, users, .. } => {
+            assert_eq!(acked, Some(12));
+            assert!(users.is_empty(), "an acknowledgement alone");
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+    let none = ServerMessage::DesignFlushed {
+        screen: "s1".into(),
+        seq: 9,
+        at_ms: 1,
+        users: vec!["ana".into()],
+        acked: None,
+    };
+    let bytes = rmp_serde::to_vec_named(&none).unwrap();
+    assert!(
+        !bytes.windows(5).any(|w| w == b"acked"),
+        "no `acked` key when there is none"
+    );
+
+    // An older server's frames, written as maps without the new keys.
+    #[derive(serde::Serialize)]
+    struct OldFlushed<'a> {
+        r#type: &'a str,
+        screen: &'a str,
+        seq: i64,
+        at_ms: i64,
+        users: Vec<&'a str>,
+    }
+    let old = rmp_serde::to_vec_named(&OldFlushed {
+        r#type: "DesignFlushed",
+        screen: "s1",
+        seq: 3,
+        at_ms: 1,
+        users: vec!["ana"],
+    })
+    .unwrap();
+    match rmp_serde::from_slice(&old).unwrap() {
+        ServerMessage::DesignFlushed { acked, seq, .. } => {
+            assert_eq!((acked, seq), (None, 3));
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+    #[derive(serde::Serialize)]
+    struct OldLimits {
+        max_update: usize,
+        max_rate: u32,
+        max_doc: usize,
+        max_awareness: usize,
+        flush_ms: u64,
+    }
+    let old = rmp_serde::to_vec_named(&OldLimits {
+        max_update: 1,
+        max_rate: 2,
+        max_doc: 3,
+        max_awareness: 4,
+        flush_ms: 5,
+    })
+    .unwrap();
+    let limits: DesignLimits = rmp_serde::from_slice(&old).unwrap();
+    assert_eq!(limits.idle_ms, 0, "0: the default idle limit");
+    let back: DesignLimits = rmp_serde::from_slice(
+        &rmp_serde::to_vec_named(&DesignLimits {
+            idle_ms: 9,
+            ..limits
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(back.idle_ms, 9);
 }

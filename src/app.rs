@@ -941,10 +941,13 @@ pub(crate) async fn serve(
     let shutdown = async move {
         shutdown.await;
         tracing::info!("Shutting down, saving data...");
-        // Designer edits not yet written to the draft rows (docs/collaboration.md).
+        // Designer edits not yet written to the draft rows
+        // (docs/collaboration.md): no more are taken from here (clients keep
+        // what is refused and send it to the next session), then what the
+        // sessions hold is written.
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            collab_state.collab.flush_all(&collab_state),
+            collab_state.collab.shutdown(&collab_state),
         )
         .await;
         flush_before_exit(

@@ -204,6 +204,14 @@ impl AppError {
             message.into(),
         )))
     }
+
+    /// An error answered with 429 and `{"error": message}`.
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        AppError(anyhow::Error::new(Rejected(
+            StatusCode::TOO_MANY_REQUESTS,
+            message.into(),
+        )))
+    }
 }
 
 /// A device poll interval must be 1 ms to one hour; 0 would spin the poller.

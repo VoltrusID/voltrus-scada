@@ -296,13 +296,3 @@ export function loadRows(d: Y.Doc, equipment: ScadaEquipmentItem[], connections:
     }
   }, origin)
 }
-
-/** Ids of the objects that events of one root map (observeDeep) touched. */
-export function touchedKeys(events: Y.YEvent<any>[]): Set<string> {
-  const out = new Set<string>()
-  for (const e of events) {
-    if (e.path.length > 0) out.add(String(e.path[0]))
-    else if (e instanceof Y.YMapEvent) for (const k of e.keysChanged) out.add(k)
-  }
-  return out
-}

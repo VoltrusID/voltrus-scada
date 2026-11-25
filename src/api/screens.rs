@@ -111,7 +111,8 @@ pub async fn update_screen(
     Ok(Json(json!({"ok": true})))
 }
 
-/// DELETE /api/screens/{id} — delete a screen and its data source associations
+/// DELETE /api/screens/{id} — delete a screen, its data source associations
+/// and its comments
 #[utoipa::path(
     delete,
     path = "/api/v1/screens/{id}",
@@ -128,6 +129,12 @@ pub async fn delete_screen(
     // One transaction: the screen's tag links, the screen, and its published
     // copy (operators never see a deleted screen); its change log and
     // versions stay (docs/version-history.md).
+    // A live editing session of it ends (its pending edits are not written)
+    // and its comments go with it (docs/collaboration.md).
+    state
+        .collab
+        .close_screen(&state, &id, "deleted", "the screen was deleted")
+        .await;
     let screen = id.clone();
     state
         .storage
@@ -137,6 +144,10 @@ pub async fn delete_screen(
                 [&screen],
             )?;
             c.execute("DELETE FROM devices WHERE id = ?1", [&screen])?;
+            c.execute(
+                "DELETE FROM design_comments WHERE screen_id = ?1",
+                [&screen],
+            )?;
             crate::storage::design_history::forget_published(c, &screen)
         })
         .await?;

@@ -220,12 +220,17 @@ pub enum ServerMessage {
         objects: Vec<DesignRejectedObject>,
     },
     /// The screen's edits were written to its draft rows (`seq` is the new
-    /// change-log head, `users` whose changes it holds).
+    /// change-log head, `users` whose changes it holds; empty when nothing
+    /// needed writing). `acked`: how many of the receiving connection's
+    /// `DesignSync` messages since its last `DesignJoined` the written state
+    /// holds, so the client knows which of its edits are safe.
     DesignFlushed {
         screen: String,
         seq: i64,
         at_ms: i64,
         users: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acked: Option<u64>,
     },
     /// Who edits which screen; sent to everyone in a session when it changes.
     DesignSessions {
@@ -252,6 +257,9 @@ pub struct DesignLimits {
     pub max_awareness: usize,
     /// How long edits wait before they are written to the draft, ms.
     pub flush_ms: u64,
+    /// A member that sends nothing for this long leaves the session, ms.
+    #[serde(default)]
+    pub idle_ms: u64,
 }
 
 /// One object a flush put back, and why.

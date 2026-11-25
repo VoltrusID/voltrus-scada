@@ -8,12 +8,12 @@ mod camera;
 mod config_snapshots_storage;
 mod cq_commands;
 mod cq_policies;
-#[cfg(feature = "dnp3")]
 pub mod design_comments;
 pub mod design_history;
 mod device_crud;
 mod device_layouts;
 mod device_templates;
+#[cfg(feature = "dnp3")]
 mod dnp3;
 mod downsampling;
 mod egress;
@@ -62,12 +62,12 @@ pub use login_failures::{
     SOURCE_LOCK_SECS, SOURCE_MAX_FAILURES,
 };
 pub use settings_audit::AuditChainReport;
-pub(crate) use settings_scada::write_layout_rows;
+pub(crate) use settings_scada::write_some_rows;
 pub use settings_scada::{LayoutBase, LayoutSave, LayoutView};
 pub use settings_seed::{
     INITIAL_ADMIN_PASSWORD_FILE, initial_admin_password_path, remove_initial_admin_password,
 };
-pub use users::DELETED_USER;
+pub use users::{ACCESS, DELETED_USER, access_changed};
 mod voltrus_plc_storage;
 
 use std::sync::{Arc, Mutex};

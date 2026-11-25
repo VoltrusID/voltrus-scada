@@ -813,7 +813,8 @@ fn toggle(console: &mut Console, window: &mut Window, cx: &mut Context<Console>)
     cx.notify();
 }
 
-/// Whether leaving waits: with unsaved edits the dialog asks first (and
+/// Whether leaving waits: with unsaved edits (or, in a live session, edits
+/// the server has not written to the draft yet) the dialog asks first (and
 /// runs `leave` once answered); a save in flight holds it too.
 pub(crate) fn holds(
     console: &mut Console,
@@ -828,7 +829,7 @@ pub(crate) fn holds(
         console.show_toast("The screen is being saved", false, cx);
         return true;
     }
-    if !editor.history.dirty() {
+    if !editor.history.dirty() && !live::unflushed(editor) {
         return false;
     }
     editor.asking = Some(leave);
@@ -886,11 +887,16 @@ enum Answer {
 
 fn answer(console: &mut Console, answer: Answer, window: &mut Window, cx: &mut Context<Console>) {
     let leave = edits(console).and_then(|editor| editor.asking.take());
+    // Nothing unsaved in the editor, but the live session has edits the
+    // server has not written yet: Save asks it to, and leaves once it has.
+    let shared =
+        edits_ref(console).is_some_and(|editor| !editor.history.dirty() && live::unflushed(editor));
     console.close_overlay(window, cx);
     let Some(leave) = leave else {
         return;
     };
     match answer {
+        Answer::Save if shared => live::save_and_leave(console, leave, cx),
         Answer::Cancel => {}
         Answer::Discard => {
             if let Some(editor) = edits(console) {
@@ -917,6 +923,26 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
         _ => "leaving edit mode",
     };
     let name = screen_name(console, &editor.screen);
+    let shared = !editor.history.dirty() && live::unflushed(editor);
+    let (title, question, note, discard) = if shared {
+        (
+            "Edits not written yet",
+            format!(
+                "Some of your edits to “{name}” have not reached the draft yet. \
+                 Write them before {doing}?"
+            ),
+            "Leave anyway leaves the edits already sent to the live session; \
+             edits made offline are lost.",
+            "Leave anyway",
+        )
+    } else {
+        (
+            "Unsaved changes",
+            format!("Save your changes to “{name}” before {doing}?"),
+            "Discard puts the screen back as it was last saved.",
+            "Discard",
+        )
+    };
     let focus = editor.dialog_focus.clone();
     let own = focus.clone();
     div()
@@ -942,7 +968,7 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
                 .border_color(theme.border)
                 .text_size(FONT_TITLE)
                 .font_weight(FontWeight::SEMIBOLD)
-                .child("Unsaved changes"),
+                .child(title),
         )
         .child(
             div()
@@ -950,12 +976,12 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
                 .flex_col()
                 .gap(SPACE_4)
                 .p(SPACE_8)
-                .child(format!("Save your changes to “{name}” before {doing}?"))
+                .child(question)
                 .child(
                     div()
                         .text_size(FONT_SMALL)
                         .text_color(theme.fg_dim)
-                        .child("Discard puts the screen back as it was last saved."),
+                        .child(note),
                 ),
         )
         .child(
@@ -975,7 +1001,7 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
                         })),
                 )
                 .child(
-                    Button::new("mimic-unsaved-discard", "Discard")
+                    Button::new("mimic-unsaved-discard", discard)
                         .danger()
                         .on_click(cx.listener(|console, _, window, cx| {
                             answer(console, Answer::Discard, window, cx);
@@ -3838,6 +3864,7 @@ mod tests {
                                 max_doc: 5 << 20,
                                 max_awareness: 4096,
                                 flush_ms: 2000,
+                                idle_ms: 0,
                             },
                         },
                         ServerMessage::DesignSync {
@@ -3934,6 +3961,48 @@ mod tests {
                 .any(|m| matches!(m, ClientMessage::DesignFlush { .. }))
         );
         assert!(saves(&mut h).is_empty());
+    }
+
+    #[gpui::test]
+    fn leaving_a_session_with_unwritten_edits_asks_and_waits_for_the_write(
+        cx: &mut TestAppContext,
+    ) {
+        let mut h = editing_a(cx);
+        let doc = server_doc();
+        join(&mut h, &doc);
+        // Sent to the session (messages 1 and 2 were the join's), not
+        // written to the draft yet.
+        move_a(&mut h, 333.0);
+        tick(&mut h);
+        serve(&mut h, &doc);
+        assert!(!dirty(&mut h), "nothing unsaved in the editor itself");
+        h.update(|console, window, cx| run(console, Cmd::Toggle, window, cx));
+        h.draw();
+        let asking = h.update(|console, _, _| edits_ref(console).and_then(|e| e.asking.clone()));
+        assert_eq!(asking, Some(Leave::Done), "leaving asks first");
+        // Save: the server is asked to write; the Designer waits for it.
+        h.keys("enter");
+        let sent = serve(&mut h, &doc);
+        assert!(
+            sent.iter()
+                .any(|m| matches!(m, ClientMessage::DesignFlush { .. }))
+        );
+        assert!(saves(&mut h).is_empty(), "no whole-layout save");
+        assert!(h.update(|console, _, _| editing(console)), "waits");
+        let screen = h.update(|console, _, _| active(console));
+        h.event(crate::console::Event::Design(
+            ServerMessage::DesignFlushed {
+                screen,
+                seq: 1,
+                at_ms: 0,
+                users: vec!["admin".into()],
+                acked: Some(3),
+            },
+        ));
+        assert!(
+            !h.update(|console, _, _| editing(console)),
+            "left once written"
+        );
     }
 
     #[gpui::test]

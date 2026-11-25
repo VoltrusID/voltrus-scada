@@ -17,6 +17,10 @@ export interface CollabHandlers {
   onComment?: (m: Extract<DesignServerMessage, { type: 'DesignComment' }>) => void
   onError?: (e: { code: string; message: string }) => void
   onFallback?: (e: { code: string; message: string }) => void
+  /** Dropped from the session and joining again (edits kept). */
+  onRejoin?: (e: { code: string; message: string }) => void
+  /** Unsaved edits written again into a restarted session. */
+  onReplayed?: (e: { objects: number }) => void
 }
 
 export interface Collab {
@@ -30,6 +34,8 @@ export interface Collab {
   peers: Peer[]
   sessions: DesignSessionInfo[] | null
   pending: boolean
+  /** Local edits not written to the draft yet, read now (for beforeunload). */
+  hasUnsaved: () => boolean
   undoDepth: number
   redoDepth: number
   edit: (e: Edit, coalesce?: string, at?: number) => void
@@ -102,6 +108,8 @@ export function useCollab(screen: string, enabled: boolean, nameOf: (w: WidgetIn
       p.on('rejected', m => handlersRef.current.onRejected?.(m))
       p.on('comment', m => handlersRef.current.onComment?.(m))
       p.on('error', e => handlersRef.current.onError?.(e))
+      p.on('rejoin', e => handlersRef.current.onRejoin?.(e))
+      p.on('replayed', e => handlersRef.current.onReplayed?.(e))
       p.on('fallback', e => { setActive(false); handlersRef.current.onFallback?.(e) })
       setActive(true)
       p.start()
@@ -143,7 +151,8 @@ export function useCollab(screen: string, enabled: boolean, nameOf: (w: WidgetIn
   const undo = useCallback(() => undoRef.current?.undo(), [])
   const redo = useCallback(() => undoRef.current?.redo(), [])
   const flush = useCallback(() => providerRef.current?.flushNow(), [])
+  const hasUnsaved = useCallback(() => providerRef.current?.pending ?? false, [])
   const setPresence = useCallback((f: Partial<Omit<Peer, 'clientId' | 'user' | 'color'>>) => providerRef.current?.setPresence(f), [])
 
-  return { active, status, synced, doc, me, peers, sessions, pending, undoDepth: depth.undo, redoDepth: depth.redo, edit, undo, redo, flush, setPresence }
+  return { active, status, synced, doc, me, peers, sessions, pending, hasUnsaved, undoDepth: depth.undo, redoDepth: depth.redo, edit, undo, redo, flush, setPresence }
 }

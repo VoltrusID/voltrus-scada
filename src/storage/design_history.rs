@@ -554,9 +554,27 @@ fn raise_head(conn: &Connection, screen_id: &str, seq: i64) -> Result<()> {
     Ok(())
 }
 
-/// Bumped by every [`append`]: open collaboration sessions compare it to
-/// notice writes made outside them (docs/collaboration.md).
-pub static DESIGN_WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Per screen, bumped by every [`append`] that touches it: an open
+/// collaboration session compares its screen's count to notice writes made
+/// outside it (docs/collaboration.md).
+static DESIGN_WRITES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// How many writes [`append`] made to `screen` (see [`DESIGN_WRITES`]).
+pub fn design_writes(screen: &str) -> u64 {
+    DESIGN_WRITES
+        .lock()
+        .map(|m| m.get(screen).copied().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+fn count_writes(screens: &BTreeSet<String>) {
+    if let Ok(mut m) = DESIGN_WRITES.lock() {
+        for s in screens.iter().filter(|s| !s.is_empty()) {
+            *m.entry(s.clone()).or_default() += 1;
+        }
+    }
+}
 
 /// Append `changes` as one batch by `actor`. Nothing is written (and `None`
 /// returned) when there is no change. When the previous batch of these
@@ -573,7 +591,7 @@ pub fn append(
     if changes.is_empty() {
         return Ok(None);
     }
-    DESIGN_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    count_writes(&changes.iter().map(|c| c.key.screen_id.clone()).collect());
     let settings = read_settings(conn)?;
     let at_ms = crate::timeutil::now_millis();
     let batch = new_batch_id(at_ms);
