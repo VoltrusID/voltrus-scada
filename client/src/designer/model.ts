@@ -38,7 +38,7 @@ export function applyEdit(doc: Doc, e: Edit): Doc {
       const gone = new Set(e.ids)
       if (!doc.widgets.some(w => gone.has(w.id))) return doc
       return {
-        widgets: doc.widgets.filter(w => !gone.has(w.id)),
+        widgets: dissolveSingleGroups(doc.widgets.filter(w => !gone.has(w.id))),
         connections: doc.connections.filter(c => !gone.has(c.fromWidgetId) && !gone.has(c.toWidgetId)),
       }
     }
@@ -82,27 +82,58 @@ function patchWidget(w: WidgetInstance, p: Patch): WidgetInstance {
   return changed ? next : w
 }
 
+/** A group left with one member is no group: that member is ungrouped. */
+function dissolveSingleGroups(ws: WidgetInstance[]): WidgetInstance[] {
+  const count = new Map<string, number>()
+  for (const w of ws) { const g = groupOf(w); if (g) count.set(g, (count.get(g) ?? 0) + 1) }
+  if (![...count.values()].some(n => n === 1)) return ws
+  return ws.map(w => {
+    const g = groupOf(w)
+    if (!g || count.get(g) !== 1) return w
+    const config = { ...w.config }
+    delete config.group
+    return { ...w, config }
+  })
+}
+
 const sameValue = (a: unknown, b: unknown) => a === b || (typeof a === 'object' && typeof b === 'object' && JSON.stringify(a) === JSON.stringify(b))
 
+/**
+ * Stacking order. A group moves as one unit and is never split by another
+ * widget: forward/backward step the selection past the whole neighbouring
+ * unit, and selecting one member moves its whole group.
+ */
 function reorder(doc: Doc, ids: string[], to: 'front' | 'back' | 'forward' | 'backward'): Doc {
-  const sel = new Set(ids)
   const ws = doc.widgets
-  let out: WidgetInstance[]
+  const sel = new Set(expandToGroups(doc, ids))
+  // Units in stacking order: a lone widget, or a group's members together (at its back-most member, members keeping their order).
+  const units: WidgetInstance[][] = []
+  const unitOfGroup = new Map<string, WidgetInstance[]>()
+  for (const w of ws) {
+    const g = groupOf(w)
+    if (!g) { units.push([w]); continue }
+    let u = unitOfGroup.get(g)
+    if (!u) { u = []; unitOfGroup.set(g, u); units.push(u) }
+    u.push(w)
+  }
+  const picked = (u: WidgetInstance[]) => u.some(w => sel.has(w.id))
+  let out: WidgetInstance[][]
   if (to === 'front' || to === 'back') {
-    const moved = ws.filter(w => sel.has(w.id))
-    const rest = ws.filter(w => !sel.has(w.id))
+    const moved = units.filter(picked)
+    const rest = units.filter(u => !picked(u))
     out = to === 'front' ? [...rest, ...moved] : [...moved, ...rest]
   } else {
-    out = [...ws]
-    // Step each selected widget past its nearest unselected neighbour, keeping the selection's own order.
-    const idx = out.map((w, i) => (sel.has(w.id) ? i : -1)).filter(i => i >= 0)
+    out = [...units]
+    // Step each selected unit past its nearest unselected neighbour, keeping the selection's own order.
+    const idx = out.map((u, i) => (picked(u) ? i : -1)).filter(i => i >= 0)
     if (to === 'forward') {
-      for (const i of idx.reverse()) if (i + 1 < out.length && !sel.has(out[i + 1].id)) [out[i], out[i + 1]] = [out[i + 1], out[i]]
+      for (const i of idx.reverse()) if (i + 1 < out.length && !picked(out[i + 1])) [out[i], out[i + 1]] = [out[i + 1], out[i]]
     } else {
-      for (const i of idx) if (i > 0 && !sel.has(out[i - 1].id)) [out[i], out[i - 1]] = [out[i - 1], out[i]]
+      for (const i of idx) if (i > 0 && !picked(out[i - 1])) [out[i], out[i - 1]] = [out[i - 1], out[i]]
     }
   }
-  return out.every((w, i) => w === ws[i]) ? doc : { ...doc, widgets: out }
+  const flat = out.flat()
+  return flat.every((w, i) => w === ws[i]) ? doc : { ...doc, widgets: flat }
 }
 
 // ── History ──
@@ -111,20 +142,28 @@ export interface History {
   past: Doc[]
   present: Doc
   future: Doc[]
-  /** Edits with the same key in a row (typing in one field, nudging with arrows) are one undo step. */
+  /**
+   * Edits with the same key in a row (typing in one field, nudging with
+   * arrows) are one undo step, unless more than COALESCE_MS passed between
+   * them (edits that carry no time always coalesce).
+   */
   lastKey: string | null
+  /** Time of the last coalescible edit (ms), when the edit gave one. */
+  lastAt?: number | null
   /** The document as last loaded or saved; `present !== saved` means unsaved changes. */
   saved: Doc
 }
 
 export type HistoryAction =
-  | { type: 'edit'; edit: Edit; coalesce?: string }
+  | { type: 'edit'; edit: Edit; coalesce?: string; at?: number }
   | { type: 'undo' }
   | { type: 'redo' }
   | { type: 'load'; doc: Doc }
   | { type: 'saved'; doc?: Doc }
 
 export const HISTORY_LIMIT = 200
+/** A pause longer than this starts a new undo step even for the same key. */
+export const COALESCE_MS = 1000
 
 const EMPTY: Doc = { widgets: [], connections: [] }
 export const emptyHistory: History = { past: [], present: EMPTY, future: [], lastKey: null, saved: EMPTY }
@@ -145,8 +184,10 @@ export function historyReducer(h: History, a: HistoryAction): History {
       const next = applyEdit(h.present, a.edit)
       if (next === h.present) return h
       const key = a.coalesce ?? null
-      if (key && key === h.lastKey) return { ...h, present: next, future: [] }
-      return { ...h, past: [...h.past, h.present].slice(-HISTORY_LIMIT), present: next, future: [], lastKey: key }
+      const at = a.at ?? null
+      const paused = at != null && h.lastAt != null && at - h.lastAt > COALESCE_MS
+      if (key && key === h.lastKey && !paused) return { ...h, present: next, future: [], lastAt: at }
+      return { ...h, past: [...h.past, h.present].slice(-HISTORY_LIMIT), present: next, future: [], lastKey: key, lastAt: at }
     }
   }
 }

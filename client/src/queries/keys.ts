@@ -23,6 +23,7 @@ export const queryKeys = {
   modbusStatus:   ['modbusStatus'] as const,
   scadaEquipment:  (screenId: string) => ['scadaEquipment', screenId] as const,
   scadaConnections: (screenId: string) => ['scadaConnections', screenId] as const,
+  scadaLayout:      (screenId: string) => ['scadaLayout', screenId] as const,
   users: ['users'] as const,
   authMe: ['auth', 'me'] as const,
   flows: ['flows'] as const,

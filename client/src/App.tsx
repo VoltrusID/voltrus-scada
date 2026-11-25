@@ -16,6 +16,7 @@ import { Footer } from './components/Footer'
 import { MainContent } from './components/MainContent'
 import { useDashboardData } from './hooks/useDashboardData'
 import { useKeyboardNavigation } from './hooks/useKeyboardNavigation'
+import { useDesignerGuard } from './hooks/useDesignerGuard'
 import { useKioskMode } from './hooks/useKioskMode'
 import { useDashboardSystemInfo, useDashboardStoreActions } from './store/dashboardStore'
 import { createDashboardStore, DashboardStoreProvider } from './store/dashboardStore'
@@ -500,7 +501,12 @@ export function AppInner() {
   useKeyboardNavigation({
     shortcuts, sensors, screens, navShortcuts, effectiveNavShortcuts,
     setSelectedSensor, setActiveScreen, setViewMode, setMode, setShowAlarmPanel: toggleAlarms, mode,
+    // The Designer has its own shortcuts (Ctrl+0 is Fit there); app navigation keys would leave it.
+    enabled: _routePage !== 'designer',
   })
+
+  const leaveDesigner = useCallback(() => navigate({ to: '/', search: prev => ({ ...prev, view: 'scada' }), replace: true }), [navigate])
+  useDesignerGuard({ routePage: _routePage, sessionKnown: authed && !authLoading, canConfigure, leave: leaveDesigner })
 
   // ── Kiosk mode ──────────────────────────────────────────
   const kiosk = useKioskMode()

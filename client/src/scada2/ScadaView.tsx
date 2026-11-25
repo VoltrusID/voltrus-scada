@@ -5,6 +5,7 @@ import { ScadaCanvas, STAGE_W, STAGE_H, type DropPayload } from './ScadaCanvas'
 import { ScadaPalette, PANEL_WIDTH } from './ScadaPalette'
 import { WidgetInspector, ConnectionInspector, ScreenInspector, INSPECTOR_WIDTH, widgetTitle } from './ScadaInspector'
 import { ConnectionLayer, CONNECTION_TYPES } from './connections/ConnectionLayer'
+import { LiveBound } from './widgets/WidgetShell'
 import { historyReducer, emptyHistory, createWidget, createConnection, type ScadaLayoutState } from './engine/widgetState'
 import { loadLayoutFromAPI, saveLayoutToAPI } from './engine/layout'
 import { SYMBOL_MAP, SYMBOLS } from './hmi/symbols'
@@ -476,6 +477,7 @@ export const ScadaView: React.FC<Props> = ({
           >
             <ConnectionLayer
               widgets={layout.widgets}
+              sensors={sensors}
               connections={layout.connections}
               editMode={editMode}
               selectedId={selection?.kind === 'connection' ? selection.id : null}
@@ -483,28 +485,32 @@ export const ScadaView: React.FC<Props> = ({
               pending={connectFrom && pointer ? { fromId: connectFrom, ...pointer } : null}
             />
           </ScadaCanvas>
-          {faceplateWidget && mapped && (
-            <MappedFaceplate
-              key={faceplateWidget.id}
-              def={mapped.def}
-              map={mapped.map}
-              title={faceplateWidget.config?.label || sensors.find(s => s.id === faceplateWidget.sensorId)?.name || mapped.def.name}
-              sensors={sensors}
-              onCommand={sendCommand}
-              onOpenDetail={openTrend}
-              onClose={() => setFaceplateId(null)}
-              canOperate={canOperate}
-            />
-          )}
-          {faceplateWidget && !mapped && faceplateWidget.sensorId != null && (
-            <Faceplate
-              key={faceplateWidget.id}
-              widget={faceplateWidget}
-              sensors={sensors}
-              onCommand={sendCommand}
-              onOpenDetail={onSensorClick}
-              onClose={() => setFaceplateId(null)}
-            />
+          {faceplateWidget && (
+            // Bindings apply to the faceplate too: a bound label is its title.
+            <LiveBound instance={faceplateWidget} sensors={sensors}>{fw => (
+              mapped ? (
+                <MappedFaceplate
+                  key={fw.id}
+                  def={mapped.def}
+                  map={mapped.map}
+                  title={fw.config?.label || sensors.find(s => s.id === fw.sensorId)?.name || mapped.def.name}
+                  sensors={sensors}
+                  onCommand={sendCommand}
+                  onOpenDetail={openTrend}
+                  onClose={() => setFaceplateId(null)}
+                  canOperate={canOperate}
+                />
+              ) : fw.sensorId != null ? (
+                <Faceplate
+                  key={fw.id}
+                  widget={fw}
+                  sensors={sensors}
+                  onCommand={sendCommand}
+                  onOpenDetail={onSensorClick}
+                  onClose={() => setFaceplateId(null)}
+                />
+              ) : null
+            )}</LiveBound>
           )}
           {editMode && tool === 'connect' && (
             <div style={{

@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   alignPatches, distributePatches, duplicate, emptyHistory, expandToGroups, groupPatches, historyReducer, isDirty,
-  lockPatches, marqueeSelect, matchSizePatches, movePatches, ungroupPatches, bindPrimaryPatch,
+  lockPatches, marqueeSelect, matchSizePatches, movePatches, ungroupPatches, bindPrimaryPatch, COALESCE_MS, groupOf,
   type Doc, type History, type HistoryAction,
 } from '../src/designer/model.ts'
 import { snapBox, snapValue, rulerStep } from '../src/designer/snap.ts'
@@ -192,4 +192,56 @@ test('snapping: object edges and guides win over the grid within the threshold',
   assert.equal(snapValue(244, 'x', others, { ...o, objects: false }).v, 240)
   assert.equal(rulerStep(1).major, 100)
   assert.equal(rulerStep(0.25).major, 500)
+})
+
+test('z-order moves a group as one unit and never splits it', () => {
+  const g = { group: 'g' }
+  let h = loaded(doc(w('a', 0, 0), w('g1', 0, 0, 10, 10, g), w('b', 0, 0), w('g2', 0, 0, 10, 10, g), w('c', 0, 0)))
+  const order = () => h.present.widgets.map(x => x.id).join(',')
+  // Forward over a group: the selection steps past the whole group.
+  h = run(h, { type: 'edit', edit: { type: 'order', ids: ['a'], to: 'forward' } })
+  assert.equal(order(), 'g1,g2,a,b,c')
+  // Selecting one member moves the whole group.
+  h = run(h, { type: 'edit', edit: { type: 'order', ids: ['g2'], to: 'forward' } })
+  assert.equal(order(), 'a,g1,g2,b,c')
+  h = run(h, { type: 'edit', edit: { type: 'order', ids: ['g1'], to: 'front' } })
+  assert.equal(order(), 'a,b,c,g1,g2')
+  h = run(h, { type: 'edit', edit: { type: 'order', ids: ['c'], to: 'forward' } })
+  assert.equal(order(), 'a,b,g1,g2,c')
+  h = run(h, { type: 'edit', edit: { type: 'order', ids: ['g2'], to: 'backward' } })
+  assert.equal(order(), 'a,g1,g2,b,c')
+})
+
+test('deleting down to one member of a group ungroups it', () => {
+  const g = { group: 'g' }
+  let h = loaded(doc(w('a', 0, 0, 10, 10, g), w('b', 0, 0, 10, 10, g), w('c', 0, 0, 10, 10, { group: 'h' }), w('d', 0, 0, 10, 10, { group: 'h' }), w('e', 0, 0, 10, 10, { group: 'h' })))
+  h = run(h, { type: 'edit', edit: { type: 'remove', ids: ['a', 'c'] } })
+  const by = (id: string) => h.present.widgets.find(x => x.id === id)!
+  assert.equal(groupOf(by('b')), null, 'last member ungrouped')
+  assert.equal(groupOf(by('d')), 'h', 'a group of two stays')
+  assert.equal(groupOf(by('e')), 'h')
+  h = run(h, { type: 'undo' })
+  assert.equal(groupOf(h.present.widgets.find(x => x.id === 'b')!), 'g', 'undo restores the group')
+})
+
+test('same-key edits coalesce only without a pause between them', () => {
+  let h = loaded(doc(w('a', 0, 0)))
+  const nudge = (x: number, at: number): HistoryAction => ({ type: 'edit', edit: { type: 'patch', patches: { a: { x } } }, coalesce: 'nudge:a', at })
+  h = run(h, nudge(1, 1000), nudge(2, 1100), nudge(3, 1200))
+  assert.equal(h.past.length, 1, 'a burst of nudges is one step')
+  h = run(h, nudge(4, 1200 + COALESCE_MS + 1))
+  assert.equal(h.past.length, 2, 'after a pause: a new step')
+  // Different key: a new step at once.
+  h = run(h, { type: 'edit', edit: { type: 'patch', patches: { a: { y: 9 } } }, coalesce: 'a:y', at: 3000 })
+  assert.equal(h.past.length, 3)
+  // No key (applying a binding): always its own step.
+  h = run(h, { type: 'edit', edit: { type: 'patch', patches: { a: { config: { label: 'x' } } } }, at: 3001 },
+    { type: 'edit', edit: { type: 'patch', patches: { a: { config: { label: 'y' } } } }, at: 3002 })
+  assert.equal(h.past.length, 5)
+})
+
+test('select all expands to whole groups', () => {
+  const d = doc(w('a', 0, 0, 10, 10, { group: 'g', locked: true }), w('b', 0, 0, 10, 10, { group: 'g' }), w('c', 0, 0))
+  // What Ctrl+A does: every unlocked widget, then whole groups.
+  assert.deepEqual(expandToGroups(d, d.widgets.filter(x => !x.config.locked).map(x => x.id)), ['a', 'b', 'c'])
 })

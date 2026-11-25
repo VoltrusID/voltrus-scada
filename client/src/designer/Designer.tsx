@@ -8,8 +8,11 @@ import { loadLayoutFromAPI, saveLayoutToAPI } from '../scada2/engine/layout'
 import { ScadaView } from '../scada2/ScadaView'
 import { widgetTitle } from '../scada2/ScadaInspector'
 import { STAGE_H, STAGE_W } from '../scada2/ScadaCanvas'
-import { useScreens, useSensors, useScadaEquipment, useScadaConnections, useSaveScadaEquipment, useSaveScadaConnections } from '../queries'
-import { useCreateFaceplate, useFaceplates } from '../queries/scada'
+import { useQueryClient } from '@tanstack/react-query'
+import { useBlocker } from '@tanstack/react-router'
+import { useScreens, useSensors } from '../queries'
+import { fetchScadaLayout, saveScadaLayout, useCreateFaceplate, useFaceplates, useScadaLayout, type ScadaLayout } from '../queries/scada'
+import { queryKeys } from '../queries/keys'
 import { useTrackedCurrentValues } from '../store/dashboardStore'
 import { openTrend } from '../trend/TrendPopup'
 import { toast } from '../components/Toast'
@@ -23,14 +26,18 @@ import type { Guide } from './snap'
 import { DesignerCanvas, type CanvasDrop } from './DesignerCanvas'
 import { EQUIPMENT, PalettePane, ProjectBrowser, TagBrowserPane } from './panes'
 import { PropertyEditor } from './PropertyEditor'
-import { D, Icon, Pane, Sep, SmallBtn, ToolBtn, mono } from './ui'
+import { ChoiceDialog, D, Icon, Pane, Sep, SmallBtn, ToolBtn, mono } from './ui'
 
 interface Props {
   screen: string
+  /** Navigate to another screen in the Designer. Unsaved changes are guarded by the router blocker here. */
   onOpenScreen: (id: string) => void
   onClose: () => void
   onOpenPage: (page: 'scripts' | 'alarms' | 'tags') => void
 }
+
+/** A save the server refused because the screen changed since it was loaded. */
+interface Conflict { revision: string; message: string; then?: () => void }
 
 const ZOOM_STEPS = [0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 3, 4]
 const isTyping = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))
@@ -78,10 +85,8 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const { data: screens = [] } = useScreens(true)
   const { data: sensors = [] } = useSensors(true)
   const screen = requested === 'all' && screens.length ? screens[0].id : requested
-  const eqQ = useScadaEquipment(screen, true)
-  const connQ = useScadaConnections(screen, true)
-  const saveEq = useSaveScadaEquipment()
-  const saveConn = useSaveScadaConnections()
+  const layoutQ = useScadaLayout(screen, true)
+  const qc = useQueryClient()
   const { data: faceplates = [] } = useFaceplates()
   const createFaceplate = useCreateFaceplate()
 
@@ -107,11 +112,19 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const clipboard = useRef<{ widgets: WidgetInstance[]; connections: ConnectionInstance[]; pastes: number } | null>(null)
   const loadedScreen = useRef<string | null>(null)
   const savingRef = useRef(false)
+  /** Revision of the server layout the document is based on (sent with a save). */
+  const baseRevision = useRef<string | null>(null)
+  const dirtyRef = useRef(dirty)
+  dirtyRef.current = dirty
+  const [conflict, setConflict] = useState<Conflict | null>(null)
+  /** The screen was saved elsewhere while this one has unsaved changes. */
+  const [remoteChanged, setRemoteChanged] = useState(false)
 
   const setSelection = useCallback((ids: string[]) => { setSelectionRaw(ids); if (ids.length) setSelConn(null) }, [])
-  const edit = useCallback((e: Edit, coalesce?: string) => dispatch({ type: 'edit', edit: e, coalesce }), [])
+  // Edits carry their time: the same kind of edit after a pause is a new undo step.
+  const edit = useCallback((e: Edit, coalesce?: string) => dispatch({ type: 'edit', edit: e, coalesce, at: Date.now() }), [])
   const patch = useCallback((patches: Record<string, Patch>, coalesce?: string) => {
-    if (Object.keys(patches).length) dispatch({ type: 'edit', edit: { type: 'patch', patches }, coalesce })
+    if (Object.keys(patches).length) dispatch({ type: 'edit', edit: { type: 'patch', patches }, coalesce, at: Date.now() })
   }, [])
 
   // Drop selected ids that no longer exist (after undo, delete, load).
@@ -123,32 +136,57 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
 
   // ── Load and save ──
 
-  const loaded = eqQ.isFetched && connQ.isFetched && !eqQ.isFetching && !connQ.isFetching
-  useEffect(() => {
-    if (!loaded || savingRef.current) return
-    const same = loadedScreen.current === screen
-    if (same && dirty) return
-    const next = loadLayoutFromAPI(eqQ.data ?? [], connQ.data ?? [])
-    if (same && JSON.stringify(next) === JSON.stringify(doc)) return
-    loadedScreen.current = screen
-    dispatch({ type: 'load', doc: next })
+  const loaded = layoutQ.isFetched && !layoutQ.isFetching
+
+  const loadLayout = useCallback((data: ScadaLayout, id: string) => {
+    loadedScreen.current = id
+    baseRevision.current = data.revision
+    setRemoteChanged(false)
+    dispatch({ type: 'load', doc: loadLayoutFromAPI(data.equipment ?? [], data.connections ?? []) })
     setSelectionRaw([])
     setSelConn(null)
-  }, [screen, loaded, eqQ.data, connQ.data]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
 
-  const save = useCallback(async (): Promise<boolean> => {
+  useEffect(() => {
+    const data = layoutQ.data
+    if (!loaded || !data || savingRef.current) return
+    const same = loadedScreen.current === screen
+    if (same && data.revision === baseRevision.current) return
+    // Changed on the server. Unsaved work is kept; the user decides (banner, or the conflict on save).
+    if (same && dirtyRef.current) { setRemoteChanged(true); return }
+    loadLayout(data, screen)
+  }, [screen, loaded, layoutQ.data, loadLayout])
+
+  const invalidate = useCallback((id: string) => {
+    void qc.invalidateQueries({ queryKey: queryKeys.scadaLayout(id) })
+    void qc.invalidateQueries({ queryKey: queryKeys.scadaEquipment(id) })
+    void qc.invalidateQueries({ queryKey: queryKeys.scadaConnections(id) })
+  }, [qc])
+
+  /**
+   * Save equipment and connections together, based on the revision loaded.
+   * `base` overrides it (overwrite after a conflict: the revision the user saw
+   * in the conflict). Nothing to save is a no-op. `then` runs after a save
+   * that first had to resolve a conflict.
+   */
+  const save = useCallback(async (opts: { base?: string | null; then?: () => void } = {}): Promise<boolean> => {
     const id = loadedScreen.current
     if (!id || savingRef.current) return false
+    if (!dirtyRef.current) return true
     savingRef.current = true
     setSaving(true)
     const snapshot = doc
     try {
       const rows = saveLayoutToAPI(snapshot, w => sensors.find(s => s.id === w.sensorId)?.name || widgetTitle(w))
-      await Promise.all([
-        saveEq.mutateAsync({ screenId: id, items: rows.equipment }),
-        saveConn.mutateAsync({ screenId: id, items: rows.connections }),
-      ])
+      const r = await saveScadaLayout(id, rows.equipment, rows.connections, opts.base !== undefined ? opts.base : baseRevision.current)
+      if (!r.ok) {
+        setConflict({ revision: r.revision, message: r.message, then: opts.then })
+        return false
+      }
+      baseRevision.current = r.revision
+      setRemoteChanged(false)
       dispatch({ type: 'saved', doc: snapshot })
+      invalidate(id)
       toast.success('Screen saved')
       return true
     } catch (err: any) {
@@ -158,27 +196,29 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
       savingRef.current = false
       setSaving(false)
     }
-  }, [doc, sensors, saveEq, saveConn])
+  }, [doc, sensors, invalidate])
 
-  const openScreen = useCallback(async (id: string) => {
-    if (dirty && !(await save())) return
-    onOpenScreen(id)
-  }, [dirty, save, onOpenScreen])
+  const reloadFromServer = useCallback(async () => {
+    const id = loadedScreen.current ?? screen
+    const data = await qc.fetchQuery({ queryKey: queryKeys.scadaLayout(id), queryFn: () => fetchScadaLayout(id), staleTime: 0 })
+    loadLayout(data, id)
+  }, [qc, screen, loadLayout])
 
-  const close = useCallback(async () => {
-    if (dirty) {
-      if (!window.confirm('Save changes to this screen before closing the Designer?\n\nOK saves, Cancel keeps editing.')) return
-      if (!(await save())) return
-    }
-    onClose()
-  }, [dirty, save, onClose])
+  // Leaving with unsaved changes (Close, another screen, Back, a link in the
+  // Project pane, an app shortcut) asks first: Save, Discard or Cancel.
+  // Reload and closing the tab get the browser's own prompt.
+  const blocker = useBlocker({
+    shouldBlockFn: ({ current, next }) => {
+      if (!dirtyRef.current) return false
+      const screenOf = (l: { search: unknown }) => (l.search as { screen?: string } | undefined)?.screen ?? 'all'
+      return !(next.pathname === current.pathname && screenOf(next) === screenOf(current))
+    },
+    enableBeforeUnload: () => dirtyRef.current,
+    withResolver: true,
+  })
 
-  useEffect(() => {
-    if (!dirty) return
-    const onUnload = (e: BeforeUnloadEvent) => { e.preventDefault() }
-    window.addEventListener('beforeunload', onUnload)
-    return () => window.removeEventListener('beforeunload', onUnload)
-  }, [dirty])
+  const openScreen = useCallback((id: string) => { if (id !== screen) onOpenScreen(id) }, [screen, onOpenScreen])
+  const close = useCallback(() => { onClose() }, [onClose])
 
   // ── Creating components ──
 
@@ -323,9 +363,9 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
 
   const keys = useRef<Record<string, () => void>>({})
   keys.current = {
-    save: () => { void save() }, undo: () => dispatch({ type: 'undo' }), redo: () => dispatch({ type: 'redo' }),
+    save: () => { if (dirtyRef.current) void save() }, undo: () => dispatch({ type: 'undo' }), redo: () => dispatch({ type: 'redo' }),
     copy, paste, cut: () => { copy(); removeSelection() }, duplicate: duplicateSel, remove: removeSelection,
-    all: () => setSelection(doc.widgets.filter(w => !isLocked(w)).map(w => w.id)),
+    all: () => setSelection(expandToGroups(doc, doc.widgets.filter(w => !isLocked(w)).map(w => w.id))),
     group, ungroup, lock: toggleLock, front: () => order('front'), back: () => order('back'), forward: () => order('forward'), backward: () => order('backward'),
     preview: () => setPreview(p => !p), fit: () => setZoom('fit'), zoomIn: () => zoomBy(1), zoomOut: () => zoomBy(-1),
     escape: () => { setSelection([]); setSelConn(null); setConnectFrom(null); setTool('select'); setDropMenu(null) },
@@ -339,7 +379,8 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
       const k = keys.current
       const mod = e.ctrlKey || e.metaKey
       const key = e.key.toLowerCase()
-      if (e.key === 'F5' || (mod && key === 'p')) { e.preventDefault(); k.preview(); return }
+      // F5 toggles preview (Ctrl+P stays the browser's print).
+      if (e.key === 'F5') { e.preventDefault(); k.preview(); return }
       if (preview) { if (key === 'escape') k.preview(); return }
       if (mod) {
         const map: Record<string, () => void> = {
@@ -546,6 +587,50 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
           </aside>
         )}
       </div>
+
+      {remoteChanged && !conflict && (
+        <div role="status" data-testid="designer-remote-changed" style={{
+          position: 'absolute', top: 72, left: '50%', transform: 'translateX(-50%)', zIndex: 20, display: 'flex', alignItems: 'center', gap: 8,
+          padding: '5px 8px 5px 12px', borderRadius: 4, fontSize: D.small, background: D.pane, border: '1px solid var(--warn)', boxShadow: '0 6px 20px rgba(0,0,0,.35)',
+        }}>
+          <span>This screen was saved elsewhere while you were editing.</span>
+          <SmallBtn onClick={() => { void reloadFromServer() }} testId="designer-remote-reload">Load theirs</SmallBtn>
+          <SmallBtn onClick={() => setRemoteChanged(false)}>Keep editing</SmallBtn>
+        </div>
+      )}
+
+      {blocker.status === 'blocked' && !conflict && (
+        <ChoiceDialog title="Unsaved changes" testId="designer-leave-dialog" onCancel={blocker.reset}
+          message={<>Save the changes to <b style={{ color: 'var(--fg)' }}>{screenName}</b> before leaving?</>}
+          choices={[
+            { label: 'Save', primary: true, testId: 'designer-leave-save', onClick: () => {
+              const proceed = blocker.proceed
+              // A conflict on this save opens the conflict dialog; leaving waits for its answer.
+              void save({ then: proceed }).then(ok => { if (ok) proceed() })
+            } },
+            { label: 'Discard', danger: true, testId: 'designer-leave-discard', onClick: () => { blocker.proceed() } },
+            { label: 'Cancel', testId: 'designer-leave-cancel', onClick: () => { blocker.reset() } },
+          ]} />
+      )}
+
+      {conflict && (
+        <ChoiceDialog title="Screen changed elsewhere" testId="designer-conflict-dialog"
+          onCancel={() => { setConflict(null); if (blocker.status === 'blocked') blocker.reset() }}
+          message={<>{conflict.message}. Load their version (your changes here are lost), or overwrite it with yours?</>}
+          choices={[
+            { label: 'Load theirs', testId: 'designer-conflict-reload', onClick: () => {
+              const then = conflict.then
+              setConflict(null)
+              void reloadFromServer().then(() => then?.())
+            } },
+            { label: 'Overwrite with mine', danger: true, testId: 'designer-conflict-overwrite', onClick: () => {
+              const { revision, then } = conflict
+              setConflict(null)
+              void save({ base: revision, then }).then(ok => { if (ok) then?.() })
+            } },
+            { label: 'Cancel', testId: 'designer-conflict-cancel', onClick: () => { setConflict(null); if (blocker.status === 'blocked') blocker.reset() } },
+          ]} />
+      )}
 
       {/* Status bar */}
       <div data-testid="designer-status" style={{ height: 22, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 14, padding: '0 10px', borderTop: `1px solid ${D.line}`, background: D.chrome, ...mono, color: 'var(--text-dim)' }}>

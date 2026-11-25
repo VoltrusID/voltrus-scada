@@ -38,14 +38,28 @@ export function WidgetPlaceholder({ text, detail }: { text: string; detail?: str
   )
 }
 
-/** A broken add-on widget shows a placeholder instead of taking the whole screen down. */
-class WidgetErrorBoundary extends Component<{ type: string; children: ReactNode }, { failed: boolean }> {
-  state = { failed: false }
+/**
+ * A broken widget shows a placeholder instead of taking the whole screen down.
+ * `fallback` replaces the default placeholder; a new `resetKey` (the edited
+ * widget, say) tries drawing it again.
+ */
+export class WidgetErrorBoundary extends Component<
+  { type: string; children: ReactNode; fallback?: ReactNode; resetKey?: unknown },
+  { failed: boolean; key: unknown }
+> {
+  state = { failed: false, key: this.props.resetKey }
   static getDerivedStateFromError() {
     return { failed: true }
   }
+  static getDerivedStateFromProps(props: { resetKey?: unknown }, state: { failed: boolean; key: unknown }) {
+    return props.resetKey !== state.key ? { failed: false, key: props.resetKey } : null
+  }
+  componentDidCatch(error: unknown) {
+    console.warn(`Widget ${this.props.type} failed to draw`, error)
+  }
   render() {
-    return this.state.failed ? <WidgetPlaceholder text="This widget failed to load" detail={this.props.type} /> : this.props.children
+    if (!this.state.failed) return this.props.children
+    return this.props.fallback ?? <WidgetPlaceholder text="This widget failed to load" detail={this.props.type} />
   }
 }
 

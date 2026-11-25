@@ -1,12 +1,13 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import { Rnd } from 'react-rnd'
 import type { SensorConfig, SensorData } from '../../types'
 import type { WidgetInstance } from './types'
 import { getWidgetComponent } from './registry'
-import { ScreenWidgetView } from '../../components/ScreenWidgetView'
+import { ScreenWidgetView, WidgetErrorBoundary, WidgetPlaceholder } from '../../components/ScreenWidgetView'
 import { framesWidget, valueStyle } from '../../valueStyle'
-import { applyBindings, hasBindings, liveReader, refIndex } from '../../designer/bindings'
+import { applyBindings, hasBindings, liveReader, sharedRefIndex } from '../../designer/bindings'
 import { propTypesOf } from '../../designer/props'
+import { useTrackedCurrentValues } from '../../store/dashboardStore'
 
 interface WidgetShellProps {
   instance: WidgetInstance
@@ -44,16 +45,52 @@ const HANDLES = {
   bottomRight: corner({ right: -4, bottom: -4 }),
 }
 
-/** The instance with its property bindings (Designer) applied to the live values. Same object when nothing is bound. */
+/**
+ * The instance with its property bindings (Designer) applied to the live
+ * values. Same object when nothing is bound. Never throws: a binding that
+ * cannot be evaluated leaves its property at the fixed value.
+ */
 export function useBoundInstance(instance: WidgetInstance, sensors: SensorConfig[], currentValues: Record<string, SensorData>, active: boolean): WidgetInstance {
-  const bound = active && hasBindings(instance.config)
-  const index = useMemo(() => (bound ? refIndex(sensors) : null), [bound, sensors])
-  if (!bound || !index) return instance
-  const config = applyBindings(instance.config, liveReader(index, currentValues), propTypesOf(instance))
+  if (!active || !hasBindings(instance.config)) return instance
+  let config: Record<string, any>
+  try {
+    // One ref index per sensors array, shared by every widget on the screen.
+    config = applyBindings(instance.config, liveReader(sharedRefIndex(sensors), currentValues), propTypesOf(instance))
+  } catch {
+    return instance
+  }
   return config === instance.config ? instance : { ...instance, config }
 }
 
-export default function WidgetShell({
+/** Renders `children` with the widget's bindings applied to the live values (faceplate titles follow a bound label). */
+export function LiveBound({ instance, sensors, children }: { instance: WidgetInstance; sensors: SensorConfig[]; children: (bound: WidgetInstance) => React.ReactNode }) {
+  const values = useTrackedCurrentValues()
+  return <>{children(useBoundInstance(instance, sensors, values, true))}</>
+}
+
+/** Where a widget that failed to draw was: a placeholder of its size, so the rest of the screen keeps running. */
+function BrokenWidget({ instance }: { instance: WidgetInstance }) {
+  return (
+    <div data-testid="widget-failed" style={{ position: 'absolute', left: instance.x, top: instance.y, width: instance.width, height: instance.height }}>
+      <WidgetPlaceholder text="This widget failed to draw" detail={instance.type} />
+    </div>
+  )
+}
+
+/**
+ * One widget on the 2D stage. Everything that runs for it (bindings, the
+ * widget's own drawing) is inside its own error boundary, so one bad widget
+ * shows a placeholder instead of taking the screen down.
+ */
+export default function WidgetShell(props: WidgetShellProps) {
+  return (
+    <WidgetErrorBoundary type={props.instance.type} resetKey={props.instance} fallback={<BrokenWidget instance={props.instance} />}>
+      <WidgetShellInner {...props} />
+    </WidgetErrorBoundary>
+  )
+}
+
+function WidgetShellInner({
   instance: saved, sensor, data, sensors, currentValues,
   editMode, selected, scale, locked, onSelect, onMove, onResize, onWriteValue, activatable = false,
 }: WidgetShellProps) {

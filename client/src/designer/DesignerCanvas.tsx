@@ -2,7 +2,7 @@ import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, 
 import type { SensorConfig } from '../types'
 import type { WidgetInstance } from '../scada2/widgets/types'
 import { getWidgetComponent } from '../scada2/widgets/registry'
-import { ScreenWidgetView } from '../components/ScreenWidgetView'
+import { ScreenWidgetView, WidgetErrorBoundary, WidgetPlaceholder } from '../components/ScreenWidgetView'
 import { ConnectionLayer } from '../scada2/connections/ConnectionLayer'
 import { useBoundInstance } from '../scada2/widgets/WidgetShell'
 import { useTrackedCurrentValues } from '../store/dashboardStore'
@@ -456,10 +456,23 @@ export function DesignerCanvas(p: Props) {
 
 const byIdNow = (doc: Doc, id: string) => doc.widgets.find(w => w.id === id)
 
-/** One widget in design mode: live values and bindings shown, never interactive. */
-const DesignWidget = memo(function DesignWidget({ w, sensor, sensors, onHover }: {
-  w: WidgetInstance; sensor: SensorConfig | undefined; sensors: SensorConfig[]; onHover: (id: string | null) => void
-}) {
+type DesignWidgetProps = { w: WidgetInstance; sensor: SensorConfig | undefined; sensors: SensorConfig[]; onHover: (id: string | null) => void }
+
+/** One widget in design mode: live values and bindings shown, never interactive. A widget that fails to draw shows a placeholder. */
+const DesignWidget = memo(function DesignWidget(props: DesignWidgetProps) {
+  const { w, onHover } = props
+  return (
+    <WidgetErrorBoundary type={w.type} resetKey={w} fallback={
+      <div data-wid={w.id} data-testid="designer-widget" onPointerEnter={() => onHover(w.id)} style={{ position: 'absolute', left: w.x, top: w.y, width: w.width, height: w.height }}>
+        <WidgetPlaceholder text="This component failed to draw" detail={w.type} />
+      </div>
+    }>
+      <DesignWidgetInner {...props} />
+    </WidgetErrorBoundary>
+  )
+})
+
+function DesignWidgetInner({ w, sensor, sensors, onHover }: DesignWidgetProps) {
   const values = useTrackedCurrentValues()
   const inst = useBoundInstance(w, sensors, values, true)
   const Comp = getWidgetComponent(inst.type)
@@ -481,7 +494,7 @@ const DesignWidget = memo(function DesignWidget({ w, sensor, sensors, onHover }:
       </div>
     </div>
   )
-})
+}
 
 function Ruler({ axis, length, offset, scale, band, onPointerDown }: {
   axis: 'x' | 'y'; length: number; offset: number; scale: number; band: [number, number] | null

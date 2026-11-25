@@ -6,6 +6,9 @@
 //   PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core \
 //   node e2e/designer.smoke.mjs [screenshot-dir]
 //
+// Or all in one (plant simulator, server, seed, browser), as CI runs it:
+//   scripts/smoke-designer.sh target/release/voltrus [screenshot-dir]
+//
 // It opens the Designer on the Plant Overview screen, drags a tag onto the
 // screen, binds a property to an expression, groups and aligns, undoes and
 // redoes, saves, reloads and checks the new component came back from the

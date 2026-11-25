@@ -5,6 +5,7 @@ import { WIDGET_MANIFESTS } from './widgets/registry'
 import { symbolSchema } from './widgets/SymbolWidget'
 import { SYMBOL_MAP } from './hmi/symbols'
 import { resolveSymbol } from './hmi/resolve'
+import { bindingsOf, describeBinding } from '../designer/bindings'
 import { CONNECTION_TYPES } from './connections/ConnectionLayer'
 import { getScreenWidget, isAddonWidgetType } from '../edition/widgets'
 import { useCreateFaceplate, useFaceplates } from '../queries/scada'
@@ -55,6 +56,9 @@ export const WidgetInspector: React.FC<WidgetProps> = ({ widget, sensors, onUpda
     if (widget.type === 'pipe') schema = [...schema, ...(manifest?.configSchema ?? []).filter(f => f.key === 'direction')]
   }
   const multi = (manifest?.maxBindings ?? 1) > 1
+  // Properties bound in the Designer: the fixed value edited here only shows when the binding has no value.
+  const boundProps = bindingsOf(widget.config)
+  const boundElsewhere = Object.keys(boundProps).filter(k => !schema.some(f => f.key === k))
   // Show what is rendered: legacy widgets map old keys (showValue → showStatus, showPercentage → showPercent).
   const config = resolved?.config ?? widget.config ?? {}
 
@@ -98,11 +102,24 @@ export const WidgetInspector: React.FC<WidgetProps> = ({ widget, sensors, onUpda
           </div>
         </Section>
 
+        {boundElsewhere.length > 0 && (
+          <div data-testid="inspector-bound-other" style={{ fontSize: 10.5, color: 'var(--text-dim)', margin: '0 0 8px', lineHeight: 1.4 }}>
+            Bound in the Designer: {boundElsewhere.join(', ')}. Edit those bindings in the Designer.
+          </div>
+        )}
         {schema.length > 0 && (
           <Section title="Appearance & behaviour">
             {schema.map(f => (
-              <Field key={f.key} field={f} value={config[f.key] ?? f.default} sensors={sensors}
-                onChange={v => onUpdateConfig({ [f.key]: v }, `${widget.id}:${f.key}`)} />
+              <React.Fragment key={f.key}>
+                <Field field={f} value={config[f.key] ?? f.default} sensors={sensors}
+                  onChange={v => onUpdateConfig({ [f.key]: v }, `${widget.id}:${f.key}`)} />
+                {boundProps[f.key] && (
+                  <div data-testid={`inspector-bound-${f.key}`} title={describeBinding(boundProps[f.key])}
+                    style={{ margin: '-4px 0 8px', fontSize: 10.5, color: 'var(--text-dim)', lineHeight: 1.4 }}>
+                    Bound in the Designer: at runtime the binding overrides this value.
+                  </div>
+                )}
+              </React.Fragment>
             ))}
           </Section>
         )}

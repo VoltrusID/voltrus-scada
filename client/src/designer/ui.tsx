@@ -172,3 +172,45 @@ export function SmallBtn({ children, onClick, title, danger, disabled, testId }:
     }}>{children}</button>
   )
 }
+
+export interface Choice { label: string; onClick: () => void; danger?: boolean; primary?: boolean; testId?: string }
+
+/**
+ * A modal question with a few answers (Save / Discard / Cancel). Escape picks
+ * `onCancel`; keys do not reach the Designer while it is open.
+ */
+export function ChoiceDialog({ title, message, choices, onCancel, testId }: {
+  title: string; message: React.ReactNode; choices: Choice[]; onCancel: () => void; testId?: string
+}) {
+  const first = React.useRef<HTMLButtonElement>(null)
+  React.useEffect(() => { first.current?.focus() }, [])
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Capture phase: the Designer's own shortcuts never see a key while the dialog is open.
+      e.stopImmediatePropagation()
+      if (e.key === 'Escape') { e.preventDefault(); onCancel() }
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [onCancel])
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 90, display: 'grid', placeItems: 'center', background: 'rgba(0,0,0,.45)' }}>
+      <div role="alertdialog" aria-modal="true" aria-labelledby="designer-dialog-title" data-testid={testId} style={{
+        width: 420, maxWidth: 'calc(100vw - 32px)', padding: 16, borderRadius: 6, background: 'var(--card)', color: 'var(--fg)',
+        border: `1px solid ${D.line}`, boxShadow: '0 12px 40px rgba(0,0,0,.5)', display: 'flex', flexDirection: 'column', gap: 12, fontSize: D.font,
+      }}>
+        <div id="designer-dialog-title" style={{ fontSize: 14, fontWeight: 700 }}>{title}</div>
+        <div style={{ lineHeight: 1.5, color: 'var(--text-dim)' }}>{message}</div>
+        <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+          {choices.map((c, i) => (
+            <button key={c.label} ref={i === 0 ? first : undefined} type="button" onClick={c.onClick} data-testid={c.testId} style={{
+              height: 26, padding: '0 12px', borderRadius: 3, cursor: 'pointer', fontSize: D.font, fontWeight: c.primary ? 600 : 400,
+              border: `1px solid ${c.danger ? 'color-mix(in srgb, var(--crit) 45%, transparent)' : c.primary ? D.accent : D.line}`,
+              background: c.primary ? D.accentBg : 'transparent', color: c.danger ? 'var(--crit)' : c.primary ? D.accent : 'var(--fg)',
+            }}>{c.label}</button>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}

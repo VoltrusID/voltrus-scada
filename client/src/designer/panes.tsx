@@ -11,7 +11,8 @@ import { useTrackedCurrentValues } from '../store/dashboardStore'
 import { valueStyle } from '../valueStyle'
 import { DND_EQUIPMENT } from './DesignerCanvas'
 import { groupOf, isLocked, type Doc } from './model'
-import { tagRef } from './bindings'
+import { refsById, tagRef } from './bindings'
+import { escapeRef } from './expr'
 import { D, Icon, input, mono } from './ui'
 
 // ── Project browser ──
@@ -119,17 +120,19 @@ function IconToggle({ on, icon, title, onClick }: { on: boolean; icon: string; t
 export function TagBrowserPane({ sensors, onPick }: { sensors: SensorConfig[]; onPick?: (id: number) => void }) {
   const [q, setQ] = useState('')
   const values = useTrackedCurrentValues()
+  // Refs as the project format numbers them (`device/key#2` for a second tag with the same key).
+  const refs = useMemo(() => refsById(sensors), [sensors])
   const groups = useMemo(() => {
     const ql = q.trim().toLowerCase()
     const m = new Map<string, SensorConfig[]>()
     for (const s of sensors) {
-      if (ql && !`${s.name} ${s.key} ${tagRef(s)}`.toLowerCase().includes(ql)) continue
+      if (ql && !`${s.name} ${s.key} ${refs.get(s.id) ?? tagRef(s)}`.toLowerCase().includes(ql)) continue
       const dev = s.device_id || '(no device)'
       if (!m.has(dev)) m.set(dev, [])
       m.get(dev)!.push(s)
     }
     return [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([dev, list]) => [dev, list.sort((a, b) => a.key.localeCompare(b.key))] as const)
-  }, [sensors, q])
+  }, [sensors, q, refs])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -138,16 +141,18 @@ export function TagBrowserPane({ sensors, onPick }: { sensors: SensorConfig[]; o
       </div>
       <div style={{ flex: 1, overflow: 'auto' }} data-testid="designer-tags">
         {groups.map(([dev, list]) => (
-          <Node key={dev} label={dev} icon="folder" depth={0} count={list.length} defaultOpen={groups.length < 4 || !!q}>
+          // Filtering remounts the folders open, so a match is visible even in a folder closed before.
+          <Node key={q ? `${dev}\u0000filtered` : dev} label={dev} icon="folder" depth={0} count={list.length} defaultOpen={groups.length < 4 || !!q}>
             {list.map(s => {
+              const ref = refs.get(s.id) ?? tagRef(s)
               const d = values[String(s.id)]
               const vs = valueStyle(d)
               const v = d?.value
               return (
-                <div key={s.id} draggable data-testid="designer-tag" data-ref={tagRef(s)}
-                  onDragStart={e => { e.dataTransfer.setData(DND_TAG, String(s.id)); e.dataTransfer.setData('text/plain', `{${tagRef(s)}}`); e.dataTransfer.effectAllowed = 'copy' }}
+                <div key={s.id} draggable data-testid="designer-tag" data-ref={ref}
+                  onDragStart={e => { e.dataTransfer.setData(DND_TAG, String(s.id)); e.dataTransfer.setData('text/plain', escapeRef(ref)); e.dataTransfer.effectAllowed = 'copy' }}
                   onDoubleClick={() => onPick?.(s.id)}
-                  title={`${s.name}\n{${tagRef(s)}}\nDrag onto the screen to place a bound component, or onto a component to bind it.`}
+                  title={`${s.name}\n${escapeRef(ref)}\nDrag onto the screen to place a bound component, or onto a component to bind it.`}
                   style={{ ...treeRow(1, false), cursor: 'grab', gap: 6 }}
                   onMouseEnter={e => { e.currentTarget.style.background = 'var(--hover-overlay)' }}
                   onMouseLeave={e => { e.currentTarget.style.background = '' }}>

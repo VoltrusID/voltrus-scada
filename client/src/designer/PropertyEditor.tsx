@@ -8,10 +8,10 @@ import { getScreenWidget, isAddonWidgetType } from '../edition/widgets'
 import { DND_TAG } from '../scada2/ScadaCanvas'
 import { useTrackedCurrentValues } from '../store/dashboardStore'
 import {
-  bindingErrors, bindingsOf, describeBinding, evaluateBinding, liveReader, refIndex, tagRef, withBinding,
+  bindingErrors, bindingsOf, describeBinding, evaluateBinding, liveReader, refsById, sharedRefIndex, withBinding,
   type Binding, type MapCase, type PropType,
 } from './bindings'
-import { FUNCTIONS } from './expr'
+import { escapeRef, FUNCTIONS } from './expr'
 import { propertiesOf } from './props'
 import { bindPrimaryPatch, boundsOf, groupOf, isLocked, type Doc, type Patch } from './model'
 import { D, GridSection, Icon, PropRow, SmallBtn, input, mono } from './ui'
@@ -80,7 +80,7 @@ function MultiProps({ ws, onPatch, arrange }: { ws: WidgetInstance[]; onPatch: P
 
 function WidgetProps({ w, sensors, onPatch }: { w: WidgetInstance; sensors: SensorConfig[]; onPatch: Props['onPatch'] }) {
   const values = useTrackedCurrentValues()
-  const index = useMemo(() => refIndex(sensors), [sensors])
+  const index = sharedRefIndex(sensors)
   const read = useMemo(() => liveReader(index, values), [index, values])
   const [editing, setEditing] = useState<string | null>(null)
   const manifest = WIDGET_MANIFESTS[w.type]
@@ -97,8 +97,9 @@ function WidgetProps({ w, sensors, onPatch }: { w: WidgetInstance; sensors: Sens
   const setConfig = (c: Record<string, any>, key?: string) => onPatch({ [w.id]: { config: c } }, key)
   const setBinding = (prop: string, b: Binding | null) => {
     // Replace the whole bindings object (a patch merges per top-level key).
+    // Each apply or removal is its own undo step (no coalescing key).
     const next = withBinding(w.config ?? {}, prop, b)
-    setConfig({ bindings: next.bindings }, `${w.id}:bind:${prop}`)
+    setConfig({ bindings: next.bindings })
   }
 
   return (
@@ -152,11 +153,13 @@ function WidgetProps({ w, sensors, onPatch }: { w: WidgetInstance; sensors: Sens
         {props.map(f => {
           const b = bs[f.key]
           const open = editing === f.key
+          // Tag-picker fields hold a tag id: pick the tag itself, there is nothing to bind.
+          const bindable = f.type !== 'tag'
           const live = b ? evaluateBinding(b, read, f.type as PropType) : undefined
           return (
             <React.Fragment key={f.key}>
               <PropRow label={f.label} bound={!!b} testId={`designer-prop-${f.key}`} title={b ? `Bound: ${describeBinding(b)}` : undefined}
-                trailing={
+                trailing={!bindable ? undefined :
                   <button type="button" title={b ? 'Edit binding' : 'Bind to a tag or expression'} aria-label={`Bind ${f.label}`} data-testid={`designer-bind-${f.key}`}
                     onClick={() => setEditing(open ? null : f.key)}
                     style={{
@@ -269,10 +272,11 @@ function BindingEditor({ prop, binding, sensors, index, read, onChange, onClose 
   const errors = (draft.kind === 'tag' ? !!draft.tag : !!draft.expr.trim()) ? bindingErrors(draft, index) : []
   const empty = draft.kind === 'tag' ? !draft.tag : !draft.expr.trim()
   const preview = !empty && errors.length === 0 ? evaluateBinding(draft, read, prop.type as PropType) : undefined
-  const tagById = (id: number | null) => (id == null ? '' : (() => { const s = sensors.find(x => x.id === id); return s ? tagRef(s) : '' })())
+  const refs = useMemo(() => refsById(sensors), [sensors])
+  const tagById = (id: number | null) => (id == null ? '' : refs.get(id) ?? '')
   const insertTag = (id: number | null) => {
     if (id == null || draft.kind === 'tag') return
-    setDraft({ ...draft, expr: `${draft.expr}${draft.expr && !draft.expr.endsWith(' ') ? ' ' : ''}{${tagById(id)}}` })
+    setDraft({ ...draft, expr: `${draft.expr}${draft.expr && !draft.expr.endsWith(' ') ? ' ' : ''}${escapeRef(tagById(id))}` })
   }
   const seg = (k: Binding['kind'], label: string) => (
     <button type="button" onClick={() => switchKind(k)} aria-pressed={kind === k} data-testid={`designer-bindkind-${k}`} style={{
@@ -324,7 +328,8 @@ function MapCases({ prop, draft, onChange }: { prop: ConfigFieldDef; draft: Extr
     ? <input type="checkbox" checked={!!v} onChange={e => set(e.target.checked)} aria-label={label} />
     : prop.type === 'color'
       ? <input type="color" value={typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v : '#8b939e'} onChange={e => set(e.target.value)} aria-label={label} style={{ width: 34, height: 20, border: 'none', padding: 0, background: 'none' }} />
-      : <input value={v == null ? '' : String(v)} onChange={e => set(prop.type === 'number' ? Number(e.target.value) : e.target.value)} style={input} aria-label={label} />
+      // An emptied number keeps no value (the property keeps its fixed value) instead of turning into 0.
+      : <input value={v == null ? '' : String(v)} onChange={e => set(prop.type === 'number' ? (e.target.value.trim() === '' ? undefined : Number(e.target.value)) : e.target.value)} style={input} aria-label={label} />
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
       {draft.cases.map((c, i) => (
@@ -332,7 +337,7 @@ function MapCases({ prop, draft, onChange }: { prop: ConfigFieldDef; draft: Extr
           <select value={c.op} onChange={e => setCase(i, { op: e.target.value as MapCase['op'] })} style={input} aria-label="Compare">
             {['==', '>=', '>', '<=', '<'].map(o => <option key={o} value={o}>{o}</option>)}
           </select>
-          <input type="number" value={c.v} onChange={e => setCase(i, { v: Number(e.target.value) })} style={input} aria-label="Value" />
+          <input type="number" value={Number.isFinite(c.v) ? c.v : ''} onChange={e => setCase(i, { v: e.target.value === '' ? NaN : Number(e.target.value) })} style={input} aria-label="Value" />
           {outInput(c.out, v => setCase(i, { out: v }), 'Result')}
           <button type="button" aria-label="Remove case" onClick={() => onChange({ ...draft, cases: draft.cases.filter((_, j) => j !== i) })}
             style={{ border: 'none', background: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}>×</button>
