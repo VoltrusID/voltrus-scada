@@ -17,6 +17,7 @@
 //! * [`validate_doc`] for offline checks
 
 pub mod binding_refs;
+pub mod equipment;
 pub mod export;
 pub mod import;
 pub mod io;
@@ -34,13 +35,15 @@ mod tests;
 
 pub use export::export_project_yaml;
 pub use import::{
-    Env, apply_import, apply_import_with_env, plan_import, plan_import_with_env, process_env,
+    Env, Guard, apply_import, apply_import_guarded, apply_import_with_env, plan_import,
+    plan_import_guarded, plan_import_with_env, process_env,
 };
 pub use io::{
     is_single_file_path, parse_project_yaml, read_project, to_yaml, write_project,
     write_project_dir, write_project_file,
 };
 pub use model::{
-    Action, Change, Counts, FORMAT, ImportPlan, InvalidProject, Issue, Mode, ProjectDoc, Severity,
+    Action, Change, Conflict, Counts, FORMAT, ImportPlan, InvalidProject, Issue, Mode, ProjectDoc,
+    Severity,
 };
 pub use validate::validate_doc;

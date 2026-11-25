@@ -23,14 +23,16 @@ interface Props {
   screenName: string
   onPatch: (patches: Record<string, Patch>, coalesce?: string) => void
   arrange: React.ReactNode
+  /** The equipment instance section of a symbol bound to one (Designer.tsx). */
+  equipment?: (w: WidgetInstance) => React.ReactNode
 }
 
 /** Property editor: the selected component's properties, each fixed or bound to a tag, an expression or a map. */
-export function PropertyEditor({ doc, selection, sensors, screenName, onPatch, arrange }: Props) {
+export function PropertyEditor({ doc, selection, sensors, screenName, onPatch, arrange, equipment }: Props) {
   const ws = doc.widgets.filter(w => selection.includes(w.id))
   if (ws.length === 0) return <ScreenProps doc={doc} sensors={sensors} screenName={screenName} />
   if (ws.length > 1) return <MultiProps ws={ws} onPatch={onPatch} arrange={arrange} />
-  return <WidgetProps key={ws[0].id} w={ws[0]} sensors={sensors} onPatch={onPatch} />
+  return <WidgetProps key={ws[0].id} w={ws[0]} sensors={sensors} onPatch={onPatch} equipment={equipment?.(ws[0])} />
 }
 
 function ScreenProps({ doc, sensors, screenName }: { doc: Doc; sensors: SensorConfig[]; screenName: string }) {
@@ -78,7 +80,7 @@ function MultiProps({ ws, onPatch, arrange }: { ws: WidgetInstance[]; onPatch: P
   )
 }
 
-function WidgetProps({ w, sensors, onPatch }: { w: WidgetInstance; sensors: SensorConfig[]; onPatch: Props['onPatch'] }) {
+function WidgetProps({ w, sensors, onPatch, equipment }: { w: WidgetInstance; sensors: SensorConfig[]; onPatch: Props['onPatch']; equipment?: React.ReactNode }) {
   const values = useTrackedCurrentValues()
   const index = sharedRefIndex(sensors)
   const read = useMemo(() => liveReader(index, values), [index, values])
@@ -108,6 +110,8 @@ function WidgetProps({ w, sensors, onPatch }: { w: WidgetInstance; sensors: Sens
         <span style={{ fontSize: 13, fontWeight: 600 }}>{w.config?.label || w.name || widgetTitle(w)}</span>
         <span style={{ ...mono, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{widgetTitle(w)} · {w.id}</span>
       </div>
+
+      {equipment}
 
       {takesTag && (
         <GridSection title="Value">

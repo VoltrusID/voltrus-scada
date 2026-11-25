@@ -1,0 +1,20 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_filter",
+  "name": "Filter",
+  "category": "Separation",
+  "keywords": ["filter", "gravity", "sand", "media", "strainer", "backwash", "f"],
+  "viewBox": [100, 132],
+  "size": [84, 110],
+  "binding": "value",
+  "ports": {"top": [50, 2], "bottom": [50, 130], "left": [2, 40], "right": [98, 92]},
+  "layers": [
+    {"d": "M50 14 V2", "paint": "line"},
+    {"d": "M50 118 V130", "paint": "line"},
+    {"d": "M14 40 H2 M86 92 H98", "paint": "line"},
+    {"d": "M14 14 H86 V118 H14 Z", "paint": "shell"},
+    {"d": "M14 64 H86 M14 82 H86 M24 64 L32 82 M40 64 L48 82 M56 64 L64 82 M72 64 L80 82", "paint": "detail"},
+    {"d": "M50 108 V24", "paint": "flow"}
+  ],
+  "runTag": "Backwash tag"
+}

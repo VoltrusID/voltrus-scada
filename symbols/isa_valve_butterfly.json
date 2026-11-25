@@ -1,0 +1,32 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_valve_butterfly",
+  "name": "Butterfly valve",
+  "category": "Valves",
+  "keywords": ["valve", "butterfly", "damper", "disc"],
+  "viewBox": [100, 100],
+  "size": [80, 80],
+  "binding": "state",
+  "ports": {"left": [2, 74], "right": [98, 74]},
+  "layers": [
+    {"d": "M2 74 H8", "paint": "line"},
+    {"d": "M92 74 H98", "paint": "line"},
+    {"d": "M50 74 V40", "paint": "line", "if": {"actuator": ["manual", "diaphragm", "motor", "solenoid", "piston"]}},
+    {"d": "M34 40 H66", "paint": "line", "if": {"actuator": "manual"}},
+    {"d": "M24 42 A26 22 0 0 1 76 42 Z", "paint": "shell", "if": {"actuator": "diaphragm"}},
+    {"d": "M36 26 A14 14 0 1 0 64 26 A14 14 0 1 0 36 26 Z", "paint": "shell", "if": {"actuator": "motor"}},
+    {"d": "M38 18 H62 V40 H38 Z", "paint": "shell", "if": {"actuator": "solenoid"}},
+    {"d": "M32 16 H68 V40 H32 Z", "paint": "shell", "if": {"actuator": "piston"}},
+    {"d": "M40 28 H60", "paint": "detail", "if": {"actuator": "piston"}},
+    {"d": "M50 56 A7 18 0 1 0 50 92 A7 18 0 1 0 50 56 Z", "paint": "body"},
+    {"d": "M18 74 H44 M56 74 H82", "paint": "line"},
+    {"d": "M18 56 V92 M82 56 V92", "paint": "line"}
+  ],
+  "text": [
+    {"x": 50, "y": 26.5, "text": "M", "size": 15, "weight": 600, "if": {"actuator": "motor"}},
+    {"x": 50, "y": 29.5, "text": "S", "size": 14, "weight": 600, "if": {"actuator": "solenoid"}}
+  ],
+  "options": [
+    {"key": "actuator", "label": "Actuator", "type": "select", "values": ["none", "manual", "diaphragm", "motor", "solenoid", "piston"], "default": "none"}
+  ]
+}

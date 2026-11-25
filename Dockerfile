@@ -16,6 +16,8 @@ WORKDIR /src/client
 COPY client/package.json client/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY client/ ./
+# The ISA-101 symbol files the client bundles (client/src/scada2/hmi/dataSymbols.tsx).
+COPY symbols/ /src/symbols/
 # Writes the bundle to /src/static, which the release build embeds.
 RUN npm run build
 

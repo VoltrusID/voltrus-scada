@@ -1,0 +1,26 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_instrument",
+  "name": "Instrument bubble",
+  "category": "Instruments",
+  "keywords": ["instrument", "transmitter", "tag", "bubble", "isa 5.1", "pt", "ft", "lt", "tt", "at"],
+  "viewBox": [80, 80],
+  "size": [72, 72],
+  "binding": "value",
+  "ports": {"left": [10, 40], "right": [70, 40], "top": [40, 10], "bottom": [40, 70]},
+  "layers": [
+    {"d": "M10 10 H70 V70 H10 Z", "paint": "line", "if": {"mounting": ["dcs", "plc"]}},
+    {"d": "M11 40 A29 29 0 1 0 69 40 A29 29 0 1 0 11 40 Z", "paint": "shell", "if": {"mounting": ["field", "panel", "dcs"]}},
+    {"d": "M40 10 L70 40 L40 70 L10 40 Z", "paint": "shell", "if": {"mounting": "plc"}},
+    {"d": "M11 40 H69", "paint": "line", "if": {"mounting": "panel"}}
+  ],
+  "text": [
+    {"x": 40, "y": 30, "from": "tagFunction", "size": 15, "weight": 700},
+    {"x": 40, "y": 52, "from": "loopNumber", "size": 12, "weight": 500, "font": "mono"}
+  ],
+  "options": [
+    {"key": "mounting", "label": "Mounting", "type": "select", "values": ["field", "panel", "dcs", "plc"], "default": "field"},
+    {"key": "tagFunction", "label": "Function (e.g. PT)", "type": "string", "default": "PT"},
+    {"key": "loopNumber", "label": "Loop number", "type": "string", "default": "101"}
+  ]
+}

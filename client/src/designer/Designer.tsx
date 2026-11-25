@@ -3,7 +3,6 @@ import type { SensorConfig } from '../types'
 import type { ConnectionInstance, ScadaWidgetType, WidgetInstance } from '../scada2/widgets/types'
 import { WIDGET_MANIFESTS } from '../scada2/widgets/registry'
 import { SYMBOL_MAP } from '../scada2/hmi/symbols'
-import { FACEPLATE_PRESETS, type FaceplateDef } from '../scada2/hmi/faceplateMap'
 import { loadLayoutFromAPI, saveLayoutToAPI } from '../scada2/engine/layout'
 import { ScadaView } from '../scada2/ScadaView'
 import { widgetTitle } from '../scada2/ScadaInspector'
@@ -11,7 +10,12 @@ import { STAGE_H, STAGE_W } from '../scada2/ScadaCanvas'
 import { useQueryClient } from '@tanstack/react-query'
 import { useBlocker } from '@tanstack/react-router'
 import { useScreens, useSensors } from '../queries'
-import { fetchScadaLayout, saveScadaLayout, useCreateFaceplate, useFaceplates, useScadaLayout, type ScadaLayout } from '../queries/scada'
+import { fetchScadaLayout, saveScadaLayout, useFaceplates, useScadaLayout, type ScadaLayout } from '../queries/scada'
+import { useModbusDevices } from '../queries/modbus'
+import {
+  updateInstance, useEquipmentInstances, useEquipmentTypes, useInstallLibrary, useInvalidateEquipment,
+  type EquipmentInstance, type EquipmentInstanceInput,
+} from '../queries/equipment'
 import { queryKeys } from '../queries/keys'
 import { useTrackedCurrentValues } from '../store/dashboardStore'
 import { openTrend } from '../trend/TrendPopup'
@@ -24,7 +28,9 @@ import {
 } from './model'
 import type { Guide } from './snap'
 import { DesignerCanvas, type CanvasDrop } from './DesignerCanvas'
-import { EQUIPMENT, PalettePane, ProjectBrowser, TagBrowserPane } from './panes'
+import { PalettePane, ProjectBrowser, TagBrowserPane } from './panes'
+import { EquipmentTree, EquipmentTypesSection, InstancePicker, InstanceSection } from './equipment'
+import { bindInstancePatch, configOf, instanceOf, widgetsByInstance } from './equipmentModel'
 import { PropertyEditor } from './PropertyEditor'
 import { ChoiceDialog, D, Icon, Pane, Sep, SmallBtn, ToolBtn, mono } from './ui'
 
@@ -71,8 +77,6 @@ function dropChoices(s: SensorConfig | undefined): { kind: 'symbol' | 'widget'; 
   return out
 }
 
-const MOTOR_PRESET: FaceplateDef = { ...FACEPLATE_PRESETS[0], id: 'motor', name: 'Motor', kind: 'motor' }
-
 function usePersisted<T>(key: string, initial: T): [T, (v: T | ((p: T) => T)) => void] {
   const [v, setV] = useState<T>(() => {
     try { const s = localStorage.getItem(key); return s ? JSON.parse(s) as T : initial } catch { return initial }
@@ -88,7 +92,13 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
   const layoutQ = useScadaLayout(screen, true)
   const qc = useQueryClient()
   const { data: faceplates = [] } = useFaceplates()
-  const createFaceplate = useCreateFaceplate()
+  const { data: eqTypes = [] } = useEquipmentTypes()
+  const { data: eqInstances = [] } = useEquipmentInstances()
+  const { data: modbusDevices = [] } = useModbusDevices()
+  const installLibrary = useInstallLibrary()
+  const invalidateEquipment = useInvalidateEquipment()
+  /** An equipment type dropped on the stage: the instance picker is open for it. */
+  const [picker, setPicker] = useState<{ type: string; x?: number; y?: number } | null>(null)
 
   const [h, dispatch] = useReducer(historyReducer, emptyHistory)
   const doc = h.present
@@ -250,19 +260,49 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
     setSelection([w.id])
   }, [edit, setSelection])
 
+  /** Dropping an equipment type asks which instance to place (or creates one). */
   const addEquipment = useCallback((key: string, x?: number, y?: number) => {
-    const e = EQUIPMENT.find(q => q.key === key)
-    if (!e) return
-    // The equipment's faceplate definition: the one of that kind, or a starting one saved now.
-    let fp = faceplates.find(f => f.id === e.faceplate) ?? faceplates.find(f => f.kind === e.faceplate)
-    if (!fp) {
-      fp = e.faceplate === 'motor' ? MOTOR_PRESET : FACEPLATE_PRESETS.find(p => p.id === e.faceplate)!
-      createFaceplate.mutate(fp, { onError: (err: any) => toast.error(`Faceplate not created: ${err?.message || 'request failed'}`) })
+    if (!eqTypes.some(t => t.id === key)) { toast.error(`No equipment type '${key}'`); return }
+    setPicker({ type: key, x, y })
+  }, [eqTypes])
+
+  /** Place a symbol bound to an instance, exactly as the server binds it. */
+  const placeInstance = useCallback((inst: EquipmentInstance) => {
+    const at = picker
+    setPicker(null)
+    invalidateEquipment()
+    const symbol = (inst.resolved.widget.config.symbol as string | undefined) ?? inst.resolved.symbol
+    const def = SYMBOL_MAP[symbol]
+    const [sw, sh] = def?.size ?? [90, 100]
+    const w = make('symbol', symbol, at?.x != null ? at.x - sw / 2 : undefined, at?.y != null ? at.y - sh / 2 : undefined)
+    if (!w) { toast.error(`Unknown symbol '${symbol}'`); return }
+    const p = bindInstancePatch(null, inst.name, inst.resolved.widget)
+    const config = { ...w.config, ...configOf(p) }
+    // An instrument bubble takes its function letters and loop number from the instance name (PT-501: PT, 501).
+    const tag = /^([A-Z]{1,5})-?(\d+[A-Z]?)$/.exec(inst.name)
+    if (tag && def?.fields?.some(f => f.key === 'tagFunction')) Object.assign(config, { tagFunction: tag[1], loopNumber: tag[2] })
+    add({ ...w, type: 'symbol', sensorId: p.sensorId ?? null, sensorIds: p.sensorIds ?? [], config })
+  }, [picker, make, add, invalidateEquipment])
+
+  /**
+   * Change an instance from the property editor. The server re-binds every
+   * symbol of it on every screen (this one included), so unsaved work is saved
+   * first and the screen reloads from the server afterwards.
+   */
+  const applyInstance = useCallback(async (name: string, body: EquipmentInstanceInput) => {
+    if (dirtyRef.current && !(await save())) throw new Error('Save the screen first')
+    await updateInstance(name, body, false)
+    invalidateEquipment()
+    const id = loadedScreen.current
+    if (id) {
+      const fresh = await fetchScadaLayout(id)
+      if (!dirtyRef.current) loadLayout(fresh, id)
+      void qc.invalidateQueries({ queryKey: queryKeys.scadaLayout(id) })
     }
-    const n = doc.widgets.filter(w => w.config?.symbol === e.symbol).length + 1
-    add(make('symbol', e.symbol, x != null ? x - SYMBOL_MAP[e.symbol].size[0] / 2 : undefined, y != null ? y - SYMBOL_MAP[e.symbol].size[1] / 2 : undefined, null,
-      { label: `${e.prefix}-${100 + n}`, showStatus: true, faceplate: fp.id, faceplateMap: {} }))
-  }, [faceplates, createFaceplate, doc.widgets, add, make])
+    toast.success(`${name} changed; its symbols follow`)
+  }, [save, invalidateEquipment, loadLayout, qc])
+
+  const onScreenInstances = useMemo(() => widgetsByInstance(doc.widgets), [doc.widgets])
 
   const onDrop = useCallback((d: CanvasDrop, x: number, y: number, target: string | null, client: { x: number; y: number }) => {
     if (d.kind === 'tag') {
@@ -515,7 +555,10 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
               <ProjectBrowser screens={screens} active={screen} onOpenScreen={id => { void openScreen(id) }} doc={doc} selection={selection} onSelect={setSelection}
                 onToggleLock={id => patch(lockPatches(doc, [id], !isLocked(doc.widgets.find(w => w.id === id)!)))}
                 onToggleVisible={id => { const w = doc.widgets.find(x => x.id === id)!; patch({ [id]: { config: { visible: w.config?.visible === false ? undefined : false } } }) }}
-                faceplates={faceplates} onOpenPage={onOpenPage} />
+                faceplates={faceplates} onOpenPage={onOpenPage}
+                equipment={<EquipmentTree types={eqTypes} instances={eqInstances} onScreen={onScreenInstances}
+                  selected={selection.length ? instanceOf(doc.widgets.find(w => w.id === selection[0]) ?? { config: {} }) : null}
+                  onSelectInstance={name => { const ids = onScreenInstances.get(name); if (ids?.length) setSelection(ids) }} />} />
             </Pane>
             <Pane title="Tag browser" icon="tag" grow={1.3} testId="designer-tag-browser">
               <TagBrowserPane sensors={sensors} onPick={id => {
@@ -570,10 +613,13 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
         {!preview && (
           <aside style={{ width: 312, flexShrink: 0, display: 'flex', flexDirection: 'column', borderLeft: `1px solid ${D.line}`, background: D.pane }}>
             <Pane title="Components" icon="layers" grow={0.9} testId="designer-components">
-              <PalettePane onAdd={it => {
-                if (it.kind === 'equipment') addEquipment(it.key)
-                else add(make(it.kind, it.key))
-              }} />
+              <PalettePane top={q => (
+                <EquipmentTypesSection types={eqTypes} query={q} onAdd={key => addEquipment(key)} installing={installLibrary.isPending}
+                  onInstall={() => installLibrary.mutate(undefined, {
+                    onSuccess: r => toast.success(`Added ${r.installed.length} equipment types`),
+                    onError: (e: any) => toast.error(`Starter types not added: ${e?.message || 'request failed'}`),
+                  })} />
+              )} onAdd={it => add(make(it.kind, it.key))} />
             </Pane>
             <Pane title="Properties" icon="faceplate" grow={1.6} testId="designer-properties"
               actions={n ? <span style={{ ...mono, color: 'var(--text-muted)' }}>{n} selected</span> : undefined}>
@@ -581,12 +627,33 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
                 <ConnectionProps conn={doc.connections.find(c => c.id === selConn)!} widgets={doc.widgets}
                   onChange={p => edit({ type: 'patchConnection', id: selConn, patch: p })} onDelete={removeSelection} />
               ) : (
-                <PropertyEditor doc={doc} selection={selection} sensors={sensors} screenName={screenName} onPatch={patch} arrange={arrangeButtons} />
+                <PropertyEditor doc={doc} selection={selection} sensors={sensors} screenName={screenName} onPatch={patch} arrange={arrangeButtons}
+                  equipment={w => {
+                    const name = instanceOf(w)
+                    if (!name) return null
+                    const inst = eqInstances.find(i => i.name === name)
+                    return (
+                      <InstanceSection key={`${w.id}:${name}`} w={w} name={name} instance={inst} type={eqTypes.find(t => t.id === inst?.type)} sensors={sensors}
+                        onApply={applyInstance}
+                        onUnbind={() => patch({ [w.id]: { config: { equipment: undefined } } })}
+                        onRebind={i => patch({ [w.id]: bindInstancePatch(w, i.name, i.resolved.widget) })} />
+                    )
+                  }} />
               )}
             </Pane>
           </aside>
         )}
       </div>
+
+      {picker && (() => {
+        const t = eqTypes.find(x => x.id === picker.type)
+        if (!t) return null
+        const devices = [...new Set([...modbusDevices.map(d => d.id), ...sensors.map(s => s.device_id).filter(Boolean) as string[]])].sort()
+        return (
+          <InstancePicker type={t} instances={eqInstances} onScreen={onScreenInstances} devices={devices}
+            modbusDevices={new Set(modbusDevices.map(d => d.id))} onPick={placeInstance} onCancel={() => setPicker(null)} />
+        )
+      })()}
 
       {remoteChanged && !conflict && (
         <div role="status" data-testid="designer-remote-changed" style={{

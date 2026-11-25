@@ -554,6 +554,39 @@ pub(super) fn run_migrations(conn: &Connection) {
         );
         CREATE INDEX IF NOT EXISTS idx_faceplate_roles_faceplate ON faceplate_roles(faceplate_id);",
     );
+    // Equipment types (Pump, Valve, ...) and their one-line instances
+    // (docs/equipment-types.md). JSON columns hold the type's tag roles,
+    // bindings, symbol config and flow templates, and an instance's overrides.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS equipment_types (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            symbol TEXT NOT NULL,
+            faceplate TEXT,
+            tags TEXT NOT NULL DEFAULT '[]',
+            bindings TEXT NOT NULL DEFAULT '{}',
+            symbol_config TEXT NOT NULL DEFAULT '{}',
+            flows TEXT NOT NULL DEFAULT '[]',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS equipment_instances (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            type_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            base INTEGER,
+            prefix TEXT,
+            description TEXT NOT NULL DEFAULT '',
+            symbol TEXT,
+            overrides TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_equipment_instances_type ON equipment_instances(type_id);",
+    );
     // A Modbus device that follows a device template instead of a copy of it.
     for col in ["template_id", "template_version", "template_source"] {
         let _ = conn.execute_batch(&format!("ALTER TABLE modbus_devices ADD COLUMN {col} TEXT"));

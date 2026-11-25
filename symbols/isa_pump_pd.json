@@ -1,0 +1,19 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_pump_pd",
+  "name": "Positive displacement pump",
+  "category": "Rotating equipment",
+  "keywords": ["pump", "gear", "rotary", "lobe", "screw", "pd"],
+  "viewBox": [100, 100],
+  "size": [80, 80],
+  "binding": "state",
+  "ports": {"left": [4, 50], "right": [96, 50]},
+  "layers": [
+    {"d": "M4 50 H20", "paint": "line"},
+    {"d": "M80 50 H96", "paint": "line"},
+    {"d": "M32 76 L24 92 H76 L68 76", "paint": "line"},
+    {"d": "M20 50 A30 30 0 1 0 80 50 A30 30 0 1 0 20 50 Z", "paint": "body"},
+    {"d": "M28.5 50 A10.5 10.5 0 1 0 49.5 50 A10.5 10.5 0 1 0 28.5 50 Z", "paint": "inner"},
+    {"d": "M50.5 50 A10.5 10.5 0 1 0 71.5 50 A10.5 10.5 0 1 0 50.5 50 Z", "paint": "inner"}
+  ]
+}

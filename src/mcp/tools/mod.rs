@@ -20,6 +20,7 @@ mod alarms;
 mod commands;
 mod data;
 mod devices;
+mod equipment;
 mod flows;
 mod project;
 mod screens;
@@ -118,6 +119,7 @@ static REGISTRY: LazyLock<Vec<Tool>> = LazyLock::new(|| {
     tools.extend(flows::tools());
     tools.extend(commands::tools());
     tools.extend(templates::tools());
+    tools.extend(equipment::tools());
     tools.extend(project::tools());
     tools
 });

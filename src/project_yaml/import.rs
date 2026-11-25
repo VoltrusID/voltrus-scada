@@ -39,13 +39,40 @@ pub async fn apply_import(storage: &Storage, doc: &ProjectDoc, mode: Mode) -> Re
     apply_import_with_env(storage, doc, mode, process_env()).await
 }
 
+/// A check run inside the import's transaction, after the expansion and
+/// validation and before anything is written: it sees what is stored and what
+/// the equipment instances generate, and refuses with an error (a
+/// [`super::model::Conflict`] for a 409).
+pub type Guard =
+    Box<dyn FnOnce(&export::Snapshot, &[super::equipment::Expanded]) -> Result<()> + Send>;
+
+/// [`plan_import`] with a [`Guard`].
+pub async fn plan_import_guarded(
+    storage: &Storage,
+    doc: &ProjectDoc,
+    mode: Mode,
+    guard: Guard,
+) -> Result<ImportPlan> {
+    run_async(storage, doc, mode, false, process_env(), Some(guard)).await
+}
+
+/// [`apply_import`] with a [`Guard`].
+pub async fn apply_import_guarded(
+    storage: &Storage,
+    doc: &ProjectDoc,
+    mode: Mode,
+    guard: Guard,
+) -> Result<ImportPlan> {
+    run_async(storage, doc, mode, true, process_env(), Some(guard)).await
+}
+
 pub async fn plan_import_with_env(
     storage: &Storage,
     doc: &ProjectDoc,
     mode: Mode,
     env: Env,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, false, env).await
+    run_async(storage, doc, mode, false, env, None).await
 }
 
 pub async fn apply_import_with_env(
@@ -54,7 +81,7 @@ pub async fn apply_import_with_env(
     mode: Mode,
     env: Env,
 ) -> Result<ImportPlan> {
-    run_async(storage, doc, mode, true, env).await
+    run_async(storage, doc, mode, true, env, None).await
 }
 
 async fn run_async(
@@ -63,10 +90,11 @@ async fn run_async(
     mode: Mode,
     write: bool,
     env: Env,
+    guard: Option<Guard>,
 ) -> Result<ImportPlan> {
     let doc = doc.clone();
     storage
-        .with_conn(move |conn| run(conn, &doc, mode, write, &*env))
+        .with_conn(move |conn| run(conn, &doc, mode, write, &*env, guard))
         .await
 }
 
@@ -83,15 +111,29 @@ fn run(
     mode: Mode,
     write: bool,
     env: &(dyn Fn(&str) -> Option<String> + Send + Sync),
+    guard: Option<Guard>,
 ) -> Result<ImportPlan> {
     let tx = conn.transaction().context("begin transaction")?;
     let (snap, mut ctx) = export::read_all(&tx)?;
 
+    // Equipment instances become tags, registers, flows and widget bindings
+    // before anything is checked, so the plan shows what they generate.
+    let (doc, expanded, mut issues) = super::equipment::expand(doc, &snap, mode);
+    let doc = &doc;
     let known = (mode == Mode::Merge).then(|| validate::Known::from_snapshot(&snap));
-    let issues = validate::validate_doc(doc, known.as_ref(), false);
+    issues.extend(validate::validate_doc(doc, known.as_ref(), false));
     if issues.iter().any(|i| i.severity == Severity::Error) {
         return Err(InvalidProject(issues).into());
     }
+    if let Some(guard) = guard {
+        guard(&snap, &expanded)?;
+    }
+    // Flows an equipment instance made and no longer has (merge deletes
+    // nothing else).
+    let removals: HashSet<(&str, String)> = expanded
+        .iter()
+        .flat_map(|e| e.flows_removed.iter().map(|f| ("flows", f.clone())))
+        .collect();
 
     let mut warnings: Vec<String> = issues.iter().map(|i| i.to_string()).collect();
     // Linked Modbus devices follow their templates (see linked.rs).
@@ -104,6 +146,7 @@ fn run(
         sections: BTreeMap::new(),
         changes: Vec::new(),
         warnings,
+        expanded,
     };
     let mut work: Vec<Work> = Vec::new();
     let mut secret_errors: Vec<Issue> = Vec::new();
@@ -189,9 +232,11 @@ fn run(
             }
         }
 
-        if mode == Mode::Replace {
+        if mode == Mode::Replace || !removals.is_empty() {
             for row in existing {
-                if !seen.contains(&(row.key.clone(), row.ord)) {
+                let removed = removals.contains(&(sec.name, row.key.clone()));
+                if (mode == Mode::Replace || removed) && !seen.contains(&(row.key.clone(), row.ord))
+                {
                     counts.delete += 1;
                     plan.changes.push(Change {
                         section: sec.name.into(),
@@ -921,19 +966,19 @@ fn write_screen(
                 *reference = Value::Number(id.into());
             }
         }
-        // runSensorId by ref (a number is a legacy id, kept as is).
-        if let Some(c) = config.as_mut().and_then(Value::as_mapping_mut)
-            && let Some(Value::String(reference)) = c.get(export::RUN_TAG).cloned()
-        {
-            let tag = tag_id(
-                ctx,
-                &reference,
-                &format!("{} of a SCADA widget of screen '{id}'", export::RUN_TAG),
-            )?;
-            c.insert(
-                Value::String(export::RUN_TAG.into()),
-                Value::Number(tag.into()),
-            );
+        // runSensorId and the other single-tag keys by ref (a number is a
+        // legacy id, kept as is).
+        if let Some(c) = config.as_mut().and_then(Value::as_mapping_mut) {
+            for key in export::TAG_KEYS {
+                if let Some(Value::String(reference)) = c.get(*key).cloned() {
+                    let tag = tag_id(
+                        ctx,
+                        &reference,
+                        &format!("{key} of a SCADA widget of screen '{id}'"),
+                    )?;
+                    c.insert(Value::String((*key).into()), Value::Number(tag.into()));
+                }
+            }
         }
         args.push(yaml_to_sql(
             field(spec::SCADA_EQUIPMENT, "config"),

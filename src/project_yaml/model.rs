@@ -148,6 +148,20 @@ impl std::fmt::Display for InvalidProject {
 
 impl std::error::Error for InvalidProject {}
 
+/// Returned (inside `anyhow::Error`) when an import's guard refuses what it
+/// finds inside the transaction (an entity created meanwhile, a change that
+/// differs from what was signed). Nothing is written; REST answers 409.
+#[derive(Debug, Clone)]
+pub struct Conflict(pub String);
+
+impl std::fmt::Display for Conflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Conflict {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
@@ -184,6 +198,10 @@ pub struct ImportPlan {
     pub sections: BTreeMap<String, Counts>,
     pub changes: Vec<Change>,
     pub warnings: Vec<String>,
+    /// What each equipment instance generated (tags, registers, flows,
+    /// widget bindings); those entities are among `changes` too.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub expanded: Vec<super::equipment::Expanded>,
 }
 
 impl ImportPlan {
@@ -199,6 +217,13 @@ impl ImportPlan {
     /// Human-readable listing (`+ create`, `~ update`, `- delete`).
     pub fn render(&self) -> String {
         let mut out = String::new();
+        for e in &self.expanded {
+            out.push_str(&e.render());
+            out.push('\n');
+            for n in &e.notes {
+                out.push_str(&format!("warning: {n}\n"));
+            }
+        }
         for c in &self.changes {
             let (sym, verb) = match c.action {
                 Action::Create => ('+', "create"),

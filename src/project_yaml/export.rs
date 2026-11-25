@@ -625,18 +625,20 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
                     *map = out;
                 }
                 let symbol = m.get("equipment_id").map(display).unwrap_or_default();
-                // The tag a symbol's flow/run animation follows, also by ref.
+                // The tags a symbol's run/fault/mode animation follows, also by ref.
                 if let Some(c) = v.as_mapping_mut() {
-                    let run = c.get(RUN_TAG).and_then(Value::as_i64);
-                    if let Some(id) = run {
+                    for key in TAG_KEYS {
+                        let Some(id) = c.get(*key).and_then(Value::as_i64) else {
+                            continue;
+                        };
                         match ctx.tag_ref_by_id.get(&id) {
                             Some(reference) => {
-                                c.insert(text(RUN_TAG), text(reference.clone()));
+                                c.insert(text(*key), text(reference.clone()));
                             }
                             None => {
-                                c.remove(RUN_TAG);
+                                c.remove(*key);
                                 ctx.warnings.push(format!(
-                                    "{RUN_TAG} of SCADA widget '{symbol}' on screen '{screen}' is a missing tag ({id}); left out"
+                                    "{key} of SCADA widget '{symbol}' on screen '{screen}' is a missing tag ({id}); left out"
                                 ));
                             }
                         }
@@ -854,6 +856,15 @@ pub const FACEPLATE_MAP: &str = "faceplateMap";
 /// Key of the tag (an id in the database, a ref in the project) that animates
 /// a SCADA symbol's flow or run state, in its `config`.
 pub const RUN_TAG: &str = "runSensorId";
+
+/// Every `config` key of a SCADA symbol that holds one tag (an id in the
+/// database, a ref in the project): run/flow, fault, manual mode, interlock.
+pub const TAG_KEYS: &[&str] = &[
+    RUN_TAG,
+    "faultSensorId",
+    "manualSensorId",
+    "interlockSensorId",
+];
 
 pub const SETTING_KEYS: &[&str] = &["alarm_cooldown_secs", "naming_template", "naming_regex"];
 pub const OEE_PREFIX: &str = "oee_threshold_";

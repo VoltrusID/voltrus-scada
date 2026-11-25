@@ -1,0 +1,22 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_pipe_vertical",
+  "name": "Pipe (vertical)",
+  "category": "Piping",
+  "keywords": ["pipe", "line", "vertical", "riser"],
+  "viewBox": [12, 200],
+  "size": [12, 200],
+  "binding": "none",
+  "layers": [
+    {"d": "M6 0 V200", "paint": "line", "width": 3},
+    {"d": "M6 0 V200", "paint": "flow", "width": 3},
+    {"d": "M0 90 L6 106 L12 90 Z", "paint": "solid", "if": {"arrow": ["forward", "both"]}},
+    {"d": "M0 110 L6 94 L12 110 Z", "paint": "solid", "if": {"arrow": "reverse"}},
+    {"d": "M0 60 L6 44 L12 60 Z", "paint": "solid", "if": {"arrow": "both"}}
+  ],
+  "stretch": true,
+  "options": [
+    {"key": "arrow", "label": "Flow arrows", "type": "select", "values": ["none", "forward", "reverse", "both"], "default": "none"}
+  ],
+  "runTag": "Flow tag (animates)"
+}

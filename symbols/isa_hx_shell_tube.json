@@ -1,0 +1,25 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_hx_shell_tube",
+  "name": "Shell & tube exchanger",
+  "category": "Heat transfer",
+  "keywords": ["heat exchanger", "shell and tube", "cooler", "heater", "condenser", "e"],
+  "viewBox": [160, 84],
+  "size": [160, 84],
+  "binding": "none",
+  "ports": {"left": [2, 42], "right": [158, 42], "top": [50, 4], "bottom": [112, 80]},
+  "layers": [
+    {"d": "M50 18 V4", "paint": "line"},
+    {"d": "M112 66 V80", "paint": "line"},
+    {"d": "M152 42 H158", "paint": "line"},
+    {"d": "M28 18 H136 A16 24 0 0 1 136 66 H28 Z", "paint": "shell"},
+    {"d": "M28 18 V66", "paint": "line"},
+    {"d": "M2 34 H124 A8 8 0 0 1 124 50 H2", "paint": "line"}
+  ],
+  "anchors": [
+    {"id": "tube_in", "x": 2, "y": 34, "dir": "left"},
+    {"id": "tube_out", "x": 2, "y": 50, "dir": "left"},
+    {"id": "shell_in", "x": 50, "y": 4, "dir": "top"},
+    {"id": "shell_out", "x": 112, "y": 80, "dir": "bottom"}
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_control_valve",
+  "name": "Control valve (ISA-101, phase 1)",
+  "category": "Valves",
+  "keywords": ["valve", "control"],
+  "viewBox": [100, 100],
+  "size": [80, 100],
+  "binding": "value",
+  "ports": {"left": [4, 75], "right": [96, 75]},
+  "layers": [
+    {"d": "M8 55 L50 75 L8 95 Z M92 55 L50 75 L92 95 Z", "paint": "shell"},
+    {"d": "M50 75 L50 36", "paint": "line"},
+    {"d": "M24 36 A26 26 0 0 1 76 36 Z", "paint": "shell"}
+  ],
+  "palette": false
+}
