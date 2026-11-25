@@ -29,7 +29,7 @@ running Core. Sign in as `guest` / `voltrus-demo` (read-only).
 **What is free and what is paid.** Core (this repository) is free, also for
 commercial use, with every protocol and no device, tag or retention limits.
 Two optional licences are sold per site: **Integrator** ($249 lifetime or
-$19 a month: white-label, PDF reports, Telegram and WhatsApp alarms,
+$19 a month: white-label, PDF reports, Telegram alarms,
 multi-site hub) and **Enterprise** ($999 lifetime or $79 a month: adds SSO,
 21 CFR Part 11 mode, hot standby). Current prices are on
 [voltrus.id](https://voltrus.id/voltrus-scada/#pricing); the split is in
@@ -188,7 +188,7 @@ licence key; a lapsed or missing key never limits Core.
 |---|:-:|:-:|:-:|
 | Everything listed above, all protocols, no limits | yes | yes | yes |
 | White-label branding and theme editor | | yes | yes |
-| Scheduled PDF reports and Telegram/WhatsApp alarms | | yes | yes |
+| Scheduled PDF reports and Telegram alarms (WhatsApp alarms are no longer supported) | | yes | yes |
 | Multi-site hub | | yes | yes |
 | Single sign-on (AD, Azure AD, Okta, SAML, OIDC, LDAP) | | | yes |
 | 21 CFR Part 11 mode (e-signatures, record checksums) | | | yes |

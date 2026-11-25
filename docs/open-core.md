@@ -34,7 +34,7 @@ Unlocked by a licence key bound to one site. Two plans:
 | Feature | Integrator | Enterprise |
 |---|:-:|:-:|
 | White-label branding and theme editor | yes | yes |
-| Scheduled PDF reports and Telegram/WhatsApp alarm notifications | yes | yes |
+| Scheduled PDF reports and Telegram alarm notifications (WhatsApp is no longer supported) | yes | yes |
 | Multi-site hub | yes | yes |
 | Single sign-on (Active Directory, Azure AD, Okta, SAML 2.0, OIDC, LDAP) | | yes |
 | 21 CFR Part 11 mode (electronic signatures, record checksums, policy) | | yes |
