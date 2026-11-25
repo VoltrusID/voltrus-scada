@@ -293,7 +293,7 @@ async fn check_tag_names(state: &AppState, names: Vec<String>) -> Result<(), App
 
 /// Update tags one after the other (`(id, label, new, old)`); on a failure,
 /// put back the ones already changed.
-async fn update_tags_all_or_nothing(
+pub(in crate::api) async fn update_tags_all_or_nothing(
     state: &AppState,
     plan: &[(i64, String, Value, Value)],
 ) -> Result<(), AppError> {
@@ -315,7 +315,7 @@ async fn update_tags_all_or_nothing(
 }
 
 /// Create tags one after the other; on a failure, delete the ones created.
-async fn create_tags_all_or_nothing(
+pub(in crate::api) async fn create_tags_all_or_nothing(
     state: &AppState,
     bodies: Vec<(String, Value)>,
 ) -> Result<Vec<i64>, (AppError, Vec<String>)> {

@@ -628,3 +628,223 @@ async fn every_generator_scrubs_and_fences_what_it_sends() {
         );
     }
 }
+
+// ── Writes that fail part-way are undone ──
+
+#[tokio::test]
+async fn a_failed_write_undoes_the_writes_before_it() {
+    use crate::api::ai_copilot::helpers::{create_tags_all_or_nothing, update_tags_all_or_nothing};
+    let c = copilot().await;
+    let one = c.tag("t1", "d").await;
+    let two = c.tag("t2", "d").await;
+
+    // The first update is written, the second is refused by the tag route
+    // (an unknown field): the first is put back.
+    let plan = vec![
+        (
+            one,
+            "t1".to_string(),
+            json!({"warn_val": 40, "crit_val": 50}),
+            json!({"warn_val": 1, "crit_val": 2}),
+        ),
+        (
+            two,
+            "t2".to_string(),
+            json!({"colour": "red"}),
+            json!({"warn_val": 1, "crit_val": 2}),
+        ),
+    ];
+    let err = update_tags_all_or_nothing(&c.state, &plan)
+        .await
+        .unwrap_err();
+    let msg = format!("{:#}", err.0);
+    assert!(msg.contains("Nothing was applied"), "{msg}");
+    assert!(msg.contains("tag 't2'"), "{msg}");
+    let tags = c.tags().await;
+    assert_eq!(tag_by_id(&tags, one)["warn_val"], 1.0);
+    assert_eq!(tag_by_id(&tags, one)["crit_val"], 2.0);
+
+    // The first tag is created, the second is refused: the first is deleted.
+    let before = c.tags().await.len();
+    let Err((err, undo_failures)) = create_tags_all_or_nothing(
+        &c.state,
+        vec![
+            (
+                "new1".to_string(),
+                json!({"key": "new1", "name": "new1", "device_id": "d"}),
+            ),
+            (
+                "new2".to_string(),
+                json!({"key": "new2", "name": "new2", "colour": "red"}),
+            ),
+        ],
+    )
+    .await
+    else {
+        panic!("the second tag should be refused");
+    };
+    assert!(undo_failures.is_empty(), "{undo_failures:?}");
+    assert!(format!("{:#}", err.0).contains("tag 'new2'"));
+    let tags = c.tags().await;
+    assert_eq!(tags.len(), before, "{tags:?}");
+    assert!(!tags.iter().any(|t| t["key"] == "new1"));
+}
+
+// ── One proposal is applied once ──
+
+#[tokio::test]
+async fn concurrent_applies_of_one_proposal_apply_it_once() {
+    let c = copilot().await;
+    let id = c
+        .proposal(
+            "flow_rule",
+            json!({"name": "hot", "trigger_config": {"type": "modbus", "device_id": "*"},
+                   "nodes": [{"id": "n1", "type": "filter", "condition": "metrics.temp > 0"}]}),
+            None,
+        )
+        .await;
+    let (status, body) = c
+        .send(
+            "POST",
+            &format!("/api/v1/ai/proposals/{id}/approve"),
+            Some(json!({})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let uri = format!("/api/v1/ai/proposals/{id}/apply");
+    let ((s1, b1), (s2, b2)) = tokio::join!(c.send("POST", &uri, None), c.send("POST", &uri, None));
+    let mut statuses = [s1, s2];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [StatusCode::OK, StatusCode::BAD_REQUEST],
+        "{b1} / {b2}"
+    );
+    let (_, flows) = c.send("GET", "/api/v1/flows", None).await;
+    let flows = flows["flows"].as_array().unwrap();
+    assert_eq!(flows.len(), 1, "{flows:?}");
+    assert_eq!(flows[0]["enabled"], false, "AI flows start disabled");
+    assert_eq!(c.status_of(id).await, "applied");
+
+    // Applied is final: not rejected afterwards.
+    let (status, _) = c
+        .send("POST", &format!("/api/v1/ai/proposals/{id}/reject"), None)
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(c.status_of(id).await, "applied");
+
+    // A pending proposal cannot be applied (a 400, not a server error).
+    let pending = c
+        .proposal(
+            "tag_rename",
+            json!([{"current": "x", "proposed": "y"}]),
+            None,
+        )
+        .await;
+    let (status, body) = c
+        .send(
+            "POST",
+            &format!("/api/v1/ai/proposals/{pending}/apply"),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, _) = c
+        .send("POST", "/api/v1/ai/proposals/999999/apply", None)
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// ── Dashboard layouts and equipment templates ──
+
+#[tokio::test]
+async fn dashboard_layout_apply_needs_a_screen_and_whole_grid_items() {
+    let c = copilot().await;
+    let (status, body) = c
+        .send("POST", "/api/v1/screens", Some(json!({"name": "line1"})))
+        .await;
+    assert!(status.is_success(), "{body}");
+
+    let item = json!({"i": "t1", "x": 0, "y": 0, "w": 4, "h": 2});
+    for (config, target, want) in [
+        (
+            json!({"widgets": [], "layout": [item]}),
+            Some("ghost"),
+            "does not exist",
+        ),
+        (
+            json!({"widgets": [], "layout": [{"i": "t1", "x": 0, "y": 0, "w": 0, "h": 2}]}),
+            Some("line1"),
+            "'w' must be a whole number",
+        ),
+        (json!({"widgets": []}), Some("line1"), "missing 'layout'"),
+    ] {
+        let id = c.proposal("dashboard_layout", config, target).await;
+        let (status, body) = c.approve_and_apply(id).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body["error"].as_str().unwrap().contains(want), "{body}");
+    }
+    let (_, saved) = c.send("GET", "/api/v1/screens/line1/layouts", None).await;
+    assert!(!saved.to_string().contains("\"t1\""), "{saved}");
+
+    let id = c
+        .proposal(
+            "dashboard_layout",
+            json!({"widgets": [], "layout": [item]}),
+            Some("line1"),
+        )
+        .await;
+    let (status, body) = c.approve_and_apply(id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, saved) = c.send("GET", "/api/v1/screens/line1/layouts", None).await;
+    assert!(saved.to_string().contains("\"t1\""), "{saved}");
+}
+
+#[tokio::test]
+async fn equipment_template_apply_creates_all_its_tags_or_none() {
+    let c = copilot().await;
+    c.tag("PT_1", "pump1").await;
+    let before = c.tags().await.len();
+
+    // One of the template's tags exists on the device already: nothing is created.
+    let id = c
+        .proposal(
+            "equipment_template",
+            json!({"prefix": "pump", "tags": [
+                {"name_pattern": "FT_{n}", "unit": "m3/h"},
+                {"name_pattern": "PT_{n}", "unit": "bar"}]}),
+            Some("pump1"),
+        )
+        .await;
+    let (status, body) = c.approve_and_apply(id).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap()
+            .contains("already has a tag 'PT_1'"),
+        "{body}"
+    );
+    assert_eq!(c.tags().await.len(), before);
+
+    let id = c
+        .proposal(
+            "equipment_template",
+            json!({"prefix": "pump", "tags": [
+                {"name_pattern": "FT_{n}", "unit": "m3/h", "register_area": "input"},
+                {"name_pattern": "TT_{n}", "unit": "C"}]}),
+            Some("pump2"),
+        )
+        .await;
+    let (status, body) = c.approve_and_apply(id).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"]["tags_created"], 2, "{body}");
+    let tags = c.tags().await;
+    let ft = tags
+        .iter()
+        .find(|t| t["key"] == "FT_1" && t["device_id"] == "pump2")
+        .unwrap();
+    assert_eq!(ft["source_type"], "modbus");
+    assert_eq!(ft["unit"], "m3/h");
+}

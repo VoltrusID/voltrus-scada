@@ -7,6 +7,13 @@ use serde_json::json;
 use super::super::{AppError, AppState, AuthUser};
 use crate::security::AuditEvent;
 
+/// Approving, rejecting and applying a proposal run one at a time, each
+/// reading the proposal's status under this lock: two clicks (or two
+/// reviewers) cannot apply one proposal twice, or reject it while it is being
+/// applied. Applies are rare and short, so one lock for all proposals is fine.
+static REVIEW: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(Default::default);
+
 // ── Proposals ──
 
 #[derive(Deserialize)]
@@ -77,6 +84,7 @@ pub async fn approve_proposal(
     Path(id): Path<i64>,
     Json(body): Json<ReviewProposalBody>,
 ) -> Result<impl IntoResponse, AppError> {
+    let _review = REVIEW.lock().await;
     let proposal = state
         .storage
         .get_ai_proposal(id)
@@ -121,6 +129,20 @@ pub async fn reject_proposal(
     Extension(auth): Extension<AuthUser>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
+    let _review = REVIEW.lock().await;
+    let proposal = state
+        .storage
+        .get_ai_proposal(id)
+        .await?
+        .ok_or_else(|| AppError::not_found("Proposal not found"))?;
+    // An applied proposal is in the configuration: rejecting it would not
+    // undo it, only make the record say it never happened.
+    if !matches!(proposal.status.as_str(), "pending" | "approved") {
+        return Err(AppError::bad_request(format!(
+            "Only a pending or approved proposal can be rejected; this one is {}",
+            proposal.status
+        )));
+    }
     state
         .storage
         .update_ai_proposal_status(id, "rejected", Some(&auth.username), None)
@@ -141,15 +163,17 @@ pub async fn apply_proposal(
     Extension(auth): Extension<AuthUser>,
     Path(id): Path<i64>,
 ) -> Result<impl IntoResponse, AppError> {
+    let _review = REVIEW.lock().await;
     let proposal = state
         .storage
         .get_ai_proposal(id)
         .await?
-        .ok_or_else(|| AppError(anyhow::anyhow!("Proposal not found")))?;
+        .ok_or_else(|| AppError::not_found("Proposal not found"))?;
 
     if proposal.status != "approved" {
-        return Err(AppError(anyhow::anyhow!(
-            "Proposal must be approved before applying"
+        return Err(AppError::bad_request(format!(
+            "Only an approved proposal can be applied; this one is {}",
+            proposal.status
         )));
     }
 

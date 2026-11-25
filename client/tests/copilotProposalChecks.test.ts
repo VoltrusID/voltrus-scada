@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { PDF_GUIDANCE, datasheetFileError, looksLikePdf, parseEditedConfig } from '../src/copilot/proposalChecks.ts'
 
 test('an invalid JSON edit is an error, not the original proposal', () => {
@@ -21,4 +22,11 @@ test('PDF datasheets are refused with guidance', () => {
   assert.ok(looksLikePdf('%PDF-1.7\n%��'))
   assert.ok(looksLikePdf('﻿  %PDF-1.4'))
   assert.ok(!looksLikePdf('name,address\nvoltage,40001'))
+})
+
+test('copilot API calls use same-origin paths', () => {
+  // `//api/...` is a protocol-relative URL: the browser sends it to a host named "api".
+  const src = readFileSync(new URL('../src/queries/copilot.ts', import.meta.url), 'utf8')
+  assert.doesNotMatch(src, /[`'"]\/\/api\//)
+  assert.match(src, /`\/api\/v1\/ai\/proposals\/\$\{id\}\/reject`/)
 })
