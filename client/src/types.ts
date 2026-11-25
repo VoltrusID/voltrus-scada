@@ -120,7 +120,8 @@ export interface Alarm {
   cooldown_until: number | null
   shelved_until: number | null
   shelved_reason: string | null
-  alarm_type?: 'high' | 'low'
+  /** 'event': raised by a flow, not by a tag crossing a limit. */
+  alarm_type?: 'high' | 'low' | 'event'
 }
 
 export interface AlarmSummary {

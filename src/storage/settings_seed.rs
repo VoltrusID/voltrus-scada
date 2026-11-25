@@ -137,9 +137,103 @@ impl Storage {
         let all_data_sources = self.list_data_sources(None).await?;
         if all_data_sources.is_empty() {
             self.seed_device_data_sources(device_configs).await?;
+        } else {
+            match self.tags_with_old_seeded_limits().await {
+                Ok(old) => old.warn(),
+                Err(e) => tracing::warn!("Could not check for seeded alarm limits: {e:#}"),
+            }
         }
 
         Ok(generated)
+    }
+
+    /// Tags that still carry, unchanged, alarm limits that earlier versions
+    /// (up to v0.52.0) wrote without anyone configuring them. They are
+    /// reported, not changed: a limit someone kept on purpose looks the same.
+    /// Tags saved with a `<limit>_enabled` flag were edited since and are
+    /// left out.
+    pub(crate) async fn tags_with_old_seeded_limits(&self) -> Result<OldSeededLimits> {
+        let conn = self.conn.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            // First start: every register got 80/90 (name, colour, range and
+            // limits exactly as seeded), known register names fixed limits.
+            // Vertical and FEED templates (orange): warning at the range's
+            // minimum, critical at its maximum. A template alarm overwrote one
+            // of the two at most, so either one left in place counts (only a
+            // limit above 0 is a limit).
+            let mut stmt = conn.prepare(
+                "SELECT key, color = '#f97316'
+                 FROM data_sources
+                 WHERE instr(source_config, '_enabled') = 0
+                   AND (
+                     (name = key AND color = '#94a3b8' AND min_val = 0 AND max_val = 100
+                      AND base_val = 50 AND warn_val = 80 AND crit_val = 90)
+                     OR (key, color, warn_val, crit_val) IN (VALUES
+                       ('voltage', '#f59e0b', 400, 420),
+                       ('current', '#06b6d4', 85, 95),
+                       ('power', '#a855f7', 40000, 45000),
+                       ('frequency', '#22c55e', 51, 52),
+                       ('power_factor', '#ef4444', 0.95, 0.98),
+                       ('energy_total', '#8b5cf6', 800000, 900000))
+                     OR (color = '#f97316'
+                         AND ((warn_val = min_val AND warn_val > 0)
+                              OR (crit_val = max_val AND crit_val > 0)))
+                   )
+                 ORDER BY id",
+            )?;
+            let mut old = OldSeededLimits::default();
+            for row in stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })? {
+                let (key, template) = row?;
+                if template {
+                    old.template_range.push(key);
+                } else {
+                    old.first_start.push(key);
+                }
+            }
+            // Vertical templates stored a "below" alarm as a high limit.
+            let mut stmt = conn.prepare(
+                "SELECT key, source_config, warn_val, crit_val FROM data_sources
+                 WHERE color = '#f97316' AND instr(source_config, '_enabled') = 0
+                   AND instr(source_config, 'template_id') > 0
+                 ORDER BY id",
+            )?;
+            let templates = crate::vertical_templates::definitions::all_templates();
+            for row in stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, f64>(2)?,
+                    row.get::<_, f64>(3)?,
+                ))
+            })? {
+                let (key, cfg, warn, crit) = row?;
+                let Some(template_id) = serde_json::from_str::<serde_json::Value>(&cfg)
+                    .ok()
+                    .and_then(|v| v.get("template_id")?.as_str().map(str::to_string))
+                else {
+                    continue;
+                };
+                let Some(template) = templates.iter().find(|t| t.id == template_id) else {
+                    continue;
+                };
+                let name = key.split_once(':').map_or(key.as_str(), |(_, n)| n);
+                let below_as_high = template.alarms.iter().any(|a| {
+                    a.comparison == "below"
+                        && a.threshold > 0.0
+                        && pattern_matches(&a.tag_pattern, name)
+                        && a.threshold == if a.severity == "critical" { crit } else { warn }
+                });
+                if below_as_high {
+                    old.below_as_high.push(key);
+                }
+            }
+            Ok(old)
+        })
+        .await
+        .context("Task join failed")?
     }
 
     /// Seed data sources for the devices defined in config.yaml.
@@ -199,94 +293,25 @@ impl Storage {
             }
         }
 
-        // Default display properties for known register names
-        let default_map: std::collections::HashMap<
-            String,
-            (String, String, String, f64, f64, f64, f64, f64, i64),
-        > = [
+        // Display properties for known register names: name, unit, colour,
+        // range, base value and decimals. No alarm limits: a tag alarms only
+        // on limits someone configured, never on a default made up here.
+        type Display = (&'static str, &'static str, &'static str, f64, f64, f64, i64);
+        let default_map: std::collections::HashMap<&str, Display> = [
+            ("voltage", ("Voltage", "V", "#f59e0b", 0.0, 450.0, 380.0, 1)),
+            ("current", ("Current", "A", "#06b6d4", 0.0, 100.0, 65.0, 2)),
+            ("power", ("Power", "W", "#a855f7", 0.0, 50000.0, 24700.0, 0)),
             (
-                "voltage".to_string(),
-                (
-                    "Voltage".to_string(),
-                    "V".to_string(),
-                    "#f59e0b".to_string(),
-                    0.0,
-                    450.0,
-                    400.0,
-                    420.0,
-                    380.0,
-                    1i64,
-                ),
+                "frequency",
+                ("Frequency", "Hz", "#22c55e", 45.0, 55.0, 50.0, 2),
             ),
             (
-                "current".to_string(),
-                (
-                    "Current".to_string(),
-                    "A".to_string(),
-                    "#06b6d4".to_string(),
-                    0.0,
-                    100.0,
-                    85.0,
-                    95.0,
-                    65.0,
-                    2i64,
-                ),
+                "power_factor",
+                ("Power Factor", "", "#ef4444", 0.0, 1.0, 0.92, 3),
             ),
             (
-                "power".to_string(),
-                (
-                    "Power".to_string(),
-                    "W".to_string(),
-                    "#a855f7".to_string(),
-                    0.0,
-                    50000.0,
-                    40000.0,
-                    45000.0,
-                    24700.0,
-                    0i64,
-                ),
-            ),
-            (
-                "frequency".to_string(),
-                (
-                    "Frequency".to_string(),
-                    "Hz".to_string(),
-                    "#22c55e".to_string(),
-                    45.0,
-                    55.0,
-                    51.0,
-                    52.0,
-                    50.0,
-                    2i64,
-                ),
-            ),
-            (
-                "power_factor".to_string(),
-                (
-                    "Power Factor".to_string(),
-                    String::new(),
-                    "#ef4444".to_string(),
-                    0.0,
-                    1.0,
-                    0.95,
-                    0.98,
-                    0.92,
-                    3i64,
-                ),
-            ),
-            (
-                "energy_total".to_string(),
-                (
-                    "Energy Total".to_string(),
-                    "kWh".to_string(),
-                    "#8b5cf6".to_string(),
-                    0.0,
-                    999999.0,
-                    800000.0,
-                    900000.0,
-                    158732.0,
-                    1i64,
-                ),
+                "energy_total",
+                ("Energy Total", "kWh", "#8b5cf6", 0.0, 999999.0, 158732.0, 1),
             ),
         ]
         .into_iter()
@@ -299,19 +324,10 @@ impl Storage {
         for (device_id, register_names) in &devices_to_seed {
             let mut ids = Vec::new();
             for (sort_idx, reg_name) in register_names.iter().enumerate() {
-                let fallback = (
-                    reg_name.clone(),
-                    String::new(),
-                    "#94a3b8".to_string(),
-                    0.0,
-                    100.0,
-                    80.0,
-                    90.0,
-                    50.0,
-                    1i64,
-                );
-                let (display, unit, color, min, max, warn, crit, base, decimals) =
-                    default_map.get(reg_name).unwrap_or(&fallback);
+                let (display, unit, color, min, max, base, decimals) = default_map
+                    .get(reg_name.as_str())
+                    .copied()
+                    .unwrap_or((reg_name.as_str(), "", "#94a3b8", 0.0, 100.0, 50.0, 1));
 
                 let id = self
                     .create_data_source(
@@ -319,13 +335,13 @@ impl Storage {
                         display,
                         unit,
                         color,
-                        *min,
-                        *max,
-                        *warn,
-                        *crit,
-                        *base,
+                        min,
+                        max,
+                        0.0,
+                        0.0,
+                        base,
                         sort_idx as i64,
-                        *decimals,
+                        decimals,
                         "modbus",
                         "{}",
                         device_id,
@@ -348,7 +364,109 @@ impl Storage {
             }
         }
 
-        tracing::info!("Seeded data sources for {} devices", devices_to_seed.len());
+        tracing::info!(
+            "Seeded data sources for {} devices. They have no alarm limits: \
+             a tag raises alarms once limits are set on it (tag settings or the tags API).",
+            devices_to_seed.len()
+        );
         Ok(())
+    }
+}
+
+/// Tags found by [`Storage::tags_with_old_seeded_limits`], by where their
+/// unconfigured limits came from (tag keys).
+#[derive(Debug, Default, PartialEq)]
+pub struct OldSeededLimits {
+    /// First start: 80/90 on any register, fixed limits on known names.
+    pub first_start: Vec<String>,
+    /// Vertical or FEED template: the range's minimum and maximum as limits.
+    pub template_range: Vec<String>,
+    /// Vertical template "below" alarm stored as a high limit, so it is
+    /// raised in normal operation.
+    pub below_as_high: Vec<String>,
+}
+
+impl OldSeededLimits {
+    pub fn is_empty(&self) -> bool {
+        self.first_start.is_empty()
+            && self.template_range.is_empty()
+            && self.below_as_high.is_empty()
+    }
+
+    /// One startup warning per kind found.
+    fn warn(&self) {
+        let list = |keys: &[String]| keys.join(", ");
+        if !self.first_start.is_empty() {
+            tracing::warn!(
+                "{} tag(s) still have the alarm limits earlier versions gave every tag at first start \
+                 (e.g. high warning 80, high critical 90), which nobody configured: {}. \
+                 Set real limits or clear them; see docs/upgrade-notes.md.",
+                self.first_start.len(),
+                list(&self.first_start)
+            );
+        }
+        if !self.template_range.is_empty() {
+            tracing::warn!(
+                "{} template tag(s) still have their range as alarm limits (high warning at the \
+                 minimum, high critical at the maximum), which nobody configured: {}. \
+                 Set real limits or clear them; see docs/upgrade-notes.md.",
+                self.template_range.len(),
+                list(&self.template_range)
+            );
+        }
+        if !self.below_as_high.is_empty() {
+            tracing::warn!(
+                "{} template tag(s) have a low alarm stored as a high limit, so they alarm in \
+                 normal operation: {}. Move the limit to the low limit; see docs/upgrade-notes.md.",
+                self.below_as_high.len(),
+                list(&self.below_as_high)
+            );
+        }
+    }
+}
+
+/// Whether a template tag name such as `TK-2_LVL` matches a pattern such as
+/// `TK-{n}_LVL`: the literal parts in order, any text for each `{...}`.
+fn pattern_matches(pattern: &str, name: &str) -> bool {
+    let mut literals = Vec::new();
+    let mut rest = pattern;
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open..].find('}') else {
+            break;
+        };
+        literals.push(&rest[..open]);
+        rest = &rest[open + close + 1..];
+    }
+    if literals.is_empty() {
+        return pattern == name;
+    }
+    let Some(remaining) = name.strip_prefix(literals[0]) else {
+        return false;
+    };
+    let Some(mut remaining) = remaining.strip_suffix(rest) else {
+        return false;
+    };
+    for literal in &literals[1..] {
+        match remaining.find(literal) {
+            Some(at) if !literal.is_empty() => remaining = &remaining[at + literal.len()..],
+            Some(_) => {}
+            None => return false,
+        }
+    }
+    true
+}
+
+#[cfg(test)]
+mod pattern_tests {
+    use super::pattern_matches;
+
+    #[test]
+    fn template_patterns_match_their_expanded_names() {
+        assert!(pattern_matches("TK-{n}_LVL", "TK-12_LVL"));
+        assert!(pattern_matches("NAV_{light}", "NAV_PORT"));
+        assert!(pattern_matches("CLO2_RES", "CLO2_RES"));
+        assert!(!pattern_matches("CLO2_RES", "CLO2_RES2"));
+        assert!(!pattern_matches("TK-{n}_LVL", "TK-1_TMP"));
+        assert!(!pattern_matches("ENG{n}_OIL_P", "ENG1_TMP"));
     }
 }

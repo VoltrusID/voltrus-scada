@@ -571,7 +571,7 @@ export function AlarmPanel({ onClose }: Props) {
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                             {isActive && !isShelved && <div style={{ width: isMobile ? 10 : 8, height: isMobile ? 10 : 8, borderRadius: '50%', background: sevColor, animation: 'pulse 1.5s infinite' }} />}
                             <PriorityBadge priority={priority} isMobile={isMobile} />
-                            {alarm.alarm_type && (
+                            {(alarm.alarm_type === 'high' || alarm.alarm_type === 'low') && (
                               <span style={{
                                 padding: '1px 6px', borderRadius: 3, fontSize: 9, fontWeight: 600,
                                 background: alarm.alarm_type === 'low' ? 'rgba(168,139,250,.15)' : 'rgba(34,197,94,.15)',

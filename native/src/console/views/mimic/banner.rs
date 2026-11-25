@@ -46,8 +46,17 @@ fn number(value: f64) -> String {
     }
 }
 
-/// `High critical: 86.4 (limit 85.0)`.
+/// `High critical: 86.4 (limit 85.0)`; a flow's event alarm by its
+/// message: `Critical: Pump 2 tripped`.
 fn describe(alarm: &Alarm) -> String {
+    if crate::console::alarms::is_event(alarm) {
+        let severity = if alarm.severity == "critical" {
+            "Critical"
+        } else {
+            "Warning"
+        };
+        return format!("{severity}: {}", alarm.message);
+    }
     let side = if alarm.alarm_type.eq_ignore_ascii_case("low") {
         "Low"
     } else {
@@ -300,6 +309,13 @@ mod tests {
             ..Alarm::default()
         };
         assert_eq!(describe(&low), "Low warning: 4.00 (limit 5.00)");
+        let event = Alarm {
+            severity: "critical".into(),
+            alarm_type: "event".into(),
+            message: "Pump 2 tripped".into(),
+            ..Alarm::default()
+        };
+        assert_eq!(describe(&event), "Critical: Pump 2 tripped");
         assert!(!blinking(&[low]));
         assert!(blinking(&[alarm]));
     }

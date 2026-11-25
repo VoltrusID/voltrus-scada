@@ -157,6 +157,12 @@ impl Sort {
     }
 }
 
+/// Raised by a flow's alarm node, not by a tag crossing a limit: no value
+/// or limit to show (the server sends 0 for both), only its message.
+pub fn is_event(alarm: &Alarm) -> bool {
+    alarm.alarm_type.eq_ignore_ascii_case("event")
+}
+
 /// Resolved: the value went back inside its limit.
 pub fn is_resolved(alarm: &Alarm) -> bool {
     alarm.resolved_at.is_some() || alarm.state == "resolved"
@@ -317,10 +323,10 @@ pub fn readable_details(details: &str) -> Option<String> {
             .next()
             .map(|first| first.to_uppercase().chain(words).collect())
             .unwrap_or_default();
-        let side = if object.get("alarm_type").and_then(Value::as_str) == Some("low") {
-            "at or below"
-        } else {
-            "at or above"
+        let side = match object.get("alarm_type").and_then(Value::as_str) {
+            Some("event") => return Some(format!("{severity} event")),
+            Some("low") => "at or below",
+            _ => "at or above",
         };
         return Some(format!("{severity} at {value}, limit {threshold} ({side})"));
     }
@@ -584,6 +590,13 @@ mod tests {
         assert_eq!(
             readable_details(r#"{"by":"admin","count":3}"#).as_deref(),
             Some("by admin · count 3")
+        );
+        assert_eq!(
+            readable_details(
+                r#"{"severity":"critical","value":0,"threshold":0,"alarm_type":"event"}"#
+            )
+            .as_deref(),
+            Some("Critical event")
         );
         assert_eq!(readable_details("acknowledged from the web"), None);
         assert_eq!(readable_details("{}"), None);
