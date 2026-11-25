@@ -107,8 +107,10 @@ fn online(console: &Console) -> bool {
     console.stress.is_none() && console.phase == Phase::Console
 }
 
+// The summary, analytics, audit trail and journal are read by any signed-in
+// user (viewers included); handling alarms is what needs the operator tier.
 fn fetch_summary(console: &mut Console) {
-    if online(console) && console.may_operate() {
+    if online(console) {
         request(
             console,
             "alarms.summary",
@@ -128,7 +130,7 @@ pub(super) fn fetch_history(console: &mut Console) {
 }
 
 fn fetch_analytics(console: &mut Console) {
-    if online(console) && console.may_operate() {
+    if online(console) {
         let now = time_now_secs();
         request(
             console,
@@ -142,7 +144,7 @@ fn fetch_analytics(console: &mut Console) {
 }
 
 fn fetch_audit(console: &mut Console) {
-    if online(console) && console.may_operate() {
+    if online(console) {
         request(
             console,
             "alarms.audit",
@@ -152,7 +154,7 @@ fn fetch_audit(console: &mut Console) {
 }
 
 pub(super) fn fetch_journal(console: &mut Console, alarm: i64) {
-    if online(console) && console.may_operate() {
+    if online(console) {
         console.call(
             CallKey::new("alarms.journal").with(alarm),
             Call::get::<Vec<AlarmJournalEntry>>(format!("/api/v1/alarms/{alarm}/journal")),
@@ -479,17 +481,17 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
 }
 
 /// Open alarms by priority, the shelf and the last day: the server's
-/// summary for operators, counted from the open alarms otherwise.
+/// summary, counted from the open alarms until it arrives or if it fails.
 fn summary_strip(console: &Console, theme: &Theme) -> Stateful<gpui::Div> {
     let summary = console
         .state_ref::<State>()
         .and_then(|state| state.summary.as_ref());
     let counts = match summary {
-        Some(Ok(summary)) if console.may_operate() => Counts::from_server(summary),
+        Some(Ok(summary)) => Counts::from_server(summary),
         _ => Counts::local(&console.alarms),
     };
     let note = match summary {
-        Some(Err(error)) if console.may_operate() => {
+        Some(Err(error)) => {
             format!("Summary unavailable ({error}); counted from the open alarms")
         }
         _ if counts.from_server => "Server summary".to_owned(),

@@ -1,4 +1,4 @@
-//! The operator views of the Alarms page: analytics (the sources that
+//! The insight views of the Alarms page (any signed-in user): analytics (the sources that
 //! alarmed most in the last 24 hours, a flood warning, the time to
 //! acknowledge) and the audit trail (every acknowledge, shelve and
 //! unshelve). Both are keyboard lists: Enter on a source lists its alarms,
