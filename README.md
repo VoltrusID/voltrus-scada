@@ -134,6 +134,26 @@ from source.
   [edition hooks](docs/edition-hooks.md).
 * **No limits and no licence key:** unlimited devices, tags and retention.
 
+## Footprint
+
+The same water-treatment project (47 Modbus tags polled every second) on five
+platforms, idle with no client open, measured on one Linux machine on
+2026-11-24/25:
+
+| | Voltrus SCADA | FUXA | Rapid SCADA | Ignition | WinCC OA |
+|---|---|---|---|---|---|
+| Disk | 63 MB binary | 936 MB image | 616 MB image | 4.45 GB image + 1.2 GB Designer on the engineer's PC | 8.02 GB image |
+| Idle RAM | 14–16 MiB | 81 MiB | 191–211 MiB | 880–890 MiB | 235–372 MiB |
+| Idle CPU (one core) | 0.3–0.4 % | ~0.8 % | 1.7–2.5 % | 44–59 % | 15–21 % |
+| Start | 0.1–0.6 s | 10 s | ~10 s | 48–75 s | 20 s |
+
+Three Voltrus plants side by side, each with its own config, database and
+port, took 44 MiB of RAM and about 1 % of one core in total, from one 63 MB
+binary plus 24.5 MB of data. One Ignition gateway can host several projects,
+so it does not need one gateway per plant; the Ignition and WinCC OA figures
+were taken before the machine started swapping. Method, caveats and the
+scripts to repeat it: [docs/footprint.md](docs/footprint.md).
+
 ## Project status
 
 Voltrus is young and built by a small team. Not every part is at the same
