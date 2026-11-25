@@ -19,7 +19,9 @@ also proposes one and counts how often each alarm is raised.
 
 `GET /api/v1/alarms/analytics?from=&to=` returns, per tag, `trigger_count`,
 `max_per_hour` (the most alarms raised in one clock hour within the range) and
-`chattering` (`max_per_hour` is 5 or more). The Alarms panel's **Analytics** tab
+`chattering` (`max_per_hour` is 5 or more). `to` defaults to now; the range
+covers at most 90 days before `to` (a missing or earlier `from` is moved up).
+The Alarms panel's **Analytics** tab
 (last 24 hours) marks such tags with `CHATTER n/h` and a hint to raise the
 delay or deadband.
 

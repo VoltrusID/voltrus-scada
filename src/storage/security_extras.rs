@@ -5,6 +5,10 @@ use crate::models::{
 };
 use anyhow::{Context, Result};
 
+/// Most annotations one list returns (the newest first). Any signed-in user
+/// reads them, and the query holds the shared SQLite connection.
+pub const MAX_ANNOTATIONS: usize = 1000;
+
 impl Storage {
     // ── Annotation CRUD (v0.23.0) ──
 
@@ -55,7 +59,8 @@ impl Storage {
                 sql.push_str(" AND data_timestamp <= ?");
                 params.push(Box::new(to));
             }
-            sql.push_str(" ORDER BY data_timestamp DESC");
+            sql.push_str(" ORDER BY data_timestamp DESC LIMIT ");
+            sql.push_str(&MAX_ANNOTATIONS.to_string());
             let mut stmt = conn.prepare(&sql).context("Prepare annotations failed")?;
             let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
             let rows = stmt.query_map(param_refs.as_slice(), |row| {

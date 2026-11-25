@@ -233,23 +233,96 @@ pub fn alarmable(tag: Option<TagValue>) -> Option<f64> {
         .map(|t| t.value)
 }
 
+/// Most decimals a reading or limit is shown with: more is float noise.
+const MAX_DECIMALS: usize = 6;
+
 /// The decimals a tag's values are shown with: its configured `decimals`,
 /// kept to 0..=6 so a bad setting neither panics nor prints float noise.
 fn shown_decimals(decimals: i64) -> usize {
-    decimals.clamp(0, 6) as usize
+    decimals.clamp(0, MAX_DECIMALS as i64) as usize
+}
+
+/// The decimals an alarm limit is shown with: the tag's decimals, or more
+/// when the limit needs them, so a limit of 0.05 on a one-decimal tag reads
+/// `0.05`, not `0.1`.
+fn limit_decimals(threshold: f64, decimals: i64) -> usize {
+    let shown = shown_decimals(decimals);
+    if !threshold.is_finite() {
+        return shown;
+    }
+    (shown..=MAX_DECIMALS)
+        .find(|&d| format!("{threshold:.d$}").parse::<f64>() == Ok(threshold))
+        .unwrap_or(MAX_DECIMALS)
+}
+
+/// `value` with `decimals` decimals, rounded the way the web client's
+/// `toFixed` rounds: to the nearest, halves away from zero, on the exact
+/// value of the float (Rust's `{:.N}` rounds exact halves to even, so
+/// `0.125` would print `0.12` here and `0.13` in the browser). Never `-0.00`.
+/// `NaN` and infinities print as `NaN`, `inf` and `-inf`.
+pub fn format_number(value: f64, decimals: usize) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    // The exact decimal expansion, far past any digit that could matter:
+    // a tie at digit `decimals + 1` is then a 5 followed only by zeros.
+    let long = format!("{:.*}", decimals + 40, value.abs());
+    let (int_part, frac_part) = long.split_once('.').unwrap_or((&long, ""));
+    let mut digits: Vec<u8> = int_part
+        .bytes()
+        .chain(frac_part.bytes().take(decimals))
+        .collect();
+    if frac_part
+        .as_bytes()
+        .get(decimals)
+        .is_some_and(|&d| d >= b'5')
+    {
+        let mut i = digits.len();
+        loop {
+            if i == 0 {
+                digits.insert(0, b'1');
+                break;
+            }
+            i -= 1;
+            if digits[i] == b'9' {
+                digits[i] = b'0';
+            } else {
+                digits[i] += 1;
+                break;
+            }
+        }
+    }
+    let int_len = digits.len() - decimals;
+    let mut out = String::with_capacity(digits.len() + 2);
+    if value < 0.0 && digits.iter().any(|&d| d != b'0') {
+        out.push('-');
+    }
+    out.push_str(std::str::from_utf8(&digits[..int_len]).unwrap_or("0"));
+    if decimals > 0 {
+        out.push('.');
+        out.push_str(std::str::from_utf8(&digits[int_len..]).unwrap_or(""));
+    }
+    out
 }
 
 /// `value` rounded to the tag's decimals, for channels that carry a number
-/// (notification templates print it with `{}`).
+/// (webhooks, chat). The same rounding as [`format_reading`], so the number
+/// and the text never disagree.
 pub fn round_to_decimals(value: f64, decimals: i64) -> f64 {
-    let factor = 10f64.powi(shown_decimals(decimals) as i32);
-    let rounded = (value * factor).round() / factor;
-    if rounded.is_finite() { rounded } else { value }
+    format_number(value, shown_decimals(decimals))
+        .parse()
+        .unwrap_or(value)
 }
 
-/// `value` with the tag's decimals and unit, e.g. `2.60 m` or `85.0%`.
-pub fn format_reading(value: f64, decimals: i64, unit: &str) -> String {
-    let number = format!("{value:.*}", shown_decimals(decimals));
+/// [`round_to_decimals`] for an alarm limit: with the decimals
+/// [`format_limit`] shows it with.
+pub fn round_limit(threshold: f64, decimals: i64) -> f64 {
+    format_number(threshold, limit_decimals(threshold, decimals))
+        .parse()
+        .unwrap_or(threshold)
+}
+
+fn with_unit(number: String, unit: &str) -> String {
     let unit = unit.trim();
     if unit.is_empty() {
         number
@@ -258,6 +331,20 @@ pub fn format_reading(value: f64, decimals: i64, unit: &str) -> String {
     } else {
         format!("{number} {unit}")
     }
+}
+
+/// `value` with the tag's decimals and unit, e.g. `2.60 m` or `85.0%`.
+pub fn format_reading(value: f64, decimals: i64, unit: &str) -> String {
+    with_unit(format_number(value, shown_decimals(decimals)), unit)
+}
+
+/// An alarm limit with its unit, with at least the tag's decimals and as
+/// many more as the limit needs (up to 6).
+pub fn format_limit(threshold: f64, decimals: i64, unit: &str) -> String {
+    with_unit(
+        format_number(threshold, limit_decimals(threshold, decimals)),
+        unit,
+    )
 }
 
 /// The text of an alarm raised on `ds`: its value and the limit it crossed,
@@ -270,7 +357,7 @@ pub fn alarm_message(
     threshold: f64,
 ) -> String {
     let reading = format_reading(value, ds.decimals, &ds.unit);
-    let limit = format_reading(threshold, ds.decimals, &ds.unit);
+    let limit = format_limit(threshold, ds.decimals, &ds.unit);
     if alarm_type == "low" {
         format!("{} dropped to {reading} ({severity} low: {limit})", ds.name)
     } else {
@@ -316,6 +403,68 @@ mod tests {
         assert_eq!(round_to_decimals(2.602250099182129, 2), 2.6);
         assert_eq!(round_to_decimals(1234.5678, 1), 1234.6);
         assert_eq!(round_to_decimals(f64::MAX, 6), f64::MAX);
+    }
+
+    #[test]
+    fn halves_round_away_from_zero_like_the_browser() {
+        // Exact binary halves: `{:.N}` would give 2, 0.12, -2 (half to even).
+        assert_eq!(format_number(2.5, 0), "3");
+        assert_eq!(format_number(0.125, 2), "0.13");
+        assert_eq!(format_number(-2.5, 0), "-3");
+        assert_eq!(format_number(9.995, 2), "9.99"); // 9.99499999... in binary
+        assert_eq!(format_number(99.95, 1), "100.0"); // 99.950000000000003
+        assert_eq!(format_number(999.5, 0), "1000");
+        assert_eq!(round_to_decimals(0.125, 2), 0.13);
+    }
+
+    #[test]
+    fn negative_readings_and_negative_zero() {
+        assert_eq!(format_reading(-12.345, 1, "\u{b0}C"), "-12.3\u{b0}C");
+        assert_eq!(format_reading(-0.001, 2, "bar"), "0.00 bar");
+        assert_eq!(format_reading(-0.0, 1, ""), "0.0");
+        assert_eq!(format_number(-0.4, 0), "0");
+        assert_eq!(round_to_decimals(-0.001, 2).to_string(), "0");
+        let mut tag = ds("t", -5.0, -10.0, serde_json::json!({}));
+        tag.unit = "\u{b0}C".into();
+        tag.decimals = 1;
+        assert_eq!(
+            alarm_message(&tag, "critical", "low", -10.04, -10.0),
+            "t dropped to -10.0\u{b0}C (critical low: -10.0\u{b0}C)"
+        );
+    }
+
+    #[test]
+    fn non_finite_readings_do_not_panic() {
+        assert_eq!(format_reading(f64::NAN, 2, "m"), "NaN m");
+        assert_eq!(format_reading(f64::INFINITY, 2, ""), "inf");
+        assert_eq!(format_limit(f64::NEG_INFINITY, 2, "%"), "-inf%");
+        assert!(round_to_decimals(f64::NAN, 2).is_nan());
+        assert_eq!(round_limit(f64::INFINITY, 1), f64::INFINITY);
+        let mut tag = ds("t", 1.0, 2.0, serde_json::json!({}));
+        tag.decimals = 1;
+        assert_eq!(
+            alarm_message(&tag, "warning", "high", f64::NAN, 1.0),
+            "t reached NaN (warning: 1.0)"
+        );
+    }
+
+    #[test]
+    fn limits_finer_than_the_tag_decimals_keep_their_digits() {
+        let mut tag = ds("ph", 0.5, 0.05, serde_json::json!({}));
+        tag.decimals = 0;
+        assert_eq!(
+            alarm_message(&tag, "warning", "high", 0.7, 0.5),
+            "ph reached 1 (warning: 0.5)"
+        );
+        tag.decimals = 1;
+        assert_eq!(
+            alarm_message(&tag, "critical", "low", 0.04, 0.05),
+            "ph dropped to 0.0 (critical low: 0.05)"
+        );
+        // A limit never prints more than six decimals, nor fewer than the tag's.
+        assert_eq!(format_limit(0.1 + 0.2, 1, ""), "0.300000");
+        assert_eq!(format_limit(2.0, 2, "m"), "2.00 m");
+        assert_eq!(round_limit(0.05, 1), 0.05);
     }
 
     fn ds(key: &str, warn: f64, crit: f64, cfg: serde_json::Value) -> DataSource {

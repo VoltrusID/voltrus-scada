@@ -267,10 +267,9 @@ pub async fn test_notification(
                 source_key: source_key.to_string(),
                 source_name: source_name.clone(),
                 severity: "warning".to_string(),
-                value: 42.0,
-                threshold: 40.0,
+                value_text: "42.0 test".to_string(),
+                threshold_text: "40.0 test".to_string(),
                 message: "This is a test alarm notification".to_string(),
-                unit: "test".to_string(),
                 triggered_at: crate::notification::webhook::format_triggered_at(
                     crate::timeutil::now_secs(),
                 ),
@@ -356,6 +355,8 @@ pub async fn test_notification(
                 value: 42.0,
                 threshold: 40.0,
                 unit: "test".to_string(),
+                value_text: "42.0 test".to_string(),
+                threshold_text: "40.0 test".to_string(),
                 message: "This is a test alarm notification".to_string(),
                 triggered_at: crate::notification::webhook::format_triggered_at(
                     crate::timeutil::now_secs(),
