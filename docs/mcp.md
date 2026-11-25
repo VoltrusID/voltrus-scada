@@ -133,7 +133,7 @@ saying so.
 | `list_equipment_types` | read | Equipment types (tag roles and key patterns, limits, alarms, faceplate, symbol, bindings) with `instance_count`; `library: true` lists the starter types. See [equipment-types.md](equipment-types.md). |
 | `create_equipment_type` | write | Define a type (`type`), or install a starter one (`from_library`, with its faceplate). |
 | `update_equipment_type` | write | Change a type; every instance follows. Dry run by default: lists each affected instance with the tags created or updated (and which fields), registers, flows and widgets; `dry_run: false` saves. |
-| `instantiate_equipment` | write | One line per piece of equipment: `{name, type, device}` binds existing tags by key pattern; `base` on a Modbus device creates the missing registers and tags; `overrides` per role; `dry_run`. |
+| `instantiate_equipment` | write (destructive) | One line per piece of equipment: `{name, type, device}` binds existing tags by key pattern; `base` on a Modbus device creates the missing registers and tags; `overrides` per role. A dry run unless `dry_run: false`: it can change existing tags (limits, alarms, write policy) and flows, and `changes` lists each attribute before and after. |
 | `list_equipment_instances` | read | Instances with the tag of every role (`resolved.roles`: key, ref, tag id, status). |
 | `import_catalog_template` | **admin** | Download a catalog template, check its sha256 and store it. Takes no URL. |
 | `project_export_yaml` | **admin** | The whole configuration as one `voltrus-project/1` YAML document (secrets as `${ENV}` references). |

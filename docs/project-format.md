@@ -217,12 +217,17 @@ in the plan like any other:
   is created when its register exists or the instance has a `base`;
 * registers at `base + offset` on the instance's Modbus device, added to the
   device entity (taken from the database when the file leaves the device out);
-* the type's flows as `<prefix>-<id>`, unless the file lists that flow;
+  never over another register (by address and the width of its type); an
+  instance's own register moves when its base or offset changes;
+* the type's flows as `<prefix>-<id>`, unless the file lists that flow; a flow of
+  that id the instance did not make is never overwritten, and copies the
+  instance no longer has (a new prefix) are deleted;
 * every SCADA widget whose `config.equipment` names the instance (in the file's
   screens and, on merge, the stored ones): `sensors`, `config.symbol`,
   `faceplate`, `faceplateMap`, `faultSensorId`, `runSensorId`,
-  `manualSensorId`, `interlockSensorId` and the type's `symbol_config` are set;
-  a label the widget has is kept.
+  `manualSensorId` and `interlockSensorId` are set, the type's `symbol_config`
+  where the widget has no value of its own; a label and the widget's other tags
+  are kept.
 
 On merge, a file that changes a type but leaves its instances out expands the
 stored instances of that type too: that is how a changed type reaches every
@@ -238,9 +243,13 @@ binds (`=`), the registers, flows and widgets:
 
 Errors stop the import and name the instance: an unknown type, device, symbol or
 faceplate, an override or binding naming a role the type does not have, two
-instances giving the same tag, a required role with no tag (no tag of that key and
-no `base` to create it), a `base` on a device that is not Modbus or follows a
-device template, and duplicate instance names. A widget naming an instance that
+instances giving the same tag, names or prefixes that are equal without case, a
+register over another one, a register of the instance's key at another address
+than its base puts it, a flow id a user's flow has, a required role with no tag
+(no tag of that key and no `base` to create it), a `base` on a device that is not
+Modbus or follows a device template, and duplicate instance names. A stored
+instance pulled in by its type's change that can no longer be expanded is skipped
+with a warning. A widget naming an instance that
 does not exist is a warning; it keeps its bindings.
 
 `faultSensorId`, `manualSensorId` and `interlockSensorId` are written by ref,

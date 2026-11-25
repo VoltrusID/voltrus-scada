@@ -268,8 +268,12 @@ server. All of it is in [equipment-types.md](equipment-types.md).
 A symbol bound to an instance carries `config.equipment: "<name>"`. The server
 fills the rest when the row is saved through any path (REST, MCP, Designer,
 project import): symbol, primary tag, `faultSensorId`/`runSensorId`/…,
-`faceplate` and `faceplateMap`, the type's symbol settings, the label when there
-is none. Rows stay ordinary rows, so the runtime, the 3D twin and the native
+`faceplate` and `faceplateMap`; the type's symbol settings and the label only
+where the symbol has no value of its own (a symbol's `writable: false` stays);
+the symbol's other tags stay after the primary one. Binding happens in the
+transaction that saves the screen, so a save from a stale revision is still
+refused (409). Deleting an instance unbinds its symbols (`config.equipment`
+cleared, `config.unboundEquipment` kept); they stay drawn. Rows stay ordinary rows, so the runtime, the 3D twin and the native
 console need nothing new.
 
 ### In the Designer
@@ -288,8 +292,11 @@ console need nothing new.
   instance shows how many of its symbols are on this screen and selects them.
 * **Properties:** a selected instance symbol shows its instance, type, device,
   prefix, faceplate and the tag per role; the instance's overrides (symbol, a
-  role's tag key, skip a role) are edited there. *Apply to instance* saves the
-  screen first if needed, changes the instance (every symbol of it, on every
+  role's tag key, skip a role) are edited there. *Preview* lists what the change
+  does to existing things: tag attributes before and after (write policies
+  included), registers moved, flows overwritten or deleted. A change of a write
+  policy asks for the electronic signature where the edition wants one.
+  *Apply to instance* saves the screen first if needed, changes the instance (every symbol of it, on every
   screen, follows) and reloads the screen. *Re-bind* when the symbol is out of
   date, *Unbind* to keep the symbol without the instance.
 
@@ -302,7 +309,8 @@ property section), `equipmentModel.ts` (binding patch, names, no React),
 `scenarios/wtp-hmi/seed.py` installs the starter types and creates 26 instances
 (pumps, dosing pumps, valves, control valve, tanks, filters, transmitters) on the
 `wtp` PLC, all bound by pattern (its register map is not laid out per equipment,
-so no base). The Plant Overview, Filtration and High-Lift screens place them with
+so no base). The instances are created before the showcase sets its own tag
+names, limits and write policies, so those win on every run. The Plant Overview, Filtration and High-Lift screens place them with
 ISA-101 symbols; the clarifier, agitator, blower and discharge valves have no type
 and are plain symbols. Pipe waypoints are computed from the symbol files' ports.
 The vertical demo screens and the electrical single line are unchanged.

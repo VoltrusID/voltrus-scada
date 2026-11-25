@@ -897,6 +897,10 @@ def main():
     if missing:
         raise SystemExit(f'tags not found (is the server polling plant-sim?): {sorted(missing)}')
 
+    # Instances first: instantiating applies the types' attributes (units, limits, alarms, write policies) to the tags
+    # it binds. The showcase's own tag metadata and write policies below then win, on the first run and every rerun.
+    ensure_equipment(api)
+
     for key, (name, unit, lo, hi, warn, crit, dec, lw, lc) in TAGS.items():
         # Keep what the source config already holds (the S7/EtherNet/IP tag binding), set the low alarm limits.
         try:
@@ -915,8 +919,6 @@ def main():
         api.call('PATCH', f'/api/v1/data-sources/{ids[key]}/write-policy',
                  {'writable': True, 'write_min': lo, 'write_max': hi, 'write_max_rate': 10})
     print(f'{len(TAGS)} tags configured, {len(WRITABLE) + len(SETPOINTS)} writable')
-
-    ensure_equipment(api)
 
     screens = {sc['name']: sc['id'] for sc in api.call('GET', '/api/v1/screens')}
     plan = [('Plant Overview', overview), ('Filtration', filtration), ('High-Lift & Power', power)] + VERTICAL_SCREENS
