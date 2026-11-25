@@ -1,0 +1,19 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_agitator",
+  "name": "Agitator",
+  "category": "Rotating equipment",
+  "keywords": ["agitator", "mixer", "stirrer", "impeller", "flocculator"],
+  "viewBox": [60, 120],
+  "size": [48, 96],
+  "binding": "state",
+  "ports": {"top": [30, 4], "bottom": [30, 108]},
+  "layers": [
+    {"d": "M30 32 V100", "paint": "line"},
+    {"d": "M16 18 A14 14 0 1 0 44 18 A14 14 0 1 0 16 18 Z", "paint": "body"},
+    {"d": "M10 92 L30 100 L10 108 Z M50 92 L30 100 L50 108 Z", "paint": "body"}
+  ],
+  "text": [
+    {"x": 30, "y": 18.5, "text": "M", "size": 14, "weight": 600, "onBody": true}
+  ]
+}

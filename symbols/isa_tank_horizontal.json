@@ -1,0 +1,24 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_tank_horizontal",
+  "name": "Horizontal tank",
+  "category": "Vessels",
+  "keywords": ["tank", "vessel", "drum", "bullet", "horizontal"],
+  "viewBox": [180, 104],
+  "size": [180, 104],
+  "binding": "level",
+  "ports": {"left": [2, 50], "right": [178, 50], "top": [90, 14], "bottom": [90, 86]},
+  "layers": [
+    {"d": "M2 50 H16", "paint": "line"},
+    {"d": "M164 50 H178", "paint": "line"},
+    {"d": "M48 86 L42 100 H66 L60 86 M120 86 L114 100 H138 L132 86", "paint": "line"},
+    {"d": "M34 14 H146 A18 36 0 0 1 146 86 H34 A18 36 0 0 1 34 14 Z", "paint": "shell"}
+  ],
+  "level": {"x": 16, "y": 14, "w": 148, "h": 72, "clip": "M34 14 H146 A18 36 0 0 1 146 86 H34 A18 36 0 0 1 34 14 Z"},
+  "text": [
+    {"x": 90, "y": 50, "from": "$level", "size": 18, "weight": 600, "font": "mono"}
+  ],
+  "options": [
+    {"key": "showPercent", "label": "Show %", "type": "boolean", "default": true}
+  ]
+}

@@ -201,7 +201,7 @@ pub async fn import_project(
 /// Pollers run from a copy of the device configuration; bring them in line
 /// with what the import wrote.
 #[cfg(feature = "modbus")]
-async fn sync_modbus_pollers(state: &AppState, plan: &project_yaml::ImportPlan) {
+pub(crate) async fn sync_modbus_pollers(state: &AppState, plan: &project_yaml::ImportPlan) {
     use project_yaml::Action;
     let configs = state
         .storage

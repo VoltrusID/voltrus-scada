@@ -1,0 +1,17 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_line",
+  "name": "Process line (ISA-101, phase 1)",
+  "category": "Piping",
+  "keywords": ["line"],
+  "viewBox": [200, 10],
+  "size": [200, 10],
+  "binding": "none",
+  "layers": [
+    {"d": "M0 5 L200 5", "paint": "line", "width": 3},
+    {"d": "M0 5 L200 5", "paint": "flow", "width": 3}
+  ],
+  "stretch": true,
+  "runTag": "Flow Tag (animates)",
+  "palette": false
+}

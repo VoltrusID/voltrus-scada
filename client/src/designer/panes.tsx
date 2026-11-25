@@ -3,13 +3,13 @@ import type { Screen, SensorConfig } from '../types'
 import type { FaceplateDef } from '../scada2/hmi/faceplateMap'
 import type { WidgetInstance } from '../scada2/widgets/types'
 import { WIDGET_MANIFESTS } from '../scada2/widgets/registry'
-import { SYMBOLS, SYMBOL_CATEGORIES } from '../scada2/hmi/symbols'
+import { SYMBOLS } from '../scada2/hmi/symbols'
+import { filterSymbols, paletteGroups } from '../scada2/hmi/symbolPalette'
 import { SymbolThumb } from '../scada2/hmi/SymbolView'
 import { widgetTitle } from '../scada2/ScadaInspector'
 import { DND_SYMBOL, DND_TAG, DND_WIDGET } from '../scada2/ScadaCanvas'
 import { useTrackedCurrentValues } from '../store/dashboardStore'
 import { valueStyle } from '../valueStyle'
-import { DND_EQUIPMENT } from './DesignerCanvas'
 import { groupOf, isLocked, type Doc } from './model'
 import { refsById, tagRef } from './bindings'
 import { escapeRef } from './expr'
@@ -47,11 +47,13 @@ function Node({ label, icon, depth, active, onClick, children, count, right, def
   )
 }
 
-export function ProjectBrowser({ screens, active, onOpenScreen, doc, selection, onSelect, onToggleLock, onToggleVisible, faceplates, onOpenPage }: {
+export function ProjectBrowser({ screens, active, onOpenScreen, doc, selection, onSelect, onToggleLock, onToggleVisible, faceplates, onOpenPage, equipment }: {
   screens: Screen[]; active: string; onOpenScreen: (id: string) => void
   doc: Doc; selection: string[]; onSelect: (ids: string[]) => void
   onToggleLock: (id: string) => void; onToggleVisible: (id: string) => void
   faceplates: FaceplateDef[]; onOpenPage: (page: 'scripts' | 'alarms' | 'tags') => void
+  /** The Equipment folder (types and instances), drawn after the screens. */
+  equipment?: React.ReactNode
 }) {
   const sel = new Set(selection)
   // Components of the open screen, front-most first (like a layers list), groups folded together.
@@ -94,6 +96,7 @@ export function ProjectBrowser({ screens, active, onOpenScreen, doc, selection, 
           </Node>
         ))}
       </Node>
+      {equipment}
       <Node label="Faceplates" icon="folder" depth={0} count={faceplates.length} defaultOpen={false}>
         {faceplates.length === 0
           ? <div style={{ ...treeRow(1, false), cursor: 'default', color: 'var(--text-muted)' }}>None yet: add one from a symbol's properties</div>
@@ -175,13 +178,6 @@ export function TagBrowserPane({ sensors, onPick }: { sensors: SensorConfig[]; o
 
 // ── Component palette ──
 
-/** Equipment: an ISA-101 symbol and its faceplate, placed in one drag. */
-export const EQUIPMENT: { key: string; name: string; symbol: string; faceplate: 'pump' | 'valve' | 'motor'; prefix: string }[] = [
-  { key: 'pump', name: 'Pump + faceplate', symbol: 'isa_pump', faceplate: 'pump', prefix: 'P' },
-  { key: 'valve', name: 'Valve + faceplate', symbol: 'isa_valve', faceplate: 'valve', prefix: 'XV' },
-  { key: 'motor', name: 'Motor + faceplate', symbol: 'isa_motor', faceplate: 'motor', prefix: 'M' },
-]
-
 const WIDGET_GROUPS: { title: string; types: string[] }[] = [
   { title: 'Display', types: ['big_number', 'indicator', 'label', 'led_display', 'status_light', 'on_off', 'annunciator', 'data_table'] },
   { title: 'Gauges & charts', types: ['gauge', 'semicircle_gauge', 'meter', 'bar', 'progress_bar', 'donut', 'trend', 'multi_trend', 'bar_chart', 'pie_chart'] },
@@ -189,54 +185,58 @@ const WIDGET_GROUPS: { title: string; types: string[] }[] = [
   { title: 'Layout', types: ['area'] },
 ]
 
-export function PalettePane({ onAdd }: { onAdd: (item: { kind: 'symbol' | 'widget' | 'equipment'; key: string }) => void }) {
+export function PalettePane({ onAdd, top }: {
+  onAdd: (item: { kind: 'symbol' | 'widget'; key: string }) => void
+  /** Drawn above the symbols (equipment types); a function gets the trimmed search text. */
+  top?: React.ReactNode | ((query: string) => React.ReactNode)
+}) {
   const [q, setQ] = useState('')
-  const [cat, setCat] = useState<string>('ISA-101')
+  const groups = useMemo(() => paletteGroups(SYMBOLS), [])
+  const [group, setGroup] = useState<string>('isa')
   const ql = q.trim().toLowerCase()
   const tile: React.CSSProperties = {
     display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, padding: '5px 2px 4px', borderRadius: 3, cursor: 'grab',
     border: `1px solid ${D.line}`, background: 'var(--hmi-stage)', color: 'var(--text-dim)', fontSize: 9.5, lineHeight: 1.15, textAlign: 'center', minWidth: 0,
   }
-  const symbols = SYMBOLS.filter(s => (ql ? `${s.name} ${s.key}`.toLowerCase().includes(ql) : s.category === cat))
+  const symbols = filterSymbols(SYMBOLS, ql, group)
+  // All of ISA-101 (or a search) is shown in category sections; one category is one grid.
+  const sections = useMemo(() => {
+    if (!ql && group !== 'isa') return [{ title: groups.find(g => g.id === group)?.label ?? group, items: symbols }]
+    const out: { title: string; items: typeof symbols }[] = []
+    for (const s of symbols) {
+      const title = `${s.library === 'isa' ? 'ISA-101' : 'Shaded'} · ${s.category}`
+      const sec = out.find(x => x.title === title)
+      if (sec) sec.items.push(s)
+      else out.push({ title, items: [s] })
+    }
+    return out
+  }, [symbols, ql, group, groups])
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }} data-testid="designer-palette">
       <div style={{ display: 'flex', gap: 4, padding: 4, borderBottom: `1px solid ${D.line}` }}>
         <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search components" aria-label="Search components" style={input} />
-        <select value={cat} onChange={e => { setCat(e.target.value); setQ('') }} aria-label="Symbol category" style={{ ...input, width: 104, flexShrink: 0 }}>
-          {SYMBOL_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+        <select value={group} onChange={e => { setGroup(e.target.value); setQ('') }} aria-label="Symbol category" style={{ ...input, width: 118, flexShrink: 0 }}>
+          {groups.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}
         </select>
       </div>
       <div style={{ flex: 1, overflow: 'auto', padding: 6 }}>
-        {!ql && cat === 'ISA-101' && (
-          <>
-            <PaletteTitle>Equipment</PaletteTitle>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 4, marginBottom: 8 }}>
-              {EQUIPMENT.map(e => {
-                const def = SYMBOLS.find(s => s.key === e.symbol)!
-                return (
-                  <div key={e.key} draggable title={`${e.name}: the symbol, a faceplate definition and its role map in one drop`} style={tile}
-                    data-testid={`designer-equipment-${e.key}`}
-                    onDragStart={ev => { ev.dataTransfer.setData(DND_EQUIPMENT, e.key); ev.dataTransfer.effectAllowed = 'copy' }}
-                    onDoubleClick={() => onAdd({ kind: 'equipment', key: e.key })}>
-                    <SymbolThumb def={def} size={30} />
-                    <span>{e.name}</span>
-                  </div>
-                )
-              })}
+        {typeof top === 'function' ? top(q.trim()) : top}
+        {sections.map(sec => (
+          <div key={sec.title}>
+            <PaletteTitle>{sec.title}</PaletteTitle>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4, marginBottom: 8 }}>
+              {sec.items.map(s => (
+                <div key={s.key} draggable title={`${s.name}\n${s.key}`} style={tile} data-testid={`designer-symbol-${s.key}`}
+                  onDragStart={e => { e.dataTransfer.setData(DND_SYMBOL, s.key); e.dataTransfer.effectAllowed = 'copy' }}
+                  onDoubleClick={() => onAdd({ kind: 'symbol', key: s.key })}>
+                  <SymbolThumb def={s} size={28} />
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', whiteSpace: 'nowrap' }}>{s.name.replace(' (ISA-101)', '')}</span>
+                </div>
+              ))}
             </div>
-          </>
-        )}
-        <PaletteTitle>{ql ? 'Symbols' : `${cat} symbols`}</PaletteTitle>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 4, marginBottom: 8 }}>
-          {symbols.map(s => (
-            <div key={s.key} draggable title={s.name} style={tile} data-testid={`designer-symbol-${s.key}`}
-              onDragStart={e => { e.dataTransfer.setData(DND_SYMBOL, s.key); e.dataTransfer.effectAllowed = 'copy' }}
-              onDoubleClick={() => onAdd({ kind: 'symbol', key: s.key })}>
-              <SymbolThumb def={s} size={28} />
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', whiteSpace: 'nowrap' }}>{s.name.replace(' (ISA-101)', '')}</span>
-            </div>
-          ))}
-        </div>
+          </div>
+        ))}
+        {ql && symbols.length === 0 && <div style={{ padding: '2px 0 8px', fontSize: D.small, color: 'var(--text-muted)' }}>No symbols match.</div>}
         {WIDGET_GROUPS.map(g => {
           const types = g.types.filter(t => WIDGET_MANIFESTS[t as keyof typeof WIDGET_MANIFESTS] && (!ql || `${WIDGET_MANIFESTS[t as keyof typeof WIDGET_MANIFESTS].displayName} ${t}`.toLowerCase().includes(ql)))
           if (types.length === 0) return null

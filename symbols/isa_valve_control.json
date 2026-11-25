@@ -1,0 +1,30 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_valve_control",
+  "name": "Control valve",
+  "category": "Valves",
+  "keywords": ["valve", "control", "modulating", "fcv", "lcv", "pcv", "tcv", "globe"],
+  "viewBox": [100, 100],
+  "size": [80, 80],
+  "binding": "value",
+  "ports": {"left": [2, 74], "right": [98, 74]},
+  "layers": [
+    {"d": "M2 74 H8", "paint": "line"},
+    {"d": "M92 74 H98", "paint": "line"},
+    {"d": "M50 74 V40", "paint": "line", "if": {"actuator": ["manual", "diaphragm", "motor", "solenoid", "piston"]}},
+    {"d": "M34 40 H66", "paint": "line", "if": {"actuator": "manual"}},
+    {"d": "M24 42 A26 22 0 0 1 76 42 Z", "paint": "shell", "if": {"actuator": "diaphragm"}},
+    {"d": "M36 26 A14 14 0 1 0 64 26 A14 14 0 1 0 36 26 Z", "paint": "shell", "if": {"actuator": "motor"}},
+    {"d": "M38 18 H62 V40 H38 Z", "paint": "shell", "if": {"actuator": "solenoid"}},
+    {"d": "M32 16 H68 V40 H32 Z", "paint": "shell", "if": {"actuator": "piston"}},
+    {"d": "M40 28 H60", "paint": "detail", "if": {"actuator": "piston"}},
+    {"d": "M8 54 L50 74 L8 94 Z M92 54 L50 74 L92 94 Z", "paint": "body"}
+  ],
+  "text": [
+    {"x": 50, "y": 26.5, "text": "M", "size": 15, "weight": 600, "if": {"actuator": "motor"}},
+    {"x": 50, "y": 29.5, "text": "S", "size": 14, "weight": 600, "if": {"actuator": "solenoid"}}
+  ],
+  "options": [
+    {"key": "actuator", "label": "Actuator", "type": "select", "values": ["none", "manual", "diaphragm", "motor", "solenoid", "piston"], "default": "diaphragm"}
+  ]
+}

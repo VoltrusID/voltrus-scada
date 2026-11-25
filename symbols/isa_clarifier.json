@@ -1,0 +1,21 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_clarifier",
+  "name": "Clarifier",
+  "category": "Vessels",
+  "keywords": ["clarifier", "thickener", "settler", "sedimentation", "rake"],
+  "viewBox": [220, 110],
+  "size": [220, 110],
+  "binding": "value",
+  "ports": {"left": [2, 34], "right": [218, 34], "bottom": [110, 106]},
+  "layers": [
+    {"d": "M2 34 H14", "paint": "line"},
+    {"d": "M206 34 H218", "paint": "line"},
+    {"d": "M110 90 V106", "paint": "line"},
+    {"d": "M14 18 H206 V58 L120 90 H100 L14 58 Z", "paint": "shell"},
+    {"d": "M94 18 V48 H126 V18", "paint": "detail"},
+    {"d": "M20 26 H44 M176 26 H200", "paint": "detail"},
+    {"d": "M110 10 V78 M28 62 L110 80 L192 62", "paint": "run"}
+  ],
+  "runTag": "Rake drive tag"
+}

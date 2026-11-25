@@ -1,0 +1,20 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_offpage",
+  "name": "Off-page connector",
+  "category": "Piping",
+  "keywords": ["off-page", "connector", "continuation", "to", "from"],
+  "viewBox": [120, 40],
+  "size": [120, 40],
+  "binding": "none",
+  "ports": {"left": [4, 20], "right": [116, 20]},
+  "layers": [
+    {"d": "M4 6 H100 L116 20 L100 34 H4 Z", "paint": "shell"}
+  ],
+  "text": [
+    {"x": 54, "y": 20, "from": "text", "size": 12, "weight": 600}
+  ],
+  "options": [
+    {"key": "text", "label": "Text", "type": "string", "default": "TO"}
+  ]
+}

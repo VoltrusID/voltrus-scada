@@ -46,6 +46,7 @@ function nozzleSides(w: WidgetInstance): PortSide[] {
   const mirror: Record<PortSide, PortSide> = { left: 'right', right: 'left', top: 'top', bottom: 'bottom' }
   return (Object.keys(ports) as PortSide[]).map(side => {
     let s = r.config.flipX ? mirror[side] : side
+    if (r.config.flipY) s = s === 'top' ? 'bottom' : s === 'bottom' ? 'top' : s
     for (let i = 0; i < rot; i++) s = cw[s]
     return s
   })

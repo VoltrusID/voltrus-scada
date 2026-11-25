@@ -130,6 +130,11 @@ saying so.
 | `instantiate_device_template` | write | Create a device from a template (name, ip, optional overrides) and start polling it; `linked: true` makes a Modbus device follow the template ([device-templates.md](device-templates.md#linked-devices)). BACnet needs an admin login, as on the BACnet routes. |
 | `save_device_as_template` | write | Save an existing device and its registers or objects as a local template. |
 | `list_template_catalog` | read | List the public template catalog the server is configured to use. Takes no URL. |
+| `list_equipment_types` | read | Equipment types (tag roles and key patterns, limits, alarms, faceplate, symbol, bindings) with `instance_count`; `library: true` lists the starter types. See [equipment-types.md](equipment-types.md). |
+| `create_equipment_type` | write | Define a type (`type`), or install a starter one (`from_library`, with its faceplate). |
+| `update_equipment_type` | write | Change a type; every instance follows. Dry run by default: lists each affected instance with the tags created or updated (and which fields), registers, flows and widgets; `dry_run: false` saves. |
+| `instantiate_equipment` | write | One line per piece of equipment: `{name, type, device}` binds existing tags by key pattern; `base` on a Modbus device creates the missing registers and tags; `overrides` per role; `dry_run`. |
+| `list_equipment_instances` | read | Instances with the tag of every role (`resolved.roles`: key, ref, tag id, status). |
 | `import_catalog_template` | **admin** | Download a catalog template, check its sha256 and store it. Takes no URL. |
 | `project_export_yaml` | **admin** | The whole configuration as one `voltrus-project/1` YAML document (secrets as `${ENV}` references). |
 | `project_plan_import` | **admin** | Dry run of a project import: what would be created, updated and deleted. Writes nothing. |

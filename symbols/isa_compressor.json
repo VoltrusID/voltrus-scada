@@ -1,0 +1,16 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_compressor",
+  "name": "Compressor",
+  "category": "Rotating equipment",
+  "keywords": ["compressor", "centrifugal", "gas", "air", "k"],
+  "viewBox": [100, 100],
+  "size": [80, 80],
+  "binding": "state",
+  "ports": {"left": [4, 50], "right": [96, 50]},
+  "layers": [
+    {"d": "M4 50 H20", "paint": "line"},
+    {"d": "M80 50 H96", "paint": "line"},
+    {"d": "M20 18 L80 36 V64 L20 82 Z", "paint": "body"}
+  ]
+}

@@ -184,6 +184,10 @@ pub struct ImportPlan {
     pub sections: BTreeMap<String, Counts>,
     pub changes: Vec<Change>,
     pub warnings: Vec<String>,
+    /// What each equipment instance generated (tags, registers, flows,
+    /// widget bindings); those entities are among `changes` too.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub expanded: Vec<super::equipment::Expanded>,
 }
 
 impl ImportPlan {
@@ -199,6 +203,13 @@ impl ImportPlan {
     /// Human-readable listing (`+ create`, `~ update`, `- delete`).
     pub fn render(&self) -> String {
         let mut out = String::new();
+        for e in &self.expanded {
+            out.push_str(&e.render());
+            out.push('\n');
+            for n in &e.notes {
+                out.push_str(&format!("warning: {n}\n"));
+            }
+        }
         for c in &self.changes {
             let (sym, verb) = match c.action {
                 Action::Create => ('+', "create"),

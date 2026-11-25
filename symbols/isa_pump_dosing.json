@@ -1,0 +1,20 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_pump_dosing",
+  "name": "Dosing pump",
+  "category": "Rotating equipment",
+  "keywords": ["pump", "metering", "diaphragm", "chemical", "dosing"],
+  "viewBox": [100, 100],
+  "size": [76, 76],
+  "binding": "state",
+  "ports": {"left": [4, 54], "right": [96, 54]},
+  "layers": [
+    {"d": "M4 54 H24", "paint": "line"},
+    {"d": "M76 54 H96", "paint": "line"},
+    {"d": "M34 76 L28 92 H72 L66 76", "paint": "line"},
+    {"d": "M24 54 A26 26 0 1 0 76 54 A26 26 0 1 0 24 54 Z", "paint": "body"},
+    {"d": "M50 30 Q60 54 50 78", "paint": "inner"},
+    {"d": "M22 86 L72 24", "paint": "line"},
+    {"d": "M64 24 L76 19 L72 32 Z", "paint": "solid"}
+  ]
+}

@@ -22,6 +22,9 @@ const WRITE_TOOLS: &[&str] = &[
     "write_tag",
     "instantiate_device_template",
     "save_device_as_template",
+    "create_equipment_type",
+    "update_equipment_type",
+    "instantiate_equipment",
 ];
 
 const READ_TOOLS: &[&str] = &[
@@ -39,6 +42,8 @@ const READ_TOOLS: &[&str] = &[
     "list_device_templates",
     "get_device_template",
     "list_template_catalog",
+    "list_equipment_types",
+    "list_equipment_instances",
 ];
 
 /// Admin sessions only; API and integration keys are refused.
@@ -2328,4 +2333,113 @@ async fn mcp_screen_from_a_project_import_round_trips() {
     .await;
     assert_eq!(plan["totals"]["update"], 0, "{plan}");
     assert_eq!(plan["totals"]["create"], 0, "{plan}");
+}
+
+#[tokio::test]
+async fn mcp_equipment_types_from_library_to_instance() {
+    let f = fixture().await;
+    let key = Auth::Bearer(&f.integration_key);
+    let lib = ok(
+        &f.app,
+        key,
+        "list_equipment_types",
+        json!({"library": true}),
+    )
+    .await;
+    assert_eq!(lib["library"].as_array().unwrap().len(), 7, "{lib}");
+    let made = ok(
+        &f.app,
+        key,
+        "create_equipment_type",
+        json!({"from_library": "pump"}),
+    )
+    .await;
+    assert_eq!(made["installed"], json!(["pump"]), "{made}");
+    let err = tool_err(&f.app, key, "create_equipment_type", json!({})).await;
+    assert!(err.contains("exactly one"), "{err}");
+
+    // A Modbus device with no registers: a base makes them.
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/modbus-devices",
+        None,
+        Some(&f.admin_cookie()),
+        Some(json!({"id": "skid", "name": "Skid", "ip": "127.0.0.1", "port": 1, "registers": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let dry = ok(
+        &f.app,
+        key,
+        "instantiate_equipment",
+        json!({"name": "P-1", "type": "pump", "device": "skid", "base": 0, "dry_run": true}),
+    )
+    .await;
+    assert_eq!(
+        dry["changes"]["registers_added"].as_array().unwrap().len(),
+        4,
+        "{dry}"
+    );
+    let made = ok(
+        &f.app,
+        key,
+        "instantiate_equipment",
+        json!({"name": "P-1", "type": "pump", "device": "skid", "base": 0}),
+    )
+    .await;
+    assert_eq!(made["resolved"]["roles"][0]["status"], "bound", "{made}");
+
+    let list = ok(
+        &f.app,
+        key,
+        "list_equipment_instances",
+        json!({"type": "pump"}),
+    )
+    .await;
+    assert_eq!(list["equipment_instances"].as_array().unwrap().len(), 1);
+
+    let types = ok(&f.app, key, "list_equipment_types", json!({})).await;
+    let mut pump = types["equipment_types"][0].clone();
+    pump["tags"][3]["max"] = json!(60.0);
+    let preview = ok(
+        &f.app,
+        key,
+        "update_equipment_type",
+        json!({"type": pump.clone()}),
+    )
+    .await;
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["affected"][0]["instance"], "P-1", "{preview}");
+    let max = f
+        .storage
+        .with_conn(|c| {
+            Ok(c.query_row(
+                "SELECT max_val FROM data_sources WHERE key='p1_speed'",
+                [],
+                |r| r.get::<_, f64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(max, 50.0);
+    ok(
+        &f.app,
+        key,
+        "update_equipment_type",
+        json!({"type": pump, "dry_run": false}),
+    )
+    .await;
+    let max = f
+        .storage
+        .with_conn(|c| {
+            Ok(c.query_row(
+                "SELECT max_val FROM data_sources WHERE key='p1_speed'",
+                [],
+                |r| r.get::<_, f64>(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(max, 60.0);
 }

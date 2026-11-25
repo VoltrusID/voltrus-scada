@@ -1,0 +1,21 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_pump_centrifugal",
+  "name": "Centrifugal pump",
+  "category": "Rotating equipment",
+  "keywords": ["pump", "centrifugal", "p"],
+  "viewBox": [100, 100],
+  "size": [80, 80],
+  "binding": "state",
+  "ports": {"left": [4, 50], "right": [90, 26]},
+  "layers": [
+    {"d": "M50 20 H90 V32 H74", "paint": "line"},
+    {"d": "M4 50 H20", "paint": "line"},
+    {"d": "M32 76 L24 92 H76 L68 76", "paint": "line"},
+    {"d": "M20 50 A30 30 0 1 0 80 50 A30 30 0 1 0 20 50 Z", "paint": "body"}
+  ],
+  "anchors": [
+    {"id": "suction", "x": 4, "y": 50, "dir": "left"},
+    {"id": "discharge", "x": 90, "y": 26, "dir": "right"}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_reducer",
+  "name": "Reducer",
+  "category": "Piping",
+  "keywords": ["reducer", "concentric", "expander", "increaser"],
+  "viewBox": [60, 40],
+  "size": [48, 32],
+  "binding": "none",
+  "ports": {"left": [0, 20], "right": [60, 20]},
+  "layers": [
+    {"d": "M0 20 H12 M48 20 H60", "paint": "line", "width": 3},
+    {"d": "M12 6 L48 14 V26 L12 34 Z", "paint": "shell"}
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_line_vertical",
+  "name": "Process line, vertical (ISA-101, phase 1)",
+  "category": "Piping",
+  "keywords": ["line"],
+  "viewBox": [10, 200],
+  "size": [10, 200],
+  "binding": "none",
+  "layers": [
+    {"d": "M5 0 L5 200", "paint": "line", "width": 3},
+    {"d": "M5 0 L5 200", "paint": "flow", "width": 3}
+  ],
+  "stretch": true,
+  "runTag": "Flow Tag (animates)",
+  "palette": false
+}

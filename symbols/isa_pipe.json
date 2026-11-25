@@ -1,0 +1,22 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_pipe",
+  "name": "Pipe",
+  "category": "Piping",
+  "keywords": ["pipe", "line", "process line", "flow"],
+  "viewBox": [200, 12],
+  "size": [200, 12],
+  "binding": "none",
+  "layers": [
+    {"d": "M0 6 H200", "paint": "line", "width": 3},
+    {"d": "M0 6 H200", "paint": "flow", "width": 3},
+    {"d": "M90 0 L106 6 L90 12 Z", "paint": "solid", "if": {"arrow": ["forward", "both"]}},
+    {"d": "M110 0 L94 6 L110 12 Z", "paint": "solid", "if": {"arrow": "reverse"}},
+    {"d": "M60 0 L44 6 L60 12 Z", "paint": "solid", "if": {"arrow": "both"}}
+  ],
+  "stretch": true,
+  "options": [
+    {"key": "arrow", "label": "Flow arrows", "type": "select", "values": ["none", "forward", "reverse", "both"], "default": "none"}
+  ],
+  "runTag": "Flow tag (animates)"
+}

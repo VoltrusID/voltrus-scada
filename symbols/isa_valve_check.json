@@ -1,0 +1,17 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_valve_check",
+  "name": "Check valve",
+  "category": "Valves",
+  "keywords": ["valve", "check", "non-return", "nrv"],
+  "viewBox": [100, 50],
+  "size": [80, 40],
+  "binding": "none",
+  "ports": {"left": [2, 25], "right": [98, 25]},
+  "layers": [
+    {"d": "M2 25 H30", "paint": "line"},
+    {"d": "M70 25 H98", "paint": "line"},
+    {"d": "M30 9 L66 25 L30 41 Z", "paint": "body"},
+    {"d": "M68 7 V43", "paint": "line"}
+  ]
+}

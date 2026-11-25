@@ -78,6 +78,7 @@ INSERT INTO twin_layouts (screen_id,equipment_id,equipment_type,position_x,posit
 INSERT INTO twin_connections (screen_id,from_id,to_id) VALUES ('plts_1','inv1','inv2');
 INSERT INTO scada_equipment (screen_id,equipment_id,equipment_type,equipment_name,x,y,width,height,rotation,sensor_bindings,config) VALUES
   ('plts_1','w1','gauge','Voltage gauge',10,20,100,60,0,'[1,2]','{"z":1,"label":"V"}'),
+  ('plts_1','w3','symbol','',200,0,90,100,0,'[1]','{"equipment":"PLTS-1 V","faceplate":"pump_std","faceplateMap":{"run":1},"label":"PLTS-1 V","showValue":true,"symbol":"meter"}'),
   ('plts_1','w2','tank','',0,0,100,60,45,'[]','{"faceplate":"pump_std","faceplateMap":{"run":1,"fault":2},"runSensorId":4,"bindings":{"label":{"kind":"expr","expr":"text({plts_1/power#2}, 1) + \" kW\""},"visible":{"kind":"tag","tag":"plts_1/voltage"}}}');
 INSERT INTO faceplates (id,name,kind,description,created_at,updated_at) VALUES ('pump_std','Pump','pump','',100,100);
 INSERT INTO faceplate_roles (faceplate_id,role,label,kind,required,sort_order) VALUES
@@ -106,6 +107,10 @@ INSERT INTO reports (name,schedule,enabled,device_ids,email_recipients,created_a
 INSERT INTO cameras (name,url,enabled,snapshot_on_alarm,retention_hours,created_at) VALUES ('Cam 1','rtsp://cam:camera-pw@10.0.0.9/stream',1,1,48,100);
 INSERT INTO hub_sites (name,url,api_key,enabled,created_at) VALUES ('Site B','https://site-b.example.com','hub-api-key-123',1,100);
 INSERT INTO equipment_templates (name,industry,equipment_type,tag_template,alarm_template,dashboard_template,flow_template) VALUES ('Inverter','solar','inverter','[{"key":"p"}]','[]','{"cols":2}','[]');
+INSERT INTO equipment_types (id,name,description,category,symbol,faceplate,tags,bindings,symbol_config,flows,created_at,updated_at) VALUES
+ ('meter','Meter','Voltage meter','Electrical','meter','pump_std','[{"role":"run","kind":"state","key":"{prefix}","alarm":{"warn":400.0}}]','{"primary":"run"}','{"showValue":true}','[]',100,100);
+INSERT INTO equipment_instances (name,type_id,device_id,base,prefix,description,symbol,overrides,created_at,updated_at) VALUES
+ ('PLTS-1 V','meter','plts_1',NULL,'voltage','',NULL,'{"run":{"unit":"V"}}',100,100);
 INSERT INTO shifts (name,start_hour,start_minute,duration_hours,days_mask,created_at) VALUES ('Morning',6,0,8,127,100);
 INSERT INTO custom_metrics (name,description,formula,unit,tag_refs,validation_error,created_at,updated_at) VALUES ('eff','Efficiency','current / voltage','%','[]',NULL,100,100);
 INSERT INTO assets (id,device_ref,name,asset_type,vendor,criticality,tags,notes,created_at,updated_at) VALUES ('a1','plts_1','Inverter','plc','Acme','high','["site-a"]','note','2025-01-01T00:00:00Z','2025-01-01T00:00:00Z');
@@ -232,6 +237,8 @@ const CONFIG_TABLES: &[&str] = &[
     "cameras",
     "hub_sites",
     "equipment_templates",
+    "equipment_types",
+    "equipment_instances",
     "shifts",
     "custom_metrics",
     "assets",
@@ -1565,4 +1572,266 @@ async fn linked_devices_stay_on_their_template_through_an_import() {
             .len(),
         0
     );
+}
+
+// ── Equipment types and instances ──
+
+const EQUIPMENT: &str = r#"format: voltrus-project/1
+modbus_devices:
+- {id: skid, name: Skid, ip: 127.0.0.1}
+opcua_devices:
+- {name: opc, url: 'opc.tcp://10.0.0.1:4840'}
+faceplates:
+- id: pump
+  name: Pump
+  kind: pump
+  roles:
+  - {role: run, kind: state, required: true}
+  - {role: fault, kind: fault}
+  - {role: cmd, kind: command}
+equipment_types:
+- id: pump
+  name: Pump
+  symbol: isa_pump_centrifugal
+  faceplate: pump
+  tags:
+  - {role: run, kind: state, offset: 0, required: true, min: 0, max: 1, decimals: 0}
+  - {role: fault, kind: fault, offset: 2, alarm: {crit: 1}}
+  - {role: cmd, kind: command, offset: 4, fallback: run, write: {writable: true, min: 0, max: 1}}
+  bindings: {primary: run, fault: fault}
+  symbol_config: {showStatus: true}
+  flows:
+  - id: trip
+    name: '{name} trip stop'
+    enabled: false
+    trigger: {type: tag_change, tags: ['{ref:fault}']}
+    nodes:
+    - {type: write_out, id: n1, tag: '{ref:cmd}', policy: immediate, reason: 'flow:trip'}
+equipment_instances:
+- {name: P-1, type: pump, device: skid, base: 10}
+- {name: P-2, type: pump, device: skid, base: 20, overrides: {fault: {skip: true}}}
+screens:
+- id: s1
+  name: S1
+  scada:
+    equipment:
+    - {equipment_id: w1, equipment_type: symbol, config: {equipment: P-1, z: 1}}
+    - {equipment_id: w2, equipment_type: symbol, config: {equipment: P-2, label: Second}}
+"#;
+
+#[tokio::test]
+async fn equipment_instances_expand_at_plan_time_and_round_trip() {
+    let a = fresh();
+    let doc = parse_project_yaml(EQUIPMENT).unwrap();
+    let plan = plan_import_with_env(&a, &doc, Mode::Merge, no_env())
+        .await
+        .unwrap();
+    assert_eq!(plan.expanded.len(), 2, "{}", plan.render());
+    let p1 = &plan.expanded[0];
+    assert_eq!(p1.instance, "P-1");
+    let created: Vec<&str> = p1
+        .tags
+        .iter()
+        .filter(|t| t.action == "create")
+        .map(|t| t.reference.as_str())
+        .collect();
+    assert_eq!(created, vec!["skid/p1_run", "skid/p1_fault", "skid/p1_cmd"]);
+    assert_eq!(
+        p1.registers_added,
+        vec!["skid/p1_run@10", "skid/p1_fault@12", "skid/p1_cmd@14"]
+    );
+    assert_eq!(p1.flows, vec!["p1-trip"]);
+    assert_eq!(p1.widgets.len(), 1);
+    // P-2 skips its fault: no fault tag, register or flow.
+    let p2 = &plan.expanded[1];
+    assert!(p2.tags.iter().all(|t| t.key != "p2_fault"));
+    assert!(
+        p2.flows.is_empty() && !p2.notes.is_empty(),
+        "{:?}",
+        p2.notes
+    );
+    let text = plan.render();
+    assert!(
+        text.contains("= expand P-1 (pump): +tag skid/p1_run"),
+        "{text}"
+    );
+    assert!(text.contains("+ create tags: skid/p1_run"), "{text}");
+    assert_eq!(count(&a, "data_sources").await, 0, "a plan writes nothing");
+
+    apply_import_with_env(&a, &doc, Mode::Merge, no_env())
+        .await
+        .unwrap();
+    let regs = scalar_text(
+        &a,
+        "SELECT group_concat(name || '@' || address, ',') FROM (SELECT * FROM modbus_registers WHERE device_id='skid' ORDER BY address)",
+    )
+    .await;
+    assert_eq!(regs, "p1_run@10,p1_fault@12,p1_cmd@14,p2_run@20,p2_cmd@24");
+    let run = scalar_i64(&a, "SELECT id FROM data_sources WHERE key='p1_run'").await;
+    let fault = scalar_i64(&a, "SELECT id FROM data_sources WHERE key='p1_fault'").await;
+    assert_eq!(
+        scalar_i64(&a, "SELECT writable FROM data_sources WHERE key='p1_cmd'").await,
+        1
+    );
+    assert_eq!(
+        scalar_text(
+            &a,
+            "SELECT sensor_bindings FROM scada_equipment WHERE equipment_id='w1'"
+        )
+        .await,
+        format!("[{run}]")
+    );
+    let cfg: serde_json::Value = serde_json::from_str(
+        &scalar_text(
+            &a,
+            "SELECT config FROM scada_equipment WHERE equipment_id='w1'",
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(cfg["faultSensorId"], fault);
+    let cmd = scalar_i64(&a, "SELECT id FROM data_sources WHERE key='p1_cmd'").await;
+    assert_eq!(
+        cfg["faceplateMap"],
+        serde_json::json!({"run": run, "fault": fault, "cmd": cmd})
+    );
+    assert_eq!(cfg["symbol"], "isa_pump_centrifugal");
+    assert_eq!(cfg["label"], "P-1");
+    assert_eq!(cfg["z"], 1);
+    let cfg2: serde_json::Value = serde_json::from_str(
+        &scalar_text(
+            &a,
+            "SELECT config FROM scada_equipment WHERE equipment_id='w2'",
+        )
+        .await,
+    )
+    .unwrap();
+    assert_eq!(cfg2["label"], "Second");
+    assert!(cfg2.get("faultSensorId").is_none());
+    let trigger = scalar_text(&a, "SELECT trigger_config FROM flows WHERE id='p1-trip'").await;
+    assert!(trigger.contains(&fault.to_string()), "{trigger}");
+
+    // Export, import elsewhere, export again: identical, and nothing to do.
+    let first = export_text(&a).await;
+    assert!(first.contains("equipment_instances:"), "{first}");
+    assert!(first.contains("faultSensorId: skid/p1_fault"), "{first}");
+    let b = fresh();
+    apply_import_with_env(
+        &b,
+        &parse_project_yaml(&first).unwrap(),
+        Mode::Merge,
+        no_env(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(first, export_text(&b).await);
+    let again = plan_import_with_env(
+        &b,
+        &parse_project_yaml(&first).unwrap(),
+        Mode::Replace,
+        no_env(),
+    )
+    .await
+    .unwrap();
+    assert!(!again.has_changes(), "{}", again.render());
+
+    // A changed type in a file that leaves the instances out reaches them all.
+    let changed = EQUIPMENT
+        .split("equipment_instances:")
+        .next()
+        .unwrap()
+        .replace("alarm: {crit: 1}", "alarm: {warn: 0.5, crit: 1}");
+    let plan = plan_import_with_env(
+        &a,
+        &parse_project_yaml(&changed).unwrap(),
+        Mode::Merge,
+        no_env(),
+    )
+    .await
+    .unwrap();
+    let names: Vec<&str> = plan.expanded.iter().map(|e| e.instance.as_str()).collect();
+    assert_eq!(names, vec!["P-1", "P-2"], "{}", plan.render());
+    let fault = plan.expanded[0]
+        .tags
+        .iter()
+        .find(|t| t.key == "p1_fault")
+        .unwrap();
+    assert_eq!(
+        (fault.action, fault.fields.clone()),
+        ("update", vec!["alarm".to_string()])
+    );
+}
+
+#[tokio::test]
+async fn equipment_problems_are_named() {
+    let a = fresh();
+    let errors = |plan: anyhow::Result<ImportPlan>| -> String {
+        let e = plan.unwrap_err();
+        let invalid = e.downcast_ref::<InvalidProject>().expect("invalid project");
+        invalid
+            .0
+            .iter()
+            .filter(|i| i.severity == Severity::Error)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let cases = [
+        (
+            "type: pump, device: skid, base: 10}",
+            "type: teapot, device: skid, base: 10}",
+            "unknown equipment type 'teapot'",
+        ),
+        (
+            "symbol: isa_pump_centrifugal",
+            "symbol: isa_teapot",
+            "symbol 'isa_teapot' is not a known symbol",
+        ),
+        (
+            "faceplate: pump\n  tags",
+            "faceplate: nope\n  tags",
+            "unknown faceplate 'nope'",
+        ),
+        (
+            "device: skid, base: 10}",
+            "device: ghost, base: 10}",
+            "unknown device 'ghost'",
+        ),
+        (
+            "device: skid, base: 10}",
+            "device: opc, base: 10}",
+            "base needs a Modbus device",
+        ),
+        (
+            "device: skid, base: 10}",
+            "device: skid}",
+            "required role 'run' has no tag",
+        ),
+        (
+            "{fault: {skip: true}}",
+            "{trip: {skip: true}}",
+            "overrides.trip: type 'pump' has no role 'trip'",
+        ),
+        (
+            "base: 20, overrides",
+            "base: 20, prefix: p1, overrides",
+            "which equipment instance 'P-1' has too",
+        ),
+        (
+            "bindings: {primary: run, fault: fault}",
+            "bindings: {primary: run, fault: trip}",
+            "bindings.fault names an unknown role 'trip'",
+        ),
+        (
+            "- {name: P-2",
+            "- {name: P-1",
+            "duplicate equipment instance 'P-1'",
+        ),
+    ];
+    for (from, to, want) in cases {
+        assert!(EQUIPMENT.contains(from), "{from}");
+        let doc = parse_project_yaml(&EQUIPMENT.replacen(from, to, 1)).unwrap();
+        let got = errors(plan_import_with_env(&a, &doc, Mode::Merge, no_env()).await);
+        assert!(got.contains(want), "{to}: want {want:?} in\n{got}");
+    }
 }

@@ -1,0 +1,17 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_fan",
+  "name": "Fan (axial)",
+  "category": "Rotating equipment",
+  "keywords": ["fan", "axial", "ventilation", "exhaust"],
+  "viewBox": [100, 100],
+  "size": [76, 76],
+  "binding": "state",
+  "ports": {"left": [2, 50], "right": [98, 50]},
+  "layers": [
+    {"d": "M2 50 H16", "paint": "line"},
+    {"d": "M84 50 H98", "paint": "line"},
+    {"d": "M16 50 A34 34 0 1 0 84 50 A34 34 0 1 0 16 50 Z", "paint": "body"},
+    {"d": "M50 50 C40 42 38 24 50 20 C58 26 58 42 50 50 Z M50 50 C60 58 62 76 50 80 C42 74 42 58 50 50 Z", "paint": "inner"}
+  ]
+}

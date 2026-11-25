@@ -87,8 +87,12 @@ fn run(
     let tx = conn.transaction().context("begin transaction")?;
     let (snap, mut ctx) = export::read_all(&tx)?;
 
+    // Equipment instances become tags, registers, flows and widget bindings
+    // before anything is checked, so the plan shows what they generate.
+    let (doc, expanded, mut issues) = super::equipment::expand(doc, &snap, mode);
+    let doc = &doc;
     let known = (mode == Mode::Merge).then(|| validate::Known::from_snapshot(&snap));
-    let issues = validate::validate_doc(doc, known.as_ref(), false);
+    issues.extend(validate::validate_doc(doc, known.as_ref(), false));
     if issues.iter().any(|i| i.severity == Severity::Error) {
         return Err(InvalidProject(issues).into());
     }
@@ -104,6 +108,7 @@ fn run(
         sections: BTreeMap::new(),
         changes: Vec::new(),
         warnings,
+        expanded,
     };
     let mut work: Vec<Work> = Vec::new();
     let mut secret_errors: Vec<Issue> = Vec::new();
@@ -921,19 +926,19 @@ fn write_screen(
                 *reference = Value::Number(id.into());
             }
         }
-        // runSensorId by ref (a number is a legacy id, kept as is).
-        if let Some(c) = config.as_mut().and_then(Value::as_mapping_mut)
-            && let Some(Value::String(reference)) = c.get(export::RUN_TAG).cloned()
-        {
-            let tag = tag_id(
-                ctx,
-                &reference,
-                &format!("{} of a SCADA widget of screen '{id}'", export::RUN_TAG),
-            )?;
-            c.insert(
-                Value::String(export::RUN_TAG.into()),
-                Value::Number(tag.into()),
-            );
+        // runSensorId and the other single-tag keys by ref (a number is a
+        // legacy id, kept as is).
+        if let Some(c) = config.as_mut().and_then(Value::as_mapping_mut) {
+            for key in export::TAG_KEYS {
+                if let Some(Value::String(reference)) = c.get(*key).cloned() {
+                    let tag = tag_id(
+                        ctx,
+                        &reference,
+                        &format!("{key} of a SCADA widget of screen '{id}'"),
+                    )?;
+                    c.insert(Value::String((*key).into()), Value::Number(tag.into()));
+                }
+            }
         }
         args.push(yaml_to_sql(
             field(spec::SCADA_EQUIPMENT, "config"),

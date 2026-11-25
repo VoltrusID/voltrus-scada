@@ -86,6 +86,41 @@ fn main() {
     if fs::read_to_string(&target).ok().as_deref() != Some(generated.as_str()) {
         fs::write(&target, generated).expect("write ui_assets.rs");
     }
+
+    symbol_keys(&manifest, &out);
+}
+
+/// Keys of the shared symbol library (`symbols/<key>.json`, drawn by the web
+/// client and the native console) as `SYMBOL_FILES` in `symbol_keys.rs`, so
+/// the server can check the symbol an equipment type names. Files starting
+/// with `_` and `symbol.schema.json` are not symbols. A tree without
+/// `symbols/` gets an empty list.
+fn symbol_keys(manifest: &Path, out: &Path) {
+    let dir = manifest.join("symbols");
+    println!("cargo:rerun-if-changed=symbols");
+    let mut keys: Vec<String> = fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter_map(|p| {
+                    let name = p.file_name()?.to_str()?.to_string();
+                    let key = name.strip_suffix(".json")?;
+                    (!key.starts_with('_') && !key.starts_with('.') && key != "symbol.schema")
+                        .then(|| key.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    keys.sort();
+    let mut generated = String::from("pub static SYMBOL_FILES: &[&str] = &[\n");
+    for k in &keys {
+        writeln!(generated, "    {k:?},").unwrap();
+    }
+    generated.push_str("];\n");
+    let target = out.join("symbol_keys.rs");
+    if fs::read_to_string(&target).ok().as_deref() != Some(generated.as_str()) {
+        fs::write(&target, generated).expect("write symbol_keys.rs");
+    }
 }
 
 /// Every file under `dir` as a `/`-separated path relative to `root`, without

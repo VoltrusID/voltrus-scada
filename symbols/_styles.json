@@ -1,0 +1,147 @@
+{
+  "$comment": "ISA-101 state style rules for symbols/*.json. Colour names are theme variables (CSS --name), with their values per theme under colors. Kept equal to client/src/scada2/hmi/symbolStyle.ts STYLE_RULES by tests/symbolLibrary.test.ts.",
+  "format": "voltrus-symbol-styles/1",
+  "states": {
+    "idle": {
+      "stroke": "isa-line",
+      "width": 1.75,
+      "fill": "isa-off"
+    },
+    "stopped": {
+      "stroke": "isa-line",
+      "width": 1.75,
+      "fill": "isa-off"
+    },
+    "running": {
+      "stroke": "isa-line",
+      "width": 1.75,
+      "fill": "isa-on"
+    },
+    "fault": {
+      "stroke": "hmi-fault",
+      "width": 2.5,
+      "fill": "hmi-fault",
+      "blink": true
+    },
+    "stale": {
+      "stroke": "hmi-stale",
+      "width": 1.75,
+      "fill": "isa-off",
+      "dash": "4 3"
+    }
+  },
+  "paints": {
+    "body": {
+      "fill": "state"
+    },
+    "shell": {
+      "fill": "isa-off"
+    },
+    "line": {
+      "fill": "none"
+    },
+    "detail": {
+      "fill": "none",
+      "width": 1
+    },
+    "inner": {
+      "fill": "none",
+      "width": 1.25,
+      "strokeOnFilled": "hmi-stage"
+    },
+    "solid": {
+      "fill": "stroke"
+    },
+    "flow": {
+      "fill": "none",
+      "stroke": "isa-on",
+      "dash": "6 18",
+      "animate": "hmi-flow",
+      "when": "run"
+    },
+    "run": {
+      "fill": "none",
+      "width": 1,
+      "widthRunning": 2.5
+    }
+  },
+  "text": {
+    "color": "isa-text",
+    "onBodyFilled": "hmi-stage",
+    "onBodyHollow": "isa-line"
+  },
+  "badges": {
+    "manual": {
+      "text": "M",
+      "shape": "box",
+      "fill": "isa-off",
+      "stroke": "isa-line",
+      "color": "isa-text"
+    },
+    "interlock": {
+      "text": "I",
+      "shape": "box",
+      "fill": "isa-off",
+      "stroke": "isa-line",
+      "color": "isa-text"
+    },
+    "alarm": {
+      "1": {
+        "text": "1",
+        "shape": "square",
+        "fill": "isa-alarm-1",
+        "stroke": "isa-alarm-1",
+        "color": "isa-alarm-1-text",
+        "blink": true
+      },
+      "2": {
+        "text": "2",
+        "shape": "triangle",
+        "fill": "isa-alarm-2",
+        "stroke": "isa-alarm-2",
+        "color": "isa-alarm-2-text"
+      },
+      "3": {
+        "text": "3",
+        "shape": "diamond",
+        "fill": "isa-alarm-3",
+        "stroke": "isa-alarm-3",
+        "color": "isa-alarm-3-text"
+      }
+    }
+  },
+  "colors": {
+    "dark": {
+      "isa-line": "#b4bcc6",
+      "isa-on": "#c9d0d8",
+      "isa-off": "#1d2128",
+      "isa-level": "#4a5361",
+      "isa-text": "#e8edf2",
+      "hmi-stage": "#15181d",
+      "hmi-fault": "#f04646",
+      "hmi-stale": "#d65ce8",
+      "isa-alarm-1": "#f04646",
+      "isa-alarm-1-text": "#ffffff",
+      "isa-alarm-2": "#f5821f",
+      "isa-alarm-2-text": "#111111",
+      "isa-alarm-3": "#f2d22e",
+      "isa-alarm-3-text": "#111111"
+    },
+    "light": {
+      "isa-line": "#3d434b",
+      "isa-on": "#3d434b",
+      "isa-off": "#eceef1",
+      "isa-level": "#b3bac3",
+      "isa-text": "#111827",
+      "hmi-stage": "#dfe2e6",
+      "hmi-fault": "#b91c1c",
+      "hmi-stale": "#9b2aaa",
+      "isa-alarm-1": "#c81e1e",
+      "isa-alarm-1-text": "#ffffff",
+      "isa-alarm-2": "#e2700f",
+      "isa-alarm-2-text": "#111111",
+      "isa-alarm-3": "#e8c00e",
+      "isa-alarm-3-text": "#111111"
+    }
+  }
+}

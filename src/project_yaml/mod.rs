@@ -17,6 +17,7 @@
 //! * [`validate_doc`] for offline checks
 
 pub mod binding_refs;
+pub mod equipment;
 pub mod export;
 pub mod import;
 pub mod io;

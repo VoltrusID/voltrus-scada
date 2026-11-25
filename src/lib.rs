@@ -41,6 +41,7 @@ pub mod discovery;
 pub mod dnp3;
 pub mod edition;
 pub mod edr_compat;
+pub mod equipment_types;
 #[cfg(feature = "ethernet-ip")]
 pub mod ethernet_ip;
 pub mod expression;

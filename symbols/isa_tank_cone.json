@@ -1,0 +1,24 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_tank_cone",
+  "name": "Cone-bottom tank",
+  "category": "Vessels",
+  "keywords": ["tank", "conical", "hopper", "cone", "chemical"],
+  "viewBox": [100, 156],
+  "size": [86, 134],
+  "binding": "level",
+  "ports": {"top": [50, 4], "bottom": [50, 152], "left": [10, 60], "right": [90, 60]},
+  "layers": [
+    {"d": "M50 14 V4", "paint": "line"},
+    {"d": "M50 134 V152", "paint": "line"},
+    {"d": "M10 100 V152 M90 100 V152 M4 152 H16 M84 152 H96", "paint": "line"},
+    {"d": "M10 14 H90 V100 L56 134 H44 L10 100 Z", "paint": "shell"}
+  ],
+  "level": {"x": 10, "y": 14, "w": 80, "h": 120, "clip": "M10 14 H90 V100 L56 134 H44 L10 100 Z"},
+  "text": [
+    {"x": 50, "y": 66, "from": "$level", "size": 18, "weight": 600, "font": "mono"}
+  ],
+  "options": [
+    {"key": "showPercent", "label": "Show %", "type": "boolean", "default": true}
+  ]
+}

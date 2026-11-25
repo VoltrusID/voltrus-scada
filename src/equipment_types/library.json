@@ -1,0 +1,152 @@
+{
+  "faceplates": [
+    {
+      "id": "pump", "name": "Pump", "kind": "pump",
+      "roles": [
+        {"role": "run", "label": "Running", "kind": "state", "required": true},
+        {"role": "fault", "label": "Fault", "kind": "fault"},
+        {"role": "cmd", "label": "Start / stop", "kind": "command"},
+        {"role": "speed", "label": "Speed", "kind": "analog"}
+      ]
+    },
+    {
+      "id": "valve", "name": "Valve", "kind": "valve",
+      "roles": [
+        {"role": "open", "label": "Open", "kind": "state", "required": true},
+        {"role": "fault", "label": "Fault", "kind": "fault"},
+        {"role": "cmd", "label": "Open / close", "kind": "command"},
+        {"role": "position", "label": "Position", "kind": "analog"}
+      ]
+    },
+    {
+      "id": "control_valve", "name": "Control valve", "kind": "valve",
+      "roles": [
+        {"role": "position", "label": "Position", "kind": "analog", "required": true},
+        {"role": "position_sp", "label": "Position setpoint", "kind": "setpoint"},
+        {"role": "fault", "label": "Fault", "kind": "fault"}
+      ]
+    },
+    {
+      "id": "analog", "name": "Analog measurement", "kind": "analog",
+      "roles": [
+        {"role": "pv", "label": "Process value", "kind": "analog", "required": true},
+        {"role": "sp", "label": "Setpoint", "kind": "setpoint"}
+      ]
+    },
+    {
+      "id": "dosing_pump", "name": "Dosing pump", "kind": "pump",
+      "roles": [
+        {"role": "run", "label": "Running", "kind": "state", "required": true},
+        {"role": "fault", "label": "Fault", "kind": "fault"},
+        {"role": "cmd", "label": "Start / stop", "kind": "command"},
+        {"role": "dose", "label": "Dose", "kind": "analog"},
+        {"role": "dose_sp", "label": "Dose setpoint", "kind": "setpoint"}
+      ]
+    },
+    {
+      "id": "filter", "name": "Filter", "kind": "analog",
+      "roles": [
+        {"role": "headloss", "label": "Headloss", "kind": "analog", "required": true},
+        {"role": "turbidity", "label": "Effluent turbidity", "kind": "analog"},
+        {"role": "backwash", "label": "Backwash", "kind": "state"}
+      ]
+    },
+    {
+      "id": "tank", "name": "Tank", "kind": "analog",
+      "roles": [
+        {"role": "level", "label": "Level", "kind": "analog", "required": true},
+        {"role": "high", "label": "High level switch", "kind": "fault"},
+        {"role": "low", "label": "Low level switch", "kind": "fault"}
+      ]
+    }
+  ],
+  "types": [
+    {
+      "id": "pump", "name": "Pump", "category": "Pumps",
+      "description": "Centrifugal pump with run feedback, trip, start/stop command and optional VFD speed.",
+      "symbol": "isa_pump_centrifugal", "faceplate": "pump",
+      "tags": [
+        {"role": "run", "label": "Running", "kind": "state", "key": "{prefix}_run", "offset": 0, "min": 0, "max": 1, "decimals": 0, "required": true},
+        {"role": "fault", "label": "Fault", "kind": "fault", "key": "{prefix}_fault", "offset": 2, "min": 0, "max": 1, "decimals": 0, "alarm": {"crit": 1}},
+        {"role": "cmd", "label": "Start / stop", "kind": "command", "key": "{prefix}_cmd", "offset": 4, "min": 0, "max": 1, "decimals": 0, "write": {"writable": true, "min": 0, "max": 1}, "fallback": "run"},
+        {"role": "speed", "label": "Speed", "kind": "analog", "key": "{prefix}_speed", "offset": 6, "unit": "Hz", "min": 0, "max": 50, "decimals": 1}
+      ],
+      "bindings": {"primary": "run", "fault": "fault"},
+      "symbol_config": {"showStatus": true, "writable": true}
+    },
+    {
+      "id": "valve", "name": "Valve", "category": "Valves",
+      "description": "On/off valve with open feedback, fault, open/close command and optional position.",
+      "symbol": "isa_valve_gate", "faceplate": "valve",
+      "tags": [
+        {"role": "open", "label": "Open", "kind": "state", "key": "{prefix}_open", "offset": 0, "min": 0, "max": 1, "decimals": 0, "required": true},
+        {"role": "fault", "label": "Fault", "kind": "fault", "key": "{prefix}_fault", "offset": 2, "min": 0, "max": 1, "decimals": 0, "alarm": {"crit": 1}},
+        {"role": "cmd", "label": "Open / close", "kind": "command", "key": "{prefix}_cmd", "offset": 4, "min": 0, "max": 1, "decimals": 0, "write": {"writable": true, "min": 0, "max": 1}, "fallback": "open"},
+        {"role": "position", "label": "Position", "kind": "analog", "key": "{prefix}_position", "offset": 6, "unit": "%", "min": 0, "max": 100, "decimals": 0}
+      ],
+      "bindings": {"primary": "open", "fault": "fault"},
+      "symbol_config": {"showStatus": true, "writable": true}
+    },
+    {
+      "id": "control_valve", "name": "Control valve", "category": "Valves",
+      "description": "Modulating valve with position feedback and an optional position setpoint.",
+      "symbol": "isa_valve_control", "faceplate": "control_valve",
+      "tags": [
+        {"role": "position", "label": "Position", "kind": "analog", "key": "{prefix}_pos", "offset": 0, "unit": "%", "min": 0, "max": 100, "decimals": 0, "required": true},
+        {"role": "position_sp", "label": "Position setpoint", "kind": "setpoint", "key": "{prefix}_pos_sp", "offset": 2, "unit": "%", "min": 0, "max": 100, "decimals": 0, "write": {"writable": true, "min": 0, "max": 100}},
+        {"role": "fault", "label": "Fault", "kind": "fault", "key": "{prefix}_fault", "offset": 4, "min": 0, "max": 1, "decimals": 0, "alarm": {"crit": 1}}
+      ],
+      "bindings": {"primary": "position", "fault": "fault"},
+      "symbol_config": {"showValue": true}
+    },
+    {
+      "id": "tank", "name": "Tank", "category": "Vessels",
+      "description": "Vessel with a level measurement in percent and optional high/low level switches.",
+      "symbol": "isa_tank_vertical", "faceplate": "tank",
+      "tags": [
+        {"role": "level", "label": "Level", "kind": "analog", "key": "{prefix}_level", "offset": 0, "unit": "%", "min": 0, "max": 100, "decimals": 1, "required": true},
+        {"role": "high", "label": "High level switch", "kind": "fault", "key": "{prefix}_lsh", "offset": 2, "min": 0, "max": 1, "decimals": 0, "alarm": {"warn": 1}},
+        {"role": "low", "label": "Low level switch", "kind": "fault", "key": "{prefix}_lsl", "offset": 4, "min": 0, "max": 1, "decimals": 0, "alarm": {"warn": 1}}
+      ],
+      "bindings": {"primary": "level"},
+      "symbol_config": {}
+    },
+    {
+      "id": "analog", "name": "Analog instrument", "category": "Instruments",
+      "description": "Transmitter (flow, pressure, level, analyser): one process value and an optional setpoint. The key is the prefix itself; give the unit and limits per instance.",
+      "symbol": "isa_instrument", "faceplate": "analog",
+      "tags": [
+        {"role": "pv", "label": "Process value", "kind": "analog", "key": "{prefix}", "offset": 0, "required": true},
+        {"role": "sp", "label": "Setpoint", "kind": "setpoint", "key": "{prefix}_sp", "offset": 2, "write": {"writable": true}}
+      ],
+      "bindings": {"primary": "pv"},
+      "symbol_config": {"showValue": true}
+    },
+    {
+      "id": "dosing_pump", "name": "Dosing pump", "category": "Pumps",
+      "description": "Chemical dosing pump: run feedback, trip, start/stop, dose and dose setpoint. Keys are {prefix}_pump_run, {prefix}_dose, ...",
+      "symbol": "isa_pump_dosing", "faceplate": "dosing_pump",
+      "tags": [
+        {"role": "run", "label": "Running", "kind": "state", "key": "{prefix}_pump_run", "offset": 0, "min": 0, "max": 1, "decimals": 0, "required": true},
+        {"role": "fault", "label": "Fault", "kind": "fault", "key": "{prefix}_pump_fault", "offset": 2, "min": 0, "max": 1, "decimals": 0, "alarm": {"crit": 1}},
+        {"role": "cmd", "label": "Start / stop", "kind": "command", "key": "{prefix}_pump_cmd", "offset": 4, "min": 0, "max": 1, "decimals": 0, "write": {"writable": true, "min": 0, "max": 1}, "fallback": "run"},
+        {"role": "dose", "label": "Dose", "kind": "analog", "key": "{prefix}_dose", "offset": 6, "unit": "mg/L", "decimals": 2},
+        {"role": "dose_sp", "label": "Dose setpoint", "kind": "setpoint", "key": "{prefix}_dose_sp", "offset": 8, "unit": "mg/L", "decimals": 2, "write": {"writable": true}}
+      ],
+      "bindings": {"primary": "run", "fault": "fault"},
+      "symbol_config": {"showStatus": true, "writable": true}
+    },
+    {
+      "id": "filter", "name": "Filter", "category": "Separation",
+      "description": "Gravity or pressure filter: headloss, effluent turbidity and backwash state.",
+      "symbol": "isa_filter", "faceplate": "filter",
+      "tags": [
+        {"role": "headloss", "label": "Headloss", "kind": "analog", "key": "{prefix}_headloss", "offset": 0, "unit": "m", "decimals": 2, "required": true},
+        {"role": "turbidity", "label": "Effluent turbidity", "kind": "analog", "key": "{prefix}_turbidity", "offset": 2, "unit": "NTU", "decimals": 2},
+        {"role": "backwash", "label": "Backwash", "kind": "state", "key": "{prefix}_backwash", "offset": 4, "min": 0, "max": 1, "decimals": 0}
+      ],
+      "bindings": {"primary": "headloss", "run": "backwash"},
+      "symbol_config": {"showValue": true}
+    }
+  ]
+}

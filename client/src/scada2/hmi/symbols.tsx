@@ -1,16 +1,20 @@
 import React from 'react'
 import type { ConfigFieldDef } from '../widgets/types'
-import { ISA101_SYMBOLS } from './isa101'
+import { DATA_SYMBOLS } from './dataSymbols'
+import { ISA_CATEGORIES } from './symbolFile'
+import type { EquipState } from './symbolStyle'
+import type { SymbolLibrary } from './symbolPalette'
 
 // ISA-101 style equipment symbols. Bodies are neutral grey; colour is
 // reserved for state (running / fault / stale) so abnormal conditions stand out.
 
-export type EquipState = 'idle' | 'running' | 'stopped' | 'fault' | 'stale'
+export type { EquipState }
 
 /** How the primary tag drives the symbol. */
 export type SymbolBinding = 'state' | 'level' | 'value' | 'none'
 
-export type SymbolCategory = 'ISA-101' | 'Rotating' | 'Valves' | 'Vessels' | 'Process' | 'Electrical' | 'Instruments' | 'Piping'
+/** Palette category: the ISA-101 data library's (symbolFile.ts ISA_CATEGORIES) or the shaded library's. */
+export type SymbolCategory = string
 
 export type PortSide = 'left' | 'right' | 'top' | 'bottom'
 
@@ -25,12 +29,24 @@ export interface SymbolRenderProps {
   /** State of the secondary run tag (agitator, pipe flow). */
   runState: EquipState
   config: Record<string, any>
+  /** Manual mode tag on (ISA-101: an "M" box beside the symbol). */
+  manual?: boolean
+  /** Interlock tag on (an "I" box). */
+  interlocked?: boolean
+  /** Alarm priority of the primary tag (1 = crit, 2 = warn), shown as a coloured, shaped badge. */
+  alarmPriority?: 1 | 2 | 3 | null
 }
 
 export interface SymbolDef {
   key: string
   name: string
   category: SymbolCategory
+  /** `isa`: the flat ISA-101 data library (symbols/*.json); default `shaded`. */
+  library?: SymbolLibrary
+  /** Extra words the palette search matches. */
+  keywords?: string[]
+  /** False: kept for saved screens, not offered in the palette. */
+  palette?: boolean
   viewBox: [number, number]
   size: [number, number]
   binding: SymbolBinding
@@ -747,9 +763,10 @@ export const SYMBOLS: SymbolDef[] = [
   breaker, transformer, generator, solar, battery, inverter, meter, busbar,
   instrument, flowMeter,
   pipe, pipeVertical, pipeElbow, pipeTee,
-  ...ISA101_SYMBOLS,
+  ...DATA_SYMBOLS,
 ]
 
 export const SYMBOL_MAP: Record<string, SymbolDef> = Object.fromEntries(SYMBOLS.map(s => [s.key, s]))
 
-export const SYMBOL_CATEGORIES: SymbolCategory[] = ['ISA-101', 'Rotating', 'Valves', 'Vessels', 'Process', 'Electrical', 'Instruments', 'Piping']
+/** Every category, ISA-101 first (the shaded library reuses some names: Valves, Vessels, Instruments, Piping). */
+export const SYMBOL_CATEGORIES: SymbolCategory[] = [...new Set([...ISA_CATEGORIES, 'Rotating', 'Valves', 'Vessels', 'Process', 'Electrical', 'Instruments', 'Piping'])]

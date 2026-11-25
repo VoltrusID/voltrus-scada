@@ -747,6 +747,51 @@
       ],
       "type": "object"
     },
+    "equipment_instances": {
+      "additionalProperties": false,
+      "properties": {
+        "base": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "device": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "overrides": {},
+        "prefix": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "symbol": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type",
+        "device"
+      ],
+      "type": "object"
+    },
     "equipment_templates": {
       "additionalProperties": false,
       "properties": {
@@ -772,6 +817,48 @@
       },
       "required": [
         "name"
+      ],
+      "type": "object"
+    },
+    "equipment_types": {
+      "additionalProperties": false,
+      "properties": {
+        "bindings": {},
+        "category": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "faceplate": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "flows": {},
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "symbol": {
+          "type": "string"
+        },
+        "symbol_config": {},
+        "tags": {}
+      },
+      "required": [
+        "id",
+        "name",
+        "symbol"
       ],
       "type": "object"
     },
@@ -2120,9 +2207,21 @@
       },
       "type": "array"
     },
+    "equipment_instances": {
+      "items": {
+        "$ref": "#/$defs/equipment_instances"
+      },
+      "type": "array"
+    },
     "equipment_templates": {
       "items": {
         "$ref": "#/$defs/equipment_templates"
+      },
+      "type": "array"
+    },
+    "equipment_types": {
+      "items": {
+        "$ref": "#/$defs/equipment_types"
       },
       "type": "array"
     },

@@ -25,6 +25,8 @@ pub struct Known {
     pub templates: HashSet<String>,
     /// Stored faceplate definitions by id.
     pub faceplates: HashSet<String>,
+    /// Stored equipment types by id.
+    pub equipment_types: HashSet<String>,
 }
 
 fn template_keys(rows: &[Mapping]) -> HashSet<String> {
@@ -69,9 +71,17 @@ impl Known {
                 .iter()
                 .map(|e| get_str(e, "name"))
                 .collect(),
-            devices: collect_devices(&rows),
+            // Tags name devices too (S7 and EtherNet/IP tags by their cache device).
+            devices: collect_devices(&rows)
+                .into_iter()
+                .chain(rows("tags").iter().map(|e| get_str(e, "device")))
+                .collect(),
             templates: template_keys(&rows(super::templates::SECTION)),
             faceplates: rows("faceplates")
+                .iter()
+                .map(|e| get_str(e, "id"))
+                .collect(),
+            equipment_types: rows(super::equipment::TYPES)
                 .iter()
                 .map(|e| get_str(e, "id"))
                 .collect(),
@@ -88,7 +98,8 @@ struct Ctx<'a> {
     tag_keys: HashSet<String>,
     templates: HashSet<String>,
     faceplates: HashSet<String>,
-    _doc: &'a ProjectDoc,
+    equipment_types: HashSet<String>,
+    doc: &'a ProjectDoc,
 }
 
 impl Ctx<'_> {
@@ -167,7 +178,12 @@ pub fn validate_doc(doc: &ProjectDoc, known: Option<&Known>, check_env: bool) ->
             .iter()
             .map(|e| get_str(e, "id"))
             .collect(),
-        _doc: doc,
+        equipment_types: doc
+            .entities(super::equipment::TYPES)
+            .iter()
+            .map(|e| get_str(e, "id"))
+            .collect(),
+        doc,
     };
     for t in crate::device_templates::builtin::builtins() {
         ctx.templates
@@ -181,7 +197,17 @@ pub fn validate_doc(doc: &ProjectDoc, known: Option<&Known>, check_env: bool) ->
         ctx.devices.extend(k.devices.iter().cloned());
         ctx.templates.extend(k.templates.iter().cloned());
         ctx.faceplates.extend(k.faceplates.iter().cloned());
+        ctx.equipment_types
+            .extend(k.equipment_types.iter().cloned());
     }
+    // Tags name devices too (S7 and EtherNet/IP tags by their cache device).
+    let tag_devices: Vec<String> = ctx
+        .doc
+        .entities("tags")
+        .iter()
+        .map(|e| get_str(e, "device"))
+        .collect();
+    ctx.devices.extend(tag_devices);
 
     for sec in spec::SECTIONS {
         let entities = doc.entities(sec.name);
@@ -308,6 +334,48 @@ fn check_plain(ctx: &mut Ctx<'_>, sec: &Section, e: &Mapping, at: &str) {
                 ctx.error(at.to_string(), message);
             }
         }
+        super::equipment::TYPES => match super::equipment::parse_type(e) {
+            Ok(t) => {
+                for p in t.problems() {
+                    ctx.error(at.to_string(), p);
+                }
+                if let Some(fp) = &t.faceplate
+                    && !ctx.faceplates.contains(fp)
+                {
+                    ctx.error(
+                        format!("{at}.faceplate"),
+                        format!("unknown faceplate '{fp}'"),
+                    );
+                }
+            }
+            Err(err) => ctx.error(at.to_string(), format!("{err:#}")),
+        },
+        super::equipment::INSTANCES => match super::equipment::parse_instance(e) {
+            Ok(i) => {
+                let t = ctx
+                    .doc
+                    .entities(super::equipment::TYPES)
+                    .iter()
+                    .filter_map(|e| super::equipment::parse_type(e).ok())
+                    .find(|t| t.id == i.type_id);
+                if t.is_none() && !ctx.equipment_types.contains(&i.type_id) {
+                    ctx.error(
+                        format!("{at}.type"),
+                        format!("unknown equipment type '{}'", i.type_id),
+                    );
+                }
+                for p in i.problems(t.as_ref()) {
+                    ctx.error(at.to_string(), p);
+                }
+                if !ctx.devices.contains(&i.device) {
+                    ctx.error(
+                        format!("{at}.device"),
+                        format!("unknown device '{}'", i.device),
+                    );
+                }
+            }
+            Err(err) => ctx.error(at.to_string(), format!("{err:#}")),
+        },
         _ => {}
     }
 }
@@ -458,13 +526,15 @@ fn check_screen(ctx: &mut Ctx<'_>, e: &Mapping, at: &str) {
                 }
             }
         }
-        if let Some(Value::String(r)) = config.and_then(|c| c.get(export::RUN_TAG))
-            && !ctx.tag_refs.contains(r)
-        {
-            ctx.error(
-                format!("{at}.scada.equipment[{i}].config.{}", export::RUN_TAG),
-                format!("unknown tag '{r}'"),
-            );
+        for key in export::TAG_KEYS {
+            if let Some(Value::String(r)) = config.and_then(|c| c.get(*key))
+                && !ctx.tag_refs.contains(r)
+            {
+                ctx.error(
+                    format!("{at}.scada.equipment[{i}].config.{key}"),
+                    format!("unknown tag '{r}'"),
+                );
+            }
         }
         if let Some(json) = config.and_then(|c| serde_json::to_value(c).ok()) {
             for (prop, refs) in super::binding_refs::config_binding_refs(&json) {

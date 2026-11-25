@@ -60,7 +60,9 @@ next server restart.
 | `reports` | scheduled report | `name` |
 | `cameras` | camera (with its snapshot retention) | `name` |
 | `hub_sites` | hub site | `name` |
-| `equipment_templates` | equipment template | `name` |
+| `equipment_templates` | equipment template (AI copilot) | `name` |
+| `equipment_types` | equipment type: tag roles, limits and alarms, faceplate, mimic symbol, bindings, flow templates ([equipment-types.md](equipment-types.md)) | `id` |
+| `equipment_instances` | one piece of equipment of a type, expanded at plan time (below) | `name` |
 | `shifts` | shift definition | `name` |
 | `custom_metrics` | custom analytics metric | `name` |
 | `assets` | asset inventory entry | `id` |
@@ -171,6 +173,78 @@ screens:
 `fault`, `analog`, `command` or `setpoint`. Validation reports a symbol that names
 a faceplate the project does not define (or, in merge mode, the database does not
 hold) and a `faceplateMap` entry that names an unknown tag.
+
+### Equipment types and instances
+
+An equipment type says once what one piece of equipment is; an instance is one
+line ([equipment-types.md](equipment-types.md)).
+
+```yaml
+equipment_types:
+- id: pump
+  name: Pump
+  symbol: isa_pump_centrifugal
+  faceplate: pump
+  tags:
+  - {role: run, kind: state, key: '{prefix}_run', offset: 0, required: true, min: 0.0, max: 1.0, decimals: 0}
+  - {role: fault, kind: fault, key: '{prefix}_fault', offset: 2, alarm: {crit: 1.0}}
+  - {role: cmd, kind: command, key: '{prefix}_cmd', offset: 4, fallback: run, write: {writable: true}}
+  bindings: {primary: run, fault: fault}
+  symbol_config: {showStatus: true, writable: true}
+equipment_instances:
+- {name: P-101A, type: pump, device: wtp}                 # binds wtp/p101a_run, ...
+- {name: P-201, type: pump, device: skid, base: 100}       # creates registers 100, 102, 104 and their tags
+- {name: P-501A, type: pump, device: wtp, prefix: p301a, overrides: {fault: {skip: true}}}
+screens:
+- id: overview
+  name: Overview
+  scada:
+    equipment:
+    - {equipment_id: p101a, equipment_type: symbol, x: 176, y: 170, width: 90, height: 124, config: {equipment: P-101A}}
+```
+
+`tags`, `bindings`, `symbol_config`, `flows` (of a type) and `overrides` (of an
+instance) are checked as the REST routes check them and stored in canonical form,
+so a hand-written entity and its export compare equal.
+
+**Expansion at plan time.** Before an import is validated and diffed, every
+instance in the file is turned into what it implies, and those entities take part
+in the plan like any other:
+
+* the tag of every role: a tag the file lists is used as written; a stored tag the
+  file leaves out (merge) gets the attributes the type and the instance's
+  override set (the plan shows it as an update naming the fields); a missing tag
+  is created when its register exists or the instance has a `base`;
+* registers at `base + offset` on the instance's Modbus device, added to the
+  device entity (taken from the database when the file leaves the device out);
+* the type's flows as `<prefix>-<id>`, unless the file lists that flow;
+* every SCADA widget whose `config.equipment` names the instance (in the file's
+  screens and, on merge, the stored ones): `sensors`, `config.symbol`,
+  `faceplate`, `faceplateMap`, `faultSensorId`, `runSensorId`,
+  `manualSensorId`, `interlockSensorId` and the type's `symbol_config` are set;
+  a label the widget has is kept.
+
+On merge, a file that changes a type but leaves its instances out expands the
+stored instances of that type too: that is how a changed type reaches every
+instance. The plan's `expanded` list (and the text output's `= expand` lines)
+says per instance which tags it creates (`+`), updates (`~`, with the fields) or
+binds (`=`), the registers, flows and widgets:
+
+```
+= expand P-201 (pump): +tag skid/p201_run, +tag skid/p201_fault, +tag skid/p201_cmd, +register skid/p201_run@100, +register skid/p201_fault@102, +register skid/p201_cmd@104, 1 widget(s)
++ create tags: skid/p201_run
+...
+```
+
+Errors stop the import and name the instance: an unknown type, device, symbol or
+faceplate, an override or binding naming a role the type does not have, two
+instances giving the same tag, a required role with no tag (no tag of that key and
+no `base` to create it), a `base` on a device that is not Modbus or follows a
+device template, and duplicate instance names. A widget naming an instance that
+does not exist is a warning; it keeps its bindings.
+
+`faultSensorId`, `manualSensorId` and `interlockSensorId` are written by ref,
+like `runSensorId`.
 
 ## Natural keys and references
 
