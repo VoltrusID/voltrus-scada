@@ -87,7 +87,11 @@ async fn scada_screen_made_over_rest_saves_back_identically() {
         {"equipment_id": "w_pt", "equipment_type": "big_number", "equipment_name": "Outlet",
          "x": 300, "y": 80, "width": 140, "height": 70, "rotation": 0,
          "sensor_bindings": format!("[{}]", tags[2]),
-         "config": json!({"decimals": 2, "z": 1}).to_string()}
+         "config": json!({"decimals": 2, "z": 1, "bindings": {
+            "label": {"kind": "expr", "expr": "\"Out \" + text({plc_1/outlet_pressure}, 1)"},
+            "visible": {"kind": "tag", "tag": "plc_1/p301a_run"},
+            "color": {"kind": "map", "expr": "{plc_1/p301a_run}", "cases": [{"op": ">=", "v": 1, "out": "#22c55e"}], "else": "#8b939e"}
+         }}).to_string()}
     ]});
     let connections = json!({"items": [
         {"connection_id": "c1", "from_equipment": "w_pump", "to_equipment": "w_pt",
@@ -173,6 +177,15 @@ async fn scada_screen_made_over_rest_saves_back_identically() {
     assert!(
         text.contains("run: plc_1/p301a_run"),
         "faceplate tags are written by ref: {text}"
+    );
+    assert!(
+        text.contains("plc_1/outlet_pressure"),
+        "property bindings are exported by ref: {text}"
+    );
+    assert!(
+        !doc.warnings.iter().any(|w| w.contains("binding")),
+        "no binding warnings for known refs: {:?}",
+        doc.warnings
     );
     let reparsed = crate::project_yaml::parse_project_yaml(&text).unwrap();
     crate::project_yaml::apply_import(&storage, &reparsed, crate::project_yaml::Mode::Replace)

@@ -885,6 +885,10 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/screens/{id}/scada-connections",
             get(layouts::get_scada_connections),
         )
+        .route(
+            "/api/v1/screens/{id}/scada-layout",
+            get(layouts::get_scada_layout),
+        )
         .route("/api/v1/data-sources", get(data_sources::list_data_sources))
         .route(
             "/api/v1/data-sources/{id}/alarm-suggestion",
@@ -1379,6 +1383,10 @@ pub fn create_router(state: AppState) -> Router {
             .route(
                 "/api/v1/screens/{id}/scada-connections",
                 put(layouts::save_scada_connections),
+            )
+            .route(
+                "/api/v1/screens/{id}/scada-layout",
+                put(layouts::save_scada_layout),
             )
             .route(
                 "/api/v1/data-sources",

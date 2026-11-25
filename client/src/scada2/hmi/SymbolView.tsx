@@ -144,7 +144,7 @@ const STATUS_TEXT: Record<EquipState, string> = {
 
 /** Words for on/off that fit the equipment: valves open, breakers close, rotating kit runs. */
 export function stateText(def: SymbolDef, state: EquipState): string {
-  if (def.category === 'Valves') return state === 'running' ? 'OPEN' : state === 'stopped' ? 'CLOSED' : STATUS_TEXT[state]
+  if (def.category === 'Valves' || def.key.includes('valve')) return state === 'running' ? 'OPEN' : state === 'stopped' ? 'CLOSED' : STATUS_TEXT[state]
   if (def.key === 'breaker') return state === 'running' ? 'CLOSED' : state === 'stopped' ? 'OPEN' : STATUS_TEXT[state]
   return STATUS_TEXT[state]
 }

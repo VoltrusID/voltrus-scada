@@ -35,6 +35,7 @@ mod poll_interval;
 mod project;
 mod protocol_routes;
 mod roles;
+mod scada_layout;
 mod scan_network;
 mod screen_round_trip;
 mod scripts;

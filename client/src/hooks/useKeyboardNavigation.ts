@@ -4,7 +4,7 @@ import type { SensorConfig } from '../types'
 
 export function useKeyboardNavigation({
   shortcuts, sensors, screens, navShortcuts, effectiveNavShortcuts,
-  setSelectedSensor, setActiveScreen, setViewMode, setMode, setShowAlarmPanel, mode,
+  setSelectedSensor, setActiveScreen, setViewMode, setMode, setShowAlarmPanel, mode, enabled = true,
 }: {
   shortcuts: Record<number, string>
   sensors: SensorConfig[]
@@ -17,6 +17,8 @@ export function useKeyboardNavigation({
   setMode: (mode: 'live' | 'history' | 'system' | 'flows' | 'tags' | 'assets' | 'scripts') => void
   setShowAlarmPanel: (v: boolean | ((prev: boolean) => boolean)) => void
   mode: 'live' | 'history' | 'system' | 'flows' | 'tags' | 'assets' | 'scripts'
+  /** Off while a full-screen editor with its own shortcuts (the Designer) is open: Mod+0, Mod+2... are its keys there. */
+  enabled?: boolean
 }) {
   const shortcutToSensorId = useMemo(() => {
     const map = new Map<string, number>();
@@ -29,6 +31,7 @@ export function useKeyboardNavigation({
   }, [shortcuts, sensors]);
 
   useEffect(() => {
+    if (!enabled) return
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
       if (!el) return;
@@ -69,5 +72,5 @@ export function useKeyboardNavigation({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [shortcutToSensorId, effectiveNavShortcuts, mode, setSelectedSensor, setActiveScreen, setViewMode, setMode, setShowAlarmPanel]);
+  }, [enabled, shortcutToSensorId, effectiveNavShortcuts, mode, setSelectedSensor, setActiveScreen, setViewMode, setMode, setShowAlarmPanel]);
 }

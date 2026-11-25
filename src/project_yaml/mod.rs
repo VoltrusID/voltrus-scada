@@ -16,6 +16,7 @@
 //! * [`read_project`] / [`write_project`] for the file and directory forms
 //! * [`validate_doc`] for offline checks
 
+pub mod binding_refs;
 pub mod export;
 pub mod import;
 pub mod io;

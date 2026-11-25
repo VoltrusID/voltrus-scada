@@ -380,9 +380,20 @@ impl Storage {
                     .optional()?,
                 None => None,
             };
+            // A new key or device changes the tag's project ref: bindings name tags by ref.
+            let renames = obj.contains_key("key") || obj.contains_key("device_id");
+            let refs_before = if renames {
+                crate::project_yaml::export::tag_refs(&tx)?
+            } else {
+                Vec::new()
+            };
             let changed = tx
                 .execute(&sql, param_refs.as_slice())
                 .context("Update data source failed")?;
+            if renames {
+                crate::project_yaml::binding_refs::rewrite_after_rename(&tx, &refs_before)
+                    .context("Rewrite binding refs failed")?;
+            }
             // A renamed tag keeps its active limit alarms (alarms are keyed by
             // tag key): without this they would clear as `tag_deleted` and be
             // raised again under the new key. Only when no other tag still has

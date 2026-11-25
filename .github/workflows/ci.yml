@@ -101,6 +101,13 @@ jobs:
       - name: Serve the embedded UI from an empty directory
         run: scripts/smoke-embedded-ui.sh target/release/voltrus
 
+      # The Voltrus Designer in a real browser against this binary and the WTP
+      # showcase (plant simulator + seeded screens): drag-to-bind, bindings,
+      # undo/redo, align/group, save and reload, preview.
+      - name: Designer browser smoke (headless Chrome)
+        timeout-minutes: 10
+        run: scripts/smoke-designer.sh target/release/voltrus
+
   # The container image (Dockerfile): built and started, never pushed.
   docker:
     name: Docker image (build and start)

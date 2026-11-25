@@ -458,6 +458,33 @@ fn check_screen(ctx: &mut Ctx<'_>, e: &Mapping, at: &str) {
                 }
             }
         }
+        if let Some(Value::String(r)) = config.and_then(|c| c.get(export::RUN_TAG))
+            && !ctx.tag_refs.contains(r)
+        {
+            ctx.error(
+                format!("{at}.scada.equipment[{i}].config.{}", export::RUN_TAG),
+                format!("unknown tag '{r}'"),
+            );
+        }
+        if let Some(json) = config.and_then(|c| serde_json::to_value(c).ok()) {
+            for (prop, refs) in super::binding_refs::config_binding_refs(&json) {
+                let path = if prop.is_empty() {
+                    format!("{at}.scada.equipment[{i}].config.bindings")
+                } else {
+                    format!("{at}.scada.equipment[{i}].config.bindings.{prop}")
+                };
+                match refs {
+                    Ok(refs) => {
+                        for r in refs {
+                            if !ctx.tag_refs.contains(&r) {
+                                ctx.error(path.clone(), format!("unknown tag '{r}'"));
+                            }
+                        }
+                    }
+                    Err(e) => ctx.error(path, e),
+                }
+            }
+        }
     }
     duplicates(
         ctx,
