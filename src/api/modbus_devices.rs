@@ -33,6 +33,7 @@ pub async fn list_modbus_devices(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, AppError> {
     let devices = state.storage.list_modbus_devices().await?;
+    let links = state.storage.modbus_template_links().await?;
     let mut result = Vec::new();
     for device in &devices {
         let registers = state.storage.list_modbus_registers(&device.id).await?;
@@ -48,6 +49,7 @@ pub async fn list_modbus_devices(
             "created_at": device.created_at,
             "updated_at": device.updated_at,
             "register_count": registers.len(),
+            "template": links.get(&device.id),
         }));
     }
     Ok(Json(result))
@@ -72,9 +74,11 @@ pub async fn get_modbus_device(
     let device = state.storage.get_modbus_device(&id).await?;
     let device = device.context("Device not found")?;
     let registers = state.storage.list_modbus_registers(&id).await?;
+    let template = state.storage.modbus_template_link(&id).await?;
     Ok(Json(json!({
         "device": device,
         "registers": registers,
+        "template": template,
     })))
 }
 
@@ -95,6 +99,7 @@ pub async fn create_modbus_device(
     Extension(auth): Extension<AuthUser>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::strict::check_modbus_device(&body)?;
     let id = body["id"].as_str().unwrap_or("").to_string();
     let name = body["name"].as_str().unwrap_or("").to_string();
     let ip = body["ip"].as_str().unwrap_or("").to_string();
@@ -182,6 +187,7 @@ pub async fn update_modbus_device(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::strict::check_modbus_device(&body)?;
     match body.get("interval_ms") {
         None | Some(serde_json::Value::Null) => {}
         Some(v) => super::check_poll_interval(
@@ -190,16 +196,23 @@ pub async fn update_modbus_device(
         )?,
     }
 
+    // `registers` absent or null leaves them alone; a linked device accepts
+    // only its current registers (an editor sending the whole device back).
+    let registers = match body.get("registers") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(_) => {
+            Some(ModbusRegisterInput::parse_all(&body).map_err(|e| AppError(anyhow::anyhow!(e)))?)
+        }
+    };
+    let write_registers = match &registers {
+        Some(regs) => super::template_links::registers_to_write(&state, &id, regs).await?,
+        None => false,
+    };
     state.storage.update_modbus_device(&id, &body).await?;
-
-    // If registers array is present, replace registers too
-    if body.get("registers").and_then(|v| v.as_array()).is_some() {
-        let registers =
-            ModbusRegisterInput::parse_all(&body).map_err(|e| AppError(anyhow::anyhow!(e)))?;
-
+    if let (true, Some(registers)) = (write_registers, &registers) {
         state
             .storage
-            .replace_modbus_registers(&id, &registers)
+            .replace_modbus_registers(&id, registers)
             .await?;
     }
 
@@ -272,8 +285,12 @@ pub async fn replace_registers(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    super::strict::check_items(&body, "registers", &super::strict::MODBUS_REGISTER)?;
     let registers =
         ModbusRegisterInput::parse_all(&body).map_err(|e| AppError(anyhow::anyhow!(e)))?;
+    if !super::template_links::registers_to_write(&state, &id, &registers).await? {
+        return Ok(Json(json!({"ok": true})));
+    }
 
     state
         .storage

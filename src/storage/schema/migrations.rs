@@ -529,6 +529,35 @@ pub(super) fn run_migrations(conn: &Connection) {
     // Migration: the tag's value when a write was queued, on the command's
     // first audit entry (audit trail of setpoint changes: old and new value).
     let _ = conn.execute_batch("ALTER TABLE command_audit_log ADD COLUMN previous_value REAL");
+    // Which front end queued a command (session, api_key, mcp, flow, recipe);
+    // NULL on commands written before, which are classified by `created_by`.
+    let _ = conn.execute_batch("ALTER TABLE commands ADD COLUMN origin TEXT");
+    // Faceplate definitions: one popup for an equipment kind, opened from any
+    // number of SCADA symbols, each with its own tag per role.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS faceplates (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'analog',
+            description TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS faceplate_roles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            faceplate_id TEXT NOT NULL REFERENCES faceplates(id) ON DELETE CASCADE,
+            role TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL,
+            required INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_faceplate_roles_faceplate ON faceplate_roles(faceplate_id);",
+    );
+    // A Modbus device that follows a device template instead of a copy of it.
+    for col in ["template_id", "template_version", "template_source"] {
+        let _ = conn.execute_batch(&format!("ALTER TABLE modbus_devices ADD COLUMN {col} TEXT"));
+    }
 
     // Migration: session limits (idle and absolute timeout). A refresh token
     // carries when its session started and when the user was last active;

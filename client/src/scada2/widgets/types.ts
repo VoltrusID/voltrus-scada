@@ -56,6 +56,8 @@ export interface WidgetInstance {
   width: number
   height: number
   config: Record<string, any>
+  /** The saved equipment name, when the row had one (API, MCP or project file). */
+  name?: string
 }
 
 // ── Connection instance ──

@@ -588,11 +588,58 @@ impl Storage {
                         trigger_count: row.get(2)?,
                         avg_time_to_ack_secs: row.get(3)?,
                         last_triggered_at: row.get(4)?,
+                        max_per_hour: 0,
+                        chattering: false,
                     })
                 })
                 .context("Query analytics failed")?;
-            rows.collect::<Result<Vec<_>, _>>()
-                .context("Row mapping failed")
+            let mut entries = rows
+                .collect::<Result<Vec<_>, _>>()
+                .context("Row mapping failed")?;
+            // Raised alarms per clock hour, per tag, in the same range.
+            let mut hourly = String::from(
+                "SELECT source_key, triggered_at / 3600 AS h, COUNT(*) FROM alarms WHERE 1=1",
+            );
+            if from.is_some() {
+                hourly.push_str(" AND triggered_at >= ?");
+            }
+            if to.is_some() {
+                hourly.push_str(" AND triggered_at <= ?");
+            }
+            hourly.push_str(" GROUP BY source_key, h");
+            let mut stmt = conn.prepare(&hourly).context("Prepare chatter query failed")?;
+            let mut max = std::collections::HashMap::<String, i64>::new();
+            let rows = stmt
+                .query_map(param_refs.as_slice(), |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(2)?))
+                })
+                .context("Query chatter failed")?;
+            for row in rows {
+                let (key, n) = row.context("Row mapping failed")?;
+                let m = max.entry(key).or_default();
+                *m = (*m).max(n);
+            }
+            for e in &mut entries {
+                e.max_per_hour = max.get(&e.source_key).copied().unwrap_or(0);
+                e.chattering = e.max_per_hour >= crate::alarm_chatter::CHATTER_PER_HOUR;
+            }
+            Ok(entries)
+        })
+        .await
+        .context("Task join failed")?
+    }
+
+    /// Trigger times (unix seconds) of a tag's alarms since `since`, oldest first.
+    pub async fn alarm_trigger_times(&self, source_key: &str, since: i64) -> Result<Vec<i64>> {
+        let conn = self.conn.clone();
+        let key = source_key.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            let mut stmt = conn.prepare(
+                "SELECT triggered_at FROM alarms WHERE source_key = ?1 AND triggered_at >= ?2 ORDER BY triggered_at",
+            )?;
+            let rows = stmt.query_map(rusqlite::params![key, since], |r| r.get::<_, i64>(0))?;
+            rows.collect::<Result<Vec<_>, _>>().context("Row mapping failed")
         })
         .await
         .context("Task join failed")?

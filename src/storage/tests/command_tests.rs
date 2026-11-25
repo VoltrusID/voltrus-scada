@@ -27,6 +27,8 @@ async fn test_command_crud_lifecycle() {
         readback_attempts: 0,
         device_ref: String::new(),
         readback_ts: None,
+        origin: None,
+        source: None,
     };
     storage.insert_command(&cmd).await.unwrap();
 
@@ -104,6 +106,8 @@ async fn test_command_audit_trail() {
         readback_attempts: 0,
         device_ref: String::new(),
         readback_ts: None,
+        origin: None,
+        source: None,
     };
     storage.insert_command(&cmd).await.unwrap();
 
@@ -158,6 +162,8 @@ async fn test_count_recent_writes() {
             readback_attempts: 0,
             device_ref: String::new(),
             readback_ts: None,
+            origin: None,
+            source: None,
         };
         storage.insert_command(&cmd).await.unwrap();
     }
@@ -199,6 +205,8 @@ async fn test_list_commands_with_filters() {
             readback_attempts: 0,
             device_ref: String::new(),
             readback_ts: None,
+            origin: None,
+            source: None,
         };
         storage.insert_command(&cmd).await.unwrap();
     }
@@ -225,6 +233,8 @@ async fn test_list_commands_with_filters() {
         readback_attempts: 0,
         device_ref: String::new(),
         readback_ts: None,
+        origin: None,
+        source: None,
     };
     storage.insert_command(&failed_cmd).await.unwrap();
 
@@ -273,6 +283,8 @@ async fn test_get_queued_commands() {
         readback_attempts: 0,
         device_ref: String::new(),
         readback_ts: None,
+        origin: None,
+        source: None,
     };
     storage.insert_command(&cmd).await.unwrap();
 
@@ -299,9 +311,81 @@ async fn test_get_queued_commands() {
         readback_attempts: 0,
         device_ref: String::new(),
         readback_ts: None,
+        origin: None,
+        source: None,
     };
     storage.insert_command(&cmd2).await.unwrap();
 
     let queued = storage.get_queued_commands().await.unwrap();
     assert_eq!(queued.len(), 2);
+}
+
+/// Commands carry who sent them: the API key's name, the flow, MCP or a user.
+#[tokio::test]
+async fn commands_name_their_sender() {
+    let storage = Storage::new_in_memory().unwrap();
+    let (key_id, _) = storage
+        .create_api_key("line-2 gateway", "admin", None, "[]", "integration")
+        .await
+        .unwrap();
+    let base = |id: &str, by: &str, origin: Option<&str>| Command {
+        id: id.to_string(),
+        data_source_id: 1,
+        device_id: 1,
+        protocol: "modbus".to_string(),
+        value: "1".to_string(),
+        status: "acked".to_string(),
+        policy: "immediate".to_string(),
+        scheduled_at: None,
+        retry_count: 0,
+        max_retries: 3,
+        error_message: None,
+        created_at: 1000,
+        sent_at: None,
+        acked_at: None,
+        resolved_at: None,
+        created_by: by.to_string(),
+        readback_status: None,
+        readback_value: None,
+        readback_attempts: 0,
+        device_ref: String::new(),
+        readback_ts: None,
+        origin: origin.map(str::to_string),
+        source: None,
+    };
+    let key_user = format!("api_key:{key_id}");
+    for cmd in [
+        base("c_user", "operator1", Some("session")),
+        base("c_key", &key_user, Some("api_key")),
+        base("c_mcp", "admin", Some("mcp")),
+        base("c_flow", "flow:f9", Some("flow")),
+        base("c_old_key", "api_key:999", None),
+    ] {
+        storage.insert_command(&cmd).await.unwrap();
+    }
+    let source = |id: &'static str| {
+        let storage = storage.clone();
+        async move {
+            let c = storage.get_command(id).await.unwrap().unwrap();
+            let s = c.source.unwrap();
+            (s.kind, s.label)
+        }
+    };
+    assert_eq!(source("c_user").await, ("user".into(), "operator1".into()));
+    assert_eq!(
+        source("c_key").await,
+        ("api_key".into(), "API key line-2 gateway".into())
+    );
+    assert_eq!(source("c_mcp").await, ("mcp".into(), "MCP (admin)".into()));
+    assert_eq!(source("c_flow").await, ("flow".into(), "flow f9".into()));
+    // Rows from before the origin column: classified by created_by.
+    assert_eq!(
+        source("c_old_key").await,
+        ("api_key".into(), "API key #999".into())
+    );
+    let listed = storage
+        .list_commands(&CommandQuery::default())
+        .await
+        .unwrap();
+    assert!(listed.iter().all(|c| c.source.is_some()));
 }

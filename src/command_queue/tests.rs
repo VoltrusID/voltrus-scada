@@ -94,6 +94,8 @@ fn command(data_source_id: i64, value: &str) -> Command {
         readback_value: None,
         readback_attempts: 0,
         readback_ts: None,
+        origin: None,
+        source: None,
     }
 }
 

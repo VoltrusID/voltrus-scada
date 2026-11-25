@@ -502,6 +502,7 @@ pub async fn write_variable(
     if let Err(e) = crate::api::commands::record_direct_write(
         &state.storage,
         &user.username,
+        crate::api::signature::origin_of(&user, api_key.is_some()),
         submission,
         checked,
         &result,

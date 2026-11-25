@@ -81,6 +81,63 @@ pub struct Command {
     pub readback_attempts: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub readback_ts: Option<String>,
+    /// The front end that queued the command: `session`, `api_key`, `mcp`,
+    /// `flow` or `recipe`. `None` on commands from before v0.53.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// Who sent the command, for display; filled when a command is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CommandSource>,
+}
+
+/// Who sent a command, as the UI shows it: what kind of sender and a label
+/// (the user name, the API key's or flow's name).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct CommandSource {
+    /// `user`, `api_key`, `mcp`, `flow`, `recipe` or `system`.
+    pub kind: String,
+    pub label: String,
+}
+
+impl CommandSource {
+    /// Classify a command from its `created_by` (`<user>`, `api_key:<id>`,
+    /// `flow:<id>`), the stored origin and the key's or flow's name.
+    pub fn of(created_by: &str, origin: Option<&str>, name: Option<&str>) -> Self {
+        let by_key = created_by.strip_prefix("api_key:");
+        let by_flow = created_by.strip_prefix("flow:");
+        let who = match (by_key, by_flow) {
+            (Some(id), _) => match name {
+                Some(n) => format!("API key {n}"),
+                None => format!("API key #{id}"),
+            },
+            (_, Some(id)) => match name {
+                Some(n) => format!("flow {n}"),
+                None => format!("flow {id}"),
+            },
+            _ if created_by.is_empty() => "system".to_string(),
+            _ => created_by.to_string(),
+        };
+        let kind = match origin {
+            Some("mcp") => "mcp",
+            Some("recipe") => "recipe",
+            Some("flow") => "flow",
+            Some("api_key") => "api_key",
+            Some("session") => "user",
+            _ if by_key.is_some() => "api_key",
+            _ if by_flow.is_some() => "flow",
+            _ if created_by.is_empty() || created_by == "system" => "system",
+            _ => "user",
+        };
+        let label = match kind {
+            "mcp" => format!("MCP ({who})"),
+            "recipe" => format!("recipe load by {who}"),
+            _ => who,
+        };
+        CommandSource {
+            kind: kind.to_string(),
+            label,
+        }
+    }
 }
 
 /// The device a data source writes to, as a queued command records it.

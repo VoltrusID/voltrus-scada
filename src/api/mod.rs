@@ -23,6 +23,7 @@ mod edr_compat;
 #[cfg(feature = "ethernet-ip")]
 mod enip_devices;
 mod excel_import;
+mod faceplates;
 mod firmware_catalog;
 pub(crate) mod flows;
 mod generators;
@@ -63,11 +64,14 @@ mod smtp_settings;
 mod snmp_scan;
 mod sse;
 pub(crate) mod stream;
+pub(crate) mod strict;
 mod system;
 mod system_docs;
 mod system_sampler;
 mod tag_tree;
 mod telemetry_delete;
+#[cfg(feature = "modbus")]
+pub(crate) mod template_links;
 pub(crate) mod ui;
 mod user_notifications;
 mod vertical_templates;
@@ -357,6 +361,10 @@ fn modbus_routes() -> Router<AppState> {
             "/api/v1/modbus-devices/{id}",
             get(modbus_devices::get_modbus_device),
         )
+        .route(
+            "/api/v1/device-templates/{id}/linked-devices",
+            get(template_links::list_linked_devices),
+        )
 }
 
 #[cfg(feature = "modbus")]
@@ -385,6 +393,14 @@ fn modbus_admin_routes() -> Router<AppState> {
         .route(
             "/api/v1/modbus-devices/{id}/restart",
             post(modbus_devices::restart_poller),
+        )
+        .route(
+            "/api/v1/modbus-devices/{id}/template",
+            put(template_links::link_device).delete(template_links::unlink_device),
+        )
+        .route(
+            "/api/v1/device-templates/{id}",
+            put(template_links::update_template),
         )
 }
 
@@ -831,6 +847,8 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/history", get(data::get_history))
         .route("/api/v1/export/csv", get(data::export_csv))
         .route("/api/v1/screens", get(screens::list_screens))
+        .route("/api/v1/faceplates", get(faceplates::list_faceplates))
+        .route("/api/v1/faceplates/{id}", get(faceplates::get_faceplate))
         .route(
             "/api/v1/screens/{id}/data-sources",
             get(screens::list_screen_sensors),
@@ -857,6 +875,10 @@ pub fn create_router(state: AppState) -> Router {
             get(layouts::get_scada_connections),
         )
         .route("/api/v1/data-sources", get(data_sources::list_data_sources))
+        .route(
+            "/api/v1/data-sources/{id}/alarm-suggestion",
+            get(data_sources::alarm_suggestion),
+        )
         .route("/api/v1/tags/tree", get(tag_tree::get_tag_tree))
         .route("/api/v1/shortcuts", get(shortcuts::get_shortcuts))
         .route("/api/v1/nav-shortcuts", get(shortcuts::get_nav_shortcuts))
@@ -1109,6 +1131,11 @@ pub fn create_router(state: AppState) -> Router {
             put(naming_convention::update_naming_convention),
         )
         .route("/api/v1/screens", post(screens::create_screen))
+        .route("/api/v1/faceplates", post(faceplates::create_faceplate))
+        .route(
+            "/api/v1/faceplates/{id}",
+            put(faceplates::update_faceplate).delete(faceplates::delete_faceplate),
+        )
         .route(
             "/api/v1/screens/{id}",
             put(screens::update_screen).delete(screens::delete_screen),

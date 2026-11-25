@@ -3,7 +3,7 @@ import type { QueryClient } from '@tanstack/react-query'
 import { queryKeys } from './keys'
 import { fetchJson, fetchOk } from './fetch'
 import { refQuery } from '../deviceTemplates'
-import type { CatalogResponse, DeviceTemplateDetail, TemplateProtocol, TemplateSummary } from '../deviceTemplates'
+import type { CatalogResponse, DeviceTemplateDetail, LinkedDevice, TemplateProtocol, TemplateSummary } from '../deviceTemplates'
 
 const BASE = '/api/v1/device-templates'
 const json = (body: unknown): RequestInit => ({
@@ -76,6 +76,24 @@ export function useImportTemplateFile() {
       return res.json() as Promise<{ ok: boolean; template_id: string; version: string; source: string }>
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.deviceTemplates }),
+  })
+}
+
+/** Save a changed template (same id and version); `dryRun` only previews the linked devices. */
+export function useUpdateDeviceTemplate() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (p: { t: { template_id: string; version: string; source: string }; body: string; dryRun: boolean }) => {
+      const q = refQuery(p.t)
+      const url = `${BASE}/${encodeURIComponent(p.t.template_id)}${q}${q ? '&' : '?'}dry_run=${p.dryRun}`
+      const res = await fetchOk(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: p.body })
+      return res.json() as Promise<{ dry_run: boolean; linked_devices: LinkedDevice[] }>
+    },
+    onSuccess: (_r, p) => {
+      if (p.dryRun) return
+      qc.invalidateQueries({ queryKey: queryKeys.deviceTemplates })
+      qc.invalidateQueries({ queryKey: queryKeys.modbusDevices })
+    },
   })
 }
 

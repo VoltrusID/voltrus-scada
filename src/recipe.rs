@@ -88,8 +88,14 @@ pub async fn load_recipe_to_plc(
             reason: Some(format!("recipe {} v{}", recipe.name, recipe.version)),
             command_id: None,
         };
-        match crate::api::commands::enqueue_checked_write(storage, cache, username, submission)
-            .await
+        match crate::api::commands::enqueue_checked_write(
+            storage,
+            cache,
+            username,
+            crate::edition::ActionOrigin::Recipe,
+            submission,
+        )
+        .await
         {
             Ok(cmd) => {
                 tracing::info!(

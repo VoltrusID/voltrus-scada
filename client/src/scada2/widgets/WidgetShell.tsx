@@ -4,6 +4,7 @@ import type { SensorConfig, SensorData } from '../../types'
 import type { WidgetInstance } from './types'
 import { getWidgetComponent } from './registry'
 import { ScreenWidgetView } from '../../components/ScreenWidgetView'
+import { framesWidget, valueStyle } from '../../valueStyle'
 
 interface WidgetShellProps {
   instance: WidgetInstance
@@ -23,6 +24,9 @@ interface WidgetShellProps {
   /** In run mode, activating the widget does something (opens its faceplate): make it a keyboard button. */
   activatable?: boolean
 }
+
+// Widgets that show no value of their own get no alarm or quality frame.
+const UNFRAMED = new Set(['area', 'label', 'pipe'])
 
 // SVG symbols draw strokes right at their edge, so they must not be clipped.
 const UNCLIPPED = new Set(['area', 'symbol', 'pump', 'motor', 'valve', 'tank_level', 'horizontal_tank', 'pipe'])
@@ -66,8 +70,13 @@ export default function WidgetShell({
   // Types core does not know are add-on widgets (or ones this build lacks, drawn as a placeholder).
   const WidgetComponent = getWidgetComponent(instance.type)
 
+  // Every bound value shows its alarm state and quality the same way, with no
+  // widget setting: a frame in the state colour and a marker (valueStyle.ts).
+  const vs = sensor && !UNFRAMED.has(instance.type) ? valueStyle(data) : null
+  const framed = !editMode && vs && framesWidget(vs) ? vs : null
+
   // At runtime `selected` marks the equipment whose faceplate is open.
-  const outline = !editMode ? (selected ? '1.5px solid var(--cyan)' : 'none')
+  const outline = !editMode ? (selected ? '1.5px solid var(--cyan)' : framed ? `2px ${framed.state === 'uncertain' || framed.state === 'offline' ? 'dashed' : 'solid'} ${framed.color}` : 'none')
     : selected ? '1.5px solid var(--cyan)'
     : hover ? '1px dashed color-mix(in srgb, var(--cyan) 60%, transparent)'
     : '1px dashed transparent'
@@ -97,7 +106,7 @@ export default function WidgetShell({
         {...(!editMode && activatable ? {
           role: 'button',
           tabIndex: 0,
-          'aria-label': `${sensor?.name ?? instance.type}: open faceplate`,
+          'aria-label': `${sensor?.name ?? instance.type}: open faceplate or trend`,
           'aria-pressed': selected,
           onKeyDown: (e: React.KeyboardEvent) => {
             if (e.target !== e.currentTarget || (e.key !== 'Enter' && e.key !== ' ')) return
@@ -107,7 +116,9 @@ export default function WidgetShell({
         } : {})}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
+        title={framed ? `${sensor?.name ?? ''}: ${framed.title || framed.label}` : undefined}
         style={{
+          position: 'relative',
           width: '100%', height: '100%', display: 'flex', flexDirection: 'column',
           outline, outlineOffset: 2,
           cursor: editMode ? 'move' : 'default',
@@ -115,6 +126,13 @@ export default function WidgetShell({
           borderRadius: instance.type === 'data_table' ? 6 : 0,
         }}
       >
+        {framed && framed.marker && (
+          <span aria-label={framed.label} role="img" style={{
+            position: 'absolute', top: -7, right: -7, zIndex: 3, minWidth: 14, height: 14, padding: '0 3px', borderRadius: 7,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, lineHeight: 1,
+            background: 'var(--card)', color: framed.color, border: `1.5px solid ${framed.color}`, pointerEvents: 'none',
+          }}>{framed.marker}</span>
+        )}
         <div style={{ flex: 1, minHeight: 0, overflow: UNCLIPPED.has(instance.type) ? 'visible' : 'hidden', pointerEvents: editMode ? 'none' : undefined }}>
           {WidgetComponent ? (
             <WidgetComponent

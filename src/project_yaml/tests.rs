@@ -78,7 +78,10 @@ INSERT INTO twin_layouts (screen_id,equipment_id,equipment_type,position_x,posit
 INSERT INTO twin_connections (screen_id,from_id,to_id) VALUES ('plts_1','inv1','inv2');
 INSERT INTO scada_equipment (screen_id,equipment_id,equipment_type,equipment_name,x,y,width,height,rotation,sensor_bindings,config) VALUES
   ('plts_1','w1','gauge','Voltage gauge',10,20,100,60,0,'[1,2]','{"z":1,"label":"V"}'),
-  ('plts_1','w2','tank','',0,0,100,60,45,'[]','{}');
+  ('plts_1','w2','tank','',0,0,100,60,45,'[]','{"faceplate":"pump_std","faceplateMap":{"run":1,"fault":2}}');
+INSERT INTO faceplates (id,name,kind,description,created_at,updated_at) VALUES ('pump_std','Pump','pump','',100,100);
+INSERT INTO faceplate_roles (faceplate_id,role,label,kind,required,sort_order) VALUES
+  ('pump_std','run','Running','state',1,0),('pump_std','fault','','fault',0,1),('pump_std','cmd','Start / stop','command',0,2);
 INSERT INTO scada_connections (screen_id,connection_id,from_equipment,to_equipment,waypoints,connection_type) VALUES ('plts_1','c1','w1','w2','[{"x":1,"y":2}]','power');
 INSERT INTO settings (key,value) VALUES ('twin_camera:plts_1','{"x":8,"y":6,"z":4}'),('alarm_cooldown_secs','300'),
   ('naming_template','{site}.{area}.{tag}'),('naming_regex','^[a-z]+$'),('oee_threshold_plts_1','{"metric":"power","running_above":1.5}'),
@@ -218,6 +221,8 @@ const CONFIG_TABLES: &[&str] = &[
     "twin_connections",
     "scada_equipment",
     "scada_connections",
+    "faceplates",
+    "faceplate_roles",
     "flows",
     "recipes",
     "notification_settings",
@@ -416,6 +421,16 @@ async fn import_recreates_everything_with_cross_references_intact() {
     )
     .await;
     assert_eq!(bindings, format!("[{voltage_id},{current_id}]"));
+    // A faceplate mapping follows the tags to their new ids.
+    let config = scalar_text(
+        &b,
+        "SELECT config FROM scada_equipment WHERE equipment_id='w2'",
+    )
+    .await;
+    let config: serde_json::Value = serde_json::from_str(&config).unwrap();
+    assert_eq!(config["faceplate"], "pump_std");
+    assert_eq!(config["faceplateMap"]["run"], voltage_id);
+    assert_eq!(config["faceplateMap"]["fault"], current_id);
     assert_eq!(
         scalar_i64(
             &b,
@@ -1217,13 +1232,6 @@ async fn invalid_device_templates_are_reported_with_their_key() {
             "must be 'local' or 'catalog:<url>'",
         ),
         (
-            MINIMAL_TEMPLATE.replace(
-                "{name: v, offset: 0}",
-                "{name: v, offset: 0, register_type: float16}",
-            ),
-            "register_type 'float16'",
-        ),
-        (
             MINIMAL_TEMPLATE.replace("version: 1.0.0", "version: one"),
             "semantic version",
         ),
@@ -1236,6 +1244,18 @@ async fn invalid_device_templates_are_reported_with_their_key() {
             "`body` is how the server stores a template",
         ),
     ];
+    // An enumerated field is checked while parsing, before the template rules.
+    let err = parse_project_yaml(&MINIMAL_TEMPLATE.replace(
+        "{name: v, offset: 0}",
+        "{name: v, offset: 0, register_type: float16}",
+    ))
+    .unwrap_err();
+    let issues: Vec<String> = invalid(&err).0.iter().map(|i| i.to_string()).collect();
+    assert!(
+        issues.iter().any(|m| m.contains("device_templates[0]")
+            && m.contains("registers[0].register_type: 'float16' is not one of int16")),
+        "{issues:?}"
+    );
     for (text, expected) in cases {
         let doc = doc_of(&text);
         let err = plan_import(&s, &doc, Mode::Merge).await.unwrap_err();
@@ -1311,4 +1331,200 @@ async fn flow_graphs_and_tag_change_triggers_round_trip_by_name() {
     assert_eq!(nodes["nodes"][1]["script_id"], script_id);
     assert_eq!(nodes["edges"][1]["port"], 1);
     crate::flow_engine::graph::FlowGraph::parse(&nodes.to_string()).unwrap();
+}
+
+// ── Values stored before the checks; linked devices on import ──
+
+/// Rows an older server stored (empty endianness, an unknown register type,
+/// a BACnet abbreviation) are canonicalised at startup, so the export imports.
+#[tokio::test]
+async fn values_older_servers_stored_survive_the_round_trip() {
+    let dir = temp_dir("old-values");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("voltrus.db");
+    let path = path.to_str().unwrap();
+    {
+        let s = Storage::new(path).unwrap();
+        s.with_conn(|c| {
+            c.execute_batch(
+                "INSERT INTO modbus_devices (id,name,ip,endianness,created_at,updated_at) VALUES ('m','M','10.0.0.1','',1,1);
+                 INSERT INTO modbus_registers (device_id,name,address,register_type,register_area,scale,sort_order) VALUES ('m','v',0,'FLOAT','holding',1.0,0);
+                 INSERT INTO bacnet_devices (id,name,ip,created_at) VALUES (1,'AHU','10.0.0.2',1);
+                 INSERT INTO bacnet_objects (device_id,object_type,object_instance,name,created_at) VALUES (1,'AI',1,'temp',1);",
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+    let s = Storage::new(path).unwrap();
+    let doc = doc_of(&export_text(&s).await);
+    let issues = validate_doc(&doc, None, false);
+    assert!(
+        issues.iter().all(|i| i.severity != Severity::Error),
+        "{issues:?}"
+    );
+    let plan = plan_import(&s, &doc, Mode::Replace).await.unwrap();
+    assert_eq!(plan.changes.len(), 0, "{:?}", plan.changes);
+    let b = fresh();
+    apply_import(&b, &doc, Mode::Merge).await.unwrap();
+    assert_eq!(
+        scalar_text(&b, "SELECT endianness FROM modbus_devices").await,
+        "big"
+    );
+    assert_eq!(
+        scalar_text(&b, "SELECT register_type FROM modbus_registers").await,
+        "float32"
+    );
+    assert_eq!(
+        scalar_text(&b, "SELECT object_type FROM bacnet_objects").await,
+        "analogInput"
+    );
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn bacnet_abbreviations_and_an_empty_endianness_import() {
+    let doc = doc_of(
+        r#"
+format: voltrus-project/1
+modbus_devices:
+- {id: m, name: M, ip: 10.0.0.1, endianness: ''}
+bacnet_devices:
+- name: AHU
+  ip: 10.0.0.2
+  objects:
+  - {object_type: AI, object_instance: 1, name: temp}
+  - {object_type: binaryvalue, object_instance: 2, name: run}
+"#,
+    );
+    assert_eq!(
+        norm::get_str(&doc.entities("modbus_devices")[0], "endianness"),
+        "big"
+    );
+    let objects = doc.entities("bacnet_devices")[0]["objects"]
+        .as_sequence()
+        .unwrap()
+        .clone();
+    let types: Vec<String> = objects
+        .iter()
+        .map(|o| norm::get_str(o.as_mapping().unwrap(), "object_type"))
+        .collect();
+    assert_eq!(types, ["analogInput", "binaryValue"]);
+    assert!(parse_project_yaml(
+        "format: voltrus-project/1\nbacnet_devices:\n- {name: A, ip: 1.1.1.1, objects: [{object_type: XY, object_instance: 1, name: t}]}\n"
+    )
+    .is_err());
+}
+
+const LINKED: &str = r#"
+format: voltrus-project/1
+device_templates:
+- template_id: acme-lnk
+  version: 1.0.0
+  source: local
+  manufacturer: Acme
+  model: M1
+  protocol: modbus
+  registers:
+  - {name: v, offset: 0}
+  - {name: i, offset: 2, scale: 0.1}
+modbus_devices:
+- id: a
+  name: A
+  ip: 10.0.0.1
+  template_id: acme-lnk
+  template_version: 1.0.0
+  template_source: local
+  registers:
+  - {name: v, address: 0, zero_based: true}
+  - {name: i, address: 2, scale: 0.1, sort_order: 1, zero_based: true}
+- id: b
+  name: B
+  ip: 10.0.0.2
+  template_id: acme-lnk
+  template_version: 1.0.0
+  template_source: local
+  registers:
+  - {name: v, address: 0, zero_based: true}
+  - {name: i, address: 2, scale: 0.1, sort_order: 1, zero_based: true}
+"#;
+
+async fn register_rows(s: &Storage, device: &str) -> String {
+    scalar_text(
+        s,
+        &format!("SELECT group_concat(name || '@' || address || 'x' || scale, ',') FROM (SELECT * FROM modbus_registers WHERE device_id = '{device}' ORDER BY sort_order)"),
+    )
+    .await
+}
+
+/// A merge import leaves linked devices on their template: other registers in
+/// the file are replaced by the template's, a changed template carries the
+/// devices the file leaves out, and a file without the link fields keeps it.
+#[tokio::test]
+async fn linked_devices_stay_on_their_template_through_an_import() {
+    let s = fresh();
+    apply_import(&s, &doc_of(LINKED), Mode::Merge)
+        .await
+        .unwrap();
+    assert_eq!(register_rows(&s, "a").await, "v@0x1.0,i@2x0.1");
+
+    // The file edits a linked device's registers: the template wins.
+    let edited = LINKED.replacen(
+        "- {name: v, address: 0, zero_based: true}",
+        "- {name: v, address: 9, zero_based: true}",
+        1,
+    );
+    let plan = apply_import(&s, &doc_of(&edited), Mode::Merge)
+        .await
+        .unwrap();
+    assert!(
+        plan.warnings
+            .iter()
+            .any(|w| w.contains("modbus_devices[a]") && w.contains("acme-lnk")),
+        "{:?}",
+        plan.warnings
+    );
+    assert_eq!(register_rows(&s, "a").await, "v@0x1.0,i@2x0.1");
+
+    // A file from before links: the device keeps its link.
+    let old = "format: voltrus-project/1\nmodbus_devices:\n- {id: a, name: A2, ip: 10.0.0.1, registers: [{name: v, address: 0, zero_based: true}, {name: i, address: 2, scale: 0.1, sort_order: 1, zero_based: true}]}\n";
+    let plan = apply_import(&s, &doc_of(old), Mode::Merge).await.unwrap();
+    assert_eq!(plan.changes.len(), 1, "{:?}", plan.changes);
+    assert_eq!(plan.changes[0].fields, ["name"]);
+    assert_eq!(
+        scalar_text(&s, "SELECT template_id FROM modbus_devices WHERE id = 'a'").await,
+        "acme-lnk"
+    );
+
+    // The file changes only the template: both linked devices follow, and the
+    // plan lists them so their pollers restart.
+    let template_only = "format: voltrus-project/1\ndevice_templates:\n- {template_id: acme-lnk, version: 1.0.0, source: local, manufacturer: Acme, model: M1, protocol: modbus, registers: [{name: v, offset: 0}, {name: p, offset: 4}]}\n";
+    let plan = plan_import(&s, &doc_of(template_only), Mode::Merge)
+        .await
+        .unwrap();
+    let devices: Vec<&str> = plan
+        .changes
+        .iter()
+        .filter(|c| c.section == "modbus_devices")
+        .map(|c| c.key.as_str())
+        .collect();
+    assert_eq!(devices, ["a", "b"]);
+    apply_import(&s, &doc_of(template_only), Mode::Merge)
+        .await
+        .unwrap();
+    for d in ["a", "b"] {
+        assert_eq!(register_rows(&s, d).await, "v@0x1.0,p@4x1.0", "{d}");
+    }
+    // And the export imports back without changes.
+    let doc = doc_of(&export_text(&s).await);
+    assert_eq!(
+        plan_import(&s, &doc, Mode::Replace)
+            .await
+            .unwrap()
+            .changes
+            .len(),
+        0
+    );
 }

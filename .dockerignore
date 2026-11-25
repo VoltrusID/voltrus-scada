@@ -1,0 +1,14 @@
+.git
+.github
+.claude
+target
+**/target
+client/node_modules
+client/dist
+static
+*.db
+*.db-shm
+*.db-wal
+pki
+release-artifacts
+sdks/generated

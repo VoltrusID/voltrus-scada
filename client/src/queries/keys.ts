@@ -17,6 +17,7 @@ export const queryKeys = {
   canvasLayouts: (screenId: string) => ['canvasLayouts', screenId] as const,
   twinConnections: (screenId: string) => ['twinConnections', screenId] as const,
   modbusDevices:  ['modbusDevices'] as const,
+  faceplates:     ['faceplates'] as const,
   modbusDevice:   (id: string) => ['modbusDevice', id] as const,
   modbusRegisters: (id: string) => ['modbusRegisters', id] as const,
   modbusStatus:   ['modbusStatus'] as const,

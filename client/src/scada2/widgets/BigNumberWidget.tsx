@@ -1,6 +1,7 @@
 import React from 'react'
 import { registerWidget, WIDGET_MANIFESTS } from './registry'
 import type { WidgetProps } from './types'
+import { valueStyle } from '../../valueStyle'
 
 const BigNumberWidget: React.FC<WidgetProps> = ({ instance, sensor, data }) => {
   const config = instance.config ?? {}
@@ -11,13 +12,10 @@ const BigNumberWidget: React.FC<WidgetProps> = ({ instance, sensor, data }) => {
 
   const value = data?.value
   const unit = sensor?.unit ?? ''
-  const status = data?.status ?? ''
   const hasData = value !== undefined && value !== null
-
-  const statusColor = status === 'crit' ? 'var(--crit)'
-    : status === 'warn' ? 'var(--warn)'
-    : 'var(--ok)'
-  const showStatus = status === 'warn' || status === 'crit'
+  const vs = valueStyle(data)
+  const statusColor = vs.color ?? 'var(--ok)'
+  const showStatus = vs.state !== 'normal' && vs.state !== 'nodata'
 
   return (
     <div style={{
@@ -37,7 +35,7 @@ const BigNumberWidget: React.FC<WidgetProps> = ({ instance, sensor, data }) => {
         </div>
       )}
       <div style={{
-        fontSize, fontWeight: 700, color: 'var(--fg)',
+        fontSize, fontWeight: 700, color: vs.state === 'normal' ? 'var(--fg)' : vs.color,
         lineHeight: 1, fontFamily: '"JetBrains Mono", monospace',
         display: 'flex', alignItems: 'baseline', gap: 4,
       }}>
@@ -55,7 +53,7 @@ const BigNumberWidget: React.FC<WidgetProps> = ({ instance, sensor, data }) => {
           background: `color-mix(in srgb, ${statusColor} 12%, transparent)`,
           textTransform: 'uppercase', letterSpacing: '.05em',
         }}>
-          {status}
+          {vs.label}
         </div>
       )}
     </div>

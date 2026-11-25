@@ -1,12 +1,17 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react'
 import { SensorConfig, SOURCE_CATEGORY } from './types'
 import { Chart } from './Chart'
-import { stColor } from './styles'
+import { valueStyle, framesWidget } from './valueStyle'
+import { openTrend } from './trend/TrendPopup'
 import { parseConfig } from './styles'
 import { useSensorCurrentValue, useChartValues } from './store/dashboardStore'
 import { useRemoveSensorFromScreen } from './queries'
-import { qualityFamily, qualityLabel, qualityMarker } from './quality'
 import { useInView } from './hooks/useInView'
+
+/** The live value is a button: it opens the trend popup for the tag. */
+const valueButton = (color: string | undefined): React.CSSProperties => ({
+  color, font: 'inherit', background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left',
+})
 
 const useIsSmallScreen = () => {
   const [small, setSmall] = useState(window.innerWidth <= 480)
@@ -52,21 +57,25 @@ export const SensorCard = React.memo(function SensorCard({
     removeSensorMut.mutate({ screenId: activeScreen, sensorId: s.id })
   }
 
-  const st = cv?.status ?? 'normal';
+  // Alarm state and quality, the same way as every other bound value (valueStyle.ts).
+  const vs = valueStyle(cv);
+  const st = vs.state === 'normal' ? 'normal' : vs.label.toLowerCase();
+  const stateColor = vs.color ?? 'var(--ok)';
+  const stateTint = vs.tint ?? 'color-mix(in srgb, var(--ok) 12%, transparent)';
   const ct = s.chart_type || 'sparkline';
   const hideStatus = ct === 'image' || ct === 'text';
   const isCompact = isSmall && !hideStatus;
 
   // No reading yet shows a dash, never a stand-in number.
-  const formattedValue = st === 'offline' ? 'OFFLINE' : cv && Number.isFinite(cv.value) ? cv.value.toFixed(s.decimals) : '—';
-  // A value that is not good stays visible for context but greyed, with a marker.
-  const qFamily = qualityFamily(cv?.quality);
-  const qLabel = qualityLabel(cv?.quality);
-  const cardAriaLabel = `${s.name}: ${formattedValue} ${s.unit || ''}${qLabel ? ` (${qLabel})` : ''}`;
-  const valueColor = qFamily !== 'good' ? 'var(--muted)' : st === 'normal' ? s.color : stColor(st);
-  const qualityMark = qFamily !== 'good' && st !== 'offline'
-    ? <span title={qLabel} aria-hidden="true" style={{ fontSize: '0.5em', marginLeft: 4, verticalAlign: 'super', color: qFamily === 'bad' ? 'var(--crit)' : 'var(--warn)' }}>{qualityMarker(cv?.quality)}</span>
+  const formattedValue = vs.state === 'offline' ? 'OFFLINE' : cv && Number.isFinite(cv.value) ? cv.value.toFixed(s.decimals) : '—';
+  // A value that is not good stays visible for context, in the quality colour, with a marker.
+  const qLabel = vs.title;
+  const cardAriaLabel = `${s.name}: ${formattedValue} ${s.unit || ''}${vs.label ? ` (${vs.title || vs.label})` : ''}`;
+  const valueColor = vs.state === 'normal' ? s.color : vs.color;
+  const qualityMark = vs.marker && vs.state !== 'offline'
+    ? <span title={vs.title} aria-hidden="true" style={{ fontSize: '0.5em', marginLeft: 4, verticalAlign: 'super', color: vs.color }}>{vs.marker}</span>
     : null;
+  const frame = framesWidget(vs) && vs.state !== 'offline' ? vs.color : undefined;
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
@@ -92,7 +101,7 @@ export const SensorCard = React.memo(function SensorCard({
         onMouseLeave={() => setHovered(false)}
         style={{
           background: 'var(--card)',
-          border: `1px solid ${selected ? 'var(--cyan)' : editingId === s.id ? 'var(--cyan)' : hovered ? 'var(--border-light)' : 'var(--border)'}`,
+          border: `1px solid ${selected ? 'var(--cyan)' : editingId === s.id ? 'var(--cyan)' : frame ?? (hovered ? 'var(--border-light)' : 'var(--border)')}`,
           borderRadius: 12,
           overflow: 'hidden',
           height: '100%',
@@ -107,14 +116,14 @@ export const SensorCard = React.memo(function SensorCard({
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.04em', minWidth: 0 }}>
-            <div style={{ width: 8, height: 8, borderRadius: '50%', background: stColor(st), flexShrink: 0 }} />
+            <div style={{ width: 8, height: 8, borderRadius: '50%', background: stateColor, flexShrink: 0 }} />
             <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
           </div>
           <div style={{ fontSize: 10, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', padding: '3px 8px', borderRadius: 4, flexShrink: 0, minWidth: 44, minHeight: 28, display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: st === 'critical' ? 'rgba(239,68,68,.15)' : st === 'warning' ? 'rgba(234,179,8,.15)' : st === 'offline' ? 'rgba(100,100,100,.15)' : 'rgba(34,197,94,.15)', color: stColor(st) }}>{st}</div>
+            background: stateTint, color: stateColor }}>{st}</div>
         </div>
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 28, fontWeight: 700, lineHeight: 1.2 }}>
-          <span title={qLabel || undefined} style={{ color: valueColor, opacity: qFamily === 'good' ? 1 : 0.7 }}>{formattedValue}</span>{qualityMark}
+          <button type="button" onClick={e => { e.stopPropagation(); openTrend(s.id) }} onKeyDown={e => e.stopPropagation()} title={qLabel ? `${qLabel}. Open the trend` : 'Open the trend'} aria-label={`Trend of ${s.name}`} style={valueButton(valueColor)}>{formattedValue}</button>{qualityMark}
           <span style={{ fontSize: 14, color: 'var(--muted)', fontWeight: 400, marginLeft: 4 }}>{s.unit}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 10, color: 'var(--muted)' }}>
@@ -142,7 +151,7 @@ export const SensorCard = React.memo(function SensorCard({
       onMouseLeave={() => setHovered(false)}
       style={{
         background: 'var(--card)',
-        border: `1px solid ${selected ? 'var(--cyan)' : editingId === s.id ? 'var(--cyan)' : hovered ? 'var(--border-light)' : 'var(--border)'}`,
+        border: `1px solid ${selected ? 'var(--cyan)' : editingId === s.id ? 'var(--cyan)' : frame ?? (hovered ? 'var(--border-light)' : 'var(--border)')}`,
         borderRadius: 12,
         overflow: 'hidden',
         height: '100%',
@@ -164,7 +173,7 @@ export const SensorCard = React.memo(function SensorCard({
               </svg>
             </span>
           )}
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: stColor(st) }} />
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: stateColor }} />
           {s.name}
           <span style={{ fontSize: 9, padding: '1px 5px', borderRadius: 3, background: `${sourceTagColor}18`, color: sourceTagColor, fontWeight: 700, letterSpacing: '.03em', textTransform: 'none' }}>{sourceTag}</span>
           {cv?.simulated && (
@@ -184,7 +193,7 @@ export const SensorCard = React.memo(function SensorCard({
             <button aria-label={`Remove ${s.name} from screen`} onClick={handleRemove} style={{ background: 'var(--bg)', border: '1px solid var(--crit)', borderRadius: 4, color: 'var(--crit)', cursor: 'pointer', padding: '2px 6px', fontSize: 10, lineHeight: 1 }}>Remove</button>
           )}
           <div style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', padding: '3px 8px', borderRadius: 6, minWidth: 52, textAlign: 'center' as const,
-            background: st === 'critical' ? 'rgba(239,68,68,.12)' : st === 'warning' ? 'rgba(234,179,8,.12)' : st === 'offline' ? 'rgba(100,100,100,.12)' : 'rgba(34,197,94,.12)', color: stColor(st) }}>{st}</div>
+            background: stateTint, color: stateColor }}>{st}</div>
         </div>
       </div>}
       {hideStatus && editMode && (
@@ -202,7 +211,7 @@ export const SensorCard = React.memo(function SensorCard({
       )}
       {!hideStatus && (
         <div style={{ fontFamily: "var(--font-mono)", fontSize: 24, fontWeight: 700, padding: '0 14px', lineHeight: 1.3 }}>
-          <span title={qLabel || undefined} style={{ color: valueColor, opacity: qFamily === 'good' ? 1 : 0.7 }}>{formattedValue}</span>{qualityMark}
+          <button type="button" onClick={e => { e.stopPropagation(); openTrend(s.id) }} onKeyDown={e => e.stopPropagation()} title={qLabel ? `${qLabel}. Open the trend` : 'Open the trend'} aria-label={`Trend of ${s.name}`} style={valueButton(valueColor)}>{formattedValue}</button>{qualityMark}
           <span style={{ fontSize: 13, color: 'var(--muted)', fontWeight: 500, marginLeft: 4 }}>{s.unit}</span>
         </div>
       )}

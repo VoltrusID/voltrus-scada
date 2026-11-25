@@ -1,14 +1,65 @@
 use super::Storage;
 use anyhow::{Context, Result};
 
-use crate::models::{Command, CommandAuditEntry, CommandQuery};
+use crate::models::{Command, CommandAuditEntry, CommandQuery, CommandSource};
+
+/// The columns [`command_from_row`] reads, with the name of the API key or
+/// flow that created the command (for [`CommandSource`]). The lookups compare
+/// the primary key with the id cut out of `created_by`, so each is one index
+/// probe instead of a scan of the table.
+const COMMAND_COLUMNS: &str = "id, data_source_id, device_id, protocol, value, status, policy,
+    scheduled_at, retry_count, max_retries, error_message, created_at,
+    sent_at, acked_at, resolved_at, created_by, device_ref,
+    readback_status, readback_value, readback_attempts, readback_ts, origin,
+    (SELECT k.name FROM api_keys k WHERE substr(commands.created_by, 1, 8) = 'api_key:'
+        AND k.id = CAST(substr(commands.created_by, 9) AS INTEGER)
+        AND 'api_key:' || k.id = commands.created_by),
+    (SELECT f.name FROM flows f WHERE substr(commands.created_by, 1, 5) = 'flow:'
+        AND f.id = substr(commands.created_by, 6))";
+
+fn command_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Command> {
+    let created_by: String = row.get(15)?;
+    let origin: Option<String> = row.get(21)?;
+    let key_name: Option<String> = row.get(22)?;
+    let flow_name: Option<String> = row.get(23)?;
+    let source = CommandSource::of(
+        &created_by,
+        origin.as_deref(),
+        key_name.as_deref().or(flow_name.as_deref()),
+    );
+    Ok(Command {
+        id: row.get(0)?,
+        data_source_id: row.get(1)?,
+        device_id: row.get(2)?,
+        protocol: row.get(3)?,
+        value: row.get(4)?,
+        status: row.get(5)?,
+        policy: row.get(6)?,
+        scheduled_at: row.get(7)?,
+        retry_count: row.get(8)?,
+        max_retries: row.get(9)?,
+        error_message: row.get(10)?,
+        created_at: row.get(11)?,
+        sent_at: row.get(12)?,
+        acked_at: row.get(13)?,
+        resolved_at: row.get(14)?,
+        created_by,
+        device_ref: row.get(16)?,
+        readback_status: row.get(17)?,
+        readback_value: row.get(18)?,
+        readback_attempts: row.get(19)?,
+        readback_ts: row.get(20)?,
+        origin,
+        source: Some(source),
+    })
+}
 
 fn insert_command_row(conn: &rusqlite::Connection, cmd: &Command) -> Result<()> {
     conn.execute(
         "INSERT INTO commands (id, data_source_id, device_id, protocol, value, status, policy,
              scheduled_at, retry_count, max_retries, error_message, created_at, sent_at, acked_at,
-             resolved_at, created_by, device_ref)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+             resolved_at, created_by, device_ref, origin)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         rusqlite::params![
             cmd.id,
             cmd.data_source_id,
@@ -27,6 +78,7 @@ fn insert_command_row(conn: &rusqlite::Connection, cmd: &Command) -> Result<()> 
             cmd.resolved_at,
             cmd.created_by,
             cmd.device_ref,
+            cmd.origin,
         ],
     )
     .context("Insert command failed")?;
@@ -241,37 +293,9 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let result = conn.query_row(
-                "SELECT id, data_source_id, device_id, protocol, value, status, policy,
-                        scheduled_at, retry_count, max_retries, error_message, created_at,
-                        sent_at, acked_at, resolved_at, created_by, device_ref,
-                        readback_status, readback_value, readback_attempts, readback_ts
-                 FROM commands WHERE id = ?1",
+                &format!("SELECT {COMMAND_COLUMNS} FROM commands WHERE id = ?1"),
                 rusqlite::params![command_id],
-                |row| {
-                    Ok(Command {
-                        id: row.get(0)?,
-                        data_source_id: row.get(1)?,
-                        device_id: row.get(2)?,
-                        protocol: row.get(3)?,
-                        value: row.get(4)?,
-                        status: row.get(5)?,
-                        policy: row.get(6)?,
-                        scheduled_at: row.get(7)?,
-                        retry_count: row.get(8)?,
-                        max_retries: row.get(9)?,
-                        error_message: row.get(10)?,
-                        created_at: row.get(11)?,
-                        sent_at: row.get(12)?,
-                        acked_at: row.get(13)?,
-                        resolved_at: row.get(14)?,
-                        created_by: row.get(15)?,
-                        device_ref: row.get(16)?,
-                        readback_status: row.get(17)?,
-                        readback_value: row.get(18)?,
-                        readback_attempts: row.get(19)?,
-                        readback_ts: row.get(20)?,
-                    })
-                },
+                command_from_row,
             );
             match result {
                 Ok(cmd) => Ok(Some(cmd)),
@@ -295,13 +319,7 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
 
-            let mut sql = String::from(
-                "SELECT id, data_source_id, device_id, protocol, value, status, policy,
-                        scheduled_at, retry_count, max_retries, error_message, created_at,
-                        sent_at, acked_at, resolved_at, created_by, device_ref,
-                        readback_status, readback_value, readback_attempts, readback_ts
-                 FROM commands WHERE 1=1",
-            );
+            let mut sql = format!("SELECT {COMMAND_COLUMNS} FROM commands WHERE 1=1");
             let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
             if let Some(ref s) = status {
@@ -341,31 +359,7 @@ impl Storage {
                 params.iter().map(|p| p.as_ref()).collect();
             let mut stmt = conn.prepare(&sql).context("Prepare list_commands failed")?;
             let rows = stmt
-                .query_map(param_refs.as_slice(), |row| {
-                    Ok(Command {
-                        id: row.get(0)?,
-                        data_source_id: row.get(1)?,
-                        device_id: row.get(2)?,
-                        protocol: row.get(3)?,
-                        value: row.get(4)?,
-                        status: row.get(5)?,
-                        policy: row.get(6)?,
-                        scheduled_at: row.get(7)?,
-                        retry_count: row.get(8)?,
-                        max_retries: row.get(9)?,
-                        error_message: row.get(10)?,
-                        created_at: row.get(11)?,
-                        sent_at: row.get(12)?,
-                        acked_at: row.get(13)?,
-                        resolved_at: row.get(14)?,
-                        created_by: row.get(15)?,
-                        device_ref: row.get(16)?,
-                        readback_status: row.get(17)?,
-                        readback_value: row.get(18)?,
-                        readback_attempts: row.get(19)?,
-                        readback_ts: row.get(20)?,
-                    })
-                })
+                .query_map(param_refs.as_slice(), command_from_row)
                 .context("Query list_commands failed")?;
             rows.collect::<Result<Vec<_>, _>>()
                 .context("Row mapping failed")
@@ -379,42 +373,14 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn
-                .prepare(
-                    "SELECT id, data_source_id, device_id, protocol, value, status, policy,
-                        scheduled_at, retry_count, max_retries, error_message, created_at,
-                        sent_at, acked_at, resolved_at, created_by, device_ref,
-                        readback_status, readback_value, readback_attempts, readback_ts
-                 FROM commands
-                 WHERE status IN ('queued', 'pending')
-                 ORDER BY created_at ASC",
-                )
+                .prepare(&format!(
+                    "SELECT {COMMAND_COLUMNS} FROM commands
+                     WHERE status IN ('queued', 'pending')
+                     ORDER BY created_at ASC"
+                ))
                 .context("Prepare get_queued_commands failed")?;
             let rows = stmt
-                .query_map([], |row| {
-                    Ok(Command {
-                        id: row.get(0)?,
-                        data_source_id: row.get(1)?,
-                        device_id: row.get(2)?,
-                        protocol: row.get(3)?,
-                        value: row.get(4)?,
-                        status: row.get(5)?,
-                        policy: row.get(6)?,
-                        scheduled_at: row.get(7)?,
-                        retry_count: row.get(8)?,
-                        max_retries: row.get(9)?,
-                        error_message: row.get(10)?,
-                        created_at: row.get(11)?,
-                        sent_at: row.get(12)?,
-                        acked_at: row.get(13)?,
-                        resolved_at: row.get(14)?,
-                        created_by: row.get(15)?,
-                        device_ref: row.get(16)?,
-                        readback_status: row.get(17)?,
-                        readback_value: row.get(18)?,
-                        readback_attempts: row.get(19)?,
-                        readback_ts: row.get(20)?,
-                    })
-                })
+                .query_map([], command_from_row)
                 .context("Query get_queued_commands failed")?;
             rows.collect::<Result<Vec<_>, _>>()
                 .context("Row mapping failed")

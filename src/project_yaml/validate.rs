@@ -21,6 +21,15 @@ pub struct Known {
     pub scripts: HashSet<String>,
     pub sim_profiles: HashSet<String>,
     pub devices: HashSet<String>,
+    /// Stored device templates as `template_id/version/source`.
+    pub templates: HashSet<String>,
+    /// Stored faceplate definitions by id.
+    pub faceplates: HashSet<String>,
+}
+
+fn template_keys(rows: &[Mapping]) -> HashSet<String> {
+    let sec = spec::section(super::templates::SECTION).expect("device_templates");
+    rows.iter().map(|e| entity_key(sec, e)).collect()
 }
 
 fn collect_devices(snap_or_doc: &dyn Fn(&str) -> Vec<Mapping>) -> HashSet<String> {
@@ -61,6 +70,11 @@ impl Known {
                 .map(|e| get_str(e, "name"))
                 .collect(),
             devices: collect_devices(&rows),
+            templates: template_keys(&rows(super::templates::SECTION)),
+            faceplates: rows("faceplates")
+                .iter()
+                .map(|e| get_str(e, "id"))
+                .collect(),
         }
     }
 }
@@ -72,6 +86,8 @@ struct Ctx<'a> {
     sim_profiles: HashSet<String>,
     devices: HashSet<String>,
     tag_keys: HashSet<String>,
+    templates: HashSet<String>,
+    faceplates: HashSet<String>,
     _doc: &'a ProjectDoc,
 }
 
@@ -145,14 +161,26 @@ pub fn validate_doc(doc: &ProjectDoc, known: Option<&Known>, check_env: bool) ->
             .iter()
             .map(|e| get_str(e, "key"))
             .collect(),
+        templates: template_keys(doc.entities(super::templates::SECTION)),
+        faceplates: doc
+            .entities("faceplates")
+            .iter()
+            .map(|e| get_str(e, "id"))
+            .collect(),
         _doc: doc,
     };
+    for t in crate::device_templates::builtin::builtins() {
+        ctx.templates
+            .insert(format!("{}/{}/{}", t.template_id, t.version, t.source));
+    }
     if let Some(k) = known {
         ctx.tag_refs.extend(k.tag_refs.iter().cloned());
         ctx.tag_keys.extend(k.tag_keys.iter().cloned());
         ctx.scripts.extend(k.scripts.iter().cloned());
         ctx.sim_profiles.extend(k.sim_profiles.iter().cloned());
         ctx.devices.extend(k.devices.iter().cloned());
+        ctx.templates.extend(k.templates.iter().cloned());
+        ctx.faceplates.extend(k.faceplates.iter().cloned());
     }
 
     for sec in spec::SECTIONS {
@@ -253,6 +281,26 @@ fn check_plain(ctx: &mut Ctx<'_>, sec: &Section, e: &Mapping, at: &str) {
                     at.to_string(),
                     format!("no tag has the key '{key}'; the rule will never fire"),
                 );
+            }
+        }
+        "modbus_devices" => {
+            let link = ["template_id", "template_version", "template_source"]
+                .map(|f| e.get(f).map(display));
+            match link {
+                [None, None, None] => {}
+                [Some(id), Some(version), Some(source)] => {
+                    let key = format!("{id}/{version}/{source}");
+                    if !ctx.templates.contains(&key) {
+                        ctx.error(
+                            at.to_string(),
+                            format!("linked to device template '{key}', which is neither in the project nor stored"),
+                        );
+                    }
+                }
+                _ => ctx.error(
+                    at.to_string(),
+                    "template_id, template_version and template_source go together".to_string(),
+                ),
             }
         }
         super::templates::SECTION => {
@@ -380,6 +428,31 @@ fn check_screen(ctx: &mut Ctx<'_>, e: &Mapping, at: &str) {
                 if !ctx.tag_refs.contains(&r) {
                     ctx.error(
                         format!("{at}.scada.equipment[{i}].sensors"),
+                        format!("unknown tag '{r}'"),
+                    );
+                }
+            }
+        }
+        let config = eq.get("config").and_then(Value::as_mapping);
+        if let Some(fp) = config.and_then(|c| c.get("faceplate")) {
+            let fp = display(fp);
+            if !ctx.faceplates.contains(&fp) {
+                ctx.error(
+                    format!("{at}.scada.equipment[{i}].config.faceplate"),
+                    format!("unknown faceplate '{fp}'"),
+                );
+            }
+        }
+        if let Some(Value::Mapping(map)) = config.and_then(|c| c.get(export::FACEPLATE_MAP)) {
+            for (role, r) in map {
+                let r = display(r);
+                if !ctx.tag_refs.contains(&r) {
+                    ctx.error(
+                        format!(
+                            "{at}.scada.equipment[{i}].config.{}.{}",
+                            export::FACEPLATE_MAP,
+                            display(role)
+                        ),
                         format!("unknown tag '{r}'"),
                     );
                 }

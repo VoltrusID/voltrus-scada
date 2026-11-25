@@ -101,6 +101,41 @@ jobs:
       - name: Serve the embedded UI from an empty directory
         run: scripts/smoke-embedded-ui.sh target/release/voltrus
 
+  # The container image (Dockerfile): built and started, never pushed.
+  docker:
+    name: Docker image (build and start)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: voltrus-scada:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start and answer /api/v1/health
+        run: |
+          docker run -d --name voltrus -p 3000:3000 voltrus-scada:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/v1/health; then echo; break; fi
+            sleep 2
+          done
+          if ! curl -fsS http://127.0.0.1:3000/api/v1/health; then
+            echo "::error::the container did not answer /api/v1/health"
+            docker ps -a --filter name=voltrus
+            docker logs voltrus
+            exit 1
+          fi
+          docker image ls voltrus-scada:ci
+          docker logs voltrus
+
   licenses:
     name: Dependency licences
     runs-on: ubuntu-latest

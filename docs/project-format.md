@@ -49,6 +49,7 @@ next server restart.
 | `device_templates` | device template (Modbus registers or BACnet objects) of source `local` or `catalog:<url>` | `template_id` + `version` + `source` |
 | `sim_profiles` | simulation profile | `name` |
 | `scripts` | script | `name` |
+| `faceplates` | faceplate definition with `roles` ([screens.md](screens.md#tag-swap-faceplates)) | `id` |
 | `tags` | data source: limits, alarm thresholds, ISA-18.2 delays, write policy, `source_config` | `ref` = `device/key` |
 | `screens` | screen: simulation settings, tag membership, grid layouts (all breakpoints), canvas, 3D twin layout and camera, 2D SCADA mimic (equipment, connections) | `id` |
 | `flows` | flow: trigger and nodes | `id` |
@@ -117,8 +118,25 @@ device_templates:
   - {name: energy, offset: 2, register_type: int32, register_area: input, scale: 0.1, writable: true}
 ```
 
-Devices created from a template do not remember it: the device carries its own
+A device copied from a template does not remember it: the device carries its own
 registers (`modbus_devices`), so a project stays complete without the template.
+A [linked](device-templates.md#linked-devices) Modbus device also names its template
+with `template_id`, `template_version` and `template_source` (all three or none)
+and still lists its registers. Validation reports a link to a template that is
+neither in the project, nor stored (merge), nor built in. An import writes the
+registers as listed; saving the template later rewrites them.
+
+```yaml
+modbus_devices:
+- id: p-301a
+  name: P-301A
+  ip: 10.0.3.11
+  template_id: acme-pump-vfd
+  template_version: 1.2.0
+  template_source: local
+  registers:
+  - {name: run, address: 0, register_type: uint16, register_area: coil}
+```
 In **replace** mode templates the project does not list are deleted like any other
 entity, so an old project without a `device_templates` section removes the stored
 local and catalog templates; use merge for partial files.
@@ -126,6 +144,33 @@ local and catalog templates; use merge for partial files.
 Derived columns are recomputed on import the way the API does when saving: a
 script's syntax error, and a custom metric's `tag_refs` and validation error.
 Creation and update timestamps are not exported; imported rows get the import time.
+
+### Faceplates
+
+```yaml
+faceplates:
+- id: pump
+  name: Pump
+  kind: pump
+  roles:
+  - {role: run, label: Running, kind: state, required: true}
+  - {role: fault, kind: fault}
+  - {role: cmd, label: Start / stop, kind: command}
+screens:
+- id: pumps
+  name: Pumps
+  scada:
+    equipment:
+    - equipment_id: p301a
+      equipment_type: symbol
+      sensors: [plc_1/p301a_run]
+      config: {symbol: pump, faceplate: pump, faceplateMap: {run: plc_1/p301a_run, fault: plc_1/p301a_fault, cmd: plc_1/p301a_cmd}}
+```
+
+`kind` is `pump`, `motor`, `valve` or `analog`; a role's `kind` is `state`,
+`fault`, `analog`, `command` or `setpoint`. Validation reports a symbol that names
+a faceplate the project does not define (or, in merge mode, the database does not
+hold) and a `faceplateMap` entry that names an unknown tag.
 
 ## Natural keys and references
 
@@ -212,6 +257,55 @@ only by the project. References to devices and notification sources that cannot
 be resolved are warnings (a tag may legitimately use a device name such as
 `default`). `voltrus project validate` checks a project on its own, without a
 database.
+
+Enumerated fields are checked against their list while the file is parsed, and
+the error names the field and the allowed values, for example
+`modbus_devices[0]: registers[2].register_type: 'uint32' is not one of int16, uint16, int32, float32, float64`.
+Up to v0.52 such a value was stored and read as the default (`float32`) by the
+poller. The checked fields are:
+
+| Field | Allowed values |
+|---|---|
+| `modbus_devices[].endianness`, `device_templates[].endianness` | `big`, `little`, `swapped`, `little_dword`, `swapped_dword` |
+| `register_type` (Modbus devices and templates) | `int16`, `uint16`, `int32`, `float32`, `float64` |
+| `register_area` (Modbus devices and templates) | `holding`, `input`, `coil`, `discrete` |
+| `device_templates[].protocol` | `modbus`, `bacnet` |
+| `device_templates[].objects[].object_type` | the nine BACnet object types of [device-templates.md](device-templates.md) |
+| `screens[].scada.connections[].connection_type` | `power`, `data`, `flow` |
+
+`chart_type` and `source_type` of tags stay open text: older versions and the
+setup wizard store chart types that the web client draws as a sparkline, and
+protocol modules add their own source types.
+
+### JSON Schema
+
+[`docs/project-schema.json`](project-schema.json) is a JSON Schema (draft
+2020-12) of the single-file form, generated from the same field lists the parser
+uses; every entity has its schema under `$defs.<section>`. Editors such as VS
+Code validate and complete a project with it:
+
+```yaml
+# yaml-language-server: $schema=https://raw.githubusercontent.com/VoltrusID/voltrus-scada/main/docs/project-schema.json
+format: voltrus-project/1
+```
+
+`voltrus project schema` prints it, `voltrus project schema OUT.json` writes it.
+A unit test fails when the committed file differs from what the server
+generates. The schema checks shape only (names, types, required fields, allowed
+values); references between entities and duplicate keys are checked by
+`voltrus project validate`.
+
+### The REST routes
+
+The create and update routes that take free-form JSON answer `400` with
+`{"error": "..."}` naming the field when a body has a field the resource does
+not have, or an enumerated value outside its list, instead of ignoring it:
+`POST`/`PUT /api/v1/data-sources`, `POST`/`PUT /api/v1/screens`,
+`POST`/`PUT /api/v1/modbus-devices` and `PUT /api/v1/modbus-devices/{id}/registers`
+(registers are checked one by one: `register 2: register_type "uint32" is not
+one of ...`). The fields `GET` returns are accepted, so a read-modify-write round
+trip works; read-only ones (`id`, `created_at`) are ignored. The MCP tools go
+through these routes and also refuse unknown arguments themselves.
 
 ## Secrets
 

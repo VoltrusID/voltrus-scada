@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { SourceBadge } from './components/SourceBadge'
 import { useTranslation } from 'react-i18next'
 import { useNavigate, useRouterState } from '@tanstack/react-router'
 import { useVirtualizer } from '@tanstack/react-virtual'
@@ -318,9 +319,20 @@ function AnalyticsTab({ isMobile }: { isMobile: boolean }) {
               }} />
             </div>
           </div>
+          {entry.chattering && (
+            <span title={`Raised up to ${entry.max_per_hour} times in one hour. Raise the tag's on delay or alarm deadband (the tag editor suggests values).`} style={{
+              fontSize: 9, fontWeight: 700, letterSpacing: '.05em', padding: '1px 5px', borderRadius: 3,
+              color: 'var(--warn)', border: '1px solid var(--warn)', whiteSpace: 'nowrap',
+            }}>CHATTER {entry.max_per_hour}/h</span>
+          )}
           <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--cyan)', minWidth: 28, textAlign: 'right' }}>{entry.trigger_count}</span>
         </div>
       ))}
+      {top10.some(e => e.chattering) && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+          CHATTER: the alarm was raised 5 or more times in one hour. Open the tag and raise its on delay or alarm deadband; the editor suggests values from the tag's recent noise.
+        </div>
+      )}
     </div>
   )
 }
@@ -361,7 +373,7 @@ function AuditTab({ isMobile }: { isMobile: boolean }) {
             <div style={{ fontSize: 11, color: 'var(--muted)', marginBottom: 2 }}>{entry.details}</div>
           )}
           <div style={{ fontSize: 10, color: 'var(--muted)' }}>
-            {t('alarms.byName', { name: entry.performed_by || t('alarms.system') })}
+            <SourceBadge actor={entry.performed_by} />
           </div>
         </div>
       ))}
@@ -614,7 +626,7 @@ export function AlarmPanel({ onClose }: Props) {
                         {historyTarget === alarm.id && <AlarmHistory alarmId={alarm.id} />}
 
                         {alarm.acknowledged_at && (
-                          <span style={{ fontSize: 11, color: 'var(--ok)' }}>&#10003; {alarm.acknowledged_by ? t('alarms.acknowledgedBy', { name: alarm.acknowledged_by }) : t('alarms.acknowledged')}</span>
+                          <span style={{ fontSize: 11, color: 'var(--ok)' }}>&#10003; {t('alarms.acknowledged')}{alarm.acknowledged_by && <> <SourceBadge actor={alarm.acknowledged_by} /></>}</span>
                         )}
                       </div>
                     )

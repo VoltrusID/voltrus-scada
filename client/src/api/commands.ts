@@ -22,6 +22,10 @@ export interface Command {
   acked_at: number | null
   resolved_at: number | null
   created_by: string
+  /** The front end that queued it (session, api_key, mcp, flow, recipe); absent on older commands. */
+  origin?: string
+  /** Who sent it, for display (servers from v0.53). */
+  source?: { kind: string; label: string }
 }
 
 export interface CommandAuditEntry {

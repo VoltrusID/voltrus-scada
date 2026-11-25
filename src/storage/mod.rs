@@ -17,6 +17,7 @@ mod downsampling;
 mod egress;
 #[cfg(feature = "ethernet-ip")]
 mod enip_storage;
+mod faceplates;
 mod flows;
 mod historian;
 mod hub;
@@ -46,6 +47,7 @@ mod settings_roles;
 mod settings_scada;
 mod settings_seed;
 mod settings_shortcuts;
+mod template_links;
 #[cfg(test)]
 mod tests;
 mod users;

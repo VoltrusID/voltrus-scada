@@ -11,6 +11,7 @@
 #![allow(clippy::should_implement_trait)]
 
 pub mod ai_copilot;
+pub mod alarm_chatter;
 pub mod alarm_delay;
 pub mod alarm_eval;
 pub mod analytics;
@@ -43,6 +44,7 @@ pub mod edr_compat;
 #[cfg(feature = "ethernet-ip")]
 pub mod ethernet_ip;
 pub mod expression;
+pub mod faceplate;
 pub mod flow_engine;
 pub mod hardware_cert;
 pub mod health;
@@ -93,3 +95,53 @@ pub use app::run;
 // the built-in device templates are generated from them.
 #[path = "sim_profiles.rs"]
 mod sim_profiles;
+
+#[cfg(test)]
+mod drivers_in_the_binary {
+    /// Every protocol driver is a Cargo feature that the default build (the
+    /// one the release workflow ships) turns on, so the release binary carries
+    /// them all and never fetches a driver at run time (docs: README,
+    /// "Drivers ship in the binary").
+    const PROTOCOLS: [&str; 7] = [
+        "modbus",
+        "opcua",
+        "s7",
+        "ethernet-ip",
+        "dnp3",
+        "bacnet",
+        "mqtt-broker",
+    ];
+
+    #[test]
+    fn the_default_build_enables_every_protocol_driver() {
+        let manifest =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml")).unwrap();
+        let default = manifest
+            .lines()
+            .find(|l| l.trim_start().starts_with("default = ["))
+            .expect("a default feature list");
+        for p in PROTOCOLS {
+            assert!(
+                default.contains(&format!("\"{p}\"")),
+                "{p} is not a default feature: {default}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_release_workflow_builds_with_default_features() {
+        let wf = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/.github/workflows/release.yml"
+        ))
+        .unwrap();
+        let build = wf
+            .lines()
+            .find(|l| l.contains("--release --target") && l.contains("--bin voltrus"))
+            .expect("the release build line");
+        assert!(
+            !build.contains("--no-default-features") && !build.contains("--features"),
+            "{build}"
+        );
+    }
+}
