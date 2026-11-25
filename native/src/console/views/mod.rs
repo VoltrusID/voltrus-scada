@@ -664,6 +664,10 @@ pub(crate) fn alarm_source(console: &Console, alarm: &Alarm) -> String {
 /// reached 86.40`. The server's own message carries full float precision.
 pub(crate) fn alarm_summary(alarm: &Alarm) -> String {
     let severity = capitalized(&alarm.severity);
+    // A flow's event alarm crossed no limit: its message says what happened.
+    if crate::console::alarms::is_event(alarm) {
+        return format!("{severity}: {}", alarm.message);
+    }
     let verb = if alarm.alarm_type.eq_ignore_ascii_case("low") {
         "fell to"
     } else {
@@ -878,6 +882,13 @@ mod tests {
             ..Alarm::default()
         };
         assert_eq!(alarm_summary(&alarm), "Critical limit 85, reached 86.40");
+        let event = Alarm {
+            severity: "warning".into(),
+            alarm_type: "event".into(),
+            message: "Door open (flow)".into(),
+            ..Alarm::default()
+        };
+        assert_eq!(alarm_summary(&event), "Warning: Door open (flow)");
         assert_eq!(capitalized(""), "");
     }
 }

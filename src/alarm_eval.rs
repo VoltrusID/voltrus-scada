@@ -377,6 +377,8 @@ pub struct ActiveLimitAlarm {
     pub alarm_type: String,
     /// The limit the alarm was raised on.
     pub threshold: f64,
+    /// The deadband stored with the alarm when it was raised.
+    pub deadband: f64,
 }
 
 /// Why an active limit alarm is resolved although its value never came back
@@ -412,18 +414,30 @@ fn limit_for(thresholds: &Thresholds, alarm_type: &str, severity: &str) -> Resul
 ///
 /// A removed limit or a deleted tag clears the alarm whatever the tag's
 /// value; a changed limit needs a good value inside the new limit (with the
-/// tag's deadband) to clear it.
+/// deadband stored on the alarm) to clear it. On a tag with an off delay
+/// (ISA-18.2), the value must stay inside the changed limit for that long:
+/// `inside_since` keeps, per alarm id, when it was first seen inside (Unix
+/// seconds, `now` is the current time); an alarm whose value went back out
+/// loses its entry, so a noisy value at the new limit does not clear and
+/// re-raise the alarm on every pass.
 pub fn stale_alarms(
     active: &[ActiveLimitAlarm],
     sources: &[DataSource],
     snapshots: &[DeviceSnapshot],
+    inside_since: &mut HashMap<i64, i64>,
+    now: i64,
 ) -> Vec<StaleAlarm> {
+    let mut by_key: HashMap<&str, Vec<&DataSource>> = HashMap::new();
+    for ds in sources {
+        by_key.entry(ds.key.as_str()).or_default().push(ds);
+    }
+    let mut still_inside = std::collections::HashSet::new();
     let mut out = Vec::new();
     for alarm in active {
-        let same_key: Vec<&DataSource> = sources
-            .iter()
-            .filter(|ds| ds.key == alarm.source_key)
-            .collect();
+        let same_key: &[&DataSource] = by_key
+            .get(alarm.source_key.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
         let tags: Vec<&DataSource> = same_key
             .iter()
             .copied()
@@ -492,25 +506,35 @@ pub fn stale_alarms(
         let Some(value) = alarmable(resolve(tag, snapshots)) else {
             continue;
         };
-        let deadband = Thresholds::of(tag).deadband;
         let cleared = if direction == "low" {
-            value > limit + deadband
+            value > limit + alarm.deadband
         } else {
-            value < limit - deadband
+            value < limit - alarm.deadband
         };
-        if cleared {
-            out.push(stale(
-                "limit_changed",
-                format!(
-                    "{}: {label} changed from {was} to {}; {} is inside it",
-                    tag.name,
-                    format_limit(limit, tag.decimals, &tag.unit),
-                    format_reading(value, tag.decimals, &tag.unit)
-                ),
-                Some(value),
-            ));
+        if !cleared {
+            continue;
         }
+        let off_delay = tag.off_delay_secs.max(0);
+        if off_delay > 0 {
+            still_inside.insert(alarm.id);
+            let since = *inside_since.entry(alarm.id).or_insert(now);
+            if now - since < off_delay {
+                continue;
+            }
+        }
+        out.push(stale(
+            "limit_changed",
+            format!(
+                "{}: {label} changed from {was} to {}; {} is inside it",
+                tag.name,
+                format_limit(limit, tag.decimals, &tag.unit),
+                format_reading(value, tag.decimals, &tag.unit)
+            ),
+            Some(value),
+        ));
     }
+    inside_since
+        .retain(|id, _| still_inside.contains(id) && !out.iter().any(|s| s.alarm_id == *id));
     out
 }
 
@@ -860,7 +884,17 @@ mod tests {
             severity: severity.into(),
             alarm_type: alarm_type.into(),
             threshold,
+            deadband: 0.0,
         }
+    }
+
+    /// [`stale_alarms`] for tags without an off delay.
+    fn stale_now(
+        active: &[ActiveLimitAlarm],
+        sources: &[DataSource],
+        snapshots: &[DeviceSnapshot],
+    ) -> Vec<StaleAlarm> {
+        stale_alarms(active, sources, snapshots, &mut HashMap::new(), 0)
     }
 
     fn flow_tag(warn: f64, crit: f64, cfg: serde_json::Value) -> DataSource {
@@ -876,7 +910,7 @@ mod tests {
         let alarms = [active(7, "critical", "high", 90.0)];
         let tag = flow_tag(0.0, 0.0, serde_json::json!({}));
         let snaps = [snap(&[("flow", 1178.0)], &[], true)];
-        let stale = stale_alarms(&alarms, std::slice::from_ref(&tag), &snaps);
+        let stale = stale_now(&alarms, std::slice::from_ref(&tag), &snaps);
         assert_eq!(
             stale,
             vec![StaleAlarm {
@@ -888,13 +922,13 @@ mod tests {
         );
         // No good value (device offline) does not keep it: the limit is gone.
         let offline = [snap(&[("flow", 1178.0)], &[], false)];
-        let stale = stale_alarms(&alarms, std::slice::from_ref(&tag), &offline);
+        let stale = stale_now(&alarms, std::slice::from_ref(&tag), &offline);
         assert_eq!(stale.len(), 1);
         assert_eq!(stale[0].value, None);
         // Switched off with the enabled flag counts as removed too.
         let disabled = flow_tag(0.0, 90.0, serde_json::json!({"crit_enabled": false}));
         assert_eq!(
-            stale_alarms(&alarms, &[disabled], &snaps)[0].reason,
+            stale_now(&alarms, &[disabled], &snaps)[0].reason,
             "limit_removed"
         );
     }
@@ -903,7 +937,7 @@ mod tests {
     fn a_removed_low_limit_clears_its_alarm() {
         let alarms = [active(3, "warning", "low", 20.0)];
         let tag = flow_tag(0.0, 0.0, serde_json::json!({"low_crit": 10.0}));
-        let stale = stale_alarms(&alarms, &[tag], &[snap(&[("flow", 15.0)], &[], true)]);
+        let stale = stale_now(&alarms, &[tag], &[snap(&[("flow", 15.0)], &[], true)]);
         assert_eq!(stale[0].reason, "limit_removed");
         assert_eq!(
             stale[0].message,
@@ -916,7 +950,7 @@ mod tests {
         let alarms = [active(7, "critical", "high", 90.0)];
         let snaps = [snap(&[("flow", 1178.0)], &[], true)];
         let raised = flow_tag(0.0, 2000.0, serde_json::json!({}));
-        let stale = stale_alarms(&alarms, &[raised], &snaps);
+        let stale = stale_now(&alarms, &[raised], &snaps);
         assert_eq!(stale.len(), 1);
         assert_eq!(stale[0].reason, "limit_changed");
         assert_eq!(
@@ -925,21 +959,26 @@ mod tests {
         );
         // Raised, but the value is still over it: the alarm stays.
         let still_over = flow_tag(0.0, 1000.0, serde_json::json!({}));
-        assert!(stale_alarms(&alarms, &[still_over], &snaps).is_empty());
-        // Inside the new limit but not by the deadband: it stays.
-        let in_band = flow_tag(0.0, 1180.0, serde_json::json!({"deadband": 5.0}));
-        assert!(stale_alarms(&alarms, &[in_band], &snaps).is_empty());
+        assert!(stale_now(&alarms, &[still_over], &snaps).is_empty());
+        // Inside the new limit but not by the alarm's deadband: it stays. The
+        // deadband stored with the alarm counts, not the tag's current one.
+        let mut banded = alarms.clone();
+        banded[0].deadband = 5.0;
+        let in_band = flow_tag(0.0, 1180.0, serde_json::json!({}));
+        assert!(stale_now(&banded, &[in_band], &snaps).is_empty());
+        let tag_band_only = flow_tag(0.0, 1180.0, serde_json::json!({"deadband": 5.0}));
+        assert_eq!(stale_now(&alarms, &[tag_band_only], &snaps).len(), 1);
         // Without a good value a changed limit is not judged.
         let raised = flow_tag(0.0, 2000.0, serde_json::json!({}));
         let bad = [snap(&[("flow", 1178.0)], &[("flow", Quality::Bad)], true)];
-        assert!(stale_alarms(&alarms, &[raised], &bad).is_empty());
+        assert!(stale_now(&alarms, &[raised], &bad).is_empty());
     }
 
     #[test]
     fn a_lowered_low_limit_clears_its_alarm() {
         let alarms = [active(4, "critical", "low", 10.0)];
         let tag = flow_tag(0.0, 0.0, serde_json::json!({"low_crit": 5.0}));
-        let stale = stale_alarms(&alarms, &[tag], &[snap(&[("flow", 8.0)], &[], true)]);
+        let stale = stale_now(&alarms, &[tag], &[snap(&[("flow", 8.0)], &[], true)]);
         assert_eq!(stale[0].reason, "limit_changed");
     }
 
@@ -948,19 +987,19 @@ mod tests {
         let alarms = [active(7, "critical", "high", 90.0)];
         let tag = flow_tag(0.0, 90.0, serde_json::json!({}));
         let snaps = [snap(&[("flow", 50.0)], &[], true)];
-        assert!(stale_alarms(&alarms, &[tag], &snaps).is_empty());
+        assert!(stale_now(&alarms, &[tag], &snaps).is_empty());
     }
 
     #[test]
     fn a_deleted_or_unpolled_tag_clears_its_alarms() {
         let alarms = [active(7, "warning", "high", 80.0)];
-        let stale = stale_alarms(&alarms, &[], &[]);
+        let stale = stale_now(&alarms, &[], &[]);
         assert_eq!(stale[0].reason, "tag_deleted");
         assert_eq!(stale[0].message, "Tag plc.flow was deleted");
 
         let mut simulated = flow_tag(80.0, 90.0, serde_json::json!({}));
         simulated.source_type = "random_walk".into();
-        let stale = stale_alarms(&alarms, &[simulated], &[]);
+        let stale = stale_now(&alarms, &[simulated], &[]);
         assert_eq!(stale[0].reason, "not_alarmed");
     }
 
@@ -971,6 +1010,35 @@ mod tests {
         let mut with = flow_tag(0.0, 90.0, serde_json::json!({}));
         with.id = 2;
         let snaps = [snap(&[("flow", 1178.0)], &[], true)];
-        assert!(stale_alarms(&alarms, &[without, with], &snaps).is_empty());
+        assert!(stale_now(&alarms, &[without, with], &snaps).is_empty());
+    }
+
+    #[test]
+    fn a_changed_limit_waits_for_the_off_delay() {
+        let alarms = [active(7, "critical", "high", 90.0)];
+        let mut tag = flow_tag(0.0, 1180.0, serde_json::json!({}));
+        tag.off_delay_secs = 30;
+        let inside = [snap(&[("flow", 1178.0)], &[], true)];
+        let outside = [snap(&[("flow", 1181.0)], &[], true)];
+        let mut since = HashMap::new();
+        let tags = std::slice::from_ref(&tag);
+        // Just inside the raised limit: the delay starts, nothing clears yet.
+        assert!(stale_alarms(&alarms, tags, &inside, &mut since, 100).is_empty());
+        assert!(stale_alarms(&alarms, tags, &inside, &mut since, 120).is_empty());
+        // Noise takes it back over the limit: the delay starts again.
+        assert!(stale_alarms(&alarms, tags, &outside, &mut since, 125).is_empty());
+        assert!(since.is_empty());
+        assert!(stale_alarms(&alarms, tags, &inside, &mut since, 130).is_empty());
+        assert!(stale_alarms(&alarms, tags, &inside, &mut since, 159).is_empty());
+        // Inside for the whole off delay: it clears, and its entry goes.
+        let stale = stale_alarms(&alarms, tags, &inside, &mut since, 160);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].reason, "limit_changed");
+        assert!(since.is_empty());
+        // A removed limit still clears at once, delay or not.
+        let mut removed = flow_tag(0.0, 0.0, serde_json::json!({}));
+        removed.off_delay_secs = 30;
+        let stale = stale_alarms(&alarms, &[removed], &inside, &mut since, 200);
+        assert_eq!(stale[0].reason, "limit_removed");
     }
 }

@@ -74,7 +74,10 @@ class Alarm:
     message: str
     triggered_at: int  # unix seconds
     state: str  # 'active' | 'acknowledged' | 'shelved' | 'cleared'
-    alarm_type: str = "high"  # 'high' fires at >= threshold, 'low' at <=
+    # 'high' fires at >= threshold, 'low' at <=; 'event' is raised by a flow's
+    # alarm node, not by a limit (value and threshold 0), and resolves when
+    # acknowledged.
+    alarm_type: str = "high"
     deadband: float = 0.0
     resolved_at: Union[int, None] = None
     acknowledged_at: Union[int, None] = None

@@ -335,6 +335,10 @@ pub(crate) async fn serve(
                 String,
                 crate::alarm_delay::DelayState,
             > = std::collections::HashMap::new();
+            // Per alarm id: since when the value has been inside a changed
+            // limit, for tags with an off delay (see alarm_eval::stale_alarms).
+            let mut changed_limit_inside: std::collections::HashMap<i64, i64> =
+                std::collections::HashMap::new();
             let mut history_filter = crate::deadband::HistoryFilter::new();
             let mut tag_changes = crate::notification::TagChangeTracker::default();
             let tag_change_queue = crate::notification::TagChangeQueue::start(
@@ -416,7 +420,14 @@ pub(crate) async fn serve(
                     // whose tag was deleted, clear now: normal evaluation below
                     // only clears an alarm once the value is back inside the
                     // limit it was raised on, which may never happen.
-                    clear_stale_alarms(&storage, &sources, &snapshots, &alarm_ws_manager).await;
+                    clear_stale_alarms(
+                        &storage,
+                        &sources,
+                        &snapshots,
+                        &alarm_ws_manager,
+                        &mut changed_limit_inside,
+                    )
+                    .await;
                     for source in &sources {
                         // Only real device tags raise alarms, and only on a good
                         // value: a value that is missing, bad or stale leaves the
@@ -963,16 +974,26 @@ async fn clear_stale_alarms(
     sources: &[crate::models::DataSource],
     snapshots: &[crate::models::DeviceSnapshot],
     ws_manager: &crate::ws_manager::WsManager,
+    changed_limit_inside: &mut std::collections::HashMap<i64, i64>,
 ) {
     let active = match storage.list_unresolved_limit_alarms().await {
         Ok(active) if !active.is_empty() => active,
-        Ok(_) => return,
+        Ok(_) => {
+            changed_limit_inside.clear();
+            return;
+        }
         Err(e) => {
             tracing::warn!("Could not list active limit alarms: {e:#}");
             return;
         }
     };
-    let stale = crate::alarm_eval::stale_alarms(&active, sources, snapshots);
+    let stale = crate::alarm_eval::stale_alarms(
+        &active,
+        sources,
+        snapshots,
+        changed_limit_inside,
+        crate::timeutil::now_secs(),
+    );
     if stale.is_empty() {
         return;
     }

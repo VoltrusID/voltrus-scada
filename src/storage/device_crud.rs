@@ -1,5 +1,6 @@
 use super::Storage;
 use anyhow::{Context, Result};
+use rusqlite::OptionalExtension;
 
 use crate::models::{DataSource, Device, ScreenDataSource};
 
@@ -368,9 +369,42 @@ impl Storage {
             let sql = format!("UPDATE data_sources SET {} WHERE id = ?", parts.join(", "));
             let param_refs: Vec<&dyn rusqlite::types::ToSql> =
                 params.iter().map(|p| p.as_ref()).collect();
-            let changed = conn
+            let tx = conn.unchecked_transaction()?;
+            let old_key: Option<String> = match obj.get("key").and_then(|v| v.as_str()) {
+                Some(_) => tx
+                    .query_row(
+                        "SELECT key FROM data_sources WHERE id = ?1",
+                        rusqlite::params![id],
+                        |row| row.get(0),
+                    )
+                    .optional()?,
+                None => None,
+            };
+            let changed = tx
                 .execute(&sql, param_refs.as_slice())
                 .context("Update data source failed")?;
+            // A renamed tag keeps its active limit alarms (alarms are keyed by
+            // tag key): without this they would clear as `tag_deleted` and be
+            // raised again under the new key. Only when no other tag still has
+            // the old key; flow event alarms name their key in the flow and stay.
+            if let (Some(old), Some(new)) = (old_key, obj.get("key").and_then(|v| v.as_str()))
+                && old != new
+            {
+                let still_used: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM data_sources WHERE key = ?1",
+                    rusqlite::params![old],
+                    |row| row.get(0),
+                )?;
+                if still_used == 0 {
+                    tx.execute(
+                        "UPDATE alarms SET source_key = ?1
+                         WHERE source_key = ?2 AND resolved_at IS NULL
+                           AND alarm_type IN ('high', 'low')",
+                        rusqlite::params![new, old],
+                    )?;
+                }
+            }
+            tx.commit()?;
             Ok(changed > 0)
         })
         .await

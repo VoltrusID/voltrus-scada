@@ -515,7 +515,13 @@ fn wtp_snapshot(metric: &str, value: f64) -> crate::models::DeviceSnapshot {
 async fn clear_stale(storage: &Storage, snaps: &[crate::models::DeviceSnapshot]) -> usize {
     let active = storage.list_unresolved_limit_alarms().await.unwrap();
     let sources = storage.list_data_sources(None).await.unwrap();
-    let stale = crate::alarm_eval::stale_alarms(&active, &sources, snaps);
+    let stale = crate::alarm_eval::stale_alarms(
+        &active,
+        &sources,
+        snaps,
+        &mut std::collections::HashMap::new(),
+        0,
+    );
     storage.resolve_stale_alarms(&stale).await.unwrap().len()
 }
 
@@ -588,7 +594,11 @@ async fn tags_seeded_with_the_old_default_limits_are_found() {
     let storage = Storage::new_in_memory().unwrap();
     let id = intake_flow_tag(&storage, 80.0, 90.0).await;
     assert_eq!(
-        storage.tags_with_old_seeded_limits().await.unwrap(),
+        storage
+            .tags_with_old_seeded_limits()
+            .await
+            .unwrap()
+            .first_start,
         vec!["intake_flow".to_string()]
     );
     storage
@@ -684,6 +694,8 @@ async fn deleting_the_tag_clears_its_alarms_but_not_flow_alarms() {
         .create_alarm("intake_flow", "critical", 0.0, 0.0, "old flow", 0.0)
         .await
         .unwrap();
+    // The upgrade's migration retypes it.
+    rerun_migrations(&storage);
     storage.delete_data_source(id).await.unwrap();
     assert_eq!(clear_stale(&storage, &[]).await, 1);
     assert_eq!(only_reason(&storage, alarm).await, "tag_deleted");
@@ -696,4 +708,235 @@ async fn deleting_the_tag_clears_its_alarms_but_not_flow_alarms() {
         .collect();
     assert_eq!(active.len(), 2);
     assert!(active.contains(&flow) && active.contains(&legacy_flow));
+}
+
+fn rerun_migrations(storage: &Storage) {
+    let conn = storage.conn.lock().unwrap();
+    crate::storage::schema::init_schema(&conn).unwrap();
+}
+
+fn alarm_type_of(storage: &Storage, id: i64) -> String {
+    let conn = storage.conn.lock().unwrap();
+    conn.query_row("SELECT alarm_type FROM alarms WHERE id = ?1", [id], |r| {
+        r.get(0)
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn old_flow_alarms_become_events_but_a_real_zero_limit_alarm_stays_high() {
+    let storage = Storage::new_in_memory().unwrap();
+    let flow = storage
+        .create_alarm("pump", "critical", 0.0, 0.0, "Pump tripped (flow)", 0.0)
+        .await
+        .unwrap();
+    // A limit alarm on an enabled high limit of 0, reached at exactly 0.
+    let limit = storage
+        .create_alarm(
+            "pump",
+            "warning",
+            0.0,
+            0.0,
+            "Pump reached 0.0 (warning: 0.0)",
+            0.0,
+        )
+        .await
+        .unwrap();
+    rerun_migrations(&storage);
+    assert_eq!(alarm_type_of(&storage, flow), "event");
+    assert_eq!(alarm_type_of(&storage, limit), "high");
+    let active: Vec<i64> = storage
+        .list_unresolved_limit_alarms()
+        .await
+        .unwrap()
+        .iter()
+        .map(|a| a.id)
+        .collect();
+    assert_eq!(active, vec![limit]);
+}
+
+#[tokio::test]
+async fn unresolved_alarms_have_a_partial_index() {
+    let storage = Storage::new_in_memory().unwrap();
+    let conn = storage.conn.lock().unwrap();
+    let plan: String = conn
+        .query_row(
+            "EXPLAIN QUERY PLAN SELECT id FROM alarms
+             WHERE resolved_at IS NULL AND severity IN ('warning', 'critical')
+               AND alarm_type IN ('high', 'low')",
+            [],
+            |r| r.get(3),
+        )
+        .unwrap();
+    assert!(plan.contains("idx_alarms_unresolved"), "{plan}");
+}
+
+#[tokio::test]
+async fn an_event_alarm_does_not_hold_back_limit_alarms_on_its_key() {
+    let storage = Storage::new_in_memory().unwrap();
+    let event = storage
+        .create_alarm_with_type(
+            "tank",
+            "critical",
+            0.0,
+            0.0,
+            "Overfill (flow)",
+            0.0,
+            "event",
+        )
+        .await
+        .unwrap();
+    assert!(
+        !storage
+            .has_unresolved_alarm("tank", "critical")
+            .await
+            .unwrap()
+    );
+    assert!(!storage.has_any_unresolved_alarm("tank").await.unwrap());
+    // Acknowledging it with a cooldown starts no cooldown for limit alarms.
+    storage.acknowledge_alarm(event, "op", 600).await.unwrap();
+    assert!(!storage.is_in_cooldown("tank", "critical").await.unwrap());
+
+    storage
+        .create_alarm_with_type("tank", "critical", 99.0, 95.0, "high", 0.0, "high")
+        .await
+        .unwrap();
+    assert!(
+        storage
+            .has_unresolved_alarm("tank", "critical")
+            .await
+            .unwrap()
+    );
+    assert!(storage.has_any_unresolved_alarm("tank").await.unwrap());
+}
+
+#[tokio::test]
+async fn acknowledging_an_event_alarm_resolves_it() {
+    let storage = Storage::new_in_memory().unwrap();
+    let event = storage
+        .create_alarm_with_type(
+            "tank",
+            "critical",
+            0.0,
+            0.0,
+            "Overfill (flow)",
+            0.0,
+            "event",
+        )
+        .await
+        .unwrap();
+    let limit = storage
+        .create_alarm_with_type("tank", "warning", 90.0, 85.0, "high", 0.0, "high")
+        .await
+        .unwrap();
+    let change = storage.acknowledge_alarm(event, "op", 0).await.unwrap();
+    assert_eq!(change.unwrap().state, "resolved");
+    let audit = storage
+        .list_alarm_audit(Some(event), None, None, 10)
+        .await
+        .unwrap();
+    let resolved = audit.iter().find(|a| a.action == "resolved").unwrap();
+    assert_eq!(resolved.performed_by, "op");
+    assert!(resolved.details.contains("event_acknowledged"));
+
+    // A limit alarm acknowledged stays raised until its value is back.
+    let change = storage.acknowledge_alarm(limit, "op", 0).await.unwrap();
+    assert_eq!(change.unwrap().state, "acknowledged");
+
+    // Acknowledge-all resolves the event alarms among them.
+    let second = storage
+        .create_alarm_with_type(
+            "tank",
+            "warning",
+            0.0,
+            0.0,
+            "Level switch (flow)",
+            0.0,
+            "event",
+        )
+        .await
+        .unwrap();
+    let all = storage.acknowledge_all("op", 0).await.unwrap();
+    assert_eq!(all.len(), 1);
+    assert_eq!(
+        (all[0].alarm_id, all[0].state.as_str()),
+        (second, "resolved")
+    );
+}
+
+#[tokio::test]
+async fn template_tags_with_the_old_limits_are_found() {
+    let storage = Storage::new_in_memory().unwrap();
+    storage.create_device("vt_t", "T", 0).await.unwrap();
+    let mk = |key: &'static str, min: f64, max: f64, warn: f64, crit: f64, cfg: &'static str| {
+        let storage = storage.clone();
+        async move {
+            storage
+                .create_data_source(
+                    key, key, "", "#f97316", min, max, warn, crit, 0.0, 0, 1, "modbus", cfg,
+                    "vt_t", None, "gauge",
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let cfg = r#"{"template_id":"maritime"}"#;
+    // Range as limits, untouched.
+    mk("vt_t:GPS_SPD", 0.0, 40.0, 0.0, 40.0, cfg).await;
+    // A critical "above" alarm replaced the maximum, the minimum (0) is no limit.
+    mk("vt_t:ENG1_TMP", 0.0, 120.0, 0.0, 95.0, cfg).await;
+    // A warning "below" alarm (tank low at 15) stored as a high limit; the
+    // range maximum is still the critical limit.
+    mk("vt_t:TK-2_LVL", 0.0, 100.0, 15.0, 100.0, cfg).await;
+    // Configured since (flag written by the tag editor).
+    mk(
+        "vt_t:TK-3_LVL",
+        0.0,
+        100.0,
+        15.0,
+        100.0,
+        r#"{"template_id":"maritime","warn_enabled":true}"#,
+    )
+    .await;
+    let old = storage.tags_with_old_seeded_limits().await.unwrap();
+    assert!(old.first_start.is_empty());
+    assert_eq!(old.template_range, vec!["vt_t:GPS_SPD", "vt_t:TK-2_LVL"]);
+    assert_eq!(old.below_as_high, vec!["vt_t:TK-2_LVL"]);
+}
+
+#[tokio::test]
+async fn renaming_a_tag_keeps_its_active_alarms() {
+    let storage = Storage::new_in_memory().unwrap();
+    let id = intake_flow_tag(&storage, 0.0, 90.0).await;
+    let alarm = storage
+        .create_alarm_with_type("intake_flow", "critical", 95.0, 90.0, "high", 0.0, "high")
+        .await
+        .unwrap();
+    let event = storage
+        .create_alarm_with_type("intake_flow", "warning", 0.0, 0.0, "flow", 0.0, "event")
+        .await
+        .unwrap();
+    storage
+        .update_data_source(id, &serde_json::json!({"key": "wtp.intake_flow"}))
+        .await
+        .unwrap();
+    let key_of = |id: i64| {
+        let conn = storage.conn.lock().unwrap();
+        conn.query_row("SELECT source_key FROM alarms WHERE id = ?1", [id], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
+    };
+    assert_eq!(key_of(alarm), "wtp.intake_flow");
+    assert_eq!(key_of(event), "intake_flow", "a flow alarm keeps its key");
+    let active = storage.list_unresolved_limit_alarms().await.unwrap();
+    let sources = storage.list_data_sources(None).await.unwrap();
+    let stale = crate::alarm_eval::stale_alarms(
+        &active,
+        &sources,
+        &[wtp_snapshot("intake_flow", 95.0)],
+        &mut std::collections::HashMap::new(),
+        0,
+    );
+    assert!(stale.is_empty(), "{stale:?}");
 }

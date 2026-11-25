@@ -22,6 +22,34 @@ fn transition_of(conn: &rusqlite::Connection, id: i64) -> Option<AlarmTransition
     .ok()
 }
 
+/// A flow's `event` alarm has no limit to return inside, so nothing would
+/// ever clear it: acknowledging it also resolves it (the operator has seen
+/// the event; there is no condition left to watch). `ids` are the alarms just
+/// acknowledged; limit alarms among them are left alone.
+fn resolve_acknowledged_events(conn: &rusqlite::Connection, ids: &[i64], username: &str, now: i64) {
+    for &id in ids {
+        let changed = conn
+            .execute(
+                "UPDATE alarms SET resolved_at = ?1, state = 'resolved'
+                 WHERE id = ?2 AND alarm_type = 'event' AND resolved_at IS NULL",
+                rusqlite::params![now, id],
+            )
+            .unwrap_or(0);
+        if changed == 0 {
+            continue;
+        }
+        let _ = conn.execute(
+            "INSERT INTO alarm_audit_log (alarm_id, action, performed_by, details, created_at)
+             VALUES (?1, 'resolved', ?2, '{\"reason\":\"event_acknowledged\"}', ?3)",
+            rusqlite::params![id, username, now],
+        );
+        let _ = conn.execute(
+            "INSERT INTO alarm_journal (alarm_id, event, at, actor) VALUES (?1, 'resolved', ?2, ?3)",
+            rusqlite::params![id, now, username],
+        );
+    }
+}
+
 impl Storage {
     // ── Alarm lifecycle: resolve, acknowledge, shelf ──
 
@@ -126,8 +154,8 @@ impl Storage {
     }
 
     /// Unresolved alarms raised by limit evaluation: warning or critical,
-    /// high or low. Flow alarms are type `event`; ones from before that type
-    /// existed were stored as `high` with value and limit 0 and are left out.
+    /// high or low. Flow alarms are type `event` (older ones are retyped by a
+    /// migration) and are left out.
     pub async fn list_unresolved_limit_alarms(
         &self,
     ) -> Result<Vec<crate::alarm_eval::ActiveLimitAlarm>> {
@@ -135,12 +163,11 @@ impl Storage {
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             let mut stmt = conn.prepare(
-                "SELECT id, source_key, severity, COALESCE(alarm_type, 'high'), threshold
+                "SELECT id, source_key, severity, alarm_type, threshold, COALESCE(deadband, 0)
                  FROM alarms
                  WHERE resolved_at IS NULL
                    AND severity IN ('warning', 'critical')
-                   AND COALESCE(alarm_type, 'high') IN ('high', 'low')
-                   AND NOT (COALESCE(alarm_type, 'high') = 'high' AND threshold = 0 AND value = 0)",
+                   AND alarm_type IN ('high', 'low')",
             )?;
             let rows = stmt.query_map([], |row| {
                 Ok(crate::alarm_eval::ActiveLimitAlarm {
@@ -149,6 +176,7 @@ impl Storage {
                     severity: row.get(2)?,
                     alarm_type: row.get(3)?,
                     threshold: row.get(4)?,
+                    deadband: row.get(5)?,
                 })
             })?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -236,6 +264,7 @@ impl Storage {
                 "INSERT INTO alarm_journal (alarm_id, event, at, actor) VALUES (?1, 'acknowledged', ?2, ?3)",
                 rusqlite::params![id, now, username],
             );
+            resolve_acknowledged_events(&conn, &[id], &username, now);
             Ok(transition_of(&conn, id))
         })
         .await
@@ -283,6 +312,7 @@ impl Storage {
                 );
             }
 
+            resolve_acknowledged_events(&conn, &alarm_ids, &username, now);
             Ok(alarm_ids
                 .into_iter()
                 .filter_map(|id| transition_of(&conn, id))

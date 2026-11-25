@@ -419,9 +419,12 @@ pub(super) fn render(
         .into_any_element()
 }
 
-/// `HI` or `LO`: which side of its limit the value crossed.
+/// `HI` or `LO`: which side of its limit the value crossed. A flow's event
+/// alarm crossed no limit: `EVENT`.
 pub(super) fn direction(alarm: &Alarm) -> &'static str {
-    if alarm.alarm_type.eq_ignore_ascii_case("low") {
+    if alarms::is_event(alarm) {
+        "EVENT"
+    } else if alarm.alarm_type.eq_ignore_ascii_case("low") {
         "↓ LO"
     } else {
         "↑ HI"
@@ -627,19 +630,21 @@ fn alarm_row(
                 .flex()
                 .flex_col()
                 .items_end()
-                .child(value_with_unit(
-                    format_value(alarm.value),
-                    &unit,
-                    FONT_BODY,
-                    color,
-                    theme,
-                ))
-                .child(
-                    div()
-                        .text_size(FONT_CAPTION)
-                        .text_color(theme.fg_dim)
-                        .child(format!("limit {}", format_value(alarm.threshold))),
-                ),
+                .when(!alarms::is_event(alarm), |this| {
+                    this.child(value_with_unit(
+                        format_value(alarm.value),
+                        &unit,
+                        FONT_BODY,
+                        color,
+                        theme,
+                    ))
+                    .child(
+                        div()
+                            .text_size(FONT_CAPTION)
+                            .text_color(theme.fg_dim)
+                            .child(format!("limit {}", format_value(alarm.threshold))),
+                    )
+                }),
         )
         .child(
             div()
