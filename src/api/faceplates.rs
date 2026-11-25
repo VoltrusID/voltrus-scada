@@ -145,7 +145,7 @@ pub async fn update_faceplate(
     responses(
         (status = 200, body = serde_json::Value),
         (status = 404),
-        (status = 409, description = "SCADA symbols still open it"),
+        (status = 409, description = "SCADA symbols or equipment types still open it"),
     ),
     tag = "Screens",
     security(("api_key" = []), ("cookie_auth" = []))
@@ -164,6 +164,16 @@ pub async fn delete_faceplate(
                 "Faceplate '{id}' is opened by {} symbol(s) ({}); remove it from them first",
                 list.len(),
                 list.join(", ")
+            ),
+        ))));
+    }
+    let types = state.storage.faceplate_type_users(&id).await?;
+    if !types.is_empty() {
+        return Err(AppError(anyhow::Error::new(Rejected(
+            StatusCode::CONFLICT,
+            format!(
+                "Faceplate '{id}' is opened by equipment type(s) {}; change their faceplate first",
+                types.join(", ")
             ),
         ))));
     }

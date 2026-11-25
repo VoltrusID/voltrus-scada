@@ -12,7 +12,10 @@
 // It opens the Designer on the Plant Overview screen, drags a tag onto the
 // screen, binds a property to an expression, groups and aligns, undoes and
 // redoes, saves, reloads and checks the new component came back from the
-// server. With a screenshot directory it also writes the PR screenshots.
+// server. Then, on a scratch screen, it drops the Pump equipment type, places
+// the seeded instance P-101A and a new instance, checks both show live run
+// states, saves, checks the rows over REST and opens the faceplate in preview.
+// With a screenshot directory it also writes the PR screenshots.
 
 import assert from 'node:assert/strict'
 import { mkdirSync } from 'node:fs'
@@ -167,62 +170,108 @@ await page.keyboard.press('Control+s')
 await page.locator('[data-testid=designer-dirty]', { hasText: 'All changes saved' }).waitFor()
 assert.equal(await widgets(), before)
 
-if (shots) {
-  step('ISA-101 symbols and drag-to-bind on a scratch screen (screenshots)')
-  const created = await (await context.request.post(`${BASE}/api/v1/screens`, { data: { name: 'ISA-101 demo' } })).json()
-  try {
-    await page.goto(`${BASE}/designer?screen=${created.id}`)
-    await page.locator('[data-testid=designer-stage]').waitFor()
-    await page.waitForTimeout(800)
-    const dropAt = async (loc, x, y) => {
-      const p = await stagePoint(x, y)
-      const vb = await viewport.boundingBox()
-      await loc.dragTo(viewport, { targetPosition: { x: p.x - vb.x, y: p.y - vb.y } })
-    }
+step('equipment types: drop a Pump, place an existing instance and a new one, bindings live')
+const tagIds = Object.fromEntries((await (await context.request.get(`${BASE}/api/v1/data-sources`)).json()).map(t => [`${t.device_id}/${t.key}`, t.id]))
+const scratch = await (await context.request.post(`${BASE}/api/v1/screens`, { data: { name: 'Equipment demo' } })).json()
+try {
+  await page.goto(`${BASE}/designer?screen=${scratch.id}`)
+  await page.locator('[data-testid=designer-stage]').waitFor()
+  await page.locator('[data-testid=designer-equipment-pump]').waitFor()
+  const dropAt = async (loc, x, y) => {
+    const p = await stagePoint(x, y)
+    const vb = await viewport.boundingBox()
+    await loc.dragTo(viewport, { targetPosition: { x: p.x - vb.x, y: p.y - vb.y } })
+  }
+  const picker = page.locator('[data-testid=designer-instance-picker]')
+  const newWid = async before => (await page.evaluate(() => [...document.querySelectorAll('[data-testid=designer-widget]')].map(e => e.getAttribute('data-wid'))))
+    .find(id => !before.includes(id))
+  const wids = () => page.evaluate(() => [...document.querySelectorAll('[data-testid=designer-widget]')].map(e => e.getAttribute('data-wid')))
+
+  // An existing instance from the seeded plant.
+  let before = await wids()
+  await dropAt(page.locator('[data-testid=designer-equipment-pump]'), 420, 420)
+  await picker.waitFor()
+  await shot('10-equipment-picker')
+  await picker.locator('[data-testid="designer-instance-existing-P-101A"]').click()
+  await picker.waitFor({ state: 'detached' })
+  const wA = await newWid(before)
+  assert.ok(wA, 'P-101A placed')
+  assert.equal(await page.locator('[data-testid=designer-equipment-name]').textContent(), 'P-101A')
+  // Live: the symbol shows the pump's run state from the PLC, not NO DATA.
+  await page.waitForFunction(id => /RUNNING|STOPPED/.test(document.querySelector(`[data-wid="${id}"]`)?.textContent ?? ''), wA, { timeout: 15000 })
+
+  // A new instance: a Pump bound by its prefix to a tag no instance has yet.
+  before = await wids()
+  await dropAt(page.locator('[data-testid=designer-equipment-pump]'), 760, 420)
+  await picker.waitFor()
+  await picker.locator('[data-testid=designer-instance-tab-new]').click()
+  await picker.locator('[data-testid=designer-instance-name]').fill('P-311')
+  await picker.locator('[data-testid=designer-instance-device]').selectOption('wtp')
+  await picker.locator('[data-testid=designer-instance-prefix]').fill('air_blower')
+  await picker.locator('[data-testid=designer-instance-role][data-role=run][data-status=bound]').waitFor()
+  await shot('11-equipment-new-instance')
+  await picker.locator('[data-testid=designer-instance-create]').click()
+  await picker.waitFor({ state: 'detached' })
+  const wB = await newWid(before)
+  assert.ok(wB, 'P-311 placed')
+  await page.waitForFunction(id => /RUNNING|STOPPED/.test(document.querySelector(`[data-wid="${id}"]`)?.textContent ?? ''), wB, { timeout: 15000 })
+  await page.locator(`[data-wid="${wA}"]`).click()
+  await page.locator('[data-testid=designer-props-equipment]').waitFor()
+  await shot('12-equipment-properties')
+
+  step('save: the rows carry the instances and their tags')
+  await page.keyboard.press('Control+s')
+  await page.locator('[data-testid=designer-dirty]', { hasText: 'All changes saved' }).waitFor()
+  const eqRows = (await (await context.request.get(`${BASE}/api/v1/screens/${scratch.id}/scada-equipment`)).json()).items
+  const byInstance = Object.fromEntries(eqRows.map(r => [JSON.parse(r.config).equipment, { ...r, config: JSON.parse(r.config) }]))
+  assert.deepEqual(JSON.parse(byInstance['P-101A'].sensor_bindings), [tagIds['wtp/p101a_run']])
+  assert.equal(byInstance['P-101A'].config.faceplate, 'pump')
+  assert.equal(byInstance['P-101A'].config.faceplateMap.run, tagIds['wtp/p101a_run'])
+  assert.deepEqual(JSON.parse(byInstance['P-311'].sensor_bindings), [tagIds['wtp/air_blower_run']])
+  const inst = await (await context.request.get(`${BASE}/api/v1/equipment-instances/P-311`)).json()
+  assert.equal(inst.type, 'pump')
+
+  step('preview: clicking the pump opens its faceplate with live tags')
+  await page.keyboard.press('F5')
+  await page.locator('[data-testid=designer-preview]').waitFor()
+  await page.waitForTimeout(1500)
+  await page.locator('[data-testid=designer-preview]').getByText('P-101A', { exact: true }).click()
+  await page.locator('[role=dialog][aria-label="P-101A faceplate"]').waitFor()
+  await shot('13-equipment-faceplate')
+  await page.locator('[aria-label="Close faceplate"]').click()
+  await page.keyboard.press('F5')
+  await page.locator('[data-testid=designer-stage]').waitFor()
+
+  if (shots) {
+    step('ISA-101 symbol library on the scratch screen (screenshots)')
+    await page.locator('[data-testid=designer-components] input').first().fill('valve')
+    await page.waitForTimeout(300)
+    await shot('14-palette-search')
+    await page.locator('[data-testid=designer-components] input').first().fill('')
     const sym = k => page.locator(`[data-testid=designer-symbol-${k}]`)
-    await dropAt(page.locator('[data-testid=designer-equipment-pump]'), 380, 400)
-    await dropAt(sym('isa_line'), 540, 386)
-    await dropAt(page.locator('[data-testid=designer-equipment-valve]'), 700, 386)
-    await dropAt(sym('isa_line'), 860, 386)
-    await dropAt(sym('isa_tank'), 1020, 380)
-    await dropAt(sym('isa_motor'), 380, 580)
-    await dropAt(sym('isa_control_valve'), 700, 580)
-    await dropAt(sym('isa_heat_exchanger'), 1020, 580)
-    // Tags dropped onto the symbols bind them.
-    const bindTag = async (key, x, y) => {
-      await page.locator('[data-testid=designer-tag-browser] input').fill(key)
-      await dropAt(page.locator(`[data-testid=designer-tag][data-ref="wtp/${key}"]`), x, y)
+    const row = ['isa_pump_centrifugal', 'isa_pump_pd', 'isa_pump_dosing', 'isa_compressor', 'isa_blower', 'isa_fan', 'isa_agitator',
+      'isa_valve_gate', 'isa_valve_ball', 'isa_valve_butterfly', 'isa_valve_check', 'isa_valve_control', 'isa_valve_3way', 'isa_valve_solenoid',
+      'isa_tank_vertical', 'isa_tank_horizontal', 'isa_tank_cone', 'isa_silo', 'isa_clarifier', 'isa_hx_shell_tube', 'isa_hx_plate',
+      'isa_filter', 'isa_cyclone', 'isa_instrument', 'isa_reducer', 'isa_junction', 'isa_flow_arrow']
+    for (const [i, k] of row.entries()) {
+      await page.locator('[data-testid=designer-components] input').first().fill(k)
+      await sym(k).waitFor()
+      await dropAt(sym(k), 120 + (i % 9) * 200, 640 + Math.floor(i / 9) * 150)
     }
-    await bindTag('p101a_run', 380, 400)
-    await bindTag('xv101_open', 700, 380)
-    await bindTag('raw_tank_level', 1020, 380)
-    await bindTag('p101b_run', 380, 580)
-    await bindTag('fcv201_pos', 700, 580)
-    await page.locator('[data-testid=designer-tag-browser] input').fill('')
-    // Focus back on the canvas (a click on empty stage), then zoom to 100 %.
-    const empty = await stagePoint(1600, 950)
+    await page.locator('[data-testid=designer-components] input').first().fill('')
+    const empty = await stagePoint(1880, 1060)
     await page.mouse.click(empty.x, empty.y)
-    for (let i = 0; i < 3; i++) await page.keyboard.press('Control+=')
-    await page.evaluate(() => {
-      const v = document.querySelector('[data-testid=designer-viewport]')
-      const s = document.querySelector('[data-testid=designer-stage]').getBoundingClientRect()
-      const r = v.getBoundingClientRect()
-      const k = s.width / 1920
-      v.scrollLeft += s.left + 240 * k - r.left
-      v.scrollTop += s.top + 220 * k - r.top
-    })
-    await page.waitForTimeout(1500)
-    const pump = await stagePoint(380, 400)
-    await page.mouse.click(pump.x, pump.y)
-    await page.waitForTimeout(500)
-    await shot('08-isa101-equipment')
+    await page.waitForTimeout(800)
+    await shot('15-isa101-library')
     await page.keyboard.press('F5')
     await page.waitForTimeout(2000)
-    await shot('09-isa101-preview')
+    await shot('16-isa101-preview')
     await page.keyboard.press('F5')
-  } finally {
-    await context.request.delete(`${BASE}/api/v1/screens/${created.id}`)
+    // Unsaved symbols: discard on leave.
   }
+} finally {
+  await context.request.delete(`${BASE}/api/v1/screens/${scratch.id}`)
+  await context.request.delete(`${BASE}/api/v1/equipment-instances/P-311`)
 }
 } catch (e) {
   await shot('failure').catch(() => {})

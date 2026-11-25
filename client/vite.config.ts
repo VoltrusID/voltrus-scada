@@ -51,7 +51,8 @@ export default defineConfig({
   },
   server: {
     fs: {
-      allow: [root, path.dirname(coreSrc), path.dirname(enterpriseClient)],
+      // ../symbols: the ISA-101 symbol files (hmi/dataSymbols.tsx), shared with the native console.
+      allow: [root, path.dirname(coreSrc), path.dirname(enterpriseClient), path.resolve(root, '../symbols')],
     },
     proxy: {
       // Server serves the built client same-origin in production, so every

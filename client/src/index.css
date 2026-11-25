@@ -66,12 +66,19 @@
   --hmi-bulk-lo: #8a7148;
   --hmi-lcd: #0b1610;
   --hmi-badge: #0d0f12;
-  /* ISA-101 flat symbols (hmi/isa101.tsx): running = filled, stopped = hollow */
+  /* ISA-101 data symbols (symbols/*.json, rules in symbols/_styles.json): running = filled, stopped = hollow */
   --isa-line: #b4bcc6;
   --isa-on: #c9d0d8;
   --isa-off: #1d2128;
   --isa-level: #4a5361;
   --isa-text: #e8edf2;
+  /* Alarm priority badges: shape and number carry the priority too */
+  --isa-alarm-1: #f04646;
+  --isa-alarm-1-text: #ffffff;
+  --isa-alarm-2: #f5821f;
+  --isa-alarm-2-text: #111111;
+  --isa-alarm-3: #f2d22e;
+  --isa-alarm-3-text: #111111;
 }
 
 /* ── Light theme ── */
@@ -122,6 +129,12 @@
   --isa-off: #eceef1;
   --isa-level: #b3bac3;
   --isa-text: #111827;
+  --isa-alarm-1: #c81e1e;
+  --isa-alarm-1-text: #ffffff;
+  --isa-alarm-2: #e2700f;
+  --isa-alarm-2-text: #111111;
+  --isa-alarm-3: #e8c00e;
+  --isa-alarm-3-text: #111111;
 }
 
 html, body, #root {

@@ -157,6 +157,7 @@ fn canonicalize(sec: &Section, e: &mut Mapping) {
     if sec.name == super::templates::SECTION {
         super::templates::canonicalize(e);
     }
+    super::equipment::canonicalize(sec.name, e);
 }
 
 // ── Files ──

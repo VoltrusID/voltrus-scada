@@ -1,0 +1,22 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_hx_plate",
+  "name": "Plate exchanger",
+  "category": "Heat transfer",
+  "keywords": ["heat exchanger", "plate", "phe", "gasketed"],
+  "viewBox": [100, 100],
+  "size": [80, 80],
+  "binding": "none",
+  "ports": {"left": [2, 24], "right": [98, 76]},
+  "layers": [
+    {"d": "M2 24 H20 M80 24 H98 M2 76 H20 M80 76 H98", "paint": "line"},
+    {"d": "M20 10 H80 V90 H20 Z", "paint": "shell"},
+    {"d": "M32 18 V82 M38 18 V82 M44 18 V82 M50 18 V82 M56 18 V82 M62 18 V82 M68 18 V82", "paint": "detail"}
+  ],
+  "anchors": [
+    {"id": "hot_in", "x": 2, "y": 24, "dir": "left"},
+    {"id": "hot_out", "x": 98, "y": 76, "dir": "right"},
+    {"id": "cold_in", "x": 98, "y": 24, "dir": "right"},
+    {"id": "cold_out", "x": 2, "y": 76, "dir": "left"}
+  ]
+}

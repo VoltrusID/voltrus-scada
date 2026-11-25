@@ -1,0 +1,24 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_silo",
+  "name": "Silo",
+  "category": "Vessels",
+  "keywords": ["silo", "bin", "hopper", "bulk", "powder", "lime"],
+  "viewBox": [100, 160],
+  "size": [84, 134],
+  "binding": "level",
+  "ports": {"top": [50, 2], "bottom": [50, 158], "left": [14, 70], "right": [86, 70]},
+  "layers": [
+    {"d": "M50 10 V2", "paint": "line"},
+    {"d": "M50 140 V158", "paint": "line"},
+    {"d": "M14 104 V156 M86 104 V156", "paint": "line"},
+    {"d": "M14 28 L50 10 L86 28 V104 L58 140 H42 L14 104 Z", "paint": "shell"}
+  ],
+  "level": {"x": 14, "y": 10, "w": 72, "h": 130, "clip": "M14 28 L50 10 L86 28 V104 L58 140 H42 L14 104 Z"},
+  "text": [
+    {"x": 50, "y": 72, "from": "$level", "size": 18, "weight": 600, "font": "mono"}
+  ],
+  "options": [
+    {"key": "showPercent", "label": "Show %", "type": "boolean", "default": true}
+  ]
+}

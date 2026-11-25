@@ -1,0 +1,24 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_tank_vertical",
+  "name": "Vertical tank",
+  "category": "Vessels",
+  "keywords": ["tank", "vessel", "storage", "reservoir", "clearwell", "t"],
+  "viewBox": [100, 164],
+  "size": [90, 148],
+  "binding": "level",
+  "ports": {"top": [50, 2], "bottom": [50, 162], "left": [6, 120], "right": [94, 120]},
+  "layers": [
+    {"d": "M50 10 V2", "paint": "line"},
+    {"d": "M50 154 V162", "paint": "line"},
+    {"d": "M6 30 Q6 10 50 10 Q94 10 94 30 V134 Q94 154 50 154 Q6 154 6 134 Z", "paint": "shell"},
+    {"d": "M86 144.0 H94 M86 117.5 H94 M86 91.0 H94 M86 64.5 H94 M86 38.0 H94", "paint": "detail"}
+  ],
+  "level": {"x": 6, "y": 10, "w": 88, "h": 144, "clip": "M6 30 Q6 10 50 10 Q94 10 94 30 V134 Q94 154 50 154 Q6 154 6 134 Z"},
+  "text": [
+    {"x": 50, "y": 82, "from": "$level", "size": 18, "weight": 600, "font": "mono"}
+  ],
+  "options": [
+    {"key": "showPercent", "label": "Show %", "type": "boolean", "default": true}
+  ]
+}

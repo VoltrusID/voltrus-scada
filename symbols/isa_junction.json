@@ -1,0 +1,14 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_junction",
+  "name": "Junction",
+  "category": "Piping",
+  "keywords": ["junction", "tee", "node", "dot"],
+  "viewBox": [20, 20],
+  "size": [14, 14],
+  "binding": "none",
+  "ports": {"left": [10, 10], "right": [10, 10], "top": [10, 10], "bottom": [10, 10]},
+  "layers": [
+    {"d": "M5 10 A5 5 0 1 0 15 10 A5 5 0 1 0 5 10 Z", "paint": "solid"}
+  ]
+}

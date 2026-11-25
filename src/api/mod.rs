@@ -22,6 +22,7 @@ mod dnp3_devices;
 mod edr_compat;
 #[cfg(feature = "ethernet-ip")]
 mod enip_devices;
+pub(crate) mod equipment_types;
 mod excel_import;
 mod faceplates;
 mod firmware_catalog;
@@ -860,6 +861,23 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/screens", get(screens::list_screens))
         .route("/api/v1/faceplates", get(faceplates::list_faceplates))
         .route("/api/v1/faceplates/{id}", get(faceplates::get_faceplate))
+        .route("/api/v1/equipment-types", get(equipment_types::list_types))
+        .route(
+            "/api/v1/equipment-types/library",
+            get(equipment_types::get_library),
+        )
+        .route(
+            "/api/v1/equipment-types/{id}",
+            get(equipment_types::get_type),
+        )
+        .route(
+            "/api/v1/equipment-instances",
+            get(equipment_types::list_instances),
+        )
+        .route(
+            "/api/v1/equipment-instances/{name}",
+            get(equipment_types::get_instance),
+        )
         .route(
             "/api/v1/screens/{id}/data-sources",
             get(screens::list_screen_sensors),
@@ -1152,6 +1170,26 @@ pub fn create_router(state: AppState) -> Router {
         )
         .route("/api/v1/screens", post(screens::create_screen))
         .route("/api/v1/faceplates", post(faceplates::create_faceplate))
+        .route(
+            "/api/v1/equipment-types",
+            post(equipment_types::create_type),
+        )
+        .route(
+            "/api/v1/equipment-types/library/install",
+            post(equipment_types::install_library),
+        )
+        .route(
+            "/api/v1/equipment-types/{id}",
+            put(equipment_types::update_type).delete(equipment_types::delete_type),
+        )
+        .route(
+            "/api/v1/equipment-instances",
+            post(equipment_types::create_instance),
+        )
+        .route(
+            "/api/v1/equipment-instances/{name}",
+            put(equipment_types::update_instance).delete(equipment_types::delete_instance),
+        )
         .route(
             "/api/v1/faceplates/{id}",
             put(faceplates::update_faceplate).delete(faceplates::delete_faceplate),

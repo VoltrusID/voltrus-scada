@@ -26,7 +26,7 @@ export const ScadaPalette: React.FC<Props> = ({ sensors, onAddSymbol, onAddWidge
   const [search, setSearch] = useState('')
   const q = search.trim().toLowerCase()
 
-  const symbols = useMemo(() => SYMBOLS.filter(s => !q || s.name.toLowerCase().includes(q) || s.category.toLowerCase().includes(q)), [q])
+  const symbols = useMemo(() => SYMBOLS.filter(s => s.palette !== false && (!q || `${s.name} ${s.category} ${(s.keywords ?? []).join(' ')}`.toLowerCase().includes(q))), [q])
   const widgets = useMemo(() => (Object.values(WIDGET_MANIFESTS) as WidgetManifest[])
     .filter(m => !SYMBOL_BACKED.has(m.type) && (!q || m.displayName.toLowerCase().includes(q))), [q])
   // Add-on widget types (none in Community, so the section does not appear).

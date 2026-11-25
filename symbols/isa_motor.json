@@ -1,0 +1,18 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_motor",
+  "name": "Motor",
+  "category": "Rotating equipment",
+  "keywords": ["motor", "drive", "electric", "m"],
+  "viewBox": [100, 100],
+  "size": [80, 96],
+  "binding": "state",
+  "ports": {"right": [96, 50], "top": [50, 4]},
+  "layers": [
+    {"d": "M84 50 L98 50", "paint": "line"},
+    {"d": "M16 50 A34 34 0 1 0 84 50 A34 34 0 1 0 16 50 Z", "paint": "body"}
+  ],
+  "text": [
+    {"x": 50, "y": 51, "text": "M", "size": 30, "weight": 600, "onBody": true}
+  ]
+}

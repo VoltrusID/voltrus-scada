@@ -743,6 +743,58 @@ static DEVICE_TEMPLATES: Plain = Plain {
 
 // ── Equipment, shifts, metrics, assets ──
 
+/// Equipment types: the tag roles, bindings, symbol config and flow templates
+/// are JSON (checked and put in canonical form by `equipment.rs`).
+const EQUIPMENT_TYPE: &[Field] = &[
+    Field::r("id", Text),
+    Field::r("name", Text),
+    Field::d("description", Text, S("")).lean(),
+    Field::d("category", Text, S("")).lean(),
+    Field::r("symbol", Text),
+    Field::o("faceplate", Text),
+    Field::d("tags", Json, Arr),
+    Field::d("bindings", Json, Map).lean(),
+    Field::d("symbol_config", Json, Map).lean(),
+    Field::d("flows", Json, Arr).lean(),
+];
+
+static EQUIPMENT_TYPES: Plain = Plain {
+    table: "equipment_types",
+    pk: Pk::Text,
+    stamp: Stamp::Secs,
+    created: Some("created_at"),
+    updated: Some("updated_at"),
+    children: &[],
+    hook: Some(Hook {
+        export: super::equipment::export_type,
+        import: super::equipment::import_type,
+    }),
+};
+
+const EQUIPMENT_INSTANCE: &[Field] = &[
+    Field::r("name", Text),
+    Field::r("type", Text).col("type_id"),
+    Field::r("device", Text).col("device_id"),
+    Field::o("base", Int),
+    Field::o("prefix", Text),
+    Field::d("description", Text, S("")).lean(),
+    Field::o("symbol", Text),
+    Field::d("overrides", Json, Map).lean(),
+];
+
+static EQUIPMENT_INSTANCES: Plain = Plain {
+    table: "equipment_instances",
+    pk: Pk::Auto,
+    stamp: Stamp::Secs,
+    created: Some("created_at"),
+    updated: Some("updated_at"),
+    children: &[],
+    hook: Some(Hook {
+        export: super::equipment::export_instance,
+        import: super::equipment::import_instance,
+    }),
+};
+
 const EQUIPMENT_TEMPLATE: &[Field] = &[
     Field::r("name", Text),
     Field::o("industry", Text),
@@ -1121,6 +1173,26 @@ pub static SECTIONS: &[Section] = &[
         key: &["id"],
         unique: true,
         kind: Kind::Plain(&FACEPLATES),
+    },
+    Section {
+        name: "equipment_types",
+        label: "equipment type",
+        path: "equipment_types",
+        layout: Layout::File,
+        fields: EQUIPMENT_TYPE,
+        key: &["id"],
+        unique: true,
+        kind: Kind::Plain(&EQUIPMENT_TYPES),
+    },
+    Section {
+        name: "equipment_instances",
+        label: "equipment instance",
+        path: "equipment_instances",
+        layout: Layout::File,
+        fields: EQUIPMENT_INSTANCE,
+        key: &["name"],
+        unique: true,
+        kind: Kind::Plain(&EQUIPMENT_INSTANCES),
     },
     Section {
         name: "tags",

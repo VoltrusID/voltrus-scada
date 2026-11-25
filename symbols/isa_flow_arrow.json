@@ -1,0 +1,15 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_flow_arrow",
+  "name": "Flow arrow",
+  "category": "Piping",
+  "keywords": ["arrow", "flow direction"],
+  "viewBox": [40, 20],
+  "size": [32, 16],
+  "binding": "none",
+  "ports": {"left": [0, 10], "right": [38, 10]},
+  "layers": [
+    {"d": "M0 10 H24", "paint": "line", "width": 3},
+    {"d": "M22 2 L38 10 L22 18 Z", "paint": "solid"}
+  ]
+}

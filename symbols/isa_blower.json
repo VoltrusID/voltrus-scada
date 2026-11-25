@@ -1,0 +1,18 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_blower",
+  "name": "Blower",
+  "category": "Rotating equipment",
+  "keywords": ["blower", "centrifugal fan", "air", "aeration", "b"],
+  "viewBox": [100, 100],
+  "size": [80, 80],
+  "binding": "state",
+  "ports": {"left": [4, 54], "right": [92, 34]},
+  "layers": [
+    {"d": "M48 24 H92 V44 H76", "paint": "line"},
+    {"d": "M4 54 H18", "paint": "line"},
+    {"d": "M30 80 L24 94 H72 L66 80", "paint": "line"},
+    {"d": "M18 54 A30 30 0 1 0 78 54 A30 30 0 1 0 18 54 Z", "paint": "body"},
+    {"d": "M41 54 A7 7 0 1 0 55 54 A7 7 0 1 0 41 54 Z", "paint": "inner"}
+  ]
+}

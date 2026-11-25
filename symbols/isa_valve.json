@@ -1,0 +1,17 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_valve",
+  "name": "Valve (ISA-101, phase 1)",
+  "category": "Valves",
+  "keywords": ["valve"],
+  "viewBox": [100, 70],
+  "size": [90, 92],
+  "binding": "state",
+  "ports": {"left": [4, 45], "right": [96, 45]},
+  "layers": [
+    {"d": "M8 25 L50 45 L8 65 Z M92 25 L50 45 L92 65 Z", "paint": "body"},
+    {"d": "M50 45 L50 14", "paint": "line"},
+    {"d": "M38 12 L62 12", "paint": "line"}
+  ],
+  "palette": false
+}

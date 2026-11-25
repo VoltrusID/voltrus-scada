@@ -1,0 +1,23 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_tank",
+  "name": "Tank (ISA-101, phase 1)",
+  "category": "Vessels",
+  "keywords": ["tank"],
+  "viewBox": [100, 160],
+  "size": [90, 144],
+  "binding": "level",
+  "ports": {"top": [50, 4], "bottom": [50, 156], "left": [4, 130], "right": [96, 130]},
+  "layers": [
+    {"d": "M6 26 Q6 16 16 16 L84 16 Q94 16 94 26 L94 150 L6 150 Z", "paint": "shell"},
+    {"d": "M86 150 L94 150 M86 116.5 L94 116.5 M86 83 L94 83 M86 49.5 L94 49.5 M86 16 L94 16", "paint": "detail"}
+  ],
+  "level": {"x": 7, "y": 16, "w": 86, "h": 134},
+  "text": [
+    {"x": 50, "y": 83, "from": "$level", "size": 18, "weight": 600, "font": "mono"}
+  ],
+  "options": [
+    {"key": "showPercent", "label": "Show %", "type": "boolean", "default": true}
+  ],
+  "palette": false
+}

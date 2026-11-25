@@ -1,0 +1,18 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_cyclone",
+  "name": "Cyclone",
+  "category": "Separation",
+  "keywords": ["cyclone", "hydrocyclone", "separator", "dust"],
+  "viewBox": [100, 132],
+  "size": [80, 106],
+  "binding": "none",
+  "ports": {"left": [2, 24], "top": [50, 2], "bottom": [50, 130]},
+  "layers": [
+    {"d": "M2 24 H26", "paint": "line"},
+    {"d": "M50 12 V2", "paint": "line"},
+    {"d": "M50 112 V130", "paint": "line"},
+    {"d": "M26 12 H74 V50 L56 112 H44 L26 50 Z", "paint": "shell"},
+    {"d": "M42 12 V36 M58 12 V36", "paint": "detail"}
+  ]
+}

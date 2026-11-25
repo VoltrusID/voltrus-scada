@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://voltrus.id/schemas/voltrus-symbol-1.json",
+  "title": "Voltrus HMI symbol (voltrus-symbol/1)",
+  "description": "One ISA-101 symbol as data: symbols/<key>.json. Drawn by the web Designer and runtime (client/src/scada2/hmi/dataSymbols.tsx) and the native console from the same SVG path strings. State styling is shared, in symbols/_styles.json.",
+  "type": "object",
+  "required": ["key", "name", "category", "viewBox", "size", "binding", "layers"],
+  "additionalProperties": false,
+  "$defs": {
+    "point": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
+    "side": { "enum": ["left", "right", "top", "bottom"] },
+    "path": { "type": "string", "pattern": "^\\s*[Mm][\\sMmLlHhVvCcSsQqTtAaZz0-9.,eE+-]*$", "description": "SVG path data: commands and numbers only." },
+    "condition": {
+      "type": "object",
+      "description": "Drawn only when every named option has the value (or one of the values). Missing config keys take the option's default.",
+      "additionalProperties": {
+        "oneOf": [
+          { "type": ["string", "boolean"] },
+          { "type": "array", "items": { "type": ["string", "boolean"] }, "minItems": 1 }
+        ]
+      }
+    }
+  },
+  "properties": {
+    "$comment": { "type": "string" },
+    "format": { "const": "voltrus-symbol/1" },
+    "key": { "type": "string", "pattern": "^[a-z][a-z0-9_]{1,63}$", "description": "Equals the file name. Saved in a widget's config.symbol." },
+    "name": { "type": "string", "minLength": 1 },
+    "category": { "type": "string", "description": "Palette category: Rotating equipment, Valves, Vessels, Heat transfer, Separation, Instruments, Piping." },
+    "keywords": { "type": "array", "items": { "type": "string" }, "description": "Extra words the palette search matches." },
+    "viewBox": { "$ref": "#/$defs/point", "description": "Drawing coordinates: width, height. Strokes do not scale." },
+    "size": { "$ref": "#/$defs/point", "description": "Default widget size in stage pixels when placed." },
+    "binding": { "enum": ["state", "level", "value", "none"], "description": "How the primary tag drives the symbol: on/off state, level fill (min..max of the tag), value badge, or nothing." },
+    "stretch": { "type": "boolean", "description": "Stretch to the widget box (pipes) instead of keeping the aspect ratio." },
+    "palette": { "type": "boolean", "description": "false: kept so saved screens draw, not offered in the palette." },
+    "ports": {
+      "type": "object",
+      "description": "Nozzles where connections attach, per side, in viewBox units. Missing sides use the edge midpoint.",
+      "additionalProperties": false,
+      "properties": { "left": { "$ref": "#/$defs/point" }, "right": { "$ref": "#/$defs/point" }, "top": { "$ref": "#/$defs/point" }, "bottom": { "$ref": "#/$defs/point" } }
+    },
+    "anchors": {
+      "type": "array",
+      "description": "Named nozzles (for polyline pipes that snap to a specific nozzle).",
+      "items": {
+        "type": "object", "required": ["id", "x", "y", "dir"], "additionalProperties": false,
+        "properties": { "id": { "type": "string" }, "x": { "type": "number" }, "y": { "type": "number" }, "dir": { "$ref": "#/$defs/side" } }
+      }
+    },
+    "layers": {
+      "type": "array", "minItems": 1,
+      "description": "Drawn in order. The paint decides fill and stroke per live state (symbols/_styles.json).",
+      "items": {
+        "type": "object", "required": ["d", "paint"], "additionalProperties": false,
+        "properties": {
+          "d": { "$ref": "#/$defs/path" },
+          "paint": { "enum": ["body", "shell", "line", "detail", "inner", "solid", "flow", "run"] },
+          "width": { "type": "number", "description": "Base stroke width instead of the paint's." },
+          "if": { "$ref": "#/$defs/condition" }
+        }
+      }
+    },
+    "level": {
+      "type": "object", "required": ["x", "y", "w", "h"], "additionalProperties": false,
+      "description": "Level fill area of a level-bound symbol; fills from the bottom. Shell layers are filled first, the level drawn, then the outlines.",
+      "properties": { "x": { "type": "number" }, "y": { "type": "number" }, "w": { "type": "number" }, "h": { "type": "number" }, "clip": { "$ref": "#/$defs/path" } }
+    },
+    "text": {
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["x", "y", "size"], "additionalProperties": false,
+        "description": "Centred text, kept upright when the symbol is rotated or mirrored.",
+        "properties": {
+          "x": { "type": "number" }, "y": { "type": "number" },
+          "text": { "type": "string" },
+          "from": { "type": "string", "description": "An option key, or $level (level in %, hidden when unknown or showPercent is false)." },
+          "size": { "type": "number" }, "weight": { "type": "number" },
+          "font": { "enum": ["ui", "mono"] },
+          "onBody": { "type": "boolean", "description": "Sits on a body layer: contrasting colour while the body is filled." },
+          "if": { "$ref": "#/$defs/condition" }
+        }
+      }
+    },
+    "options": {
+      "type": "array",
+      "description": "Per-widget settings, stored in the widget's config under their key (actuator, mounting, arrow, ...).",
+      "items": {
+        "type": "object", "required": ["key", "label", "type", "default"], "additionalProperties": false,
+        "properties": {
+          "key": { "type": "string" }, "label": { "type": "string" },
+          "type": { "enum": ["select", "boolean", "string"] },
+          "values": { "type": "array", "items": { "type": "string" } },
+          "default": { "type": ["string", "boolean"] }
+        }
+      }
+    },
+    "runTag": { "type": "string", "description": "Label of the secondary run tag (config.runSensorId) that animates flow and run layers." }
+  }
+}

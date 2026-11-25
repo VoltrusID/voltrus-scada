@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Seed the WTP showcase: tag names/units/alarm limits, write policies, and SCADA screens.
+"""Seed the WTP showcase: tag names/units/alarm limits, write policies, equipment instances and SCADA screens.
+
+The process equipment is engineered with equipment types (docs/equipment-types.md): the server's starter types (Pump,
+Valve, Control valve, Tank, Analog instrument, Dosing pump, Filter) are installed, every pump, valve, tank, filter and
+transmitter is one instance line in INSTANCES, and the screens place symbols bound to those instances.
 
 Also creates the four vertical demo sites from verticals.py (solar with its Victron ESS, genset, energy meters,
 booster pumps) and the packaging line from line.py (S7, EtherNet/IP and Modbus PLCs): their devices on plant-sim.py,
@@ -18,7 +22,9 @@ import secrets
 import http.cookiejar
 import json
 import re
+from pathlib import Path
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import line
@@ -83,6 +89,40 @@ SETPOINTS = {'cl2_dose_sp': (1.0, 3.0)}
 TAGS.update(verticals.META)
 TAGS.update(line.META)
 
+# Equipment instances on the WTP PLC: (name, type, tag prefix). No base address: the plant's register map is not laid
+# out per equipment, so every instance binds the tags its type's key patterns name ({prefix}_run, {prefix}_fault, ...).
+INSTANCES = [
+    ('XV-101', 'valve', 'xv101'),
+    ('P-101A', 'pump', 'p101a'),
+    ('P-101B', 'pump', 'p101b'),
+    ('FT-101', 'analog', 'intake_flow'),
+    ('AT-101', 'analog', 'raw_ph'),
+    ('AT-102', 'analog', 'raw_turbidity'),
+    ('T-101', 'tank', 'raw_tank'),
+    ('T-201', 'tank', 'coag_tank'),
+    ('P-201', 'dosing_pump', 'coag'),
+    ('T-202', 'tank', 'flash_mix'),
+    ('AT-203', 'analog', 'clarifier_turbidity'),
+    ('P-204', 'pump', 'sludge_pump'),
+    ('F-301', 'filter', 'filter1'),
+    ('F-302', 'filter', 'filter2'),
+    ('F-303', 'filter', 'filter3'),
+    ('P-310', 'pump', 'backwash_pump'),
+    ('FCV-320', 'control_valve', 'fcv201'),
+    ('FT-320', 'analog', 'filtered_flow'),
+    ('P-401', 'dosing_pump', 'cl2'),
+    ('T-401', 'tank', 'clearwell'),
+    ('AT-402', 'analog', 'chlorine_residual'),
+    ('P-501A', 'pump', 'p301a'),
+    ('P-501B', 'pump', 'p301b'),
+    ('P-501C', 'pump', 'p301c'),
+    ('PT-501', 'analog', 'distribution_pressure'),
+    ('FT-501', 'analog', 'output_flow'),
+]
+# name -> the instance as GET /api/v1/equipment-instances returns it (with `resolved`), filled by ensure_equipment().
+EQUIP = {}
+SYMBOLS = Path(__file__).resolve().parents[2] / 'symbols'
+
 
 class Api:
     def __init__(self, base):
@@ -123,6 +163,24 @@ class Screen:
         })
         return eid
 
+    def equip(self, name, x, y, w, h, **config):
+        """A symbol bound to an equipment instance, as the Designer places it: the server's binding (symbol, primary
+        tag, faceplate and its role map, fault tag, the type's symbol settings) plus this symbol's own settings."""
+        rw = EQUIP[name]['resolved']['widget']
+        cfg = {k: v for k, v in rw['config'].items() if k != 'label'}
+        cfg.update(config)
+        cfg.setdefault('label', name)
+        cfg['equipment'] = name
+        self.n += 1
+        eid = f'e{self.n:03d}'
+        cfg['z'] = self.n
+        self.items.append({
+            'equipment_id': eid, 'equipment_type': 'symbol', 'equipment_name': cfg['label'],
+            'x': x, 'y': y, 'width': w, 'height': h, 'rotation': 0,
+            'sensor_bindings': json.dumps([] if rw['sensor_id'] is None else [rw['sensor_id']]), 'config': json.dumps(cfg),
+        })
+        return eid
+
     def sym(self, key, x, y, w, h, tag=None, **config):
         return self._add('symbol', x, y, w, h, tag, symbol=key, **config)
 
@@ -160,39 +218,38 @@ def overview(ids):
     s.area(1116, 104, 372, 552, 'Filtration', '3 × rapid gravity')
     s.area(1500, 104, 404, 552, 'Disinfection & Distribution')
 
-    # Intake
-    xv = s.sym('valve', 36, 300, 90, 106, 'xv101_open', label='XV-101', showStatus=True, writable=True)
-    pa = s.sym('pump', 176, 170, 90, 124, 'p101a_run', label='P-101A', showStatus=True, writable=True)
-    pb = s.sym('pump', 176, 400, 90, 124, 'p101b_run', label='P-101B', showStatus=True, writable=True, faultSensorId='p101b_fault')
-    at = s.sym('instrument', 316, 140, 84, 128, 'raw_turbidity', label='Raw turbidity', tagFunction='AT', loopNumber='102', showValue=True)
-    ft = s.sym('flow_meter', 310, 320, 96, 104, 'intake_flow', label='FT-101', showValue=True)
-    t101 = s.sym('tank', 448, 250, 110, 220, 'raw_tank_level', label='T-101 Raw')
+    # Intake. Process equipment is placed by instance (ISA-101 symbols from the equipment types); the clarifier and
+    # the flash mixer's agitator have no type and are plain symbols bound to their tags.
+    xv = s.equip('XV-101', 36, 300, 90, 112, actuator='motor')
+    pa = s.equip('P-101A', 176, 170, 90, 116)
+    pb = s.equip('P-101B', 176, 400, 90, 116)
+    at = s.equip('AT-102', 320, 140, 80, 118, tagFunction='AT', loopNumber='102')
+    ft = s.equip('FT-101', 320, 320, 80, 118, tagFunction='FT', loopNumber='101')
+    t101 = s.equip('T-101', 448, 250, 110, 220, label='T-101 Raw')
     s.pipe(xv, pa); s.pipe(xv, pb); s.pipe(pa, ft); s.pipe(pb, ft); s.pipe(ft, t101)
     s.pipe(at, ft, 'data')
 
     # Coagulation & clarification
-    t201 = s.sym('tank', 606, 380, 84, 172, 'coag_tank_level', label='T-201 Coag')
-    p201 = s.sym('dosing_pump', 606, 214, 84, 106, 'coag_pump_run', label='P-201', showStatus=True, writable=True)
-    t202 = s.sym('mixer', 740, 150, 110, 220, 'flash_mix_level', label='T-202 Flash mix', runSensorId='flash_mixer_run')
-    cl = s.sym('clarifier', 858, 400, 236, 144, 'clarifier_turbidity', label='CL-203 Clarifier', showValue=True, runSensorId='clarifier_rake_run')
-    p204 = s.sym('pump', 900, 540, 90, 106, 'sludge_pump_run', label='P-204 Sludge', writable=True)
+    t201 = s.equip('T-201', 606, 380, 84, 172, label='T-201 Coag')
+    p201 = s.equip('P-201', 606, 220, 84, 108)
+    t202 = s.equip('T-202', 740, 170, 110, 200, label='T-202 Flash mix')
+    s.sym('isa_agitator', 771, 150, 48, 96, 'flash_mixer_run', showLabel=False)
+    cl = s.sym('isa_clarifier', 864, 410, 224, 130, 'clarifier_turbidity', label='CL-203 Clarifier', showValue=True,
+               runSensorId='clarifier_rake_run')
+    p204 = s.equip('P-204', 940, 540, 84, 112, label='P-204 Sludge')
     s.pipe(t101, t202); s.pipe(t201, p201); s.pipe(p201, t202); s.pipe(t202, cl); s.pipe(cl, p204)
 
     # Filtration
-    filters = []
-    for i in range(3):
-        filters.append(s.sym('gravity_filter', 1140, 130 + i * 170, 140, 160, f'filter{i + 1}_headloss',
-                             label=f'F-30{i + 1} headloss', showValue=True, runSensorId=f'filter{i + 1}_backwash'))
-    fcv = s.sym('control_valve', 1360, 300, 90, 128, 'fcv201_pos', label='FCV-320', showValue=True)
+    filters = [s.equip(f'F-30{i + 1}', 1150, 124 + i * 176, 110, 168) for i in range(3)]
+    fcv = s.equip('FCV-320', 1360, 300, 90, 120, actuator='diaphragm')
     for f in filters:
         s.pipe(cl, f); s.pipe(f, fcv)
 
     # Disinfection & distribution
-    p401 = s.sym('dosing_pump', 1520, 150, 84, 106, 'cl2_pump_run', label='P-401 NaOCl', showStatus=True, writable=True)
-    t401 = s.sym('tank', 1528, 330, 110, 220, 'clearwell_level', label='T-401 Clearwell')
-    hl = [s.sym('pump', 1700, 140 + i * 150, 90, 124, f'p301{c}_run', label=f'P-501{c.upper()}', showStatus=True, writable=True)
-          for i, c in enumerate('abc')]
-    pt = s.sym('instrument', 1816, 290, 76, 128, 'distribution_pressure', label='To network', tagFunction='PT', loopNumber='501', showValue=True)
+    p401 = s.equip('P-401', 1520, 150, 84, 108, label='P-401 NaOCl')
+    t401 = s.equip('T-401', 1528, 330, 110, 220, label='T-401 Clearwell')
+    hl = [s.equip(f'P-501{c}', 1700, 140 + i * 150, 90, 116) for i, c in enumerate('ABC')]
+    pt = s.equip('PT-501', 1816, 290, 76, 118, label='To network', tagFunction='PT', loopNumber='501')
     s.pipe(fcv, t401); s.pipe(p401, t401)
     for p in hl:
         s.pipe(t401, p); s.pipe(p, pt)
@@ -214,8 +271,15 @@ def overview(ids):
 FOOTER = {'pad': 2, 'gap': 2, 'label': 15, 'value': 19, 'status': 12}
 
 
-def nozzle(x, y, w, h, vb, port, rows=('label', 'value')):
-    """Stage point of a symbol nozzle, mirroring the client's port math (resolve.ts portPoint) for waypoint routing."""
+def nozzle(x, y, w, h, key, side, rows=('label', 'value')):
+    """Stage point of a symbol's port, mirroring the client's port math (resolve.ts portPoint) for waypoint routing.
+    `key`, `side`: a data symbol's port, viewBox and ports read from its file (symbols/<key>.json, shared with the
+    browser and the console). The shaded code symbols pass their viewBox and port point instead."""
+    if isinstance(key, str):
+        sym = json.loads((SYMBOLS / f'{key}.json').read_text())
+        vb, port = sym['viewBox'], sym['ports'][side]
+    else:
+        vb, port = key, side
     foot = FOOTER['pad'] + sum(FOOTER[r] for r in rows) + FOOTER['gap'] * (len(rows) - 1) if rows else 0
     avail = h - foot
     sc = min(w / vb[0], avail / vb[1])
@@ -229,36 +293,38 @@ def filtration(ids):
     kpis(s, ['filtered_flow', 'treated_turbidity', 'fcv201_pos', 'clarifier_turbidity'])
     s.area(16, 104, 1888, 560, 'Filters', 'settled water → filter beds → clearwell')
 
-    cl = s.sym('clarifier', 40, 330, 236, 144, 'clarifier_turbidity', label='CL-203 settled water', showValue=True, runSensorId='clarifier_rake_run')
-    cl_out = nozzle(40, 330, 236, 144, (220, 100), (220, 22))
-    fcv_x, fcv_y = 1460, 300
-    fcv = s.sym('control_valve', fcv_x, fcv_y, 90, 128, 'fcv201_pos', label='FCV-320', showValue=True)
-    fcv_in = nozzle(fcv_x, fcv_y, 90, 128, (100, 100), (0, 72))
-    ft = s.sym('flow_meter', 1600, fcv_in[1] - nozzle(0, 0, 96, 104, (100, 70), (0, 46))[1], 96, 104, 'filtered_flow', label='FT-320', showValue=True)
-    t401 = s.sym('tank', 1770, 240, 110, 220, 'clearwell_level', label='T-401 Clearwell')
+    cl_box = (40, 330, 236, 140)
+    cl = s.sym('isa_clarifier', *cl_box, 'clarifier_turbidity', label='CL-203 settled water', showValue=True, runSensorId='clarifier_rake_run')
+    cl_out = nozzle(*cl_box, 'isa_clarifier', 'right')
+    fcv_box = (1460, 300, 90, 120)
+    fcv = s.equip('FCV-320', *fcv_box, actuator='diaphragm')
+    fcv_in = nozzle(*fcv_box, 'isa_valve_control', 'left')
+    ft_box = (1600, fcv_in[1] - nozzle(0, 0, 72, 110, 'isa_instrument', 'left')[1], 72, 110)
+    ft = s.equip('FT-320', *ft_box, tagFunction='FT', loopNumber='320')
+    t401 = s.equip('T-401', 1770, 240, 110, 220, label='T-401 Clearwell')
 
     inlet_header_y, bw_header_y = 186, 600
-    bw_x, bw_y = 330, 450
-    bw = s.sym('pump', bw_x, bw_y, 90, 124, 'backwash_pump_run', label='P-310 Backwash', showStatus=True, writable=True)
-    bw_out = nozzle(bw_x, bw_y, 90, 124, (100, 100), (97, 29.5), ('label', 'status'))
-    bl = s.sym('fan', 180, 450, 90, 124, 'air_blower_run', label='B-311 Air scour', showStatus=True, writable=True)
-    bl_out = nozzle(180, 450, 90, 124, (100, 100), (94, 50), ('label', 'status'))
+    bw_box = (330, 450, 90, 116)
+    bw = s.equip('P-310', *bw_box, label='P-310 Backwash')
+    bw_out = nozzle(*bw_box, 'isa_pump_centrifugal', 'right', ('label', 'status'))
+    bl_box = (180, 450, 90, 116)
+    bl = s.sym('isa_blower', *bl_box, 'air_blower_run', label='B-311 Air scour', showStatus=True, writable=True)
+    bl_out = nozzle(*bl_box, 'isa_blower', 'right', ('label', 'status'))
     for i in range(3):
-        x, y, w, h = 440 + i * 330, 210, 200, 200
-        f = s.sym('gravity_filter', x, y, w, h, f'filter{i + 1}_headloss', label=f'F-30{i + 1} headloss', showValue=True,
-                  runSensorId=f'filter{i + 1}_backwash')
-        f_in = nozzle(x, y, w, h, (140, 120), (0, 26))
-        f_out = nozzle(x, y, w, h, (140, 120), (140, 106))
-        f_bot = nozzle(x, y, w, h, (140, 120), (70, 120))
+        box = (470 + i * 330, 200, 150, 220)
+        f = s.equip(f'F-30{i + 1}', *box, label=f'F-30{i + 1} headloss')
+        f_in = nozzle(*box, 'isa_filter', 'left')
+        f_out = nozzle(*box, 'isa_filter', 'right')
+        f_bot = nozzle(*box, 'isa_filter', 'bottom')
         # Settled water header across the top, one drop per filter.
-        s.pipe(cl, f, waypoints=[[cl_out[0] + 30, cl_out[1]], [cl_out[0] + 30, inlet_header_y], [x - 24, inlet_header_y], [x - 24, f_in[1]]])
+        s.pipe(cl, f, waypoints=[[cl_out[0] + 30, cl_out[1]], [cl_out[0] + 30, inlet_header_y], [f_in[0] - 24, inlet_header_y], [f_in[0] - 24, f_in[1]]])
         # Filtered water collector at the nozzle height of FCV-320.
         s.pipe(f, fcv, waypoints=[[f_out[0] + 18, f_out[1]], [f_out[0] + 18, fcv_in[1]]])
         # Backwash header under the gallery, rising into each underdrain.
         s.pipe(bw, f, waypoints=[[bw_out[0] + 20, bw_out[1]], [bw_out[0] + 20, bw_header_y], [f_bot[0], bw_header_y]])
         # Air scour shares the underdrain; its header runs just below the backwash water header.
         s.pipe(bl, f, waypoints=[[bl_out[0] + 10, bl_out[1]], [bl_out[0] + 10, bw_header_y + 30], [f_bot[0], bw_header_y + 30]])
-        at = s.sym('instrument', x + 214, 236, 76, 128, f'filter{i + 1}_turbidity', label=f'AT-30{i + 1}', tagFunction='AT',
+        at = s.sym('isa_instrument', box[0] + 178, 236, 76, 118, f'filter{i + 1}_turbidity', label=f'AT-30{i + 1}', tagFunction='AT',
                    loopNumber=f'30{i + 1}', showValue=True)
         s.pipe(at, f, 'data')
     s.pipe(fcv, ft); s.pipe(ft, t401)
@@ -275,12 +341,13 @@ def power(ids):
     header(s, 'WTP-01 · High-Lift & Power', 'Clearwell → distribution · 400 V MCC · energy')
     kpis(s, ['power_kw', 'bus_voltage', 'power_factor', 'energy_kwh'])
     s.area(16, 104, 1100, 560, 'High-lift pumping', 'duty / assist / standby')
-    t401 = s.sym('tank', 60, 220, 130, 260, 'clearwell_level', label='T-401 Clearwell')
-    pt = s.sym('instrument', 900, 200, 84, 128, 'distribution_pressure', label='PT-501', tagFunction='PT', loopNumber='501', showValue=True)
-    ft = s.sym('flow_meter', 880, 410, 110, 110, 'output_flow', label='FT-501', showValue=True)
-    for i, c in enumerate('abc'):
-        p = s.sym('pump', 380, 150 + i * 160, 100, 136, f'p301{c}_run', label=f'P-501{c.upper()}', showStatus=True, writable=True)
-        v = s.sym('valve', 600, 168 + i * 160, 90, 106, f'p301{c}_run', label=f'XV-50{i + 1}', showStatus=True)
+    t401 = s.equip('T-401', 60, 220, 130, 260, label='T-401 Clearwell')
+    pt = s.equip('PT-501', 900, 200, 84, 120, tagFunction='PT', loopNumber='501')
+    ft = s.equip('FT-501', 900, 410, 84, 120, tagFunction='FT', loopNumber='501')
+    for i, c in enumerate('ABC'):
+        p = s.equip(f'P-501{c}', 380, 150 + i * 160, 100, 128)
+        # Discharge valves follow their pump's run tag; they are not instances of their own.
+        v = s.sym('isa_valve_gate', 600, 168 + i * 160, 90, 112, f'p301{c.lower()}_run', label=f'XV-50{i + 1}', showStatus=True)
         s.pipe(t401, p); s.pipe(p, v); s.pipe(v, pt)
     s.pipe(pt, ft)
     s.widget('semicircle_gauge', 860, 530, 200, 126, 'p301a_speed')
@@ -762,6 +829,30 @@ def link_line_tags(api):
         print(f'line PLC tags: {made} data sources linked to the poller cache, {dropped} duplicates removed')
 
 
+def ensure_equipment(api):
+    """Install the starter equipment types and create (or bring up to date) the WTP instances; fills EQUIP."""
+    r = api.call('POST', '/api/v1/equipment-types/library/install', {})
+    if r['installed']:
+        print(f"equipment types installed: {', '.join(r['installed'])}")
+    have = {i['name']: i for i in api.call('GET', '/api/v1/equipment-instances')}
+    made = changed = 0
+    for name, typ, prefix in INSTANCES:
+        body = {'name': name, 'type': typ, 'device': 'wtp', 'prefix': prefix}
+        cur = have.get(name)
+        if cur is None:
+            api.call('POST', '/api/v1/equipment-instances', body)
+            made += 1
+        elif any(cur.get(k) != v for k, v in body.items()):
+            keep = {k: cur[k] for k in ('base', 'description', 'symbol', 'overrides') if k in cur}
+            api.call('PUT', f'/api/v1/equipment-instances/{urllib.parse.quote(name)}', {**keep, **body})
+            changed += 1
+    EQUIP.clear()
+    EQUIP.update({i['name']: i for i in api.call('GET', '/api/v1/equipment-instances')})
+    missing = sorted(f"{n}.{r['role']}" for n, *_ in INSTANCES for r in EQUIP[n]['resolved']['roles'] if r['status'] == 'missing')
+    print(f'{len(INSTANCES)} equipment instances ({made} created, {changed} updated)'
+          + (f'; roles without a tag: {", ".join(missing)}' if missing else ''))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--url', default='http://localhost:3100')
@@ -806,6 +897,10 @@ def main():
     if missing:
         raise SystemExit(f'tags not found (is the server polling plant-sim?): {sorted(missing)}')
 
+    # Instances first: instantiating applies the types' attributes (units, limits, alarms, write policies) to the tags
+    # it binds. The showcase's own tag metadata and write policies below then win, on the first run and every rerun.
+    ensure_equipment(api)
+
     for key, (name, unit, lo, hi, warn, crit, dec, lw, lc) in TAGS.items():
         # Keep what the source config already holds (the S7/EtherNet/IP tag binding), set the low alarm limits.
         try:
@@ -837,7 +932,10 @@ def main():
         sid = screens[name]
         s = build(ids)
         bound = sorted({b for it in s.items for b in json.loads(it['sensor_bindings'])}
-                       | {v for it in s.items for k, v in json.loads(it['config']).items() if k in ('runSensorId', 'faultSensorId')})
+                       | {v for it in s.items for k, v in json.loads(it['config']).items()
+                          if k in ('runSensorId', 'faultSensorId', 'manualSensorId', 'interlockSensorId') and isinstance(v, int)}
+                       # Faceplate roles (commands, speeds, setpoints) stream too, so a faceplate opens with live values.
+                       | {v for it in s.items for v in (json.loads(it['config']).get('faceplateMap') or {}).values() if isinstance(v, int)})
         for b in bound:
             try:
                 api.call('POST', f'/api/v1/screens/{sid}/data-sources', {'data_source_id': b})

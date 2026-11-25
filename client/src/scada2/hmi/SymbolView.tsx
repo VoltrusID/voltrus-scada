@@ -3,6 +3,7 @@ import type { SensorConfig, SensorData } from '../../types'
 import type { WidgetProps } from '../widgets/types'
 import type { EquipState, SymbolDef } from './symbols'
 import { FOOTER, footerRows } from './resolve'
+import { alarmPriorityOf, symbolStyle, type Badge } from './symbolStyle'
 
 function tagState(data: SensorData | undefined, threshold: number): EquipState {
   if (!data || data.value == null) return 'stale'
@@ -25,6 +26,12 @@ export interface SymbolLiveState {
   /** Run tag alone (ignores the fault override): a faulted pump that is still running must offer Stop. */
   running: boolean
   alarm: 'crit' | 'warn' | null
+  /** Manual mode tag on (config.manualSensorId). */
+  manual: boolean
+  /** Interlock tag on (config.interlockSensorId). */
+  interlocked: boolean
+  /** Alarm priority of the primary tag: crit 1, warn 2. */
+  alarmPriority: 1 | 2 | null
 }
 
 /** Live state of a symbol from its bound tags. Shared by the symbol drawing and its faceplate. */
@@ -56,7 +63,8 @@ export function symbolLiveState(
 
   const alarm = bound && data ? (data.status === 'crit' ? 'crit' : data.status === 'warn' ? 'warn' : null) : null
   const running = bound && tagState(data, threshold) === 'running'
-  return { state, level, runState, running, alarm }
+  const on = (key: string) => config[key] != null && (currentValues[String(config[key])]?.value ?? 0) > 0.5
+  return { state, level, runState, running, alarm, manual: on('manualSensorId'), interlocked: on('interlockSensorId'), alarmPriority: alarmPriorityOf(alarm) }
 }
 
 /** Operator start/stop is offered for state-bound symbols that opted in (legacy pump/valve/motor widgets did by default). */
@@ -69,7 +77,8 @@ export function SymbolView({ def, instance, sensor, data, currentValues, editMod
   const uid = 's' + useId().replace(/[^a-zA-Z0-9]/g, '')
   const config = instance.config ?? {}
   const bound = instance.sensorId != null
-  const { state, level, runState, alarm } = symbolLiveState(def, config, instance.sensorId, sensor, data, currentValues)
+  const { state, level, runState, alarm, manual, interlocked, alarmPriority } = symbolLiveState(def, config, instance.sensorId, sensor, data, currentValues)
+  const badges = symbolStyle(state, { manual, interlocked, alarmPriority }).badges
 
   const value = formatValue(data, sensor)
   const unit = sensor?.unit ?? ''
@@ -77,9 +86,7 @@ export function SymbolView({ def, instance, sensor, data, currentValues, editMod
   const label: string = config.label ?? ''
   const rows = footerRows(def, config, bound)
 
-  const rotation = Number(config.rotation ?? 0)
-  const flip = !!config.flipX
-  const transform = [rotation ? `rotate(${rotation}deg)` : '', flip ? 'scaleX(-1)' : ''].filter(Boolean).join(' ')
+  const transform = symbolTransform(config)
   const inspectable = !editMode && bound
 
   const [vw, vh] = def.viewBox
@@ -97,8 +104,13 @@ export function SymbolView({ def, instance, sensor, data, currentValues, editMod
           preserveAspectRatio={def.stretch ? 'none' : 'xMidYMid meet'}
           style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', transform: transform || undefined }}
         >
-          {def.render({ uid, state, level, value, unit, runState, config })}
+          {def.render({ uid, state, level, value, unit, runState, config, manual, interlocked, alarmPriority })}
         </svg>
+        {badges.length > 0 && (
+          <div data-testid="symbol-badges" style={{ position: 'absolute', top: -4, right: -6, display: 'flex', flexDirection: 'column', gap: 2, pointerEvents: 'none' }}>
+            {badges.map(b => <StateBadge key={b.kind} b={b} />)}
+          </div>
+        )}
       </div>
       {(rows.label || rows.value || rows.status) && (
         // Fixed row heights: connection ports are computed from them (resolve.ts footerHeight).
@@ -117,6 +129,29 @@ export function SymbolView({ def, instance, sensor, data, currentValues, editMod
         </div>
       )}
     </div>
+  )
+}
+
+/** CSS transform of a symbol's drawing: mirror (flipX, flipY), then rotate. */
+export function symbolTransform(config: Record<string, any>): string | undefined {
+  const rotation = Number(config.rotation ?? 0)
+  return [rotation ? `rotate(${rotation}deg)` : '', config.flipX ? 'scaleX(-1)' : '', config.flipY ? 'scaleY(-1)' : ''].filter(Boolean).join(' ') || undefined
+}
+
+const BADGE_TITLE: Record<Badge['kind'], string> = { alarm: 'Alarm priority', manual: 'Manual mode', interlock: 'Interlocked' }
+
+/** ISA-101 indicator beside a symbol: alarm priority (shape, colour and number) or a grey M / I letter box. */
+export function StateBadge({ b }: { b: Badge }) {
+  const shape = b.shape === 'triangle' ? <path d="M8 0.8 L15.2 14.4 H0.8 Z" />
+    : b.shape === 'diamond' ? <path d="M8 0.5 L15.5 8 L8 15.5 L0.5 8 Z" />
+      : <rect x={b.shape === 'box' ? 1.5 : 1} y={b.shape === 'box' ? 1.5 : 1} width={b.shape === 'box' ? 13 : 14} height={b.shape === 'box' ? 13 : 14} rx={b.shape === 'box' ? 1 : 0} />
+  return (
+    <svg width={16} height={16} viewBox="0 0 16 16" className={b.blink ? 'hmi-blink' : undefined} data-badge={b.kind}>
+      <title>{`${BADGE_TITLE[b.kind]}${b.kind === 'alarm' ? ` ${b.text}` : ''}`}</title>
+      <g fill={b.fill} stroke={b.stroke} strokeWidth={1}>{shape}</g>
+      <text x="8" y={b.shape === 'triangle' ? 10 : 8.5} textAnchor="middle" dominantBaseline="central" fontSize={b.shape === 'triangle' ? 8.5 : 10} fontWeight={700}
+        fill={b.color} style={{ fontFamily: 'var(--font-ui)' }}>{b.text}</text>
+    </svg>
   )
 }
 

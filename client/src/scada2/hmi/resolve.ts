@@ -57,6 +57,7 @@ export function footerHeight(def: SymbolDef, config: Record<string, any>, bound:
 
 const ROTATE_CW: Record<PortSide, PortSide> = { left: 'top', top: 'right', right: 'bottom', bottom: 'left' }
 const MIRROR: Record<PortSide, PortSide> = { left: 'right', right: 'left', top: 'top', bottom: 'bottom' }
+const MIRROR_Y: Record<PortSide, PortSide> = { left: 'left', right: 'right', top: 'bottom', bottom: 'top' }
 
 /** Absolute stage point where a connection attaches to `side` of a widget, following the drawn symbol's nozzles. */
 export function portPoint(w: WidgetInstance, side: PortSide): [number, number] {
@@ -71,11 +72,13 @@ export function portPoint(w: WidgetInstance, side: PortSide): [number, number] {
   const { def, config } = r
   const rotation = (((Number(config.rotation ?? 0) % 360) + 360) % 360) as 0 | 90 | 180 | 270
   const flip = !!config.flipX
+  const flipY = !!config.flipY
 
-  // Which local side ends up facing `side` after mirror-then-rotate (CSS applies scaleX before rotate).
+  // Which local side ends up facing `side` after mirror-then-rotate (CSS applies scaleX/scaleY before rotate).
   let local: PortSide = side
   for (let i = 0; i < rotation / 90; i++) local = (Object.keys(ROTATE_CW) as PortSide[]).find(k => ROTATE_CW[k] === local)!
   if (flip) local = MIRROR[local]
+  if (flipY) local = MIRROR_Y[local]
 
   const [vw, vh] = def.viewBox
   const availH = Math.max(1, w.height - footerHeight(def, config, w.sensorId != null))
@@ -96,6 +99,7 @@ export function portPoint(w: WidgetInstance, side: PortSide): [number, number] {
   const cx = w.width / 2
   const cy = availH / 2
   if (flip) x = 2 * cx - x
+  if (flipY) y = 2 * cy - y
   if (rotation) {
     const a = (rotation * Math.PI) / 180
     const dx = x - cx

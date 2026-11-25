@@ -1,0 +1,17 @@
+{
+  "format": "voltrus-symbol/1",
+  "key": "isa_heat_exchanger",
+  "name": "Heat exchanger",
+  "category": "Heat transfer",
+  "keywords": ["heat exchanger", "generic", "coil"],
+  "viewBox": [100, 100],
+  "size": [80, 80],
+  "binding": "none",
+  "ports": {"left": [4, 50], "right": [96, 50], "top": [50, 4], "bottom": [50, 96]},
+  "layers": [
+    {"d": "M10 50 A40 40 0 1 0 90 50 A40 40 0 1 0 10 50 Z", "paint": "shell"},
+    {"d": "M4 50 L22 50 L34 30 L50 70 L66 30 L78 50 L96 50", "paint": "line"},
+    {"d": "M50 4 L50 10", "paint": "line"},
+    {"d": "M50 90 L50 96", "paint": "line"}
+  ]
+}

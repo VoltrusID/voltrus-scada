@@ -104,7 +104,9 @@ impl Storage {
 
     /// Replace a screen's equipment and/or connections (`None` leaves that
     /// table alone) in one transaction. With `base_revision`, nothing is
-    /// written when the screen's current revision differs.
+    /// written when the screen's current revision differs. Symbols naming an
+    /// equipment instance are bound to it in the same transaction
+    /// (docs/equipment-types.md).
     pub async fn save_scada_layout(
         &self,
         screen_id: &str,
@@ -123,7 +125,8 @@ impl Storage {
                     return Ok(LayoutSave::Conflict { revision: current });
                 }
             }
-            if let Some(items) = equipment {
+            if let Some(mut items) = equipment {
+                super::equipment_types::bind_rows(&tx, &mut items)?;
                 tx.execute(
                     "DELETE FROM scada_equipment WHERE screen_id = ?1",
                     rusqlite::params![screen_id],

@@ -2,9 +2,8 @@
 
 Design for the browser screen editor that replaces the 2D view's Edit mode:
 panes, bindings, a flat ISA-101 library, version history, live collaboration,
-mobile layouts and a widget SDK. Phase 1 is built (branch
-`feat/designer-phase1`); the later phases are designs, grounded in the code as it
-is on `main` after #29.
+mobile layouts and a widget SDK. Phases 1 and 2 are built; the later phases are
+designs, grounded in the code as it is on `main` after #29.
 
 Order: **1** editor, **2** symbol library and equipment types, **2b** widget SDK,
 **3** version history, **4** collaboration, **5** mobile and PWA. Version history
@@ -206,35 +205,137 @@ resize, copy between screens through the system clipboard, connection waypoint
 editing (the old editor does not have it either), screen size other than
 1920×1080, templates (UDT-like parameterised symbols).
 
-## Phase 2: ISA-101 library and equipment types
+## Phase 2: ISA-101 library and equipment types (built)
 
-Phase 1 ships the first flat set in `client/src/scada2/hmi/isa101.tsx` (category
-`ISA-101`): pump, motor, valve, control valve, tank, heat exchanger, process
-line (horizontal, vertical). Running/open is filled, stopped is hollow, fault is
-red and blinks, no data is magenta and dashed; colour never carries state alone.
-They use the `SymbolDef` contract, so ports, faceplates, the 3D twin and saved
-rows work unchanged. Colours are theme variables (`--isa-line`, `--isa-on`,
-`--isa-off`, `--isa-level`, `--isa-text`), defined for dark and light.
+### Symbols as data
 
-**Equipment types** (pump + faceplate in one drag) exist in a first form: the
-palette's *Equipment* tiles place the ISA symbol with a tag, a numbered label
-(`P-101`) and `config.faceplate` set to the definition of that kind, saving the
-starting definition first if the project has none.
+The ISA-101 library is one JSON file per symbol in `symbols/<key>.json` (format
+`voltrus-symbol/1`, schema `symbols/symbol.schema.json`), as
+[native-designer.md](native-designer.md) proposed: viewBox, default size, binding
+kind (`state`, `level`, `value`, `none`), ports (`left`/`right`/`top`/`bottom`, the
+contract connections already use) and named anchors, and layers of SVG path
+strings (`d`) with a paint (`body`, `shell`, `line`, `detail`, `inner`, `solid`,
+`flow`, `run`, `actuator` …). Options (`actuator`, `mounting`, `tagFunction`,
+`arrow`, …) become property fields, and a layer or text can carry `if:
+{option: value}`, so actuator variants are one file, not seven. Only path strings
+and simple text: the console can tessellate the same strings with lyon.
 
-To do in phase 2:
+38 files: centrifugal, positive displacement and dosing pumps, compressor, blower,
+fan, motor, agitator; gate, ball, butterfly, check, control, three-way and
+solenoid valves (actuator none, manual, diaphragm, motor, solenoid or piston on
+each); vertical, horizontal and cone-bottom tanks, silo, clarifier; shell-and-tube
+and plate heat exchangers; filter, cyclone; the ISA 5.1 instrument bubble (field,
+panel, DCS, PLC; function letters and loop number from config); pipes with flow
+arrows, junction, reducer, flow arrow, off-page connector. The eight phase-1 keys
+(`isa_pump`, `isa_valve`, `isa_tank`, …) are data files too, with their old
+sizes and ports, so saved screens draw as before; `isa101.tsx` is gone.
 
-* More symbols: compressor, fan, agitator, conveyor, filter, clarifier, column,
-  three-way valve, check valve, damper, instrument bubble, reducer, flanges,
-  arrows, off-page connectors. Rotation and mirror for all.
-* Lines as real polylines: a `line` widget with `config.points`, snapping to
-  symbol ports, drawn under symbols; flow animation from a tag. Replaces the
-  stretched process-line symbol.
-* **Equipment types as data**: `equipment_types` (id, name, symbol, faceplate id,
-  default role→tag pattern such as `{prefix}_run`, `{prefix}_fault`). Dropping
-  one asks for the prefix (`p101a`) and maps every role by pattern; unmatched roles
-  are listed for the engineer. Project section `equipment_types`, keyed by `id`.
-* Analog indicator set from the HP-HMI guidance: moving analog indicator (value
-  on its normal range with alarm limits), sparkline, deviation bar.
+**State styles** are shared, in `symbols/_styles.json` (kept equal to
+`client/src/scada2/hmi/symbolStyle.ts` by a test): grey thin outlines, running
+or open filled, stopped hollow, fault red and blinking, no data magenta and
+dashed. Colour is for abnormal states only. Manual mode and interlock are small
+`M` and `I` boxes beside the symbol (from `config.manualSensorId` and
+`config.interlockSensorId`); an alarm on the primary tag adds a priority badge
+coded by shape as well as colour (1 red square, blinks; 2 amber triangle; 3
+yellow diamond), so state reads in greyscale.
+
+Every symbol rotates (`config.rotation`), mirrors (`config.flipX`, and new
+`config.flipY`; ports follow both) and scales (non-scaling strokes).
+
+**Web:** `dataSymbols.tsx` loads the files with `import.meta.glob` into the same
+`SymbolDef` contract, so the old editor, the Designer, the runtime, faceplates and
+ports use them unchanged. The palette (`symbolPalette.ts`) groups them by
+category (Rotating equipment, Valves, Vessels, Heat transfer, Separation,
+Instruments, Piping) and searches name, key, keywords and category. **Server:**
+`build.rs` lists the file keys, so an equipment type naming an unknown symbol is
+refused. **Native:** not wired yet; the console still draws its own path data and
+falls back for unknown keys. Reading `symbols/*.json` there is the next step.
+
+### Equipment types
+
+A type (Pump, Valve, Tank, …) defines once the tags by role with key patterns
+(`{prefix}_run`) and optional register offsets, their limits, alarms and write
+policy, the faceplate, the symbol and which role drives which part of it, and
+optional flows (interlocks). An instance is one line: `{name: P-101A, type: pump,
+device: wtp}` (with `base: 40` it also creates the registers). Stored in
+`equipment_types` and `equipment_instances`, with REST, MCP tools, the project
+sections `equipment_types` and `equipment_instances` (expanded at plan time; the
+dry run lists what each instance generates), and propagation: changing a type
+re-applies it to every instance and re-binds every symbol of them, with a dry run
+that lists the affected instances first. Seven starter types ship with the
+server. All of it is in [equipment-types.md](equipment-types.md).
+
+A symbol bound to an instance carries `config.equipment: "<name>"`. The server
+fills the rest when the row is saved through any path (REST, MCP, Designer,
+project import): symbol, primary tag, `faultSensorId`/`runSensorId`/…,
+`faceplate` and `faceplateMap`; the type's symbol settings and the label only
+where the symbol has no value of its own (a symbol's `writable: false` stays);
+the symbol's other tags stay after the primary one. Binding happens in the
+transaction that saves the screen, so a save from a stale revision is still
+refused (409). Deleting an instance unbinds its symbols (`config.equipment`
+cleared, `config.unboundEquipment` kept); they stay drawn. Rows stay ordinary rows, so the runtime, the 3D twin and the native
+console need nothing new.
+
+### In the Designer
+
+* **Palette:** *Equipment types* above the symbols, one tile per type with its
+  symbol and instance count; *Add the starter types* when there are none.
+* **Drop a type** (or double-click it): the instance picker. *Existing* lists the
+  type's instances (and how many are on this screen); *New instance* asks for name
+  (the next free one is suggested: P-101A → P-101B), device, tag prefix (default
+  from the name) and base address (Modbus only; empty binds existing tags by
+  pattern). A dry run shows each role's tag and whether it is bound, created,
+  a fallback or missing. *Create and place* instantiates and places the symbol,
+  bound exactly as the server binds it (`resolved.widget`). Clicking it at
+  runtime opens its faceplate with the instance's tags.
+* **Project tree:** an *Equipment* folder, types and under them instances; an
+  instance shows how many of its symbols are on this screen and selects them.
+* **Properties:** a selected instance symbol shows its instance, type, device,
+  prefix, faceplate and the tag per role; the instance's overrides (symbol, a
+  role's tag key, skip a role) are edited there. *Preview* lists what the change
+  does to existing things: tag attributes before and after (write policies
+  included), registers moved, flows overwritten or deleted. A change of a write
+  policy asks for the electronic signature where the edition wants one.
+  *Apply to instance* saves the screen first if needed, changes the instance (every symbol of it, on every
+  screen, follows) and reloads the screen. *Re-bind* when the symbol is out of
+  date, *Unbind* to keep the symbol without the instance.
+
+Code: `client/src/designer/equipment.tsx` (palette section, picker, tree,
+property section), `equipmentModel.ts` (binding patch, names, no React),
+`client/src/queries/equipment.ts`.
+
+### WTP showcase
+
+`scenarios/wtp-hmi/seed.py` installs the starter types and creates 26 instances
+(pumps, dosing pumps, valves, control valve, tanks, filters, transmitters) on the
+`wtp` PLC, all bound by pattern (its register map is not laid out per equipment,
+so no base). The instances are created before the showcase sets its own tag
+names, limits and write policies, so those win on every run. The Plant Overview, Filtration and High-Lift screens place them with
+ISA-101 symbols; the clarifier, agitator, blower and discharge valves have no type
+and are plain symbols. Pipe waypoints are computed from the symbol files' ports.
+The vertical demo screens and the electrical single line are unchanged.
+
+### Screenshots
+
+WTP showcase seeded by `scenarios/wtp-hmi/seed.py`, taken by the smoke run.
+
+![Plant Overview with equipment instances, live](images/designer-phase2/06-preview-live.webp)
+![Dropping the Pump type: existing instances](images/designer-phase2/10-equipment-picker.webp)
+![A new instance with its dry run](images/designer-phase2/11-equipment-new-instance.webp)
+![Instance section of the property editor](images/designer-phase2/12-equipment-properties.webp)
+![The instance's faceplate in preview](images/designer-phase2/13-equipment-faceplate.webp)
+![Palette search](images/designer-phase2/14-palette-search.webp)
+![The ISA-101 library](images/designer-phase2/15-isa101-library.webp)
+
+### Still open
+
+* Lines as real polylines (`line` widget with `config.points`, snapping to
+  anchors) replacing the stretched pipe symbols.
+* Analog indicators from the HP-HMI guidance (moving analog indicator, deviation
+  bar, sparkline).
+* The console reading `symbols/*.json`.
+* A type editor in the Designer (types are edited over REST, MCP or a project
+  file; the Designer edits instances).
 
 ## Phase 2b: widget SDK
 
@@ -533,10 +634,19 @@ site.
   rename rewrites refs, export warnings), `project_yaml::binding_refs` (ref
   scanning and rewriting with escapes and string literals), bindings and
   `runSensorId` in `screen_round_trip` and the project import tests.
+* `client/tests/designerEquipment.test.ts`, `tests/flow/designerEquipment.test.tsx`:
+  binding patch, names, picker (existing, new with dry run, refused input),
+  property section and tree; `tests/symbolLibrary.test.ts` and
+  `tests/flow/symbolLibrary.test.tsx`: every symbol file valid, state styles,
+  palette search, flipY ports.
+* Server: `equipment_types::tests`, `api::tests::equipment_types` (CRUD, 409s,
+  instantiate, propagation, materialisation on save, library), the MCP tool
+  tests and the project round trip with types and instances.
 * `client/e2e/designer.smoke.mjs`: browser run against the WTP showcase: open,
   drag a tag in, bind an expression, undo/redo, marquee, align, group, save,
-  reload and check the rows over REST, preview, light theme, ISA-101 equipment
-  with drag-to-bind. Needs a server, `plant-sim.py` and `playwright-core`; not
+  reload and check the rows over REST, preview, light theme; then drop the Pump
+  type, place the seeded P-101A and a new instance, check both show live run
+  states, save and check the rows over REST, open the faceplate in preview. Needs a server, `plant-sim.py` and `playwright-core`; not
   part of `npm test`. `scripts/smoke-designer.sh <binary>` runs it end to end
   (simulator, server, seed, headless Chrome); CI runs that against the release
   binary in the embedded-UI job.
