@@ -19,14 +19,16 @@
 //! - **Saving**: [`named`] fills `equipment_name` as the web's `toAPI`
 //!   does; [`super::to_rows`] makes the `PUT` bodies.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
+use super::library::{self, FileBinding, ISA_CATEGORIES, OptionKind, Scalar, SymbolFile};
 use super::{
-    Binding, Category, Connection, Layout, STAGE_H, STAGE_W, SYMBOLS, SymbolDef, Widget,
+    Binding, Category, Connection, Layout, Library, STAGE_H, STAGE_W, SYMBOLS, SymbolDef, Widget,
     WidgetKind, quarter_turns, resolve, route, symbol_def,
 };
 
@@ -602,9 +604,9 @@ pub fn palette_widgets() -> impl Iterator<Item = &'static Manifest> {
         .filter(|manifest| !WidgetKind::parse(manifest.kind).is_equipment())
 }
 
-/// The library's categories in the palette's order (`SYMBOL_CATEGORIES`).
-pub const CATEGORIES: [Category; 8] = [
-    Category::Isa101,
+/// The shaded library's categories in the palette's order
+/// (`SYMBOL_CATEGORIES`).
+pub const SHADED_CATEGORIES: [Category; 7] = [
     Category::Rotating,
     Category::Valves,
     Category::Vessels,
@@ -614,9 +616,44 @@ pub const CATEGORIES: [Category; 8] = [
     Category::Piping,
 ];
 
+/// The palette's groups (`paletteGroups`): the ISA-101 categories that
+/// have a symbol to offer, in [`ISA_CATEGORIES`] order (others after
+/// them), then the shaded library's.
+pub fn palette_categories() -> Vec<Category> {
+    let mut isa: Vec<&'static str> = Vec::new();
+    for def in SYMBOLS.iter() {
+        if let Category::Isa(name) = def.category
+            && def.palette
+            && !isa.contains(&name)
+        {
+            isa.push(name);
+        }
+    }
+    let rank = |name: &str| ISA_CATEGORIES.iter().position(|c| *c == name).unwrap_or(99);
+    isa.sort_by_key(|name| rank(name));
+    isa.into_iter()
+        .map(Category::Isa)
+        .chain(SHADED_CATEGORIES)
+        .collect()
+}
+
+/// A palette group's heading: `ISA-101 · Valves`, `Shaded · Valves`.
+pub fn category_heading(category: Category) -> String {
+    let library = if matches!(category, Category::Isa(_)) {
+        "ISA-101"
+    } else {
+        "Shaded"
+    };
+    let name = SYMBOLS
+        .iter()
+        .find(|def| def.category == category)
+        .map_or_else(|| category_name(category), SymbolDef::category_name);
+    format!("{library} · {name}")
+}
+
 pub fn category_name(category: Category) -> &'static str {
     match category {
-        Category::Isa101 => "ISA-101",
+        Category::Isa(name) => name,
         Category::Rotating => "Rotating",
         Category::Valves => "Valves",
         Category::Vessels => "Vessels",
@@ -637,11 +674,47 @@ pub fn matches(query: &str, texts: &[&str]) -> bool {
             .any(|text| text.to_lowercase().contains(&query))
 }
 
-/// The symbols the palette lists for `query`: by name or category.
-pub fn palette_symbols(query: &str) -> impl Iterator<Item = &'static SymbolDef> + '_ {
-    SYMBOLS
+/// The symbols the palette lists for `query` (`filterSymbols`): with no
+/// query every symbol offered in the palette; with one, those whose name,
+/// key, category and keywords hold every word of it, ISA-101 first. A
+/// symbol kept for saved screens only (`palette: false`) is listed only
+/// when the query is its exact key.
+pub fn palette_symbols(query: &str) -> Vec<&'static SymbolDef> {
+    let query = query.trim().to_lowercase();
+    let all: &'static [SymbolDef] = &SYMBOLS;
+    if query.is_empty() {
+        return all.iter().filter(|def| def.palette).collect();
+    }
+    let words: Vec<&str> = query.split_whitespace().collect();
+    let hits: Vec<&'static SymbolDef> = all
         .iter()
-        .filter(move |def| matches(query, &[def.name, category_name(def.category)]))
+        .filter(|def| {
+            if !def.palette {
+                return def.key == query;
+            }
+            let keywords = def
+                .data
+                .map(|file| file.keywords.join(" "))
+                .unwrap_or_default();
+            let isa = if def.library == Library::Isa {
+                "isa-101 isa101"
+            } else {
+                ""
+            };
+            let hay = format!(
+                "{} {} {} {keywords} {isa}",
+                def.name,
+                def.key,
+                def.category_name()
+            )
+            .to_lowercase();
+            words.iter().all(|word| hay.contains(word))
+        })
+        .collect();
+    let (isa, shaded): (Vec<_>, Vec<_>) = hits
+        .into_iter()
+        .partition(|def| def.library == Library::Isa);
+    isa.into_iter().chain(shaded).collect()
 }
 
 // ── The symbols' fields (`symbolSchema`, `hmi/symbols.tsx`) ──────────────
@@ -671,18 +744,72 @@ const PIPE: &[Field] = &[tag("runSensorId", "Flow Tag (animates)")];
 const ROTATIONS: &[(&str, &str)] = &[("0", "0°"), ("90", "90°"), ("180", "180°"), ("270", "270°")];
 
 /// A symbol's own fields (`SymbolDef.fields`).
-fn own_fields(key: &str) -> &'static [Field] {
-    match key {
-        "tank" | "tank_horizontal" | "silo" | "isa_tank" => VESSEL,
+fn own_fields(def: &SymbolDef) -> &'static [Field] {
+    if def.data.is_some() {
+        return DATA_FIELDS.get(def.key).map_or(&[], Vec::as_slice);
+    }
+    match def.key {
+        "tank" | "tank_horizontal" | "silo" => VESSEL,
         "mixer" => MIXER,
         "clarifier" => CLARIFIER,
         "gravity_filter" => GRAVITY_FILTER,
         "instrument" => INSTRUMENT,
-        "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee" | "isa_line" | "isa_line_vertical" => {
-            PIPE
-        }
+        "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee" => PIPE,
         _ => &[],
     }
+}
+
+/// The fields of the symbol files (`fieldsOf`), made once: their options,
+/// their run tag, and for state symbols the manual mode and interlock tags.
+static DATA_FIELDS: LazyLock<HashMap<&'static str, Vec<Field>>> = LazyLock::new(|| {
+    library::files()
+        .iter()
+        .map(|file| (file.key.as_str(), data_fields(file)))
+        .collect()
+});
+
+fn data_fields(file: &'static SymbolFile) -> Vec<Field> {
+    let mut out = Vec::new();
+    for option in &file.options {
+        let (key, label) = (option.key.as_str(), option.label.as_str());
+        out.push(match (option.kind, &option.default) {
+            (OptionKind::Select, default) => {
+                // Made once per file, for the life of the program.
+                let values: &'static [(&'static str, &'static str)] = Box::leak(
+                    option
+                        .values
+                        .iter()
+                        .map(|value| (value.as_str(), value.as_str()))
+                        .collect::<Vec<_>>()
+                        .into_boxed_slice(),
+                );
+                let init = match default {
+                    Scalar::Text(text) => text.as_str(),
+                    Scalar::Flag(true) => "true",
+                    Scalar::Flag(false) => "false",
+                };
+                select(key, label, init, values)
+            }
+            (OptionKind::Boolean, Scalar::Flag(init)) => flag(key, label, *init),
+            (OptionKind::Boolean, Scalar::Text(text)) => flag(key, label, !text.is_empty()),
+            (OptionKind::String, Scalar::Text(text)) => text_field(key, label, text),
+            (OptionKind::String, Scalar::Flag(init)) => {
+                text_field(key, label, if *init { "true" } else { "false" })
+            }
+        });
+    }
+    if let Some(label) = &file.run_tag {
+        out.push(tag("runSensorId", label));
+    }
+    if file.binding == FileBinding::State {
+        out.push(tag("manualSensorId", "Manual Mode Tag"));
+        out.push(tag("interlockSensorId", "Interlock Tag"));
+    }
+    out
+}
+
+const fn text_field(key: &'static str, label: &'static str, init: &'static str) -> Field {
+    text(key, label, init)
 }
 
 /// The inspector's fields for a symbol: the label, the binding's, the
@@ -706,11 +833,12 @@ pub fn symbol_fields(def: &SymbolDef, legacy: bool, default_writable: bool) -> V
             flag("writable", "Operator Start/Stop", default_writable),
         ]);
     }
-    fields.extend_from_slice(own_fields(def.key));
+    fields.extend_from_slice(own_fields(def));
     if !def.stretch {
         fields.extend([
             select("rotation", "Rotation", "0", ROTATIONS),
             flag("flipX", "Mirror", false),
+            flag("flipY", "Flip Vertical", false),
         ]);
     }
     fields

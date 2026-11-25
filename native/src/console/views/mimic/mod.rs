@@ -1052,12 +1052,17 @@ fn on_scroll(console: &mut Console, event: &ScrollWheelEvent, cx: &mut Context<C
 // ── Rendering ─────────────────────────────────────────────────────────────
 
 /// Whether a symbol has a part that moves in this state.
-fn animates(key: &str, live: &mimic::Live) -> bool {
+fn animates(def: &mimic::SymbolDef, live: &mimic::Live) -> bool {
     use mimic::EquipState::Running;
-    match key {
+    if let Some(file) = def.data {
+        // A symbol file moves only its flow layers, while the run tag is on.
+        return live.run_state == Running && file.has_flow();
+    }
+    match def.key {
         "pump" | "fan" | "conveyor" => live.state == Running,
-        "mixer" | "clarifier" | "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee"
-        | "isa_line" | "isa_line_vertical" => live.run_state == Running,
+        "mixer" | "clarifier" | "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee" => {
+            live.run_state == Running
+        }
         _ => false,
     }
 }
@@ -1311,7 +1316,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         || items.iter().any(|item| {
             item.symbol
                 .as_ref()
-                .is_some_and(|(resolved, live)| animates(resolved.def.key, live))
+                .is_some_and(|(resolved, live)| animates(resolved.def, live))
         });
     let banner_blinks = banner::blinking(&console.alarms);
     let blinking = banner_blinks
@@ -1980,12 +1985,27 @@ mod tests {
             run_state,
             running: false,
             alarm: None,
+            manual: false,
+            interlocked: false,
         };
         use mimic::EquipState::{Idle, Running, Stopped};
-        assert!(animates("pump", &live(Running, Idle)));
-        assert!(!animates("pump", &live(Stopped, Idle)));
-        assert!(!animates("inverter", &live(Running, Idle)), "nothing turns");
-        assert!(animates("pipe", &live(Idle, Running)));
-        assert!(animates("mixer", &live(Idle, Running)));
+        let def = |key| mimic::symbol_def(key).expect("a library symbol");
+        assert!(animates(def("pump"), &live(Running, Idle)));
+        assert!(!animates(def("pump"), &live(Stopped, Idle)));
+        assert!(
+            !animates(def("inverter"), &live(Running, Idle)),
+            "nothing turns"
+        );
+        assert!(animates(def("pipe"), &live(Idle, Running)));
+        assert!(animates(def("mixer"), &live(Idle, Running)));
+        assert!(
+            animates(def("isa_line"), &live(Idle, Running)),
+            "its flow layer"
+        );
+        assert!(!animates(def("isa_line"), &live(Idle, Idle)));
+        assert!(
+            !animates(def("isa_tank"), &live(Idle, Running)),
+            "no flow layer"
+        );
     }
 }

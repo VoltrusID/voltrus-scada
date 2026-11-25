@@ -22,7 +22,7 @@ its own.
 | Bindings | `config.bindings[prop] = {kind: tag|expr|map, …}`, tags by project ref `device/key` (`device/key#2` for the second tag sharing it) | `designer/bindings.ts` | `designer::bindings` |
 | Expressions | grammar, values, errors, limits (2048 characters, 1000 parts, 100 levels) | `designer/expr.ts` | `designer::expr` (port) |
 | Placement menu | what a tag dropped on the empty stage can become | `dropChoices` | `designer::arrange::drop_choices` |
-| Symbols | `SymbolDef` keys, ports, `config.symbol` | `scada2/hmi/` (SVG) | `mimic::SYMBOLS` + `console/views/mimic/symbols.rs` (SVG path data tessellated with lyon) |
+| Symbols | `symbols/<key>.json` (`voltrus-symbol/1`) and `symbols/_styles.json`: keys, ports, view boxes, layers, options, state styles; `config.symbol` | `scada2/hmi/dataSymbols.tsx`, `symbolStyle.ts` (SVG) | `mimic::library` (embedded at build time) + `console/views/mimic/symbols.rs` (the same path data tessellated with lyon) |
 | Permissions | configure roles (admin, demo, integration) save screens | server | `Console::may_configure`, server |
 
 The native model already existed for the mimic viewer and its editor
@@ -71,10 +71,10 @@ it level with the web Designer's rules. What changed to match:
 * **Per-frame cost.** Each widget's bindings are parsed when its config
   changes and evaluated again only when a tag they read changes
   (`designer::BoundCache`); the inspector shares one parse cache.
-* **ISA-101 symbols.** The flat ISA-101 set (pump, motor, valve, control
-  valve, tank, heat exchanger, process lines) is drawn natively with the
-  web's geometry and colours, so the placement menu's choices and screens
-  built with them look the same.
+* **ISA-101 symbols from the shared files.** The console reads the same
+  `symbols/*.json` and `symbols/_styles.json` as the web (see *Symbols*
+  below), so every ISA-101 symbol of phase 2, and the placement menu's
+  choices, draw with the web's geometry, state styles and colours.
 
 **Proof, not promises.** `native/tests/fixtures/designer/web-save.mts` runs the
 web Designer's own `model.ts`, `bindings.ts` and `layout.ts` (Node, no build)
@@ -101,9 +101,21 @@ node native/tests/fixtures/designer/web-save.mts
 node native/tests/fixtures/designer/expr-corpus.mts
 ```
 
-The ISA-101 symbols are hand-ported until the symbol data files of the
-Designer's phase 2 replace both copies; `symbols::tests` fail when the
-native paths, view boxes, sizes or ports drift from `isa101.tsx`.
+The symbol library has its own fixture: `symbols.mts` runs the web's
+`symbolFile.ts`, `symbolStyle.ts` and `symbolPalette.ts` over `symbols/` and
+writes `symbols.json` (the keys the web loads; each symbol's view box, size,
+binding, stretch, palette flag, category, ports and validation; which layers
+and texts every option value shows; the state styles for each state, run tag,
+mode, interlock and alarm priority; the palette's groups and searches).
+`mimic::library::tests` compare the native loader with it, and check that
+every file parses, validates and reads to the end of each path;
+`symbols::tests::every_symbol_file_tessellates` fills and strokes every layer
+and clip with the console's tessellators. The `designer-parity` job writes
+`symbols.json` again with the other fixtures:
+
+```sh
+node native/tests/fixtures/designer/symbols.mts
+```
 
 ## The expression evaluator: one implementation
 
@@ -132,16 +144,58 @@ big screens. The server validates; the clients evaluate.
 
 ## Symbols
 
-One library, keyed by `config.symbol`. The web draws SVG components; the
-console draws the same geometry from SVG path data (`symbols.rs`, lyon
-tessellation, cached per size). The ISA-101 set is ported by hand; new
-symbols should be authored once as **data**: a
-`symbols/<key>.json` with viewBox, SVG path strings per layer (body, fill,
-state, text anchors), ports and the binding kind. The web renders it as
-`<path d>`; the console tessellates the same strings. Until then a symbol
-added on one side only is drawn by the other's fallback (the console's
-`resolve` falls back to the pump; it should become a labelled box) and saved
-unchanged.
+One library, keyed by `config.symbol`, in two parts:
+
+* **ISA-101: the symbol files.** `symbols/<key>.json` (format
+  `voltrus-symbol/1`, schema `symbols/symbol.schema.json`) and the shared
+  state styles `symbols/_styles.json`, written once for both clients
+  ([designer.md](designer.md), phase 2). `native/build.rs` embeds every file
+  (files starting with `_` and `*.schema.json` are not symbols, as for the
+  web's glob and the server's `build.rs`), so the console binary needs nothing
+  beside it. `mimic::library` parses them into `SymbolDef`s (key, name,
+  category, view box, size, binding, stretch, ports, palette flag) that point
+  at their file, and turns `_styles.json` into the style of each live state
+  (`library::style_of`, `symbolStyle`; made once for every state, run tag,
+  mode, interlock and alarm priority, so drawing allocates nothing for it).
+  The painter (`symbols.rs`, `data_symbol`) draws each layer whose `if` holds
+  for the widget's options (missing ones take the option's default): its `d`
+  tessellated with lyon (cached per path, size and style, as every library
+  shape), filled and stroked by its paint role in the state's style, with the
+  theme's colours from `_styles.json` (`dark`, `light`). Running is filled,
+  stopped hollow, a fault red and blinking, no data magenta and dashed; flow
+  layers run dashed only while the run tag is on; run layers thicken with it;
+  inner strokes turn to the stage colour on a filled body. A level symbol
+  fills its shells, then the level rectangle from its floor clipped to
+  `level.clip`, then strokes the shells. Text comes from fixed text, an
+  option (`tagFunction`, `loopNumber`, …) or `$level` (hidden when unknown or
+  `showPercent` is false), drawn upright at its turned or mirrored anchor.
+  Beside the drawing, top right and upright as on the web: the alarm priority
+  badge (1 red square, blinking; 2 orange triangle; 3 yellow diamond), then
+  the grey `M` (`config.manualSensorId` on) and `I` (`config.interlockSensorId`
+  on) boxes; the console subscribes to those tags with the screen.
+  `rotation`, `flipX` and `flipY` turn and mirror every symbol, and the ports
+  follow both mirrors (`mimic::port_point`, as `portPoint`).
+* **Shaded: drawn in code.** The older shaded library (`hmi/symbols.tsx` on
+  the web) keeps its hand-drawn native port in `symbols.rs`; it has no data
+  files.
+
+The inspector lists a symbol file's options as fields (selects, switches,
+text), its run tag, and for state symbols the manual mode and interlock tags,
+as `fieldsOf`; *Flip Vertical* sits next to *Mirror* for every symbol. The
+palette (*Components*) lists the ISA-101 categories first (`ISA-101 ·
+Rotating equipment`, `ISA-101 · Valves`, …) and then the shaded ones, with the
+web's search: every word must be in the name, key, category or keywords. A
+symbol kept for saved screens only (`palette: false`, the phase-1 `isa_*`
+keys) is not browsed, but an exact key search finds it, and saved screens and
+the placement menu still draw it. An unknown key still falls back to the
+pump.
+
+Not yet native: equipment types in the palette and the placement menu
+(drop a type, pick or create an instance with the dry-run preview of
+`POST /api/v1/equipment-instances?dry_run=true`, place the symbol bound with
+`config.equipment` from `resolved.widget`, as the web's `bindInstancePatch`).
+Screens bound to instances already draw and run natively: the server writes
+the binding into ordinary rows.
 
 Custom widgets (phase 2b, Web Components in a sandboxed iframe) are
 web-only. The console draws them as a placeholder with their name and
@@ -257,7 +311,8 @@ collaboration (phase 4), match size and the faceplate editor in the
 inspector.
 
 Screenshots: the console built from this branch against the WTP showcase
-(`scenarios/wtp-hmi`, server from this branch).
+(`scenarios/wtp-hmi`, server from this branch); the symbol library screen is
+one screen of every palette symbol and its states, made for the pictures.
 
 ![Project tree, stage and the property list with a bound label](images/native-designer/01-designer-wtp.webp)
 ![A tag dropped on the empty stage: the placement menu](images/native-designer/02-tag-drop-menu.webp)
@@ -265,3 +320,6 @@ Screenshots: the console built from this branch against the WTP showcase
 ![A group and a locked tank selected; align and distribute](images/native-designer/04-group-align.webp)
 ![A hidden component drawn faded while designing](images/native-designer/05-hidden-faded.webp)
 ![Light theme](images/native-designer/06-light.webp)
+![The ISA-101 symbol files drawn natively: every palette symbol, the live states (idle, running, stopped, fault, no data, manual and interlock boxes, alarm priority badges), actuator and mounting options, rotation, mirror and flip vertical, level fills](images/native-designer/07-isa-symbol-files.webp)
+![Components: the ISA-101 categories from the symbol files, then the shaded library](images/native-designer/08-palette-isa-categories.webp)
+![The symbol files in the light theme (colours from symbols/_styles.json)](images/native-designer/09-isa-light.webp)

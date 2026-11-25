@@ -28,6 +28,7 @@
 //! (`hmi/resolve.ts`), and the live state of a symbol comes from
 //! [`symbol_live`] (`hmi/SymbolView.tsx`).
 
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -354,9 +355,14 @@ impl Layout {
     pub fn tags(&self) -> Vec<i64> {
         let mut tags: Vec<i64> = Vec::new();
         for widget in &self.widgets {
-            let settings = ["runSensorId", "faultSensorId"]
-                .iter()
-                .filter_map(|key| widget.tag_setting(key));
+            let settings = [
+                "runSensorId",
+                "faultSensorId",
+                "manualSensorId",
+                "interlockSensorId",
+            ]
+            .iter()
+            .filter_map(|key| widget.tag_setting(key));
             for tag in widget.tags.iter().copied().chain(settings) {
                 if !tags.contains(&tag) {
                     tags.push(tag);
@@ -545,8 +551,9 @@ pub enum Binding {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
-    /// The flat ISA-101 high-performance library (`hmi/isa101.tsx`).
-    Isa101,
+    /// A category of the flat ISA-101 library (`symbols/*.json`), by its
+    /// name (`Valves`, `Rotating equipment`, …; [`library::ISA_CATEGORIES`]).
+    Isa(&'static str),
     Rotating,
     Valves,
     Vessels,
@@ -588,6 +595,14 @@ impl Side {
             other => other,
         }
     }
+
+    fn mirrored_y(self) -> Self {
+        match self {
+            Self::Top => Self::Bottom,
+            Self::Bottom => Self::Top,
+            other => other,
+        }
+    }
 }
 
 /// Where connections attach, in view box units; a missing side uses the
@@ -622,12 +637,22 @@ impl Ports {
     }
 }
 
+/// The two libraries the palette lists (`SymbolLibrary`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Library {
+    /// The flat ISA-101 symbols, drawn from `symbols/*.json`.
+    Isa,
+    /// The shaded symbols drawn in code (`hmi/symbols.tsx`, `symbols.rs`).
+    Shaded,
+}
+
 /// One symbol of the library: what the console needs besides its drawing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SymbolDef {
     pub key: &'static str,
     pub name: &'static str,
     pub category: Category,
+    pub library: Library,
     pub view_box: (f64, f64),
     /// The size a new one is placed at.
     pub size: (f64, f64),
@@ -635,6 +660,33 @@ pub struct SymbolDef {
     /// Stretched to the widget's box (pipes, busbars) rather than fitted.
     pub stretch: bool,
     pub ports: Ports,
+    /// Offered in the palette (`palette: false` keeps a symbol for saved
+    /// screens only).
+    pub palette: bool,
+    /// The symbol file it is drawn from; `None` for the shaded ones.
+    pub data: Option<&'static library::SymbolFile>,
+}
+
+impl SymbolDef {
+    /// The category's name as the palette shows it.
+    pub fn category_name(&self) -> &'static str {
+        match self.category {
+            Category::Isa(name) => name,
+            Category::Rotating => "Rotating",
+            Category::Valves => "Valves",
+            Category::Vessels => "Vessels",
+            Category::Process => "Process",
+            Category::Electrical => "Electrical",
+            Category::Instruments => "Instruments",
+            Category::Piping => "Piping",
+        }
+    }
+
+    /// Opens and closes rather than runs (`def.category === 'Valves' ||
+    /// def.key.includes('valve')`).
+    pub fn is_valve(&self) -> bool {
+        self.category_name() == "Valves" || self.key.contains("valve")
+    }
 }
 
 const fn ports(
@@ -666,19 +718,22 @@ const fn symbol(
         key,
         name,
         category,
+        library: Library::Shaded,
         view_box,
         size,
         binding,
         stretch,
         ports,
+        palette: true,
+        data: None,
     }
 }
 
 use Binding as B;
 use Category as C;
 
-/// The library, in the web client's palette order.
-pub static SYMBOLS: &[SymbolDef] = &[
+/// The shaded library, drawn in code, in the web client's palette order.
+static SHADED: &[SymbolDef] = &[
     symbol(
         "pump",
         "Centrifugal Pump",
@@ -1034,103 +1089,26 @@ pub static SYMBOLS: &[SymbolDef] = &[
         false,
         ports(None, None, None, None),
     ),
-    // ISA-101 high-performance symbols (`hmi/isa101.tsx`): flat, grey,
-    // thin outlines; colour only for abnormal state.
-    symbol(
-        "isa_pump",
-        "Pump (ISA-101)",
-        C::Isa101,
-        (100.0, 100.0),
-        (90.0, 104.0),
-        B::State,
-        false,
-        ports(Some((12.0, 54.0)), Some((94.0, 18.0)), None, None),
-    ),
-    symbol(
-        "isa_motor",
-        "Motor (ISA-101)",
-        C::Isa101,
-        (100.0, 100.0),
-        (80.0, 96.0),
-        B::State,
-        false,
-        ports(None, Some((96.0, 50.0)), Some((50.0, 4.0)), None),
-    ),
-    symbol(
-        "isa_valve",
-        "Valve (ISA-101)",
-        C::Isa101,
-        (100.0, 70.0),
-        (90.0, 92.0),
-        B::State,
-        false,
-        ports(Some((4.0, 45.0)), Some((96.0, 45.0)), None, None),
-    ),
-    symbol(
-        "isa_control_valve",
-        "Control Valve (ISA-101)",
-        C::Isa101,
-        (100.0, 100.0),
-        (80.0, 100.0),
-        B::Value,
-        false,
-        ports(Some((4.0, 75.0)), Some((96.0, 75.0)), None, None),
-    ),
-    symbol(
-        "isa_tank",
-        "Tank (ISA-101)",
-        C::Isa101,
-        (100.0, 160.0),
-        (90.0, 144.0),
-        B::Level,
-        false,
-        ports(
-            Some((4.0, 130.0)),
-            Some((96.0, 130.0)),
-            Some((50.0, 4.0)),
-            Some((50.0, 156.0)),
-        ),
-    ),
-    symbol(
-        "isa_heat_exchanger",
-        "Heat Exchanger (ISA-101)",
-        C::Isa101,
-        (100.0, 100.0),
-        (80.0, 80.0),
-        B::None,
-        false,
-        ports(
-            Some((4.0, 50.0)),
-            Some((96.0, 50.0)),
-            Some((50.0, 4.0)),
-            Some((50.0, 96.0)),
-        ),
-    ),
-    symbol(
-        "isa_line",
-        "Process Line (ISA-101)",
-        C::Isa101,
-        (200.0, 10.0),
-        (200.0, 10.0),
-        B::None,
-        true,
-        ports(None, None, None, None),
-    ),
-    symbol(
-        "isa_line_vertical",
-        "Process Line, vertical (ISA-101)",
-        C::Isa101,
-        (10.0, 200.0),
-        (10.0, 200.0),
-        B::None,
-        true,
-        ports(None, None, None, None),
-    ),
 ];
+
+/// The whole library: the shaded symbols, then the ISA-101 symbol files
+/// (category order, then name).
+pub static SYMBOLS: LazyLock<Vec<SymbolDef>> = LazyLock::new(|| {
+    let mut all: Vec<SymbolDef> = SHADED.to_vec();
+    all.extend(library::defs());
+    all
+});
 
 /// The symbol with this key.
 pub fn symbol_def(key: &str) -> Option<&'static SymbolDef> {
-    SYMBOLS.iter().find(|def| def.key == key)
+    let all: &'static [SymbolDef] = &SYMBOLS;
+    all.iter().find(|def| def.key == key)
+}
+
+/// The symbol `resolve` falls back to for an unknown key (`SYMBOL_MAP.pump`).
+fn fallback_symbol() -> &'static SymbolDef {
+    let all: &'static [SymbolDef] = &SYMBOLS;
+    &all[0]
 }
 
 /// A widget seen as a library symbol, its settings normalised to the
@@ -1167,7 +1145,7 @@ pub fn resolve(widget: &Widget) -> Option<Resolved> {
         }
         _ => return None,
     };
-    let def = symbol_def(key).unwrap_or(&SYMBOLS[0]);
+    let def = symbol_def(key).unwrap_or_else(fallback_symbol);
     let legacy_drive = matches!(
         widget.kind,
         WidgetKind::Pump | WidgetKind::Motor | WidgetKind::Valve
@@ -1280,7 +1258,10 @@ pub struct Placement {
     pub width: f64,
     pub height: f64,
     pub quarter_turns: u8,
+    /// Mirrored left to right (`flipX`).
     pub flip: bool,
+    /// Mirrored top to bottom (`flipY`).
+    pub flip_y: bool,
 }
 
 impl Placement {
@@ -1308,6 +1289,7 @@ impl Placement {
             height,
             quarter_turns: Resolved::quarter_turns(widget),
             flip: widget.flag("flipX").unwrap_or(false),
+            flip_y: widget.flag("flipY").unwrap_or(false),
         }
     }
 
@@ -1319,6 +1301,9 @@ impl Placement {
         if self.flip {
             x = 2.0 * cx - x;
         }
+        if self.flip_y {
+            y = 2.0 * cy - y;
+        }
         for _ in 0..self.quarter_turns {
             let (dx, dy) = (x - cx, y - cy);
             x = cx - dy;
@@ -1329,8 +1314,8 @@ impl Placement {
 }
 
 /// The view box side that ends up facing `side` of the widget after the
-/// mirror and the turns.
-fn local_side(side: Side, turns: u8, flip: bool) -> Side {
+/// mirrors and the turns.
+fn local_side(side: Side, turns: u8, flip: bool, flip_y: bool) -> Side {
     let mut local = side;
     for _ in 0..turns {
         // Undo one clockwise turn.
@@ -1339,7 +1324,13 @@ fn local_side(side: Side, turns: u8, flip: bool) -> Side {
             .find(|candidate| candidate.clockwise() == local)
             .unwrap_or(local);
     }
-    if flip { local.mirrored() } else { local }
+    if flip {
+        local = local.mirrored();
+    }
+    if flip_y {
+        local = local.mirrored_y();
+    }
+    local
 }
 
 /// The stage point where a connection attaches to `side` of a widget,
@@ -1354,7 +1345,12 @@ pub fn port_point(widget: &Widget, side: Side) -> (f64, f64) {
         };
     };
     let placement = Placement::of(widget, &resolved);
-    let local = local_side(side, placement.quarter_turns, placement.flip);
+    let local = local_side(
+        side,
+        placement.quarter_turns,
+        placement.flip,
+        placement.flip_y,
+    );
     let (vw, vh) = resolved.def.view_box;
     let (px, py) = resolved.def.ports.get(local).unwrap_or(match local {
         Side::Left => (0.0, vh / 2.0),
@@ -1623,6 +1619,10 @@ pub struct Live {
     /// must offer Stop.
     pub running: bool,
     pub alarm: Option<Level>,
+    /// The manual mode tag on (`config.manualSensorId`).
+    pub manual: bool,
+    /// The interlock tag on (`config.interlockSensorId`).
+    pub interlocked: bool,
 }
 
 impl Live {
@@ -1683,12 +1683,20 @@ pub fn symbol_live(widget: &Widget, def: &SymbolDef, values: &impl Values) -> Li
         (Some(_), Some(Level::Warning)) => Some(Level::Warning),
         _ => None,
     };
+    let on = |key: &str| {
+        widget
+            .tag_setting(key)
+            .and_then(|tag| values.value(tag))
+            .is_some_and(|value| value > 0.5)
+    };
     Live {
         state,
         level,
         run_state,
         running: bound && tag_state(data, threshold) == EquipState::Running,
         alarm,
+        manual: on("manualSensorId"),
+        interlocked: on("interlockSensorId"),
     }
 }
 
@@ -1722,12 +1730,10 @@ pub fn flowing(connection: &Connection, layout: &Layout, values: &impl Values) -
 
 /// The words for a state: valves open, breakers close, rotating kit runs.
 pub fn state_text(def: &SymbolDef, state: EquipState) -> &'static str {
-    match (def.category, def.key, state) {
-        // Valves open and close; so do the ISA-101 valves (`key.includes('valve')`).
-        (Category::Valves, _, EquipState::Running) => "OPEN",
-        (Category::Valves, _, EquipState::Stopped) => "CLOSED",
-        (_, key, EquipState::Running) if key.contains("valve") => "OPEN",
-        (_, key, EquipState::Stopped) if key.contains("valve") => "CLOSED",
+    match (def.is_valve(), def.key, state) {
+        // Valves open and close, whatever their library.
+        (true, _, EquipState::Running) => "OPEN",
+        (true, _, EquipState::Stopped) => "CLOSED",
         (_, "breaker", EquipState::Running) => "CLOSED",
         (_, "breaker", EquipState::Stopped) => "OPEN",
         (_, _, EquipState::Idle) => "—",
@@ -1912,7 +1918,7 @@ pub fn commands(widget: &Widget, values: &impl Values) -> Option<Commands> {
             return None;
         }
         let running = value > threshold(widget, def);
-        let (on, off) = if def.category == Category::Valves {
+        let (on, off) = if def.category_name() == "Valves" {
             ("OPEN", "CLOSE")
         } else {
             ("START", "STOP")
@@ -2028,7 +2034,7 @@ pub fn related(widget: &Widget) -> Vec<Related> {
     let Some(resolved) = resolve(widget) else {
         return rows;
     };
-    let valve = resolved.def.category == Category::Valves;
+    let valve = resolved.def.category_name() == "Valves";
     if resolved.def.binding == Binding::State
         && let Some(tag) = widget.tag()
     {
@@ -2315,6 +2321,8 @@ pub fn neighbor(
 }
 
 pub mod edit;
+pub mod library;
+pub mod svg_path;
 
 #[cfg(test)]
 mod tests;

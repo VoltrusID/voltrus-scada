@@ -12,13 +12,14 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
+use std::sync::LazyLock;
 
 use gpui::{
     App, Background, Bounds, ContentMask, Corners, FontWeight, Hsla, PathBuilder, Pixels, Point,
     TextRun, Window, font, linear_color_stop, linear_gradient, point, px, size,
 };
 use lyon::algorithms::measure::{PathMeasurements, SampleType};
-use lyon::math::{Angle, Box2D, Transform, Vector, point as lpoint, vector};
+use lyon::math::{Angle, Box2D, Transform, point as lpoint, vector};
 use lyon::path::builder::BorderRadii;
 use lyon::path::iterator::PathIterator;
 use lyon::path::traits::SvgPathBuilder;
@@ -27,6 +28,8 @@ use lyon::tessellation::{
     BuffersBuilder, FillOptions, FillRule, FillTessellator, FillVertex, LineCap, LineJoin,
     StrokeOptions, StrokeTessellator, StrokeVertex, VertexBuffers,
 };
+use voltrus_scada_native::mimic::library;
+use voltrus_scada_native::mimic::svg_path::parse_svg;
 use vt_ui::theme::{MONO, SANS, Theme};
 
 use crate::console::anim::mix;
@@ -65,13 +68,9 @@ pub(crate) struct Hmi {
     pub solar_grid: Hsla,
     pub power_line: Hsla,
     pub data_line: Hsla,
-    /// The ISA-101 library's own greys (`--isa-*`): outlines, a running
-    /// (filled) body, a stopped (hollow) body, the level and its text.
-    pub isa_line: Hsla,
-    pub isa_on: Hsla,
-    pub isa_off: Hsla,
-    pub isa_level: Hsla,
-    pub isa_text: Hsla,
+    /// The ISA-101 library's colours by name (`isa-line`, `hmi-fault`,
+    /// …), from `symbols/_styles.json` for the theme.
+    pub isa: &'static IsaColors,
     // Theme tokens, for the widgets.
     pub bg: Hsla,
     pub surface: Hsla,
@@ -92,6 +91,29 @@ pub(crate) struct Hmi {
 fn hex(rgb: u32) -> Hsla {
     gpui::rgb(rgb).into()
 }
+
+/// The colours `symbols/_styles.json` names for one theme.
+#[derive(Debug)]
+pub(crate) struct IsaColors(HashMap<&'static str, Hsla>);
+
+impl IsaColors {
+    fn of(dark: bool) -> Self {
+        let theme = if dark { "dark" } else { "light" };
+        let names = library::styles()
+            .colors
+            .get(theme)
+            .into_iter()
+            .flat_map(|colors| colors.keys());
+        Self(
+            names
+                .filter_map(|name| library::color(dark, name).map(|rgb| (name.as_str(), hex(rgb))))
+                .collect(),
+        )
+    }
+}
+
+static ISA_DARK: LazyLock<IsaColors> = LazyLock::new(|| IsaColors::of(true));
+static ISA_LIGHT: LazyLock<IsaColors> = LazyLock::new(|| IsaColors::of(false));
 
 impl Hmi {
     pub fn new(theme: &Theme) -> Self {
@@ -132,11 +154,7 @@ impl Hmi {
             solar_grid: mix(theme.info, white, 0.35),
             power_line: mix(theme.warning, grey, 0.35),
             data_line: mix(theme.info, grey, 0.3),
-            isa_line: hex(if dark { 0xb4bcc6 } else { 0x3d434b }),
-            isa_on: hex(if dark { 0xc9d0d8 } else { 0x3d434b }),
-            isa_off: hex(if dark { 0x1d2128 } else { 0xeceef1 }),
-            isa_level: hex(if dark { 0x4a5361 } else { 0xb3bac3 }),
-            isa_text: hex(if dark { 0xe8edf2 } else { 0x111827 }),
+            isa: if dark { &ISA_DARK } else { &ISA_LIGHT },
             bg: theme.bg,
             surface: theme.surface,
             fg: theme.fg,
@@ -151,6 +169,12 @@ impl Hmi {
             white,
             black,
         }
+    }
+
+    /// An ISA-101 colour by its name in `_styles.json`; magenta (no data)
+    /// for a name it does not have.
+    pub fn isa(&self, name: &str) -> Hsla {
+        self.isa.0.get(name).copied().unwrap_or(self.stale)
     }
 
     /// The SVG gradients of the library (`Defs` in `hmi/symbols.tsx`),
@@ -251,6 +275,13 @@ impl Xf {
         Self::translate(cx, 0.0)
             .then(&Self::scale(sx, 1.0))
             .then(&Self::translate(-cx, 0.0))
+    }
+
+    /// A vertical mirror about `y = cy`, scaled by `sy` (`flipY`).
+    pub fn scale_y_about(sy: f32, cy: f32) -> Self {
+        Self::translate(0.0, cy)
+            .then(&Self::scale(1.0, sy))
+            .then(&Self::translate(0.0, -cy))
     }
 
     /// `self` after `inner`: inner's units are mapped by inner, then self.
@@ -550,6 +581,12 @@ impl Shape {
     /// it was made from): `make` runs only the first time, and the shape's
     /// tessellations are cached like the library's.
     pub fn cached(key: u64, make: impl FnOnce() -> String) -> Self {
+        Self::kept(key, || Self::new(parse_svg(&make())))
+    }
+
+    /// A shape made at run time, kept under `key` like [`Shape::cached`]
+    /// (a level fill clipped to its vessel).
+    pub fn kept(key: u64, make: impl FnOnce() -> Self) -> Self {
         // Apart from the library's pointer keys.
         let key = key | (1 << 63);
         KEYED.with(|shapes| {
@@ -561,7 +598,7 @@ impl Shape {
                 shapes.clear();
             }
             let shape = Self {
-                path: Rc::new(parse_svg(&make())),
+                path: make().path,
                 key: Some(key),
             };
             shapes.insert(key, shape.clone());
@@ -635,6 +672,12 @@ impl Shape {
             );
         }
         Self::new(builder.build())
+    }
+
+    /// Nothing to draw.
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.path.iter().next().is_none()
     }
 
     /// This shape under a further local transform (a blade turned about the
@@ -738,201 +781,6 @@ fn clip(polygon: &[(f32, f32)], inside: impl Fn((f32, f32)) -> f32) -> Vec<(f32,
     out
 }
 
-/// SVG path data into a lyon path. Stops at the first thing it cannot
-/// read, keeping what came before.
-fn parse_svg(data: &str) -> Path {
-    let mut scan = Scan {
-        bytes: data.as_bytes(),
-        at: 0,
-    };
-    let mut builder = Path::svg_builder();
-    let mut command = b'M';
-    loop {
-        if let Some(next) = scan.command() {
-            command = next;
-            if command.eq_ignore_ascii_case(&b'z') {
-                builder.close();
-                continue;
-            }
-        } else if !scan.at_number() || command.eq_ignore_ascii_case(&b'z') {
-            break;
-        }
-        let read = match command {
-            b'M' => scan.point().map(|p| {
-                builder.move_to(p);
-                command = b'L';
-            }),
-            b'm' => scan.vector().map(|v| {
-                builder.relative_move_to(v);
-                command = b'l';
-            }),
-            b'L' => scan.point().map(|p| {
-                builder.line_to(p);
-            }),
-            b'l' => scan.vector().map(|v| {
-                builder.relative_line_to(v);
-            }),
-            b'H' => scan.number().map(|x| builder.horizontal_line_to(x)),
-            b'h' => scan
-                .number()
-                .map(|x| builder.relative_horizontal_line_to(x)),
-            b'V' => scan.number().map(|y| builder.vertical_line_to(y)),
-            b'v' => scan.number().map(|y| builder.relative_vertical_line_to(y)),
-            b'C' => scan.points3().map(|(a, b, to)| {
-                builder.cubic_bezier_to(a, b, to);
-            }),
-            b'c' => scan.vectors3().map(|(a, b, to)| {
-                builder.relative_cubic_bezier_to(a, b, to);
-            }),
-            b'S' => scan.points2().map(|(b, to)| {
-                builder.smooth_cubic_bezier_to(b, to);
-            }),
-            b's' => scan.vectors2().map(|(b, to)| {
-                builder.smooth_relative_cubic_bezier_to(b, to);
-            }),
-            b'Q' => scan.points2().map(|(c, to)| {
-                builder.quadratic_bezier_to(c, to);
-            }),
-            b'q' => scan.vectors2().map(|(c, to)| {
-                builder.relative_quadratic_bezier_to(c, to);
-            }),
-            b'T' => scan.point().map(|to| {
-                builder.smooth_quadratic_bezier_to(to);
-            }),
-            b't' => scan.vector().map(|to| {
-                builder.smooth_relative_quadratic_bezier_to(to);
-            }),
-            b'A' | b'a' => scan.arc().map(|(radii, rotation, flags, x, y)| {
-                if command == b'A' {
-                    builder.arc_to(radii, rotation, flags, lpoint(x, y));
-                } else {
-                    builder.relative_arc_to(radii, rotation, flags, vector(x, y));
-                }
-            }),
-            _ => None,
-        };
-        if read.is_none() {
-            break;
-        }
-    }
-    builder.build()
-}
-
-struct Scan<'a> {
-    bytes: &'a [u8],
-    at: usize,
-}
-
-impl Scan<'_> {
-    fn skip(&mut self) {
-        while self
-            .bytes
-            .get(self.at)
-            .is_some_and(|b| b.is_ascii_whitespace() || *b == b',')
-        {
-            self.at += 1;
-        }
-    }
-
-    fn command(&mut self) -> Option<u8> {
-        self.skip();
-        let byte = *self.bytes.get(self.at)?;
-        (byte.is_ascii_alphabetic() && byte != b'e' && byte != b'E').then(|| {
-            self.at += 1;
-            byte
-        })
-    }
-
-    fn at_number(&mut self) -> bool {
-        self.skip();
-        self.bytes
-            .get(self.at)
-            .is_some_and(|b| b.is_ascii_digit() || matches!(b, b'-' | b'+' | b'.'))
-    }
-
-    fn number(&mut self) -> Option<f32> {
-        self.skip();
-        let start = self.at;
-        let mut end = start;
-        let bytes = self.bytes;
-        if matches!(bytes.get(end), Some(b'-' | b'+')) {
-            end += 1;
-        }
-        let mut dot = false;
-        while let Some(&b) = bytes.get(end) {
-            if b.is_ascii_digit() {
-                end += 1;
-            } else if b == b'.' && !dot {
-                dot = true;
-                end += 1;
-            } else {
-                break;
-            }
-        }
-        if matches!(bytes.get(end), Some(b'e' | b'E')) {
-            let mut exponent = end + 1;
-            if matches!(bytes.get(exponent), Some(b'-' | b'+')) {
-                exponent += 1;
-            }
-            if bytes.get(exponent).is_some_and(u8::is_ascii_digit) {
-                end = exponent;
-                while bytes.get(end).is_some_and(u8::is_ascii_digit) {
-                    end += 1;
-                }
-            }
-        }
-        let value = std::str::from_utf8(&bytes[start..end]).ok()?.parse().ok()?;
-        self.at = end;
-        Some(value)
-    }
-
-    fn flag(&mut self) -> Option<bool> {
-        self.skip();
-        let byte = *self.bytes.get(self.at)?;
-        let flag = match byte {
-            b'0' => false,
-            b'1' => true,
-            _ => return None,
-        };
-        self.at += 1;
-        Some(flag)
-    }
-
-    fn point(&mut self) -> Option<lyon::math::Point> {
-        Some(lpoint(self.number()?, self.number()?))
-    }
-
-    fn vector(&mut self) -> Option<Vector> {
-        Some(vector(self.number()?, self.number()?))
-    }
-
-    fn points2(&mut self) -> Option<(lyon::math::Point, lyon::math::Point)> {
-        Some((self.point()?, self.point()?))
-    }
-
-    fn points3(&mut self) -> Option<(lyon::math::Point, lyon::math::Point, lyon::math::Point)> {
-        Some((self.point()?, self.point()?, self.point()?))
-    }
-
-    fn vectors2(&mut self) -> Option<(Vector, Vector)> {
-        Some((self.vector()?, self.vector()?))
-    }
-
-    fn vectors3(&mut self) -> Option<(Vector, Vector, Vector)> {
-        Some((self.vector()?, self.vector()?, self.vector()?))
-    }
-
-    fn arc(&mut self) -> Option<(Vector, Angle, ArcFlags, f32, f32)> {
-        let radii = self.vector()?;
-        let rotation = Angle::degrees(self.number()?);
-        let large_arc = self.flag()?;
-        let sweep = self.flag()?;
-        let x = self.number()?;
-        let y = self.number()?;
-        Some((radii, rotation, ArcFlags { large_arc, sweep }, x, y))
-    }
-}
-
 // ── The canvas ────────────────────────────────────────────────────────────
 
 /// A tessellated shape, in window pixels less the translation.
@@ -1032,9 +880,23 @@ impl Canvas<'_> {
         }
         // Dashes scale like the stroke: local units, or stage pixels.
         let unit = if line.scaling { xf.unit() } else { self.zoom };
-        let key = shape.key.filter(|_| line.dash.is_none()).map(|id| {
+        // Still dashes (no data) are kept like solid strokes; moving ones
+        // (flow) change every frame and are made afresh.
+        let still = line.dash.is_none_or(|dash| dash.offset == 0.0);
+        let dash_key = line
+            .dash
+            .map(|dash| (dash.on.to_bits(), dash.off.to_bits(), unit.to_bits()));
+        let key = shape.key.filter(|_| still).map(|id| {
             let mut hasher = DefaultHasher::new();
-            (1u8, id, xf.linear_key(), width.to_bits(), line.cap).hash(&mut hasher);
+            (
+                1u8,
+                id,
+                xf.linear_key(),
+                width.to_bits(),
+                line.cap,
+                dash_key,
+            )
+                .hash(&mut hasher);
             hasher.finish()
         });
         let make = |transform: &Transform| {

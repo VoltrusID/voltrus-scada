@@ -248,8 +248,11 @@ ports use them unchanged. The palette (`symbolPalette.ts`) groups them by
 category (Rotating equipment, Valves, Vessels, Heat transfer, Separation,
 Instruments, Piping) and searches name, key, keywords and category. **Server:**
 `build.rs` lists the file keys, so an equipment type naming an unknown symbol is
-refused. **Native:** not wired yet; the console still draws its own path data and
-falls back for unknown keys. Reading `symbols/*.json` there is the next step.
+refused. **Native:** the console embeds the same files at build time and draws
+them with lyon from the same path strings and `_styles.json`
+([native-designer.md](native-designer.md#symbols)); a fixture written from the
+web's `symbolFile.ts`, `symbolStyle.ts` and `symbolPalette.ts` keeps both
+readings equal.
 
 ### Equipment types
 

@@ -19,10 +19,14 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/native.yml
-      # The Designer's web code the native port is checked against.
+      # The Designer's web code the native port is checked against, and
+      # the symbol library both draw.
       - client/src/designer/**
       - client/src/scada2/engine/**
-      - client/src/scada2/hmi/isa101.tsx
+      - client/src/scada2/hmi/symbolFile.ts
+      - client/src/scada2/hmi/symbolStyle.ts
+      - client/src/scada2/hmi/symbolPalette.ts
+      - symbols/**
   pull_request:
     paths:
       - native/**
@@ -31,10 +35,14 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/native.yml
-      # The Designer's web code the native port is checked against.
+      # The Designer's web code the native port is checked against, and
+      # the symbol library both draw.
       - client/src/designer/**
       - client/src/scada2/engine/**
-      - client/src/scada2/hmi/isa101.tsx
+      - client/src/scada2/hmi/symbolFile.ts
+      - client/src/scada2/hmi/symbolStyle.ts
+      - client/src/scada2/hmi/symbolPalette.ts
+      - symbols/**
   workflow_dispatch:
 
 permissions:
@@ -50,9 +58,12 @@ env:
 
 jobs:
   # The native Designer's parity fixtures, written again from the web
-  # Designer's own code (client/src/designer, client/src/scada2/engine):
-  # what the web saves after a list of edits (web-save.json) and what its
-  # expressions and bindings give (expr-corpus.json). A change to either
+  # Designer's own code (client/src/designer, client/src/scada2/engine,
+  # client/src/scada2/hmi/symbol*.ts): what the web saves after a list of
+  # edits (web-save.json), what its expressions and bindings give
+  # (expr-corpus.json) and how it reads the symbol library (symbols.json:
+  # keys, ports, view boxes, option conditions, state styles, palette
+  # search). A change to either
   # side that the committed fixtures do not show fails here; the Rust tests
   # (linux job) compare the port with them.
   designer-parity:
@@ -71,6 +82,7 @@ jobs:
         run: |
           node native/tests/fixtures/designer/web-save.mts
           node native/tests/fixtures/designer/expr-corpus.mts
+          node native/tests/fixtures/designer/symbols.mts
 
       - name: Fixtures are up to date
         run: git diff --exit-code -- native/tests/fixtures/designer

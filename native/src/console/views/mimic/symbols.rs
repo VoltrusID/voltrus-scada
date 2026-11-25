@@ -1,8 +1,15 @@
-//! The symbol library (`hmi/symbols.tsx`) and the symbol view
-//! (`hmi/SymbolView.tsx`): ISA-101 equipment drawn in its view box, fitted
-//! (or stretched) into the widget's box above its footer, turned and
-//! mirrored as set, with its live state, level and value; then the footer
-//! rows (label, value badge, state text) under the drawing.
+//! The symbol library (`hmi/symbols.tsx`, `symbols/*.json`) and the symbol
+//! view (`hmi/SymbolView.tsx`): equipment drawn in its view box, fitted (or
+//! stretched) into the widget's box above its footer, turned and mirrored
+//! as set, with its live state, level and value; the ISA-101 state badges
+//! beside it; then the footer rows (label, value badge, state text) under
+//! the drawing.
+//!
+//! The ISA-101 symbols are the shared symbol files (`dataSymbols.tsx`): each
+//! layer's SVG path data tessellated with lyon (cached per shape, size and
+//! style), drawn by its paint role in the live state's style from
+//! `symbols/_styles.json` ([`library::style_of`]), with the theme's colours
+//! from the same file. The shaded symbols are drawn in code below.
 //!
 //! Text inside a turned symbol stays upright at its mapped anchor (GPUI
 //! cannot turn glyphs), where the web turns it with the drawing; text a
@@ -11,7 +18,12 @@
 
 use std::borrow::Cow;
 
-use gpui::Hsla;
+use std::hash::{DefaultHasher, Hash, Hasher};
+
+use gpui::{FontWeight, Hsla};
+use voltrus_scada_native::mimic::library::{
+    self, BadgeShape, Fill, Font, Modifiers, PaintRole, SymbolFile, SymbolStyle,
+};
 use voltrus_scada_native::mimic::{
     EquipState, FooterRows, Level, Placement, Widget, footer, footer_height, footer_rows,
     state_text,
@@ -37,10 +49,22 @@ pub(crate) fn paint(canvas: &mut Canvas<'_>, item: &Item, xf: &Xf, t: f32) {
     if place.flip {
         area = area.then(&Xf::scale_x_about(-1.0, w / 2.0));
     }
+    if place.flip_y {
+        area = area.then(&Xf::scale_y_about(-1.0, h / 2.0));
+    }
     let (sx, sy) = (place.scale_x as f32, place.scale_y as f32);
     let (ox, oy) = (place.offset_x as f32, place.offset_y as f32);
     let primary = item.primary.as_ref();
     let value = primary.and_then(TagView::text);
+    let style = library::style_of(
+        live.state,
+        Modifiers {
+            run_on: live.run_state == EquipState::Running,
+            manual: live.manual,
+            interlocked: live.interlocked,
+            alarm_priority: library::alarm_priority(live.alarm),
+        },
+    );
     let sym = Sym {
         key: resolved.def.key,
         xf: area.then(&Xf::translate(ox, oy)).then(&Xf::scale(sx, sy)),
@@ -55,13 +79,16 @@ pub(crate) fn paint(canvas: &mut Canvas<'_>, item: &Item, xf: &Xf, t: f32) {
         unit: primary.map_or("", |tag| tag.unit.as_str()),
         widget,
         t,
+        data: resolved.def.data,
+        style,
     };
-    let alpha = if live.state == EquipState::Fault {
+    let alpha = if live.state == EquipState::Fault || style.blink {
         motion::blink(t)
     } else {
         1.0
     };
     canvas.faded(alpha, |c| draw(c, &sym));
+    badges(canvas, xf, style, w, t);
 
     let rows = footer_rows(widget, resolved);
     let [label, badge, status] = footer_centres(rows, widget.height as f32);
@@ -249,6 +276,10 @@ struct Sym<'a> {
     unit: &'a str,
     widget: &'a Widget,
     t: f32,
+    /// The symbol file it is drawn from (ISA-101).
+    data: Option<&'static SymbolFile>,
+    /// Its look in the live state (symbol files).
+    style: &'static SymbolStyle,
 }
 
 /// The outline of a symbol's parts: grey, red and heavier on a fault,
@@ -451,6 +482,10 @@ impl Sym<'_> {
 // ── The symbols ───────────────────────────────────────────────────────────
 
 fn draw(c: &mut Canvas<'_>, s: &Sym<'_>) {
+    if let Some(file) = s.data {
+        data_symbol(c, s, file);
+        return;
+    }
     match s.key {
         "dosing_pump" => dosing_pump(c, s),
         "fan" => fan(c, s),
@@ -481,13 +516,6 @@ fn draw(c: &mut Canvas<'_>, s: &Sym<'_>) {
         "pipe" | "pipe_vertical" => straight_pipe(c, s),
         "pipe_elbow" => pipe_path(c, s, Shape::svg("M0 30 L20 30 Q30 30 30 40 L30 60")),
         "pipe_tee" => pipe_path(c, s, Shape::svg("M0 12 L80 12 M40 12 L40 50")),
-        "isa_pump" => isa_pump(c, s),
-        "isa_motor" => isa_motor(c, s),
-        "isa_valve" => isa_valve(c, s),
-        "isa_control_valve" => isa_control_valve(c, s),
-        "isa_tank" => isa_tank(c, s),
-        "isa_heat_exchanger" => isa_heat_exchanger(c, s),
-        "isa_line" | "isa_line_vertical" => isa_line(c, s),
         // `resolve` falls back to the pump for unknown keys.
         _ => pump(c, s),
     }
@@ -1102,148 +1130,176 @@ fn pipe_path(c: &mut Canvas<'_>, s: &Sym<'_>, shape: Shape) {
     pipe_stroke(c, &s.xf, &shape, 1.0, 1.0, flowing, s.t);
 }
 
-// ── ISA-101 (`hmi/isa101.tsx`) ──────────────────────────────────────────
+// ── Symbol files (`symbols/*.json`, `dataSymbols.tsx`) ─────────────────
 //
 // Flat and grey with thin outlines that never scale; colour only for an
-// abnormal state (fault red, stale magenta and dashed). Running or open is
-// a filled body, stopped or unknown a hollow one, so the state reads in
-// greyscale too. The fault blink is the whole drawing's, as for the rest.
+// abnormal state (fault red and blinking, no data magenta and dashed).
+// Running or open is a filled body, stopped a hollow one, so the state
+// reads in greyscale too.
 
-/// `stroke(state)`: the outline's colour and line.
-fn isa_outline(h: &Hmi, state: EquipState) -> (Hsla, Line) {
-    match state {
-        EquipState::Fault => (h.fault, Line::hairline(2.5).round()),
-        EquipState::Stale => (h.stale, Line::hairline(1.75).round().dashed(4.0, 3.0, 0.0)),
-        EquipState::Idle | EquipState::Running | EquipState::Stopped => {
-            (h.isa_line, Line::hairline(1.75).round())
+/// Which part of a layer to draw: a level-bound symbol fills its shells
+/// before the level and strokes them after it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    All,
+    Fill,
+    Stroke,
+}
+
+fn data_symbol(c: &mut Canvas<'_>, s: &Sym<'_>, file: &'static SymbolFile) {
+    let config = &s.widget.config;
+    let shown = |layer: &&'static library::Layer| file.matches(layer.when.as_ref(), config);
+    if let Some(area) = &file.level {
+        for layer in file.layers.iter().filter(shown) {
+            if layer.paint == PaintRole::Shell {
+                data_layer(c, s, layer, Part::Fill);
+            }
+        }
+        if let Some(level) = s.level {
+            level_area(c, s, file, area, level);
         }
     }
-}
-
-/// `fill(state)`: filled while running, red on a fault, hollow otherwise.
-fn isa_fill(h: &Hmi, state: EquipState) -> Hsla {
-    match state {
-        EquipState::Running => h.isa_on,
-        EquipState::Fault => h.fault,
-        EquipState::Idle | EquipState::Stopped | EquipState::Stale => h.isa_off,
+    for layer in file.layers.iter().filter(shown) {
+        let part = if file.level.is_some() && layer.paint == PaintRole::Shell {
+            Part::Stroke
+        } else {
+            Part::All
+        };
+        data_layer(c, s, layer, part);
     }
-}
-
-impl Sym<'_> {
-    /// An ISA part: filled with `fill` (none: unfilled), outlined.
-    fn isa(&self, c: &mut Canvas<'_>, shape: &Shape, fill: Option<Hsla>) {
-        if let Some(fill) = fill {
-            c.fill(&self.xf, shape, fill);
+    for spec in &file.text {
+        if !file.matches(spec.when.as_ref(), config) {
+            continue;
         }
-        let (color, line) = isa_outline(c.hmi, self.state);
-        c.stroke(&self.xf, shape, color, line);
+        let Some(text) = file.text_of(spec, config, s.level.map(f64::from)) else {
+            continue;
+        };
+        let color = c.hmi.isa(if spec.on_body {
+            s.style.text_on_body
+        } else {
+            s.style.text
+        });
+        #[allow(clippy::cast_possible_truncation)]
+        let mut style = Text::new(spec.size as f32, color);
+        if spec.font == Some(Font::Mono) {
+            style = style.mono();
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        let weight = spec.weight.unwrap_or(600.0) as f32;
+        style.weight = FontWeight(weight);
+        #[allow(clippy::cast_possible_truncation)]
+        s.text(c, (spec.x as f32, spec.y as f32), &text, style);
     }
 }
 
-/// `M top+10 … Z`: the ISA tank's outline between `top` and `bottom`.
-const ISA_TANK: &str = "M6 26 Q6 16 16 16 L84 16 Q94 16 94 26 L94 150 L6 150 Z";
-const ISA_TANK_TOP: f32 = 16.0;
-const ISA_TANK_BOTTOM: f32 = 150.0;
-
-fn isa_pump(c: &mut Canvas<'_>, s: &Sym<'_>) {
-    let fill = isa_fill(c.hmi, s.state);
-    s.isa(c, &Shape::svg("M50 54 L50 18 L94 18 L94 30 L72 30"), None);
-    s.isa(c, &Shape::circle(50.0, 54.0, 34.0), Some(fill));
-    s.isa(c, &Shape::svg("M30 82 L22 96 L78 96 L70 82"), None);
-    s.isa(c, &Shape::svg("M2 54 L16 54"), None);
+/// One layer in its paint's style; a paint that is off in this state (flow
+/// without the run tag) draws nothing.
+fn data_layer(c: &mut Canvas<'_>, s: &Sym<'_>, layer: &'static library::Layer, part: Part) {
+    let paint = s.style.paint(layer.paint);
+    if !paint.visible {
+        return;
+    }
+    let shape = Shape::svg(&layer.d);
+    if part != Part::Stroke
+        && let Fill::Color(name) = paint.fill
+    {
+        c.fill(&s.xf, &shape, c.hmi.isa(name));
+    }
+    if part != Part::Fill {
+        #[allow(clippy::cast_possible_truncation)]
+        let width = library::layer_width(layer, &paint, s.state) as f32;
+        let mut line = Line::hairline(width);
+        if layer.paint != PaintRole::Flow {
+            line = line.round();
+        }
+        if let Some((on, off)) = paint.dash {
+            let offset = if paint.animate {
+                motion::flow(s.t)
+            } else {
+                0.0
+            };
+            #[allow(clippy::cast_possible_truncation)]
+            {
+                line = line.dashed(on as f32, off as f32, offset);
+            }
+        }
+        c.stroke(&s.xf, &shape, c.hmi.isa(paint.stroke), line);
+    }
 }
 
-fn isa_motor(c: &mut Canvas<'_>, s: &Sym<'_>) {
-    let h = c.hmi;
-    s.isa(c, &Shape::svg("M84 50 L98 50"), None);
-    s.isa(
-        c,
-        &Shape::circle(50.0, 50.0, 34.0),
-        Some(isa_fill(h, s.state)),
-    );
-    let letter = match s.state {
-        EquipState::Running | EquipState::Fault => h.stage,
-        EquipState::Idle | EquipState::Stopped | EquipState::Stale => h.isa_line,
+/// The level fill: from the area's floor up to `level`, clipped to the
+/// vessel (`level.clip`, convex in every file). Kept by the symbol and the
+/// level in tenths of a percent, so a steady level re-uses its
+/// tessellation.
+fn level_area(
+    c: &mut Canvas<'_>,
+    s: &Sym<'_>,
+    file: &'static SymbolFile,
+    area: &'static library::LevelArea,
+    level: f32,
+) {
+    let (x, y, w, h) = area.filled(f64::from(level));
+    if h <= 0.0 {
+        return;
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let shape = match &area.clip {
+        Some(clip) => {
+            let mut hasher = DefaultHasher::new();
+            #[allow(clippy::cast_possible_truncation)]
+            let step = (f64::from(level.clamp(0.0, 1.0)) * 1000.0).round() as u32;
+            ("level", file.key.as_str(), step).hash(&mut hasher);
+            Shape::kept(hasher.finish(), || {
+                Shape::rect(x as f32, y as f32, w as f32, h as f32).within(&Shape::svg(clip))
+            })
+        }
+        None => Shape::rect(x as f32, y as f32, w as f32, h as f32),
     };
-    s.text(c, (50.0, 51.0), "M", Text::new(30.0, letter).semibold());
+    c.fill(&s.xf, &shape, c.hmi.isa("isa-level"));
 }
 
-fn isa_valve(c: &mut Canvas<'_>, s: &Sym<'_>) {
-    let fill = isa_fill(c.hmi, s.state);
-    s.isa(
-        c,
-        &Shape::svg("M8 25 L50 45 L8 65 Z M92 25 L50 45 L92 65 Z"),
-        Some(fill),
-    );
-    s.isa(c, &Shape::svg("M50 45 L50 14"), None);
-    s.isa(c, &Shape::svg("M38 12 L62 12"), None);
-}
-
-fn isa_control_valve(c: &mut Canvas<'_>, s: &Sym<'_>) {
-    let off = c.hmi.isa_off;
-    s.isa(
-        c,
-        &Shape::svg("M8 55 L50 75 L8 95 Z M92 55 L50 75 L92 95 Z"),
-        Some(off),
-    );
-    s.isa(c, &Shape::svg("M50 75 L50 36"), None);
-    s.isa(c, &Shape::svg("M24 36 A26 26 0 0 1 76 36 Z"), Some(off));
-}
-
-/// The tank's level fill: from the bottom up to `level`, inside the walls.
-fn isa_level_rect(level: f32) -> (f32, f32, f32, f32) {
-    let h = (ISA_TANK_BOTTOM - ISA_TANK_TOP) * level.clamp(0.0, 1.0);
-    (7.0, ISA_TANK_BOTTOM - h, 86.0, h)
-}
-
-fn isa_tank(c: &mut Canvas<'_>, s: &Sym<'_>) {
-    let h = c.hmi;
-    let vessel = Shape::svg(ISA_TANK);
-    c.fill(&s.xf, &vessel, h.isa_off);
-    if let Some(level) = s.level {
-        let (x, y, w, height) = isa_level_rect(level);
-        c.fill(&s.xf, &Shape::rect(x, y, w, height), h.isa_level);
-    }
-    s.isa(c, &vessel, None);
-    // The level scale on the right wall: 0, 25, 50, 75, 100 %.
-    for i in 0..=4u8 {
-        let y = ISA_TANK_BOTTOM - (ISA_TANK_BOTTOM - ISA_TANK_TOP) * f32::from(i) / 4.0;
-        s.segment(c, (86.0, y), (94.0, y), h.isa_line, Line::hairline(1.0));
-    }
-    if let Some(level) = s.level.filter(|_| s.show_percent) {
-        let style = Text::new(18.0, h.isa_text).mono().semibold();
-        let middle = f32::midpoint(ISA_TANK_TOP, ISA_TANK_BOTTOM);
-        s.text(c, (50.0, middle), &percent(level), style);
-    }
-}
-
-fn isa_heat_exchanger(c: &mut Canvas<'_>, s: &Sym<'_>) {
-    let off = c.hmi.isa_off;
-    s.isa(c, &Shape::circle(50.0, 50.0, 40.0), Some(off));
-    s.isa(
-        c,
-        &Shape::svg("M4 50 L22 50 L34 30 L50 70 L66 30 L78 50 L96 50"),
-        None,
-    );
-    s.isa(c, &Shape::svg("M50 4 L50 10"), None);
-    s.isa(c, &Shape::svg("M50 90 L50 96"), None);
-}
-
-/// A process line: a thin grey line stretched to its box, dashes running
-/// along it while its flow tag runs (`hmi-flow`).
-fn isa_line(c: &mut Canvas<'_>, s: &Sym<'_>) {
-    let h = c.hmi;
-    let shape = if s.key == "isa_line_vertical" {
-        Shape::svg("M5 0 L5 200")
-    } else {
-        Shape::svg("M0 5 L200 5")
-    };
-    c.stroke(&s.xf, &shape, h.isa_line, Line::hairline(3.0).round());
-    if s.run == EquipState::Running {
-        let line = Line::hairline(3.0)
-            .round()
-            .dashed(6.0, 18.0, motion::flow(s.t));
-        c.stroke(&s.xf, &shape, h.isa_on, line);
+/// `StateBadge`s: the alarm priority (shape, colour and number), then the
+/// grey M and I boxes, in a column at the drawing's top right, upright and
+/// unscaled (16 stage pixels each).
+fn badges(c: &mut Canvas<'_>, xf: &Xf, style: &SymbolStyle, width: f32, t: f32) {
+    const SIZE: f32 = 16.0;
+    const GAP: f32 = 2.0;
+    for (i, badge) in style.badges.iter().enumerate() {
+        #[allow(clippy::cast_precision_loss)]
+        let top = -4.0 + i as f32 * (SIZE + GAP);
+        let at = xf.then(&Xf::translate(width + 6.0 - SIZE, top));
+        let h = c.hmi;
+        let (fill, stroke, color) = (h.isa(badge.fill), h.isa(badge.stroke), h.isa(badge.color));
+        let alpha = if badge.blink { motion::blink(t) } else { 1.0 };
+        c.faded(alpha, |c| {
+            let line = Line::hairline(1.0);
+            match badge.shape {
+                BadgeShape::Triangle => {
+                    let shape = Shape::svg("M8 0.8 L15.2 14.4 H0.8 Z");
+                    c.fill(&at, &shape, fill);
+                    c.stroke(&at, &shape, stroke, line);
+                }
+                BadgeShape::Diamond => {
+                    let shape = Shape::svg("M8 0.5 L15.5 8 L8 15.5 L0.5 8 Z");
+                    c.fill(&at, &shape, fill);
+                    c.stroke(&at, &shape, stroke, line);
+                }
+                BadgeShape::Box => {
+                    c.rect(&at, (1.5, 1.5, 13.0, 13.0), 1.0, fill, Some((stroke, 1.0)));
+                }
+                BadgeShape::Square => {
+                    c.rect(&at, (1.0, 1.0, 14.0, 14.0), 0.0, fill, Some((stroke, 1.0)));
+                }
+            }
+            let triangle = badge.shape == BadgeShape::Triangle;
+            let style = Text::new(if triangle { 8.5 } else { 10.0 }, color).bold();
+            c.text(
+                &at,
+                (8.0, if triangle { 10.0 } else { 8.5 }),
+                badge.text,
+                style,
+            );
+        });
     }
 }
 
@@ -1307,184 +1363,65 @@ mod tests {
         assert_eq!(footer_centres(none, 50.0), [None; 3]);
     }
 
+    /// Every symbol file parses, reads to the end of every path and
+    /// clip, and tessellates into something to fill and to stroke with the
+    /// console's own tessellators: what the painter does with each layer.
     #[test]
-    #[allow(clippy::float_cmp)]
-    fn the_isa_tank_fills_from_its_floor() {
-        assert_eq!(isa_level_rect(0.0), (7.0, 150.0, 86.0, 0.0));
-        assert_eq!(isa_level_rect(0.5), (7.0, 83.0, 86.0, 67.0));
-        assert_eq!(isa_level_rect(1.0), (7.0, 16.0, 86.0, 134.0));
-        assert_eq!(isa_level_rect(1.5), isa_level_rect(1.0));
-        // `M6 ${top + 10} Q6 ${top} 16 ${top} L84 ${top} Q94 ${top} 94 ${top + 10} L94 ${bottom} L6 ${bottom} Z`
-        let (top, bottom) = (ISA_TANK_TOP, ISA_TANK_BOTTOM);
-        let web = format!(
-            "M6 {} Q6 {top} 16 {top} L84 {top} Q94 {top} 94 {} L94 {bottom} L6 {bottom} Z",
-            top + 10.0,
-            top + 10.0
-        );
-        assert_eq!(web, ISA_TANK);
-    }
+    fn every_symbol_file_tessellates() {
+        use lyon::tessellation::{
+            BuffersBuilder, FillOptions, FillTessellator, FillVertex, StrokeOptions,
+            StrokeTessellator, StrokeVertex, VertexBuffers,
+        };
+        use voltrus_scada_native::mimic::svg_path::parse_svg_strict;
 
-    // ── The ISA-101 symbols against `client/src/scada2/hmi/isa101.tsx` ──
-    //
-    // Hand-ported until the Designer's symbol data files (`symbols/*.json`)
-    // replace both copies: these fail when either side changes alone.
-
-    const WEB_ISA: &str = include_str!("../../../../../client/src/scada2/hmi/isa101.tsx");
-    const NATIVE: &str = include_str!("symbols.rs");
-
-    /// The text between each `open` and the next `close` in `text`.
-    fn between<'a>(text: &'a str, open: &str, close: &str) -> Vec<&'a str> {
-        let mut out = Vec::new();
-        let mut rest = text;
-        while let Some(start) = rest.find(open) {
-            let after = &rest[start + open.len()..];
-            let Some(end) = after.find(close) else { break };
-            out.push(&after[..end]);
-            rest = &after[end + close.len()..];
-        }
-        out
-    }
-
-    /// An attribute's value in a JSX tag (`x1="2"`).
-    fn attr(tag: &str, name: &str) -> f64 {
-        let tag = format!(" {tag}");
-        let value = between(&tag, &format!(" {name}=\""), "\"");
-        value
-            .first()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or_else(|| panic!("{name} in {tag}"))
-    }
-
-    fn number(text: &str) -> String {
-        let x: f64 = text.trim().parse().unwrap_or_else(|_| panic!("{text}"));
-        format!("{x}")
-    }
-
-    /// Every outline the web's ISA symbols draw: paths, lines as `M… L…`,
-    /// circles as `circle cx cy r`, the tank's templated path filled in.
-    fn web_shapes() -> std::collections::BTreeSet<String> {
-        let mut out: std::collections::BTreeSet<String> = between(WEB_ISA, " d=\"", "\"")
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        for line in between(WEB_ISA, "<line ", "/>") {
-            // The tank's scale ticks are drawn in a loop, with `y={y}`.
-            if line.contains("y1={y}") {
-                continue;
+        let files = library::files();
+        assert_eq!(files.len(), library::embedded_keys().count());
+        for file in files {
+            let mut paths: Vec<&str> = file.layers.iter().map(|l| l.d.as_str()).collect();
+            paths.extend(file.level.iter().filter_map(|l| l.clip.as_deref()));
+            for d in paths {
+                let path = parse_svg_strict(d)
+                    .unwrap_or_else(|at| panic!("{}: '{d}' unreadable at {at}", file.key));
+                let mut fill: VertexBuffers<lyon::math::Point, u16> = VertexBuffers::new();
+                FillTessellator::new()
+                    .tessellate_path(
+                        &path,
+                        &FillOptions::tolerance(0.15),
+                        &mut BuffersBuilder::new(&mut fill, |v: FillVertex| v.position()),
+                    )
+                    .unwrap_or_else(|e| panic!("{}: fill of '{d}': {e:?}", file.key));
+                let mut stroke: VertexBuffers<lyon::math::Point, u16> = VertexBuffers::new();
+                StrokeTessellator::new()
+                    .tessellate_path(
+                        &path,
+                        &StrokeOptions::tolerance(0.1).with_line_width(1.75),
+                        &mut BuffersBuilder::new(&mut stroke, |v: StrokeVertex| v.position()),
+                    )
+                    .unwrap_or_else(|e| panic!("{}: stroke of '{d}': {e:?}", file.key));
+                assert!(
+                    !stroke.indices.is_empty(),
+                    "{}: '{d}' strokes nothing",
+                    file.key
+                );
             }
-            out.insert(format!(
-                "M{} {} L{} {}",
-                attr(line, "x1"),
-                attr(line, "y1"),
-                attr(line, "x2"),
-                attr(line, "y2")
-            ));
         }
-        for circle in between(WEB_ISA, "<circle ", "/>") {
-            out.insert(format!(
-                "circle {} {} {}",
-                attr(circle, "cx"),
-                attr(circle, "cy"),
-                attr(circle, "r")
-            ));
-        }
-        let consts = between(WEB_ISA, "const top = ", "\n")[0];
-        let (top, bottom) = consts.split_once(", bottom = ").expect("top and bottom");
-        let (top, bottom): (f64, f64) = (top.parse().unwrap(), bottom.trim().parse().unwrap());
-        for template in between(WEB_ISA, "d={`", "`}") {
-            out.insert(
-                template
-                    .replace("${top + 10}", &format!("{}", top + 10.0))
-                    .replace("${top}", &format!("{top}"))
-                    .replace("${bottom}", &format!("{bottom}")),
-            );
-        }
-        out
     }
 
-    /// Every outline the native ISA symbols draw, read from this file.
-    fn native_shapes() -> std::collections::BTreeSet<String> {
-        let start = NATIVE
-            .find("// ── ISA-101 (`hmi/isa101.tsx`)")
-            .expect("the ISA section");
-        let end = start + NATIVE[start..].find("#[cfg(test)]").expect("its end");
-        let code = &NATIVE[start..end];
-        let mut out: std::collections::BTreeSet<String> = between(code, "Shape::svg(\"", "\")")
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        out.extend(
-            between(code, "const ISA_TANK: &str = \"", "\"")
-                .into_iter()
-                .map(str::to_owned),
-        );
-        for circle in between(code, "Shape::circle(", ")") {
-            let parts: Vec<String> = circle.split(',').map(number).collect();
-            out.insert(format!("circle {}", parts.join(" ")));
-        }
-        out
-    }
-
+    /// The level fill stays inside the vessel: clipped to `level.clip`.
     #[test]
-    fn the_isa_shapes_are_the_web_ones() {
-        let (web, native) = (web_shapes(), native_shapes());
-        assert!(web.len() > 15, "{web:?}");
-        let missing: Vec<_> = web.difference(&native).collect();
-        let extra: Vec<_> = native.difference(&web).collect();
-        assert!(
-            missing.is_empty() && extra.is_empty(),
-            "isa101.tsx and symbols.rs drifted apart: not drawn here {missing:?}, not on the web {extra:?}"
-        );
-        assert_eq!(
-            (ISA_TANK_TOP, ISA_TANK_BOTTOM),
-            (16.0, 150.0),
-            "the tank's level runs between its web top and bottom"
-        );
-        assert!(WEB_ISA.contains("const top = 16, bottom = 150"));
-    }
-
-    #[test]
-    fn the_isa_symbols_have_the_web_boxes_and_ports() {
-        let mut keys = 0;
-        for block in between(WEB_ISA, "key: 'isa_", "render:") {
-            let key = format!("isa_{}", block.split('\'').next().expect("the key"));
-            let key = key.as_str();
-            let def = voltrus_scada_native::mimic::symbol_def(key)
-                .unwrap_or_else(|| panic!("{key} is a native symbol"));
-            let pair = |name: &str| -> (f64, f64) {
-                let inner = between(block, &format!("{name}: ["), "]")[0];
-                let (a, b) = inner.split_once(',').expect("a pair");
-                (a.trim().parse().unwrap(), b.trim().parse().unwrap())
+    fn level_fills_stay_in_their_vessel() {
+        for file in library::files() {
+            let Some(area) = &file.level else { continue };
+            let (x, y, w, h) = area.filled(0.5);
+            assert!((y - (area.y + area.h / 2.0)).abs() < 1e-9, "{}", file.key);
+            #[allow(clippy::cast_possible_truncation)]
+            let fill = Shape::rect(x as f32, y as f32, w as f32, h as f32);
+            let shape = match &area.clip {
+                Some(clip) => fill.within(&Shape::svg_owned(clip)),
+                None => fill,
             };
-            assert_eq!(def.view_box, pair("viewBox"), "{key} view box");
-            assert_eq!(def.size, pair("size"), "{key} size");
-            assert_eq!(
-                def.stretch,
-                block.contains("stretch: true"),
-                "{key} stretch"
-            );
-            let ports = between(block, "ports: {", "}")
-                .first()
-                .copied()
-                .unwrap_or("");
-            let port = |side: &str| {
-                between(ports, &format!("{side}: ["), "]")
-                    .first()
-                    .map(|inner| {
-                        let (a, b) = inner.split_once(',').expect("a pair");
-                        (
-                            a.trim().parse::<f64>().unwrap(),
-                            b.trim().parse::<f64>().unwrap(),
-                        )
-                    })
-            };
-            assert_eq!(def.ports.left, port("left"), "{key} left port");
-            assert_eq!(def.ports.right, port("right"), "{key} right port");
-            assert_eq!(def.ports.top, port("top"), "{key} top port");
-            assert_eq!(def.ports.bottom, port("bottom"), "{key} bottom port");
-            keys += 1;
+            assert!(!shape.is_empty(), "{}", file.key);
         }
-        assert_eq!(keys, 8, "every ISA symbol checked");
     }
 
     #[test]

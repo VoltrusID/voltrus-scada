@@ -12,7 +12,9 @@
 //! - **Components**: the palette (symbols and widgets).
 
 use gpui::prelude::*;
-use gpui::{AnyElement, AnyView, Context, ElementId, Render, SharedString, Window, div, px};
+use gpui::{
+    AnyElement, AnyView, Context, ElementId, Render, SharedString, Window, div, px, uniform_list,
+};
 use voltrus_scada_native::designer::{self, bindings};
 use voltrus_scada_native::mimic::edit::{self, Edit};
 use vt_ui::Icon;
@@ -22,9 +24,6 @@ use vt_ui::theme::*;
 use super::{Editor, apply, edits, edits_ref, focus_stage, stage_at};
 use crate::console::Console;
 use crate::console::screens::Screens;
-
-/// Tags the browser lists at most (the search narrows them).
-const TAG_ROWS: usize = 400;
 
 /// The column's tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -263,23 +262,87 @@ fn toggle(
         .into_any_element()
 }
 
-/// The project tree: the screens, the edited one opened.
+/// A row of the project tree.
+#[derive(Clone)]
+enum ProjectRow {
+    /// A screen: its position, id, name, and whether it is the edited one.
+    Screen(usize, String, String, bool),
+    /// A component of the edited screen, by its place in the stack.
+    Component(usize),
+}
+
+/// The project tree's row height (`row_base`).
+const TREE_ROW: f32 = 26.0;
+
+/// The project tree: the screens, the edited one opened. A virtual list:
+/// only the rows in view are built each frame, so a screen of hundreds of
+/// components costs what its visible rows cost.
 fn project(console: &Console, theme: &Theme, cx: &mut Context<Console>) -> AnyElement {
     let Some(editor) = edits_ref(console) else {
         return div().into_any_element();
     };
     let screens = console.state_ref::<Screens>();
     let ids = screens.map(Screens::ids).unwrap_or_default();
-    let mut rows: Vec<AnyElement> = Vec::new();
+    let mut rows: Vec<ProjectRow> = Vec::new();
     for (index, id) in ids.into_iter().enumerate() {
         let open = id == editor.screen;
         let name = screens.map_or_else(|| id.clone(), |s| s.name(&id));
-        let target = id.clone();
-        rows.push(
+        rows.push(ProjectRow::Screen(index, id, name, open));
+        if open {
+            // Top of the stack first, as the web Designer lists them.
+            rows.extend(
+                (0..editor.layout().widgets.len())
+                    .rev()
+                    .map(ProjectRow::Component),
+            );
+        }
+    }
+    let count = rows.len();
+    let rows = std::rc::Rc::new(rows);
+    let theme = theme.clone();
+    div()
+        .id("designer-project")
+        .flex_1()
+        .min_h_0()
+        .p(SPACE_3)
+        .child(
+            uniform_list(
+                "designer-project-rows",
+                count,
+                cx.processor(
+                    move |console: &mut Console,
+                          range: std::ops::Range<usize>,
+                          _,
+                          cx: &mut Context<Console>| {
+                        range
+                            .filter_map(|at| rows.get(at))
+                            .map(|row| project_row(console, row, &theme, cx))
+                            .collect::<Vec<_>>()
+                    },
+                ),
+            )
+            .size_full(),
+        )
+        .into_any_element()
+}
+
+fn project_row(
+    console: &Console,
+    row: &ProjectRow,
+    theme: &Theme,
+    cx: &mut Context<Console>,
+) -> AnyElement {
+    let Some(editor) = edits_ref(console) else {
+        return div().h(px(TREE_ROW)).into_any_element();
+    };
+    match row {
+        ProjectRow::Screen(index, id, name, open) => {
+            let open = *open;
+            let target = id.clone();
             row_base(
                 ElementId::NamedInteger(
                     "designer-screen".into(),
-                    u64::try_from(index).unwrap_or(0),
+                    u64::try_from(*index).unwrap_or(0),
                 ),
                 false,
                 theme,
@@ -302,7 +365,7 @@ fn project(console: &Console, theme: &Theme, cx: &mut Context<Console>) -> AnyEl
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis()
-                    .child(name),
+                    .child(name.clone()),
             )
             .when(open, |this| {
                 this.child(
@@ -316,127 +379,123 @@ fn project(console: &Console, theme: &Theme, cx: &mut Context<Console>) -> AnyEl
             .on_click(cx.listener(move |console, _, window, cx| {
                 super::super::switch_screen(console, &target, window, cx);
             }))
-            .into_any_element(),
-        );
-        if !open {
-            continue;
+            .into_any_element()
         }
-        // Top of the stack first, as the web Designer lists them.
-        for (at, widget) in editor.layout().widgets.iter().enumerate().rev() {
-            let selected = editor.selection.contains(&widget.id);
-            let hidden = !designer::visible(widget);
-            let locked = designer::locked(widget);
-            let grouped = edit::group_of(widget).is_some();
-            let bound = bindings::has_bindings(&widget.config);
-            let label = widget
-                .text("label")
-                .filter(|label| !label.is_empty())
-                .map(str::to_owned)
-                .or_else(|| widget.text("title").map(str::to_owned))
-                .or_else(|| widget.text("text").map(str::to_owned))
-                .unwrap_or_else(|| edit::title(widget));
-            let id = widget.id.clone();
-            rows.push(
-                row_base(
-                    ElementId::NamedInteger(
-                        "designer-component".into(),
-                        u64::try_from(at).unwrap_or(0),
-                    ),
-                    selected,
-                    theme,
-                )
-                .pl(px(34.0))
-                .text_color(if hidden { theme.fg_dim } else { theme.fg })
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(label),
-                )
-                .when(bound, |this| {
-                    this.child(
-                        div()
-                            .text_size(FONT_CAPTION)
-                            .text_color(theme.accent)
-                            .child("ƒ"),
-                    )
-                })
-                .when(grouped, |this| {
-                    this.child(vt_ui::icon(Icon::Boxes, px(12.0), theme.fg_dim))
-                })
-                // Hide / show and lock / unlock from the tree (`IconToggle`):
-                // shown when set, or on the selected row.
-                .when(hidden || selected, |this| {
-                    this.child(toggle(
-                        ElementId::NamedInteger(
-                            "designer-toggle-visible".into(),
-                            u64::try_from(at).unwrap_or(0),
-                        ),
-                        Icon::Eye,
-                        if hidden {
-                            "Show it"
-                        } else {
-                            "Hide it at runtime"
-                        },
-                        if hidden { theme.fg_dim } else { theme.fg_muted },
-                        Edit::Config {
-                            id: widget.id.clone(),
-                            key: "visible".into(),
-                            value: serde_json::Value::Bool(hidden),
-                        },
-                        cx,
-                    ))
-                })
-                .when(locked || selected, |this| {
-                    this.child(toggle(
-                        ElementId::NamedInteger(
-                            "designer-toggle-lock".into(),
-                            u64::try_from(at).unwrap_or(0),
-                        ),
-                        if locked { Icon::Lock } else { Icon::LockOpen },
-                        if locked { "Unlock" } else { "Lock" },
-                        if locked { theme.fg_dim } else { theme.fg_muted },
-                        Edit::Config {
-                            id: widget.id.clone(),
-                            key: edit::LOCKED_KEY.into(),
-                            value: if locked {
-                                serde_json::Value::Null
-                            } else {
-                                serde_json::Value::Bool(true)
-                            },
-                        },
-                        cx,
-                    ))
-                })
-                .child(
-                    div()
-                        .text_size(FONT_CAPTION)
-                        .font_family(MONO)
-                        .text_color(theme.fg_dim)
-                        .child(widget.kind.as_str().to_owned()),
-                )
-                .on_click(cx.listener(move |console, _, window, cx| {
-                    if let Some(editor) = edits(console) {
-                        editor.selection = vec![id.clone()];
-                        editor.line = None;
-                    }
-                    super::changed(console, window, cx);
-                }))
-                .into_any_element(),
-            );
+        ProjectRow::Component(at) => {
+            let Some(widget) = editor.layout().widgets.get(*at) else {
+                return div().h(px(TREE_ROW)).into_any_element();
+            };
+            component_row(editor, *at, widget, theme, cx)
         }
     }
-    div()
-        .id("designer-project")
-        .flex_1()
-        .min_h_0()
-        .overflow_y_scroll()
-        .p(SPACE_3)
-        .children(rows)
-        .into_any_element()
+}
+
+fn component_row(
+    editor: &Editor,
+    at: usize,
+    widget: &voltrus_scada_native::mimic::Widget,
+    theme: &Theme,
+    cx: &mut Context<Console>,
+) -> AnyElement {
+    let selected = editor.selection.contains(&widget.id);
+    let hidden = !designer::visible(widget);
+    let locked = designer::locked(widget);
+    let grouped = edit::group_of(widget).is_some();
+    let bound = bindings::has_bindings(&widget.config);
+    let label = widget
+        .text("label")
+        .filter(|label| !label.is_empty())
+        .map(str::to_owned)
+        .or_else(|| widget.text("title").map(str::to_owned))
+        .or_else(|| widget.text("text").map(str::to_owned))
+        .unwrap_or_else(|| edit::title(widget));
+    let id = widget.id.clone();
+    row_base(
+        ElementId::NamedInteger("designer-component".into(), u64::try_from(at).unwrap_or(0)),
+        selected,
+        theme,
+    )
+    .pl(px(34.0))
+    .text_color(if hidden { theme.fg_dim } else { theme.fg })
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_ellipsis()
+            .child(label),
+    )
+    .when(bound, |this| {
+        this.child(
+            div()
+                .text_size(FONT_CAPTION)
+                .text_color(theme.accent)
+                .child("ƒ"),
+        )
+    })
+    .when(grouped, |this| {
+        this.child(vt_ui::icon(Icon::Boxes, px(12.0), theme.fg_dim))
+    })
+    // Hide / show and lock / unlock from the tree (`IconToggle`):
+    // shown when set, or on the selected row.
+    .when(hidden || selected, |this| {
+        this.child(toggle(
+            ElementId::NamedInteger(
+                "designer-toggle-visible".into(),
+                u64::try_from(at).unwrap_or(0),
+            ),
+            Icon::Eye,
+            if hidden {
+                "Show it"
+            } else {
+                "Hide it at runtime"
+            },
+            if hidden { theme.fg_dim } else { theme.fg_muted },
+            Edit::Config {
+                id: widget.id.clone(),
+                key: "visible".into(),
+                value: serde_json::Value::Bool(hidden),
+            },
+            cx,
+        ))
+    })
+    .when(locked || selected, |this| {
+        this.child(toggle(
+            ElementId::NamedInteger(
+                "designer-toggle-lock".into(),
+                u64::try_from(at).unwrap_or(0),
+            ),
+            if locked { Icon::Lock } else { Icon::LockOpen },
+            if locked { "Unlock" } else { "Lock" },
+            if locked { theme.fg_dim } else { theme.fg_muted },
+            Edit::Config {
+                id: widget.id.clone(),
+                key: edit::LOCKED_KEY.into(),
+                value: if locked {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::Bool(true)
+                },
+            },
+            cx,
+        ))
+    })
+    .child(
+        div()
+            .text_size(FONT_CAPTION)
+            .font_family(MONO)
+            .text_color(theme.fg_dim)
+            .child(widget.kind.as_str().to_owned()),
+    )
+    .on_click(cx.listener(move |console, _, window, cx| {
+        if let Some(editor) = edits(console) {
+            editor.selection = vec![id.clone()];
+            editor.line = None;
+        }
+        super::changed(console, window, cx);
+    }))
+    .into_any_element()
 }
 
 /// The tag browser: live values, searched; click or drag to bind.
@@ -458,89 +517,28 @@ fn tag_browser(
     let store = &console.store;
     let found = store.filter(&query);
     let total = found.len();
-    let rows: Vec<AnyElement> = found
-        .iter()
-        .take(TAG_ROWS)
-        .filter_map(|at| store.tags.get(*at))
-        .map(|tag| {
-            let id = tag.info.id;
-            // The numbered ref (`device/key#2`) when tags share a key, as
-            // bindings name them.
-            let reference = store.ref_of(id).map_or_else(
-                || bindings::tag_ref(&tag.info.device_id, &tag.info.key),
-                str::to_owned,
-            );
-            let value = if tag.at_secs == 0 && !tag.simulated {
-                "—".to_owned()
-            } else {
-                tag.display()
-            };
-            let attention = tag.status.needs_attention();
-            let drag = TagDrag {
-                id,
-                name: tag.label.clone(),
-            };
-            row_base(
-                ElementId::NamedInteger("designer-tag".into(), u64::try_from(id).unwrap_or(0)),
-                bound.contains(&id),
-                theme,
-            )
-            .h(px(36.0))
-            .cursor_grab()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_color(theme.fg)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(tag.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(FONT_CAPTION)
-                            .font_family(MONO)
-                            .text_color(theme.fg_dim)
-                            .overflow_hidden()
-                            .whitespace_nowrap()
-                            .text_ellipsis()
-                            .child(reference),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .font_family(MONO)
-                    .text_color(if attention { theme.warning } else { theme.fg })
-                    .child(value),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(34.0))
-                    .text_size(FONT_CAPTION)
-                    .text_color(theme.fg_dim)
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .child(tag.info.unit.clone()),
-            )
-            .on_click(cx.listener(move |console, _, window, cx| {
-                bind_selected(console, id, window, cx);
-            }))
-            .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
-            .into_any_element()
-        })
-        .collect();
-    let caption = if total > TAG_ROWS {
-        format!("{TAG_ROWS} of {total} tags, live · search to narrow")
-    } else {
-        format!("{total} tags, live · click or drag onto a component to bind")
-    };
+    let found = std::rc::Rc::new(found);
+    let bound = std::rc::Rc::new(bound);
+    let row_theme = theme.clone();
+    let list = uniform_list(
+        "designer-tag-rows",
+        total,
+        cx.processor(
+            move |console: &mut Console,
+                  range: std::ops::Range<usize>,
+                  _,
+                  cx: &mut Context<Console>| {
+                range
+                    .filter_map(|row| found.get(row))
+                    .filter_map(|at| console.store.tags.get(*at))
+                    .map(|tag| tag_row(console, tag, &bound, &row_theme, cx))
+                    .collect::<Vec<_>>()
+            },
+        ),
+    )
+    .size_full();
+    let caption = format!("{total} tags, live · click or drag onto a component to bind");
+
     div()
         .flex()
         .flex_col()
@@ -568,9 +566,90 @@ fn tag_browser(
                 .id("designer-tags")
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
                 .p(SPACE_3)
-                .children(rows),
+                .child(list),
         )
         .into_any_element()
+}
+
+fn tag_row(
+    console: &Console,
+    tag: &crate::console::store::Tag,
+    bound: &[i64],
+    theme: &Theme,
+    cx: &mut Context<Console>,
+) -> AnyElement {
+    let store = &console.store;
+
+    let id = tag.info.id;
+    // The numbered ref (`device/key#2`) when tags share a key, as
+    // bindings name them.
+    let reference = store.ref_of(id).map_or_else(
+        || bindings::tag_ref(&tag.info.device_id, &tag.info.key),
+        str::to_owned,
+    );
+    let value = if tag.at_secs == 0 && !tag.simulated {
+        "—".to_owned()
+    } else {
+        tag.display()
+    };
+    let attention = tag.status.needs_attention();
+    let drag = TagDrag {
+        id,
+        name: tag.label.clone(),
+    };
+    row_base(
+        ElementId::NamedInteger("designer-tag".into(), u64::try_from(id).unwrap_or(0)),
+        bound.contains(&id),
+        theme,
+    )
+    .h(px(36.0))
+    .cursor_grab()
+    .child(
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_w_0()
+            .child(
+                div()
+                    .text_color(theme.fg)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(tag.label.clone()),
+            )
+            .child(
+                div()
+                    .text_size(FONT_CAPTION)
+                    .font_family(MONO)
+                    .text_color(theme.fg_dim)
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .child(reference),
+            ),
+    )
+    .child(
+        div()
+            .flex_none()
+            .font_family(MONO)
+            .text_color(if attention { theme.warning } else { theme.fg })
+            .child(value),
+    )
+    .child(
+        div()
+            .flex_none()
+            .w(px(34.0))
+            .text_size(FONT_CAPTION)
+            .text_color(theme.fg_dim)
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .child(tag.info.unit.clone()),
+    )
+    .on_click(cx.listener(move |console, _, window, cx| {
+        bind_selected(console, id, window, cx);
+    }))
+    .on_drag(drag, |drag, _, _, cx| cx.new(|_| drag.clone()))
+    .into_any_element()
 }
