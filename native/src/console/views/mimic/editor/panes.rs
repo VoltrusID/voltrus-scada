@@ -464,7 +464,12 @@ fn tag_browser(
         .filter_map(|at| store.tags.get(*at))
         .map(|tag| {
             let id = tag.info.id;
-            let reference = bindings::tag_ref(&tag.info.device_id, &tag.info.key);
+            // The numbered ref (`device/key#2`) when tags share a key, as
+            // bindings name them.
+            let reference = store.ref_of(id).map_or_else(
+                || bindings::tag_ref(&tag.info.device_id, &tag.info.key),
+                str::to_owned,
+            );
             let value = if tag.at_secs == 0 && !tag.simulated {
                 "—".to_owned()
             } else {

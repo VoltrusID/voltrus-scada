@@ -19,6 +19,10 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/native.yml
+      # The Designer's web code the native port is checked against.
+      - client/src/designer/**
+      - client/src/scada2/engine/**
+      - client/src/scada2/hmi/isa101.tsx
   pull_request:
     paths:
       - native/**
@@ -27,6 +31,10 @@ on:
       - Cargo.toml
       - Cargo.lock
       - .github/workflows/native.yml
+      # The Designer's web code the native port is checked against.
+      - client/src/designer/**
+      - client/src/scada2/engine/**
+      - client/src/scada2/hmi/isa101.tsx
   workflow_dispatch:
 
 permissions:
@@ -41,6 +49,32 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  # The native Designer's parity fixtures, written again from the web
+  # Designer's own code (client/src/designer, client/src/scada2/engine):
+  # what the web saves after a list of edits (web-save.json) and what its
+  # expressions and bindings give (expr-corpus.json). A change to either
+  # side that the committed fixtures do not show fails here; the Rust tests
+  # (linux job) compare the port with them.
+  designer-parity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Write the fixtures from the web code
+        run: |
+          node native/tests/fixtures/designer/web-save.mts
+          node native/tests/fixtures/designer/expr-corpus.mts
+
+      - name: Fixtures are up to date
+        run: git diff --exit-code -- native/tests/fixtures/designer
+
   # Formatting, lints and every test but the live end-to-end one, on Linux
   # (GPUI's X11/Wayland backend; the console's tests use GPUI's test
   # platform, so no display is needed).

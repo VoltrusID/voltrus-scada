@@ -125,17 +125,20 @@ pub struct LayoutSave<'a> {
     pub base_revision: Option<&'a str>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-struct SavedAnswer {
-    revision: String,
+/// `PUT` of the two older endpoints (`scada-equipment`,
+/// `scada-connections`), which take a `base_revision` too.
+#[derive(Debug, Serialize)]
+struct ItemsSave<T> {
+    items: Vec<T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_revision: Option<String>,
 }
 
 /// How a save went.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Saved {
-    /// Saved; the layout's new revision (`None` from a server without
-    /// revisions).
+    /// Saved; the layout's new revision (`None`: the server named none,
+    /// so keep the one the edits were based on, never drop the check).
     Done { revision: Option<String> },
     /// The screen changed elsewhere since the revision the edits started
     /// from; nothing was written. Its current revision, to overwrite with.
@@ -145,24 +148,63 @@ pub enum Saved {
     Half(String),
 }
 
+/// Whether a failed request means the server predates the endpoint: 404
+/// or 405, or a success that is not JSON at all (a server from before it
+/// answers its web page). Anything else (refused, signed out, a server
+/// error, a timeout, JSON of the wrong shape) is an error to show.
+pub fn older_server(error: &anyhow::Error) -> bool {
+    if let Some(server) = error.downcast_ref::<ServerError>() {
+        return matches!(
+            server.status,
+            reqwest::StatusCode::NOT_FOUND | reqwest::StatusCode::METHOD_NOT_ALLOWED
+        );
+    }
+    error
+        .downcast_ref::<serde_json::Error>()
+        .is_some_and(serde_json::Error::is_syntax)
+}
+
+/// The revision in a save's or a load's answer, when it names one.
+fn revision_in(answer: &Json) -> Option<String> {
+    answer
+        .get("revision")
+        .and_then(Json::as_str)
+        .filter(|revision| !revision.is_empty())
+        .map(str::to_owned)
+}
+
 /// A screen's layout and its revision. A server from before the Designer
-/// has no `scada-layout` (it may answer its web page instead): then the
-/// two lists, with no revision.
+/// has no `scada-layout` (404, 405, or its web page instead of JSON):
+/// then the two lists, with no revision. Any other failure is the error.
 pub async fn load(api: &VoltrusApi, screen: &str) -> anyhow::Result<(Layout, Option<String>)> {
-    if let Ok(answer) = api.get_json::<LayoutAnswer>(&layout_path(screen)).await
-        && !answer.revision.is_empty()
-    {
-        let layout = mimic::parse(&answer.equipment, &answer.connections);
-        return Ok((layout, Some(answer.revision)));
+    match api.get_json::<Json>(&layout_path(screen)).await {
+        Ok(answer) => {
+            let revision = revision_in(&answer).ok_or_else(|| {
+                anyhow::anyhow!("the server's scada-layout answer has no revision")
+            })?;
+            let answer: LayoutAnswer = serde_json::from_value(answer)?;
+            let layout = mimic::parse(&answer.equipment, &answer.connections);
+            return Ok((layout, Some(revision)));
+        }
+        Err(error) if older_server(&error) => {}
+        Err(error) => return Err(error),
     }
     let equipment: Items<EquipmentRow> = api.get_json(&equipment_path(screen)).await?;
     let connections: Items<ConnectionRow> = api.get_json(&connections_path(screen)).await?;
     Ok((mimic::parse(&equipment.items, &connections.items), None))
 }
 
+/// The layout's current revision (`GET scada-layout`), for a save whose
+/// answer named none.
+async fn current_revision(api: &VoltrusApi, screen: &str) -> Option<String> {
+    let answer = api.get_json::<Json>(&layout_path(screen)).await.ok()?;
+    revision_in(&answer)
+}
+
 /// Save rows as the web Designer does: one `PUT scada-layout` based on
 /// `base` (the revision loaded, or the one a conflict named to overwrite
-/// it). With no revision (an older server) the two `PUT`s.
+/// it). With no revision (an older server), or a server without
+/// `scada-layout`, the two `PUT`s, which carry `base` too when it is known.
 pub async fn save(
     api: &VoltrusApi,
     screen: &str,
@@ -170,44 +212,72 @@ pub async fn save(
     connections: Vec<ConnectionRow>,
     base: Option<String>,
 ) -> anyhow::Result<Saved> {
-    let Some(base) = base else {
-        api.send_json::<_, serde::de::IgnoredAny>(
+    if let Some(base) = &base {
+        let body = LayoutSave {
+            equipment: &equipment,
+            connections: &connections,
+            base_revision: Some(base),
+        };
+        match api
+            .send_json::<_, Json>(Method::PUT, &layout_path(screen), &body)
+            .await
+        {
+            Ok(answer) => {
+                let revision = match revision_in(&answer) {
+                    Some(revision) => Some(revision),
+                    None => current_revision(api, screen).await,
+                };
+                return Ok(Saved::Done { revision });
+            }
+            Err(error) if older_server(&error) => {}
+            Err(error) => {
+                return match conflict(&error) {
+                    Some(saved) => Ok(saved),
+                    None => Err(error),
+                };
+            }
+        }
+    }
+    let first = api
+        .send_json::<_, Json>(
             Method::PUT,
             &equipment_path(screen),
-            &Items { items: equipment },
+            &ItemsSave {
+                items: equipment,
+                base_revision: base.clone(),
+            },
         )
-        .await?;
-        // The equipment is in by now: a failure here leaves the server
-        // half-saved, which the answer says.
-        let lines = api
-            .send_json::<_, serde::de::IgnoredAny>(
-                Method::PUT,
-                &connections_path(screen),
-                &Items { items: connections },
-            )
-            .await;
-        return Ok(match lines {
-            Ok(_) => Saved::Done { revision: None },
-            Err(error) => Saved::Half(error.to_string()),
-        });
+        .await;
+    let first = match first {
+        Ok(answer) => answer,
+        Err(error) => {
+            return match conflict(&error) {
+                Some(saved) => Ok(saved),
+                None => Err(error),
+            };
+        }
     };
-    let body = LayoutSave {
-        equipment: &equipment,
-        connections: &connections,
-        base_revision: Some(&base),
-    };
-    match api
-        .send_json::<_, SavedAnswer>(Method::PUT, &layout_path(screen), &body)
-        .await
-    {
-        Ok(answer) => Ok(Saved::Done {
-            revision: Some(answer.revision).filter(|r| !r.is_empty()),
-        }),
-        Err(error) => match conflict(&error) {
-            Some(saved) => Ok(saved),
-            None => Err(error),
+    // The second save is based on what the first made (or, from a server
+    // that names no revision, on what the first was based on).
+    let after_first = revision_in(&first).or(base);
+    // The equipment is in by now: a failure here leaves the server
+    // half-saved, which the answer says.
+    let lines = api
+        .send_json::<_, Json>(
+            Method::PUT,
+            &connections_path(screen),
+            &ItemsSave {
+                items: connections,
+                base_revision: after_first.clone(),
+            },
+        )
+        .await;
+    Ok(match lines {
+        Ok(answer) => Saved::Done {
+            revision: revision_in(&answer).or(after_first),
         },
-    }
+        Err(error) => Saved::Half(error.to_string()),
+    })
 }
 
 /// A 409 with the current revision: the conflict.
@@ -257,6 +327,115 @@ pub fn bound(
         config,
         ..widget.clone()
     })
+}
+
+/// [`bound`] for every widget a screen draws, frame after frame: each
+/// widget's bindings are parsed when its config changes and evaluated
+/// again only when a tag they read changes, so a large screen costs a
+/// lookup and a comparison per bound widget per frame.
+#[derive(Debug, Default)]
+pub struct BoundCache {
+    widgets: HashMap<String, BoundEntry>,
+    frame: u64,
+}
+
+#[derive(Debug)]
+struct BoundEntry {
+    /// The widget as last asked for.
+    source: Widget,
+    compiled: bindings::Compiled,
+    /// The values its refs had (bits; `None`: no value).
+    inputs: Vec<Option<u64>>,
+    out: Option<Widget>,
+    /// The frame it was last asked for.
+    seen: u64,
+}
+
+impl BoundCache {
+    /// Frames a widget not drawn (off screen, deleted) is kept for.
+    pub const KEEP_FRAMES: u64 = 600;
+
+    /// A new frame: what has not been asked for in a while goes.
+    pub fn frame(&mut self) {
+        self.frame += 1;
+        if self.frame.is_multiple_of(64) {
+            let now = self.frame;
+            self.widgets
+                .retain(|_, entry| now - entry.seen <= Self::KEEP_FRAMES);
+        }
+    }
+
+    /// Widgets kept.
+    pub fn len(&self) -> usize {
+        self.widgets.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.widgets.is_empty()
+    }
+
+    /// The widget as drawn now (as [`bound`]; `None`: draw it as it is).
+    pub fn bound(
+        &mut self,
+        widget: &Widget,
+        read: &dyn Fn(&str) -> Option<f64>,
+    ) -> Option<&Widget> {
+        if !bindings::has_bindings(&widget.config) {
+            self.widgets.remove(&widget.id);
+            return None;
+        }
+        let frame = self.frame;
+        match self.widgets.get_mut(&widget.id) {
+            Some(entry) if entry.source == *widget => {}
+            Some(entry)
+                if entry.source.config == widget.config && entry.source.kind == widget.kind =>
+            {
+                // Moved or resized: same bindings, drawn again.
+                entry.source = widget.clone();
+                entry.out = None;
+            }
+            _ => {
+                let types = prop_types(widget);
+                let compiled =
+                    bindings::Compiled::new(&widget.config, &|prop| types.get(prop).copied());
+                self.widgets.insert(
+                    widget.id.clone(),
+                    BoundEntry {
+                        source: widget.clone(),
+                        compiled,
+                        inputs: Vec::new(),
+                        out: None,
+                        seen: frame,
+                    },
+                );
+            }
+        }
+        let entry = self.widgets.get_mut(&widget.id)?;
+        entry.seen = frame;
+        if entry.compiled.is_empty() {
+            return None;
+        }
+        let refs = entry.compiled.refs();
+        let mut changed = entry.out.is_none() || entry.inputs.len() != refs.len();
+        if changed {
+            entry.inputs = refs.iter().map(|r| read(r).map(f64::to_bits)).collect();
+        } else {
+            for (slot, reference) in entry.inputs.iter_mut().zip(refs) {
+                let now = read(reference).map(f64::to_bits);
+                if *slot != now {
+                    *slot = now;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            entry.out = Some(Widget {
+                config: entry.compiled.apply(&widget.config, read),
+                ..widget.clone()
+            });
+        }
+        entry.out.as_ref()
+    }
 }
 
 /// Whether a widget is drawn at runtime: `config.visible` is not false

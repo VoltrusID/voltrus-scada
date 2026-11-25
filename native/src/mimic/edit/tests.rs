@@ -761,3 +761,37 @@ fn an_edited_layout_saves_and_reads_back() {
     assert_eq!(super::super::parse(&equipment, &connections), layout);
     assert_eq!(LINE_TYPES[0], ("flow", "Process pipe"));
 }
+
+#[test]
+fn a_pause_starts_a_new_step_even_for_the_same_key() {
+    use std::time::{Duration, Instant};
+    let mut history = History::new(two_and_a_line());
+    let label = |text: &str| Edit::Config {
+        id: "a".into(),
+        key: "label".into(),
+        value: json!(text),
+    };
+    let start = Instant::now();
+    assert!(history.apply_at(&label("P"), Some("a:label"), Some(start)));
+    assert!(history.apply_at(
+        &label("P-"),
+        Some("a:label"),
+        Some(start + Duration::from_millis(400))
+    ));
+    // Within COALESCE of the last edit, not of the first: still one step.
+    assert!(history.apply_at(
+        &label("P-1"),
+        Some("a:label"),
+        Some(start + Duration::from_millis(1300))
+    ));
+    // A pause longer than COALESCE: a new step.
+    assert!(history.apply_at(
+        &label("P-10"),
+        Some("a:label"),
+        Some(start + Duration::from_millis(1300) + COALESCE + Duration::from_millis(1))
+    ));
+    assert!(history.undo());
+    assert_eq!(history.present().widgets[0].text("label"), Some("P-1"));
+    assert!(history.undo());
+    assert_eq!(history.present().widgets[0].text("label"), None);
+}

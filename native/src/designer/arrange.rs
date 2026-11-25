@@ -13,6 +13,7 @@
 
 use serde_json::Value as Json;
 
+use super::expr::js_round;
 use crate::mimic::edit::{self, Edit, Placing, Rect};
 use crate::mimic::{Layout, STAGE_H, STAGE_W, Widget, symbol_def};
 
@@ -58,11 +59,6 @@ impl Align {
 pub enum Axis {
     Horizontal,
     Vertical,
-}
-
-/// JavaScript's `Math.round`.
-fn js_round(x: f64) -> f64 {
-    (x + 0.5).floor()
 }
 
 /// The widgets `ids` names, in stacking order.

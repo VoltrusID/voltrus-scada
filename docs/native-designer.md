@@ -44,13 +44,33 @@ it level with the web Designer's rules. What changed to match:
   revision and saves the whole layout in one `PUT` based on it. A 409 opens
   the web's choice: *Load theirs* (the edits here are lost) or *Overwrite
   with mine* (saves again based on the revision the conflict named). A server
-  from before the Designer has no `scada-layout`: the console then loads and
-  saves with the two older routes, without a revision.
+  from before the Designer has no `scada-layout` (404, 405, or its web page
+  instead of JSON): the console then loads and saves with the two older
+  routes, which still carry `base_revision` when one is known. Any other
+  failure (refused, signed out, a server error, a timeout, JSON of the wrong
+  shape or without a revision) is shown as an error, never taken for an older
+  server, and a revision once known is never dropped. As on the web, the
+  console reads the revision again when its window comes to the front: a
+  clean editor takes the newer copy, one with unsaved edits shows *This screen
+  was saved elsewhere* with *Load theirs* and *Keep editing*.
+* **Unsaved edits outlive a lost session.** When the link fails under the
+  Designer (an expired session, a server restart), its unsaved edits are kept
+  in memory; after the same user signs in to the same server again, the
+  Designer opens on that screen with them, still based on the revision they
+  started from (so a save conflicts if the screen changed meanwhile).
 * **Expression safety.** As #33's review fixes: text over 2048 characters,
   more than 1000 parts or nesting deeper than 100 fails to parse; refs escape
   `}` and `\` inside braces; `text()` and `round()` clamp decimals to 0–20;
   `bit()` takes bits 0–52 in two's complement; a result that is not a number
   gives no value; the parse cache drops the least recently used text.
+  JavaScript's own rules where values cross: `toFixed` rounds the exact binary
+  value (only an exact tie goes away from zero), `Math.round`, `Number()` of
+  text (`0x`/`0o`/`0b`, `Infinity`, JavaScript's white space, no `inf`),
+  `String()` of numbers, arrays and objects, `-0`, and error positions in
+  UTF-16 units.
+* **Per-frame cost.** Each widget's bindings are parsed when its config
+  changes and evaluated again only when a tag they read changes
+  (`designer::BoundCache`); the inspector shares one parse cache.
 * **ISA-101 symbols.** The flat ISA-101 set (pump, motor, valve, control
   valve, tank, heat exchanger, process lines) is drawn natively with the
   web's geometry and colours, so the placement menu's choices and screens
@@ -67,10 +87,23 @@ forward a step, an undone centring).
 `designer::tests::the_save_matches_the_web_designer` makes the same edits with
 the native model and compares every row field and every config key. The same
 module runs the web's binding tests (`designerBindings.test.ts`) against the
-Rust port. Regenerate the fixture whenever `model.ts`, `bindings.ts` or
-`layout.ts` change (`node native/tests/fixtures/designer/web-save.mts` from
-the checkout); the committed one is generated from `main`. Next: run the
-script in the web test job and diff, so drift fails CI.
+Rust port, and `expr-corpus.mts` writes what the web's `expr.ts` and
+`bindings.ts` give for a few hundred expressions and bindings (malformed
+ones included) and a few thousand numbers (`toFixed`, `Math.round`,
+`String()`, exact ties and the doubles either side of them), which
+`designer::tests::*_match_the_web_corpus` compare with the port. The
+`designer-parity` job of `native.yml` runs both scripts and fails when the
+fixtures they write differ from the committed ones, so a change on either
+side alone fails CI. Regenerate them after such a change:
+
+```sh
+node native/tests/fixtures/designer/web-save.mts
+node native/tests/fixtures/designer/expr-corpus.mts
+```
+
+The ISA-101 symbols are hand-ported until the symbol data files of the
+Designer's phase 2 replace both copies; `symbols::tests` fail when the
+native paths, view boxes, sizes or ports drift from `isa101.tsx`.
 
 ## The expression evaluator: one implementation
 

@@ -88,6 +88,8 @@ fn kept_across_sessions(id: TypeId) -> bool {
         TypeId::of::<shell::Shell>(),
         TypeId::of::<views::ops_kit::Polls>(),
         TypeId::of::<audio::Annunciator>(),
+        // Unsaved Designer edits, restored when the same user signs in.
+        TypeId::of::<views::mimic::editor::Drafts>(),
     ]
     .contains(&id)
 }
@@ -1112,6 +1114,8 @@ impl Console {
     /// overlay and the shell's session data. On sign-out, on a failed link
     /// and before a later sign-in shows the pages.
     fn reset_session(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // The Designer's unsaved edits outlive it (as a draft).
+        views::mimic::editor::stash(self);
         self.session_epoch += 1;
         self.states.retain(|id, _| kept_across_sessions(*id));
         self.writing = None;

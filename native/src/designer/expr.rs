@@ -16,7 +16,7 @@
 //! web evaluator relies on them (truthiness, `+` joining text, number to
 //! text), and a missing tag or value gives "no value" (`Null`), never 0.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 /// A value an expression gives.
@@ -35,14 +35,7 @@ impl Value {
             Self::Num(x) => *x,
             Self::Bool(b) => f64::from(u8::from(*b)),
             Self::Null => f64::NAN,
-            Self::Str(s) => {
-                let s = s.trim();
-                if s.is_empty() {
-                    0.0
-                } else {
-                    s.parse().unwrap_or(f64::NAN)
-                }
-            }
+            Self::Str(s) => js_string_to_number(s),
         }
     }
 
@@ -88,8 +81,9 @@ impl Value {
     }
 }
 
-/// JavaScript's number to text: integers without a fraction, the shortest
-/// round-trip digits, exponents outside 1e-6..1e21.
+/// JavaScript's number to text (`Number::toString`): the shortest digits
+/// that read back as the number, the closest such when there are several;
+/// integers without a fraction, exponents outside 1e-6..1e21.
 pub fn js_number(x: f64) -> String {
     if x.is_nan() {
         return "NaN".into();
@@ -101,18 +95,51 @@ pub fn js_number(x: f64) -> String {
         return "0".into();
     }
     let abs = x.abs();
-    if (1e-6..1e21).contains(&abs) {
-        return format!("{x}");
+    // Rust's shortest digits; of the same length, the closest one (`{:.Ne}`
+    // rounds the exact value), as JavaScript picks.
+    let shortest = format!("{abs:e}");
+    let count = shortest.split_once('e').map_or(1, |(mantissa, _)| {
+        mantissa.chars().filter(char::is_ascii_digit).count()
+    });
+    let closest = format!("{abs:.prec$e}", prec = count.saturating_sub(1));
+    let chosen = if closest.parse::<f64>().ok() == Some(abs) {
+        closest
+    } else {
+        shortest
+    };
+    let (mantissa, exponent) = chosen.split_once('e').unwrap_or((&chosen, "0"));
+    let mut digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    while digits.len() > 1 && digits.ends_with('0') {
+        digits.pop();
     }
-    // `1e21` → `1e+21`, `1.5e-7` stays.
-    let text = format!("{x:e}");
-    match text.split_once('e') {
-        Some((mantissa, exp)) if !exp.starts_with('-') => format!("{mantissa}e+{exp}"),
-        _ => text,
-    }
+    let k = i32::try_from(digits.len()).unwrap_or(i32::MAX);
+    // The point goes after `n` digits: the value is 0.digits × 10^n.
+    let n = exponent.parse::<i32>().unwrap_or(0) + 1;
+    let sign = if x < 0.0 { "-" } else { "" };
+    let body = if k <= n && n <= 21 {
+        format!(
+            "{digits}{}",
+            "0".repeat(usize::try_from(n - k).unwrap_or(0))
+        )
+    } else if 0 < n && n <= 21 {
+        let (int, frac) = digits.split_at(usize::try_from(n).unwrap_or(0));
+        format!("{int}.{frac}")
+    } else if -6 < n && n <= 0 {
+        format!("0.{}{digits}", "0".repeat(usize::try_from(-n).unwrap_or(0)))
+    } else {
+        let (first, rest) = digits.split_at(1);
+        let point = if rest.is_empty() { "" } else { "." };
+        let e = n - 1;
+        let e_sign = if e < 0 { "-" } else { "+" };
+        format!("{first}{point}{rest}e{e_sign}{}", e.abs())
+    };
+    format!("{sign}{body}")
 }
 
-/// JavaScript's `x.toFixed(digits)`: ties round away from zero.
+/// JavaScript's `x.toFixed(digits)`: the decimal nearest the exact binary
+/// value, an exact tie rounding away from zero; `-0` (and anything that
+/// rounds to zero from a zero) shows without a sign, a negative that rounds
+/// to zero keeps it (`(-0.0001).toFixed(2)` is `-0.00`).
 pub fn to_fixed(x: f64, digits: f64) -> String {
     let digits = if digits.is_nan() {
         0
@@ -122,14 +149,138 @@ pub fn to_fixed(x: f64, digits: f64) -> String {
     if !x.is_finite() || x.abs() >= 1e21 {
         return js_number(x);
     }
-    let scale = 10f64.powi(digits as i32);
-    let scaled = x.abs() * scale;
-    if scaled.fract() == 0.5 {
-        let rounded = scaled.round() / scale;
-        let sign = if x < 0.0 { "-" } else { "" };
-        return format!("{sign}{rounded:.digits$}");
+    let sign = if x < 0.0 { "-" } else { "" };
+    let abs = x.abs();
+    // Rust's `{:.N}` is exact, ties to even: only an exact tie differs.
+    let body = if exact_tie(abs, digits) {
+        round_up_last(&format!("{abs:.prec$}", prec = digits + 1))
+    } else {
+        format!("{abs:.digits$}")
+    };
+    format!("{sign}{body}")
+}
+
+/// Whether `x` (finite, not negative) lies exactly halfway between two
+/// multiples of 10^-digits: x·10^digits has a fraction of exactly ½, which
+/// for x = m·2^e (m odd) is e + digits = -1.
+fn exact_tie(x: f64, digits: usize) -> bool {
+    if x == 0.0 {
+        return false;
     }
-    format!("{x:.digits$}")
+    let bits = x.to_bits();
+    let exponent = i64::try_from((bits >> 52) & 0x7ff).unwrap_or(0);
+    let fraction = bits & ((1 << 52) - 1);
+    let (mantissa, e) = if exponent == 0 {
+        (fraction, -1074)
+    } else {
+        (fraction | (1 << 52), exponent - 1075)
+    };
+    let digits = i64::try_from(digits).unwrap_or(i64::MAX / 2);
+    e + i64::from(mantissa.trailing_zeros()) + digits == -1
+}
+
+/// `"2.5"` → `"3"`, `"0.125"` → `"0.13"`, `"9.95"` → `"10.0"`: drop the
+/// last digit (a 5) and add one to the one before.
+fn round_up_last(text: &str) -> String {
+    let mut digits: Vec<u8> = text.as_bytes()[..text.len() - 1].to_vec();
+    if digits.last() == Some(&b'.') {
+        digits.pop();
+    }
+    let mut carry = true;
+    for d in digits.iter_mut().rev() {
+        if !carry {
+            break;
+        }
+        match *d {
+            b'.' => {}
+            b'9' => *d = b'0',
+            _ => {
+                *d += 1;
+                carry = false;
+            }
+        }
+    }
+    if carry {
+        digits.insert(0, b'1');
+    }
+    String::from_utf8(digits).unwrap_or_default()
+}
+
+/// `Math.round`: the nearest integer, halves toward +∞, the sign of a zero
+/// kept (`Math.round(-0.4)` is `-0`). Exact: `0.49999999999999994` gives 0
+/// and integers above 2^52 stay.
+pub fn js_round(x: f64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    let floor = x.floor();
+    let rounded = if x - floor >= 0.5 { floor + 1.0 } else { floor };
+    if rounded == 0.0 && x.is_sign_negative() {
+        -0.0
+    } else {
+        rounded
+    }
+}
+
+/// JavaScript's white space and line terminators (`/\s/`, and what
+/// `Number()` trims): not U+0085, but U+FEFF.
+pub fn js_space(c: char) -> bool {
+    matches!(
+        c,
+        '\t' | '\n' | '\u{b}' | '\u{c}' | '\r' | ' ' | '\u{a0}' | '\u{1680}' | '\u{2000}'
+            ..='\u{200a}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{3000}'
+                | '\u{feff}'
+    )
+}
+
+/// JavaScript's `Number(text)`: trimmed of [`js_space`]; empty is 0;
+/// `0x`, `0o`, `0b` integers; `Infinity` with a sign; otherwise a decimal
+/// with an optional sign and exponent (no `inf`, `nan`, `1_0`).
+pub fn js_string_to_number(text: &str) -> f64 {
+    let s = text.trim_matches(js_space);
+    if s.is_empty() {
+        return 0.0;
+    }
+    let radix = match s.get(..2) {
+        Some("0x" | "0X") => 16,
+        Some("0o" | "0O") => 8,
+        Some("0b" | "0B") => 2,
+        _ => 0,
+    };
+    if radix != 0 {
+        let digits = &s[2..];
+        if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+            return f64::NAN;
+        }
+        return match u128::from_str_radix(digits, radix) {
+            #[allow(clippy::cast_precision_loss)]
+            Ok(n) => n as f64,
+            Err(_) => digits.chars().fold(0.0, |acc, c| {
+                acc * f64::from(radix) + f64::from(c.to_digit(radix).unwrap_or(0))
+            }),
+        };
+    }
+    let unsigned = s.strip_prefix(['+', '-']).unwrap_or(s);
+    if unsigned == "Infinity" {
+        return if s.starts_with('-') {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+    // StrUnsignedDecimalLiteral: digits, a point, digits (one side at
+    // least), then an optional exponent with digits.
+    let chars: Vec<char> = unsigned.chars().collect();
+    let len = number_len(&chars);
+    if len == 0 || len != chars.len() {
+        return f64::NAN;
+    }
+    s.parse().unwrap_or(f64::NAN)
 }
 
 /// A parsed expression.
@@ -184,21 +335,29 @@ const OPS: [&str; 19] = [
 
 fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ExprError> {
     let chars: Vec<char> = src.chars().collect();
-    let rest = |i: usize| chars[i..].iter().collect::<String>();
+    // Positions are in UTF-16 units, as the web counts them.
+    let mut at = Vec::with_capacity(chars.len() + 1);
+    let mut units = 0;
+    for c in &chars {
+        at.push(units);
+        units += c.len_utf16();
+    }
+    at.push(units);
     let mut out = Vec::new();
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        if c.is_whitespace() {
+        let pos = at[i];
+        if js_space(c) {
             i += 1;
             continue;
         }
         if c.is_ascii_digit() || c == '.' {
             let len = number_len(&chars[i..]);
             if len == 0 {
-                return Err(error(format!("bad number at {}", i + 1), i));
+                return Err(error(format!("bad number at {}", pos + 1), pos));
             }
-            out.push((Tok::Num(chars[i..i + len].iter().collect()), i));
+            out.push((Tok::Num(chars[i..i + len].iter().collect()), pos));
             i += len;
             continue;
         }
@@ -215,9 +374,9 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ExprError> {
                 }
             }
             if j >= chars.len() {
-                return Err(error("unterminated string", i));
+                return Err(error("unterminated string", pos));
             }
-            out.push((Tok::Str(s), i));
+            out.push((Tok::Str(s), pos));
             i = j + 1;
             continue;
         }
@@ -235,13 +394,14 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ExprError> {
                 }
             }
             if j >= chars.len() {
-                return Err(error("missing } after tag reference", i));
+                return Err(error("missing } after tag reference", pos));
             }
-            let reference = raw.trim();
+            // `String.trim` trims JavaScript's white space.
+            let reference = raw.trim_matches(js_space);
             if reference.is_empty() {
-                return Err(error("empty tag reference", i));
+                return Err(error("empty tag reference", pos));
             }
-            out.push((Tok::Tag(reference.to_owned()), i));
+            out.push((Tok::Tag(reference.to_owned()), pos));
             i = j + 1;
             continue;
         }
@@ -250,18 +410,21 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ExprError> {
                 .iter()
                 .take_while(|ch| ch.is_ascii_alphanumeric() || **ch == '_')
                 .count();
-            out.push((Tok::Id(chars[i..i + len].iter().collect()), i));
+            out.push((Tok::Id(chars[i..i + len].iter().collect()), pos));
             i += len;
             continue;
         }
-        let tail = rest(i);
-        let Some(op) = OPS.iter().find(|op| tail.starts_with(**op)) else {
-            return Err(error(format!("unexpected \"{c}\" at {}", i + 1), i));
+        let rest = &chars[i..];
+        let Some(op) = OPS
+            .iter()
+            .find(|op| op.len() <= rest.len() && op.chars().zip(rest).all(|(a, b)| a == *b))
+        else {
+            return Err(error(format!("unexpected \"{c}\" at {}", pos + 1), pos));
         };
-        out.push((Tok::Op(op), i));
-        i += op.chars().count();
+        out.push((Tok::Op(op), pos));
+        i += op.len();
     }
-    out.push((Tok::End, chars.len()));
+    out.push((Tok::End, units));
     Ok(out)
 }
 
@@ -355,17 +518,8 @@ pub fn escape_ref(reference: &str) -> String {
     out
 }
 
-/// A node's depth: 1 for a leaf. Bounded by [`MAX_DEPTH`] for any node
-/// the parser built.
-fn depth(node: &Node) -> usize {
-    1 + match node {
-        Node::Lit(_) | Node::Tag(_) => 0,
-        Node::Neg(a) | Node::Not(a) => depth(a),
-        Node::Bin(_, a, b) => depth(a).max(depth(b)),
-        Node::Cond(c, a, b) => depth(c).max(depth(a)).max(depth(b)),
-        Node::Call(_, args) => args.iter().map(depth).max().unwrap_or(0),
-    }
-}
+/// A node the parser built and its depth (1 for a leaf).
+type Built = (Node, usize);
 
 struct Parser {
     toks: Vec<(Tok, usize)>,
@@ -398,9 +552,9 @@ impl Parser {
         }
     }
 
-    /// A node built: counted, and its depth checked (a long
-    /// left-associative chain is caught too).
-    fn mk(&mut self, node: Node, pos: usize) -> Result<Node, ExprError> {
+    /// A node built from children of depths `kids`: counted, and its depth
+    /// checked (a long left-associative chain is caught too).
+    fn mk(&mut self, node: Node, pos: usize, kids: &[usize]) -> Result<Built, ExprError> {
         self.nodes += 1;
         if self.nodes > MAX_NODES {
             return Err(error(
@@ -408,13 +562,14 @@ impl Parser {
                 pos,
             ));
         }
-        if depth(&node) > MAX_DEPTH {
+        let depth = 1 + kids.iter().copied().max().unwrap_or(0);
+        if depth > MAX_DEPTH {
             return Err(error(
                 format!("expression is nested deeper than {MAX_DEPTH} levels"),
                 pos,
             ));
         }
-        Ok(node)
+        Ok((node, depth))
     }
 
     fn enter(&mut self) -> Result<(), ExprError> {
@@ -429,24 +584,28 @@ impl Parser {
         Ok(())
     }
 
-    fn primary(&mut self) -> Result<Node, ExprError> {
+    fn primary(&mut self) -> Result<Built, ExprError> {
         self.enter()?;
         let node = self.primary_inner();
         self.nesting -= 1;
         node
     }
 
-    fn primary_inner(&mut self) -> Result<Node, ExprError> {
+    fn primary_inner(&mut self) -> Result<Built, ExprError> {
         let (tok, pos) = self.take();
         match tok {
-            Tok::Num(text) => self.mk(Node::Lit(Value::Num(text.parse().unwrap_or(f64::NAN))), pos),
-            Tok::Str(text) => self.mk(Node::Lit(Value::Str(text)), pos),
-            Tok::Tag(reference) => self.mk(Node::Tag(reference), pos),
+            Tok::Num(text) => self.mk(
+                Node::Lit(Value::Num(text.parse().unwrap_or(f64::NAN))),
+                pos,
+                &[],
+            ),
+            Tok::Str(text) => self.mk(Node::Lit(Value::Str(text)), pos, &[]),
+            Tok::Tag(reference) => self.mk(Node::Tag(reference), pos, &[]),
             Tok::Id(name) => {
                 match name.as_str() {
-                    "true" => return self.mk(Node::Lit(Value::Bool(true)), pos),
-                    "false" => return self.mk(Node::Lit(Value::Bool(false)), pos),
-                    "null" => return self.mk(Node::Lit(Value::Null), pos),
+                    "true" => return self.mk(Node::Lit(Value::Bool(true)), pos, &[]),
+                    "false" => return self.mk(Node::Lit(Value::Bool(false)), pos, &[]),
+                    "null" => return self.mk(Node::Lit(Value::Null), pos, &[]),
                     _ => {}
                 }
                 let Some(&(function, least, most, doc)) =
@@ -472,7 +631,9 @@ impl Parser {
                     };
                     return Err(error(format!("{doc} takes {count} arguments"), pos));
                 }
-                self.mk(Node::Call(function, args), pos)
+                let depths: Vec<usize> = args.iter().map(|(_, d)| *d).collect();
+                let args = args.into_iter().map(|(node, _)| node).collect();
+                self.mk(Node::Call(function, args), pos, &depths)
             }
             Tok::Op("(") => {
                 let inner = self.ternary()?;
@@ -480,19 +641,19 @@ impl Parser {
                 Ok(inner)
             }
             Tok::Op("-") => {
-                let a = self.primary()?;
-                self.mk(Node::Neg(Box::new(a)), pos)
+                let (a, d) = self.primary()?;
+                self.mk(Node::Neg(Box::new(a)), pos, &[d])
             }
             Tok::Op("!") => {
-                let a = self.primary()?;
-                self.mk(Node::Not(Box::new(a)), pos)
+                let (a, d) = self.primary()?;
+                self.mk(Node::Not(Box::new(a)), pos, &[d])
             }
             Tok::Op(op) => Err(error(format!("unexpected \"{op}\" at {}", pos + 1), pos)),
             Tok::End => Err(error("unexpected end of expression", pos)),
         }
     }
 
-    fn binary(&mut self, least: u8) -> Result<Node, ExprError> {
+    fn binary(&mut self, least: u8) -> Result<Built, ExprError> {
         let mut left = self.primary()?;
         loop {
             let op = match &self.peek().0 {
@@ -503,28 +664,35 @@ impl Parser {
                 return Ok(left);
             };
             let (_, pos) = self.take();
-            let right = self.binary(prec + 1)?;
-            left = self.mk(Node::Bin(op, Box::new(left), Box::new(right)), pos)?;
+            let (right, dr) = self.binary(prec + 1)?;
+            let (left_node, dl) = left;
+            left = self.mk(
+                Node::Bin(op, Box::new(left_node), Box::new(right)),
+                pos,
+                &[dl, dr],
+            )?;
         }
     }
 
-    fn ternary(&mut self) -> Result<Node, ExprError> {
+    fn ternary(&mut self) -> Result<Built, ExprError> {
         self.enter()?;
         let node = self.ternary_inner();
         self.nesting -= 1;
         node
     }
 
-    fn ternary_inner(&mut self) -> Result<Node, ExprError> {
+    fn ternary_inner(&mut self) -> Result<Built, ExprError> {
         let cond = self.binary(1)?;
         if self.peek_op("?") {
             let (_, pos) = self.take();
-            let then = self.ternary()?;
+            let (then, dt) = self.ternary()?;
             self.expect(":")?;
-            let otherwise = self.ternary()?;
+            let (otherwise, de) = self.ternary()?;
+            let (cond, dc) = cond;
             return self.mk(
                 Node::Cond(Box::new(cond), Box::new(then), Box::new(otherwise)),
                 pos,
+                &[dc, dt, de],
             );
         }
         Ok(cond)
@@ -546,7 +714,7 @@ pub fn parse(src: &str) -> Result<Node, ExprError> {
         nodes: 0,
         nesting: 0,
     };
-    let root = parser.ternary()?;
+    let (root, _) = parser.ternary()?;
     let (tok, pos) = parser.peek().clone();
     if tok != Tok::End {
         let text = match tok {
@@ -622,9 +790,26 @@ fn bit_of(x: f64, n: f64) -> Option<bool> {
     Some(((q % 2.0) + 2.0) % 2.0 == 1.0)
 }
 
-/// `Math.round`: halves toward +∞.
-fn js_round(x: f64) -> f64 {
-    (x + 0.5).floor()
+/// `Math.min` of two: `NaN` wins, `-0` is less than `0`.
+fn js_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if b < a || (b == 0.0 && a == 0.0 && b.is_sign_negative()) {
+        b
+    } else {
+        a
+    }
+}
+
+/// `Math.max` of two: `NaN` wins, `0` is more than `-0`.
+fn js_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else if b > a || (b == 0.0 && a == 0.0 && a.is_sign_negative()) {
+        b
+    } else {
+        a
+    }
 }
 
 /// Evaluate. `tag(ref)` gives the tag's current value, or `None` when the
@@ -711,13 +896,6 @@ fn call(function: &str, args: &[Node], tag: &dyn Fn(&str) -> Option<f64>) -> Val
         return Value::Null;
     }
     let xs: Vec<f64> = values.iter().map(Value::num).collect();
-    let nan_or = |fold: fn(f64, f64) -> f64, start: f64| {
-        if xs.iter().any(|x| x.is_nan()) {
-            f64::NAN
-        } else {
-            xs.iter().copied().fold(start, fold)
-        }
-    };
     match function {
         "abs" => Value::Num(xs[0].abs()),
         "round" => {
@@ -726,15 +904,9 @@ fn call(function: &str, args: &[Node], tag: &dyn Fn(&str) -> Option<f64>) -> Val
         }
         "floor" => Value::Num(xs[0].floor()),
         "ceil" => Value::Num(xs[0].ceil()),
-        "min" => Value::Num(nan_or(f64::min, f64::INFINITY)),
-        "max" => Value::Num(nan_or(f64::max, f64::NEG_INFINITY)),
-        "clamp" => {
-            if xs.iter().any(|x| x.is_nan()) {
-                Value::Num(f64::NAN)
-            } else {
-                Value::Num(xs[2].min(xs[1].max(xs[0])))
-            }
-        }
+        "min" => Value::Num(xs.iter().copied().fold(f64::INFINITY, js_min)),
+        "max" => Value::Num(xs.iter().copied().fold(f64::NEG_INFINITY, js_max)),
+        "clamp" => Value::Num(js_min(xs[2], js_max(xs[1], xs[0]))),
         "bit" => bit_of(xs[0], xs[1]).map_or(Value::Null, Value::Bool),
         "scale" => {
             if xs[2] == xs[1] {
@@ -756,21 +928,59 @@ pub fn safe_evaluate(node: &Node, tag: &dyn Fn(&str) -> Option<f64>) -> Value {
     }
 }
 
-/// Parses once per distinct text (the web's `compile`): a bounded cache
-/// that drops the least recently used text first; text longer than
+/// Parses once per distinct text (the web's `compile`): a least recently
+/// used cache, [`Cache::LIMIT`] texts by default or as many as
+/// [`Cache::fit`] asks for (a screen's binding texts); text longer than
 /// [`MAX_SOURCE`] is not kept.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Cache {
     /// Each text's parse and when it was last asked for.
     parsed: HashMap<String, (u64, Result<Node, ExprError>)>,
+    /// The texts by when they were last asked for: the first goes first.
+    order: BTreeMap<u64, String>,
     clock: u64,
+    limit: usize,
     /// The last oversized text's answer (always the length error).
     oversized: Option<Result<Node, ExprError>>,
 }
 
+impl Default for Cache {
+    fn default() -> Self {
+        Self {
+            parsed: HashMap::new(),
+            order: BTreeMap::new(),
+            clock: 0,
+            limit: Self::LIMIT,
+            oversized: None,
+        }
+    }
+}
+
 impl Cache {
-    /// Entries kept.
+    /// Entries kept by default (the web's `CACHE_LIMIT`).
     pub const LIMIT: usize = 500;
+
+    /// Keep at least `texts` entries (never fewer than [`Self::LIMIT`]),
+    /// so a screen with more binding texts than that does not parse each
+    /// of them again every frame.
+    pub fn fit(&mut self, texts: usize) {
+        self.limit = texts.max(Self::LIMIT);
+        self.evict();
+    }
+
+    /// Entries kept now.
+    pub fn limit(&self) -> usize {
+        self.limit
+    }
+
+    fn evict(&mut self) {
+        while self.parsed.len() > self.limit {
+            let Some((_, oldest)) = self.order.pop_first() else {
+                break;
+            };
+            self.parsed.remove(&oldest);
+        }
+    }
 
     pub fn compile(&mut self, src: &str) -> &Result<Node, ExprError> {
         if src.encode_utf16().count() > MAX_SOURCE {
@@ -779,18 +989,14 @@ impl Cache {
         self.clock += 1;
         let now = self.clock;
         if let Some(entry) = self.parsed.get_mut(src) {
+            if let Some(key) = self.order.remove(&entry.0) {
+                self.order.insert(now, key);
+            }
             entry.0 = now;
         } else {
-            if self.parsed.len() >= Self::LIMIT
-                && let Some(oldest) = self
-                    .parsed
-                    .iter()
-                    .min_by_key(|(_, (at, _))| *at)
-                    .map(|(key, _)| key.clone())
-            {
-                self.parsed.remove(&oldest);
-            }
             self.parsed.insert(src.to_owned(), (now, parse(src)));
+            self.order.insert(now, src.to_owned());
+            self.evict();
         }
         &self.parsed[src].1
     }

@@ -1290,8 +1290,15 @@ pub struct History {
     /// Consecutive edits with this key (typing in one field, one drag, one
     /// nudge run) are one step.
     last_key: Option<String>,
+    /// When the last keyed edit came, when it said: a pause longer than
+    /// [`COALESCE`] starts a new step even for the same key.
+    last_at: Option<std::time::Instant>,
     saved: Layout,
 }
+
+/// A pause between edits with the same key longer than this starts a new
+/// undo step (the web Designer's `COALESCE_MS`).
+pub const COALESCE: std::time::Duration = std::time::Duration::from_millis(1000);
 
 impl History {
     /// Start from the server's copy.
@@ -1299,6 +1306,23 @@ impl History {
         Self {
             saved: layout.clone(),
             present: layout,
+            ..Self::default()
+        }
+    }
+
+    /// Edits brought back (unsaved work kept across a sign-in): `saved`
+    /// is the server's copy they started from, `present` the edits, one
+    /// undo step apart.
+    pub fn restored(saved: Layout, present: Layout) -> Self {
+        let past = if present == saved {
+            Vec::new()
+        } else {
+            vec![saved.clone()]
+        };
+        Self {
+            past,
+            present,
+            saved,
             ..Self::default()
         }
     }
@@ -1314,9 +1338,23 @@ impl History {
     /// Apply `edit`; with the key of the edit before it, it joins that
     /// step. Whether it changed anything.
     pub fn apply(&mut self, edit: &Edit, coalesce: Option<&str>) -> bool {
-        if coalesce.is_some() && coalesce == self.last_key.as_deref() {
+        self.apply_at(edit, coalesce, None)
+    }
+
+    /// [`Self::apply`] at time `at`: an edit after a pause longer than
+    /// [`COALESCE`] since the last one starts a new step even with the
+    /// same key (edits without a time always join).
+    pub fn apply_at(
+        &mut self,
+        edit: &Edit,
+        coalesce: Option<&str>,
+        at: Option<std::time::Instant>,
+    ) -> bool {
+        let paused = matches!((at, self.last_at), (Some(at), Some(last)) if at.saturating_duration_since(last) > COALESCE);
+        if coalesce.is_some() && coalesce == self.last_key.as_deref() && !paused {
             if edit.apply(&mut self.present) {
                 self.future.clear();
+                self.last_at = at;
                 return true;
             }
             return false;
@@ -1331,6 +1369,7 @@ impl History {
         }
         self.future.clear();
         self.last_key = coalesce.map(str::to_owned);
+        self.last_at = at;
         true
     }
 

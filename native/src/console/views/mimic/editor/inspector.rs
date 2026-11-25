@@ -10,8 +10,8 @@ use gpui::{
     AnyElement, Context, ElementId, Focusable, FontWeight, Hsla, SharedString, Window, div, px,
 };
 use serde_json::Value;
+use voltrus_scada_native::designer;
 use voltrus_scada_native::designer::arrange::{self, Align, Axis};
-use voltrus_scada_native::designer::{self, expr};
 use voltrus_scada_native::mimic::edit::{self, Edit, Field, FieldKind};
 use voltrus_scada_native::mimic::{self, Widget, WidgetKind};
 use vt_ui::Icon;
@@ -1420,7 +1420,13 @@ fn properties_panel(
         .filter(|bind| bind.widget == widget.id)
         .map(|bind| bind.prop);
     let picking = editor.picking;
-    let mut cache = expr::Cache::default();
+    let Some(exprs) = console
+        .state_ref::<super::super::State>()
+        .map(|state| &state.exprs)
+    else {
+        return Vec::new();
+    };
+    let mut cache = exprs.borrow_mut();
     for prop in designer::properties(widget) {
         // A tag picker holds a tag id: pick the tag itself, nothing to bind.
         if !prop.bindable() {

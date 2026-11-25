@@ -361,8 +361,19 @@ fn preview(console: &Console, editor: &BindEditor, cx: &gpui::App) -> (String, b
         return (errors.join(" · "), true);
     }
     let read = |reference: &str| console.store.read_ref(reference);
-    let mut cache = expr::Cache::default();
-    let value = bindings::evaluate_binding(&draft, &read, Some(editor.kind), &mut cache);
+    // The inspector's parse cache, unless the inspector holds it now.
+    let shared = console
+        .state_ref::<super::super::State>()
+        .and_then(|state| state.exprs.try_borrow_mut().ok());
+    let value = match shared {
+        Some(mut cache) => bindings::evaluate_binding(&draft, &read, Some(editor.kind), &mut cache),
+        None => bindings::evaluate_binding(
+            &draft,
+            &read,
+            Some(editor.kind),
+            &mut expr::Cache::default(),
+        ),
+    };
     let text = value.map_or_else(|| "no value".to_owned(), |value| value.to_string());
     (format!("Now: {text}"), false)
 }
@@ -705,7 +716,7 @@ pub(super) fn value_line(
         let shown = match live {
             None => "—".to_owned(),
             Some(Json::Number(n)) => n.as_f64().map_or_else(String::new, |x| {
-                expr::js_number((x * 1000.0).round() / 1000.0)
+                expr::js_number(expr::js_round(x * 1000.0) / 1000.0)
             }),
             Some(Json::String(s)) => s,
             Some(other) => other.to_string(),

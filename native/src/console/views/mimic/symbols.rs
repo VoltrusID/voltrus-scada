@@ -1324,6 +1324,169 @@ mod tests {
         assert_eq!(web, ISA_TANK);
     }
 
+    // ── The ISA-101 symbols against `client/src/scada2/hmi/isa101.tsx` ──
+    //
+    // Hand-ported until the Designer's symbol data files (`symbols/*.json`)
+    // replace both copies: these fail when either side changes alone.
+
+    const WEB_ISA: &str = include_str!("../../../../../client/src/scada2/hmi/isa101.tsx");
+    const NATIVE: &str = include_str!("symbols.rs");
+
+    /// The text between each `open` and the next `close` in `text`.
+    fn between<'a>(text: &'a str, open: &str, close: &str) -> Vec<&'a str> {
+        let mut out = Vec::new();
+        let mut rest = text;
+        while let Some(start) = rest.find(open) {
+            let after = &rest[start + open.len()..];
+            let Some(end) = after.find(close) else { break };
+            out.push(&after[..end]);
+            rest = &after[end + close.len()..];
+        }
+        out
+    }
+
+    /// An attribute's value in a JSX tag (`x1="2"`).
+    fn attr(tag: &str, name: &str) -> f64 {
+        let tag = format!(" {tag}");
+        let value = between(&tag, &format!(" {name}=\""), "\"");
+        value
+            .first()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{name} in {tag}"))
+    }
+
+    fn number(text: &str) -> String {
+        let x: f64 = text.trim().parse().unwrap_or_else(|_| panic!("{text}"));
+        format!("{x}")
+    }
+
+    /// Every outline the web's ISA symbols draw: paths, lines as `M… L…`,
+    /// circles as `circle cx cy r`, the tank's templated path filled in.
+    fn web_shapes() -> std::collections::BTreeSet<String> {
+        let mut out: std::collections::BTreeSet<String> = between(WEB_ISA, " d=\"", "\"")
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        for line in between(WEB_ISA, "<line ", "/>") {
+            // The tank's scale ticks are drawn in a loop, with `y={y}`.
+            if line.contains("y1={y}") {
+                continue;
+            }
+            out.insert(format!(
+                "M{} {} L{} {}",
+                attr(line, "x1"),
+                attr(line, "y1"),
+                attr(line, "x2"),
+                attr(line, "y2")
+            ));
+        }
+        for circle in between(WEB_ISA, "<circle ", "/>") {
+            out.insert(format!(
+                "circle {} {} {}",
+                attr(circle, "cx"),
+                attr(circle, "cy"),
+                attr(circle, "r")
+            ));
+        }
+        let consts = between(WEB_ISA, "const top = ", "\n")[0];
+        let (top, bottom) = consts.split_once(", bottom = ").expect("top and bottom");
+        let (top, bottom): (f64, f64) = (top.parse().unwrap(), bottom.trim().parse().unwrap());
+        for template in between(WEB_ISA, "d={`", "`}") {
+            out.insert(
+                template
+                    .replace("${top + 10}", &format!("{}", top + 10.0))
+                    .replace("${top}", &format!("{top}"))
+                    .replace("${bottom}", &format!("{bottom}")),
+            );
+        }
+        out
+    }
+
+    /// Every outline the native ISA symbols draw, read from this file.
+    fn native_shapes() -> std::collections::BTreeSet<String> {
+        let start = NATIVE
+            .find("// ── ISA-101 (`hmi/isa101.tsx`)")
+            .expect("the ISA section");
+        let end = start + NATIVE[start..].find("#[cfg(test)]").expect("its end");
+        let code = &NATIVE[start..end];
+        let mut out: std::collections::BTreeSet<String> = between(code, "Shape::svg(\"", "\")")
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        out.extend(
+            between(code, "const ISA_TANK: &str = \"", "\"")
+                .into_iter()
+                .map(str::to_owned),
+        );
+        for circle in between(code, "Shape::circle(", ")") {
+            let parts: Vec<String> = circle.split(',').map(number).collect();
+            out.insert(format!("circle {}", parts.join(" ")));
+        }
+        out
+    }
+
+    #[test]
+    fn the_isa_shapes_are_the_web_ones() {
+        let (web, native) = (web_shapes(), native_shapes());
+        assert!(web.len() > 15, "{web:?}");
+        let missing: Vec<_> = web.difference(&native).collect();
+        let extra: Vec<_> = native.difference(&web).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "isa101.tsx and symbols.rs drifted apart: not drawn here {missing:?}, not on the web {extra:?}"
+        );
+        assert_eq!(
+            (ISA_TANK_TOP, ISA_TANK_BOTTOM),
+            (16.0, 150.0),
+            "the tank's level runs between its web top and bottom"
+        );
+        assert!(WEB_ISA.contains("const top = 16, bottom = 150"));
+    }
+
+    #[test]
+    fn the_isa_symbols_have_the_web_boxes_and_ports() {
+        let mut keys = 0;
+        for block in between(WEB_ISA, "key: 'isa_", "render:") {
+            let key = format!("isa_{}", block.split('\'').next().expect("the key"));
+            let key = key.as_str();
+            let def = voltrus_scada_native::mimic::symbol_def(key)
+                .unwrap_or_else(|| panic!("{key} is a native symbol"));
+            let pair = |name: &str| -> (f64, f64) {
+                let inner = between(block, &format!("{name}: ["), "]")[0];
+                let (a, b) = inner.split_once(',').expect("a pair");
+                (a.trim().parse().unwrap(), b.trim().parse().unwrap())
+            };
+            assert_eq!(def.view_box, pair("viewBox"), "{key} view box");
+            assert_eq!(def.size, pair("size"), "{key} size");
+            assert_eq!(
+                def.stretch,
+                block.contains("stretch: true"),
+                "{key} stretch"
+            );
+            let ports = between(block, "ports: {", "}")
+                .first()
+                .copied()
+                .unwrap_or("");
+            let port = |side: &str| {
+                between(ports, &format!("{side}: ["), "]")
+                    .first()
+                    .map(|inner| {
+                        let (a, b) = inner.split_once(',').expect("a pair");
+                        (
+                            a.trim().parse::<f64>().unwrap(),
+                            b.trim().parse::<f64>().unwrap(),
+                        )
+                    })
+            };
+            assert_eq!(def.ports.left, port("left"), "{key} left port");
+            assert_eq!(def.ports.right, port("right"), "{key} right port");
+            assert_eq!(def.ports.top, port("top"), "{key} top port");
+            assert_eq!(def.ports.bottom, port("bottom"), "{key} bottom port");
+            keys += 1;
+        }
+        assert_eq!(keys, 8, "every ISA symbol checked");
+    }
+
     #[test]
     fn idle_and_stopped_are_at_rest() {
         assert!(at_rest(EquipState::Idle));

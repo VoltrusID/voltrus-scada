@@ -3135,6 +3135,37 @@ async fn live_designer_save() {
         )
         .await
         .expect("POST /screens");
+    // Deletes the screen however the test ends, a failed assertion too.
+    struct DeleteScreen {
+        base: String,
+        token: Option<String>,
+        id: String,
+    }
+    impl Drop for DeleteScreen {
+        fn drop(&mut self) {
+            let mut api = VoltrusApi::new(&self.base);
+            api.token = self.token.clone();
+            let path = format!("/api/v1/screens/{}", self.id);
+            // Its own thread and runtime: the test's may be unwinding.
+            let deleted = std::thread::spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .ok()?
+                    .block_on(api.send_empty::<IgnoredAny>(Method::DELETE, &path))
+                    .ok()
+            })
+            .join();
+            if !matches!(deleted, Ok(Some(_))) {
+                eprintln!("could not delete screen {}", self.id);
+            }
+        }
+    }
+    let cleanup = DeleteScreen {
+        base: api.base.clone(),
+        token: api.token.clone(),
+        id: created.id.clone(),
+    };
     let (empty, base) = designer::load(&api, &created.id)
         .await
         .expect("GET scada-layout");
@@ -3170,9 +3201,7 @@ async fn live_designer_save() {
     let (back, read_revision) = designer::load(&api, &created.id)
         .await
         .expect("the saved layout");
-    api.send_empty::<IgnoredAny>(Method::DELETE, &format!("/api/v1/screens/{}", created.id))
-        .await
-        .expect("DELETE /screens/{id}");
+    drop(cleanup);
     assert_eq!(read_revision.as_deref(), Some(revision.as_str()));
     assert_eq!(
         back,

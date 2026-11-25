@@ -39,6 +39,9 @@ pub enum Binding {
     },
     Map {
         expr: String,
+        /// Read leniently, as the web reads them: not a list is no case;
+        /// an entry that is not a case never matches.
+        #[serde(default, deserialize_with = "lenient_cases")]
         cases: Vec<MapCase>,
         /// What no case matches gives; absent: the fixed value stays.
         #[serde(
@@ -56,10 +59,32 @@ fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Json>, D
     Json::deserialize(deserializer).map(Some)
 }
 
+/// The cases of a map binding as the web evaluates them: anything but a
+/// list is none; an entry that is not an object (or whose `op` is not
+/// text) never matches, and a case without `op` compares with `<` (the
+/// web's last branch).
+fn lenient_cases<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<MapCase>, D::Error> {
+    let Json::Array(items) = Json::deserialize(deserializer)? else {
+        return Ok(Vec::new());
+    };
+    Ok(items
+        .into_iter()
+        .map(|item| {
+            serde_json::from_value::<MapCase>(item).unwrap_or_else(|_| MapCase {
+                op: String::new(),
+                v: f64::NAN,
+                out: None,
+            })
+        })
+        .collect())
+}
+
 /// One case of a map binding.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MapCase {
-    /// `==`, `>=`, `<=`, `>` or `<`.
+    /// `==`, `>=`, `<=`, `>` or `<` (absent: compared with `<`, as the
+    /// web does).
+    #[serde(default)]
     pub op: String,
     /// The number compared with (not finite: the case never matches, and
     /// the editor says the case needs a number).
@@ -256,37 +281,104 @@ pub fn binding_refs(config: &Map<String, Json>) -> BTreeSet<String> {
     out
 }
 
+/// JavaScript's `String(v)` of a JSON value: arrays joined with commas
+/// (`null` inside as nothing), objects `[object Object]`.
+pub fn js_string(value: &Json) -> String {
+    match value {
+        Json::Null => "null".into(),
+        Json::Bool(b) => b.to_string(),
+        Json::Number(n) => n.as_f64().map_or_else(String::new, expr::js_number),
+        Json::String(s) => s.clone(),
+        Json::Array(items) => items
+            .iter()
+            .map(|item| match item {
+                Json::Null => String::new(),
+                item => js_string(item),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        Json::Object(_) => "[object Object]".into(),
+    }
+}
+
+/// JavaScript's `Number(v)` of a JSON value (`null` is 0; an array or
+/// object through its text: `[5]` is 5, `[]` 0, `{}` `NaN`).
+pub fn js_number_of(value: &Json) -> f64 {
+    match value {
+        Json::Null => 0.0,
+        Json::Bool(b) => f64::from(u8::from(*b)),
+        Json::Number(n) => n.as_f64().unwrap_or(f64::NAN),
+        Json::String(s) => expr::js_string_to_number(s),
+        Json::Array(_) | Json::Object(_) => expr::js_string_to_number(&js_string(value)),
+    }
+}
+
+/// JavaScript truthiness of a JSON value (arrays and objects are true).
+fn js_truthy(value: &Json) -> bool {
+    match value {
+        Json::Null => false,
+        Json::Bool(b) => *b,
+        Json::Number(n) => n.as_f64().is_some_and(|x| x != 0.0 && !x.is_nan()),
+        Json::String(s) => !s.is_empty(),
+        Json::Array(_) | Json::Object(_) => true,
+    }
+}
+
+/// A number as JSON: a non-finite one has no JSON number, so it is kept
+/// as JavaScript writes it (`"Infinity"`, `"-Infinity"`), which reads
+/// back as the same number.
+fn number_json(x: f64) -> Json {
+    serde_json::Number::from_f64(x).map_or_else(|| Json::String(expr::js_number(x)), Json::Number)
+}
+
+/// A number as a text property shows it: rounded to 3 decimals.
+fn number_text(x: f64) -> String {
+    expr::js_number(expr::js_round(x * 1000.0) / 1000.0)
+}
+
 /// A value as a property of `kind` takes it (`coerce`); `None` for a
 /// number property that gets no finite number (it keeps its fixed value).
 pub fn coerce(value: &Json, kind: Option<PropType>) -> Option<Json> {
-    let as_expr = Value::from_json(value);
     Some(match kind {
         Some(PropType::Boolean) => match value {
             Json::Bool(_) => value.clone(),
-            _ => Json::Bool(as_expr.truthy()),
+            _ => Json::Bool(js_truthy(value)),
         },
         Some(PropType::Number) => {
             let x = match value {
                 Json::Null => f64::NAN,
                 Json::String(s) if s.is_empty() => f64::NAN,
-                _ => as_expr.num(),
+                _ => js_number_of(value),
             };
             if !x.is_finite() {
                 return None;
             }
-            Value::Num(x).to_json()
+            number_json(x)
         }
         Some(PropType::String) => match value {
             Json::Null => Json::String(String::new()),
-            Json::Number(n) => {
-                let x = n.as_f64().unwrap_or(f64::NAN);
-                Json::String(expr::js_number((x * 1000.0 + 0.5).floor() / 1000.0))
-            }
-            Json::String(_) => value.clone(),
-            Json::Bool(b) => Json::String(b.to_string()),
-            other => Json::String(other.to_string()),
+            Json::Number(n) => Json::String(number_text(n.as_f64().unwrap_or(f64::NAN))),
+            other => Json::String(js_string(other)),
         },
         _ => value.clone(),
+    })
+}
+
+/// [`coerce`] of an expression's value, straight from the value: an
+/// infinite number stays a number (`"Infinity"` as text, `true` as a
+/// flag, no number for a number property).
+pub fn coerce_value(value: &Value, kind: Option<PropType>) -> Option<Json> {
+    Some(match (value, kind) {
+        (Value::Num(_), Some(PropType::Boolean)) => Json::Bool(value.truthy()),
+        (Value::Num(x), Some(PropType::Number)) => {
+            if !x.is_finite() {
+                return None;
+            }
+            number_json(*x)
+        }
+        (Value::Num(x), Some(PropType::String)) => Json::String(number_text(*x)),
+        (Value::Num(x), _) => number_json(*x),
+        (value, kind) => return coerce(&value.to_json(), kind),
     })
 }
 
@@ -298,22 +390,33 @@ pub fn evaluate_binding(
     kind: Option<PropType>,
     cache: &mut Cache,
 ) -> Option<Json> {
-    match binding {
-        Binding::Tag { tag } => coerce(&Value::Num(read(tag)?).to_json(), kind),
-        Binding::Expr { expr } => {
-            let node = cache.compile(expr).as_ref().ok()?;
-            match expr::safe_evaluate(node, read) {
-                Value::Null => None,
-                value => coerce(&value.to_json(), kind),
-            }
+    let node = match binding {
+        Binding::Tag { .. } => None,
+        Binding::Expr { expr } | Binding::Map { expr, .. } => {
+            Some(cache.compile(expr).as_ref().ok()?)
         }
+    };
+    evaluate_parsed(binding, node, read, kind)
+}
+
+/// [`evaluate_binding`] with the expression already parsed (`node`, for
+/// an expression or a map; a tag binding has none).
+pub fn evaluate_parsed(
+    binding: &Binding,
+    node: Option<&expr::Node>,
+    read: &dyn Fn(&str) -> Option<f64>,
+    kind: Option<PropType>,
+) -> Option<Json> {
+    match binding {
+        Binding::Tag { tag } => coerce_value(&Value::Num(read(tag)?), kind),
+        Binding::Expr { .. } => match expr::safe_evaluate(node?, read) {
+            Value::Null => None,
+            value => coerce_value(&value, kind),
+        },
         Binding::Map {
-            expr,
-            cases,
-            otherwise,
+            cases, otherwise, ..
         } => {
-            let node = cache.compile(expr).as_ref().ok()?;
-            let x = match expr::safe_evaluate(node, read) {
+            let x = match expr::safe_evaluate(node?, read) {
                 Value::Bool(b) => f64::from(u8::from(b)),
                 Value::Num(x) => x,
                 _ => f64::NAN,
@@ -370,6 +473,73 @@ pub fn apply_bindings(
         }
     }
     Some(out)
+}
+
+/// A config's bindings parsed once, so they are evaluated again when a
+/// tag they read changes without parsing or deserialising anything.
+#[derive(Debug, Clone, Default)]
+pub struct Compiled {
+    /// Each bound property: its type, its binding and the binding's
+    /// parsed expression (`None` for a tag binding, or text that does not
+    /// parse, which gives no value).
+    props: Vec<(String, Option<PropType>, Binding, Option<expr::Node>)>,
+    /// Every tag ref the bindings read, once each.
+    refs: Vec<String>,
+}
+
+impl Compiled {
+    /// Parse a config's bindings; `types` as for [`apply_bindings`].
+    pub fn new(config: &Map<String, Json>, types: &dyn Fn(&str) -> Option<PropType>) -> Self {
+        let mut props = Vec::new();
+        let mut refs = BTreeSet::new();
+        for (prop, binding) in bindings_of(config) {
+            let kind = types(&prop).or_else(|| common_type(&prop));
+            if prop == BINDINGS_KEY || kind == Some(PropType::Tag) {
+                continue;
+            }
+            let node = match &binding {
+                Binding::Tag { tag } => {
+                    if !tag.is_empty() {
+                        refs.insert(tag.clone());
+                    }
+                    None
+                }
+                Binding::Expr { expr } | Binding::Map { expr, .. } => expr::parse(expr)
+                    .ok()
+                    .inspect(|node| refs.extend(expr::refs(node))),
+            };
+            props.push((prop, kind, binding, node));
+        }
+        Self {
+            props,
+            refs: refs.into_iter().collect(),
+        }
+    }
+
+    /// Nothing to evaluate: the config draws as it is.
+    pub fn is_empty(&self) -> bool {
+        self.props.is_empty()
+    }
+
+    /// The tag refs the bindings read.
+    pub fn refs(&self) -> &[String] {
+        &self.refs
+    }
+
+    /// [`apply_bindings`] with what was parsed.
+    pub fn apply(
+        &self,
+        config: &Map<String, Json>,
+        read: &dyn Fn(&str) -> Option<f64>,
+    ) -> Map<String, Json> {
+        let mut out = config.clone();
+        for (prop, kind, binding, node) in &self.props {
+            if let Some(value) = evaluate_parsed(binding, node.as_ref(), read, *kind) {
+                out.insert(prop.clone(), value);
+            }
+        }
+        out
+    }
 }
 
 /// Whether a widget is drawn at runtime (`shownAtRuntime`): its bound

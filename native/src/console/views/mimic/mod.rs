@@ -188,8 +188,11 @@ pub(crate) struct State {
     pending: Option<Pending>,
     /// The editor, in edit mode.
     edit: Option<Box<editor::Editor>>,
-    /// Parsed binding expressions, by text.
+    /// Parsed binding expressions, by text (the inspector's).
     exprs: RefCell<expr::Cache>,
+    /// Bound widgets as drawn, evaluated again when their config or a tag
+    /// they read changes.
+    bound: RefCell<designer::BoundCache>,
 }
 
 impl Default for State {
@@ -224,6 +227,7 @@ impl Default for State {
             pending: None,
             edit: None,
             exprs: RefCell::new(expr::Cache::default()),
+            bound: RefCell::new(designer::BoundCache::default()),
         }
     }
 }
@@ -297,6 +301,19 @@ fn sync(console: &mut Console) {
         CallKey::new("mimic.layout").with(ask),
         Call::new(move |api| async move { designer::load(&api, &screen).await }),
     );
+}
+
+/// Note a screen's revision; a known one is kept when an answer names
+/// none, so a save is never sent without the check once it had one.
+fn remember_revision(state: &mut State, screen: &str, revision: Option<String>) {
+    match revision {
+        Some(revision) => {
+            state.revisions.insert(screen.to_owned(), Some(revision));
+        }
+        None => {
+            state.revisions.entry(screen.to_owned()).or_insert(None);
+        }
+    }
 }
 
 /// Forget the active screen's mimic and fetch it again.
@@ -435,14 +452,14 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
             state.fetching.remove(&screen);
             let loaded = match reply.take::<(Layout, Option<String>)>() {
                 Ok((layout, revision)) => {
-                    state.revisions.insert(screen.clone(), revision);
+                    remember_revision(state, &screen, revision);
                     Loaded::Ready(Rc::new(layout))
                 }
                 Err(error) => Loaded::Failed(error),
             };
             state.layouts.insert(screen, loaded);
         }
-        "mimic.save" | "mimic.reload" => editor::on_reply(console, key, reply, cx),
+        "mimic.save" | "mimic.reload" | editor::REMOTE => editor::on_reply(console, key, reply, cx),
         "mimic.write" => {
             let state = console.state::<State>();
             state.sending = None;
@@ -1096,7 +1113,7 @@ fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
     // draw it, as the web's `applyBindings`.
     let bound = if bindings::has_bindings(&widget.config) {
         let read = |reference: &str| store.read_ref(reference);
-        designer::bound(widget, &read, &mut state.exprs.borrow_mut())
+        state.bound.borrow_mut().bound(widget, &read).cloned()
     } else {
         None
     };
@@ -1237,6 +1254,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
     let (items, wires, faceplate_item) = match &loaded {
         Some(Loaded::Ready(layout)) => {
             let state = console.state_ref::<State>().expect("made above");
+            state.bound.borrow_mut().frame();
             let items: Vec<Item> = layout
                 .widgets
                 .iter()

@@ -1175,3 +1175,532 @@ fn designing_fades_hidden_widgets_and_keeps_some_opacity() {
             .any(|p| p.key == "opacity" && p.kind == PropType::Number)
     );
 }
+
+// ── The generated corpus (`tests/fixtures/designer/expr-corpus.json`) ──────
+//
+// Written by `expr-corpus.mts` from the web Designer's own `expr.ts` and
+// `bindings.ts`; CI writes it again and fails when it changed, so these
+// tests follow the web code.
+
+#[derive(Deserialize)]
+struct Corpus {
+    tags: HashMap<String, f64>,
+    exprs: Vec<CorpusExpr>,
+    bindings: Vec<CorpusBinding>,
+    numbers: Vec<(String, f64, String, String)>,
+}
+
+#[derive(Deserialize)]
+struct CorpusExpr {
+    src: String,
+    r: String,
+}
+
+#[derive(Deserialize)]
+struct CorpusBinding {
+    b: Json,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    r: String,
+}
+
+fn corpus() -> Corpus {
+    serde_json::from_str(include_str!(
+        "../../tests/fixtures/designer/expr-corpus.json"
+    ))
+    .expect("expr-corpus.json")
+}
+
+/// A number as the corpus writes it (`String(x)`, `-0`), bit for bit.
+fn corpus_number(text: &str) -> f64 {
+    if text == "-0" {
+        return -0.0;
+    }
+    let x = expr::js_string_to_number(text);
+    assert!(!x.is_nan(), "{text} is a number");
+    x
+}
+
+fn encode(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::Num(x) if *x == 0.0 && x.is_sign_negative() => "number:-0".into(),
+        Value::Num(x) => format!("number:{}", expr::js_number(*x)),
+        Value::Str(s) => format!("string:{s}"),
+        Value::Bool(b) => format!("boolean:{b}"),
+    }
+}
+
+fn encode_json(value: Option<&Json>) -> String {
+    match value {
+        None => "undefined".into(),
+        Some(Json::Null) => "null".into(),
+        Some(Json::Number(n)) => encode(&Value::Num(n.as_f64().unwrap())),
+        Some(Json::String(s)) => format!("string:{s}"),
+        Some(Json::Bool(b)) => format!("boolean:{b}"),
+        Some(other) => format!("other:{other}"),
+    }
+}
+
+#[test]
+fn expressions_match_the_web_corpus() {
+    let corpus = corpus();
+    let read = |reference: &str| corpus.tags.get(reference).copied();
+    let mut failed = Vec::new();
+    for case in &corpus.exprs {
+        let got = match parse(&case.src) {
+            Err(error) => format!("error:{}@{}", error.message, error.pos),
+            Ok(node) => encode(&expr::safe_evaluate(&node, &read)),
+        };
+        if got != case.r {
+            failed.push(format!("{:?}: web {:?}, native {got:?}", case.src, case.r));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+#[test]
+fn bindings_match_the_web_corpus() {
+    let corpus = corpus();
+    let read = |reference: &str| corpus.tags.get(reference).copied();
+    let mut cache = Cache::default();
+    let mut failed = Vec::new();
+    for case in &corpus.bindings {
+        let kind = case.kind.as_deref().map(|kind| match kind {
+            "string" => PropType::String,
+            "number" => PropType::Number,
+            "boolean" => PropType::Boolean,
+            other => panic!("type {other}"),
+        });
+        let binding: Binding = serde_json::from_value(case.b.clone()).expect("a binding");
+        let got = evaluate_binding(&binding, &read, kind, &mut cache);
+        let got = encode_json(got.as_ref());
+        // JSON has no infinite number: an untyped property keeps it as
+        // JavaScript writes it, which reads back as the same number.
+        let infinite = kind.is_none()
+            && matches!(case.r.as_str(), "number:Infinity" | "number:-Infinity")
+            && got == case.r.replace("number:", "string:");
+        if got != case.r && !infinite {
+            failed.push(format!(
+                "{} as {:?}: web {:?}, native {got:?}",
+                case.b, case.kind, case.r
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
+}
+
+#[test]
+fn to_fixed_round_and_number_text_match_the_web_corpus() {
+    let corpus = corpus();
+    assert!(corpus.numbers.len() > 1000);
+    let mut failed = Vec::new();
+    for (text, digits, fixed, rounded) in &corpus.numbers {
+        let x = corpus_number(text);
+        if expr::js_number(x) != *text && text != "-0" {
+            failed.push(format!("String({text}): native {}", expr::js_number(x)));
+        }
+        let got = to_fixed(x, *digits);
+        if got != *fixed {
+            failed.push(format!(
+                "({text}).toFixed({digits}): web {fixed}, native {got}"
+            ));
+        }
+        let got = encode(&Value::Num(expr::js_round(x)));
+        if got != *rounded {
+            failed.push(format!("Math.round({text}): web {rounded}, native {got}"));
+        }
+    }
+    assert!(
+        failed.is_empty(),
+        "{}",
+        failed[..failed.len().min(40)].join("\n")
+    );
+}
+
+#[test]
+fn text_rounds_the_exact_value_and_drops_the_sign_of_zero() {
+    assert_eq!(ev("text(1.45, 1)"), text("1.4"), "1.45 is 1.4499…");
+    assert_eq!(
+        ev("text(2940.055, 2)"),
+        text("2940.05"),
+        "2940.055 is …054…"
+    );
+    assert_eq!(
+        ev("text(0.125, 2)"),
+        text("0.13"),
+        "an exact tie: away from zero"
+    );
+    assert_eq!(ev("text(-0.125, 2)"), text("-0.13"));
+    assert_eq!(ev("text(9.995, 2)"), text("9.99"));
+    assert_eq!(ev("text(99.5, 0)"), text("100"));
+    assert_eq!(ev("text(-{wtp/fault}, 2)"), text("0.00"), "-0");
+    assert_eq!(ev("text(-0.0001, 2)"), text("-0.00"), "as the web");
+}
+
+#[test]
+fn infinite_values_keep_their_meaning_in_every_property_type() {
+    let mut cache = Cache::default();
+    let read = |_: &str| Some(1e300);
+    let big = Binding::Expr {
+        expr: "{x} * 1e10".into(),
+    };
+    let as_kind = |kind, cache: &mut Cache| evaluate_binding(&big, &read, kind, cache);
+    assert_eq!(
+        as_kind(Some(PropType::String), &mut cache),
+        Some(json!("Infinity"))
+    );
+    assert_eq!(
+        as_kind(Some(PropType::Boolean), &mut cache),
+        Some(json!(true))
+    );
+    assert_eq!(as_kind(Some(PropType::Number), &mut cache), None);
+    assert_eq!(as_kind(None, &mut cache), Some(json!("Infinity")));
+}
+
+#[test]
+fn malformed_map_bindings_fall_to_otherwise_as_on_the_web() {
+    let mut cache = Cache::default();
+    let read = |_: &str| None;
+    let otherwise = |raw: Json| {
+        let binding: Binding = serde_json::from_value(raw).expect("read leniently");
+        evaluate_binding(
+            &binding,
+            &read,
+            Some(PropType::String),
+            &mut Cache::default(),
+        )
+    };
+    assert_eq!(
+        otherwise(json!({ "kind": "map", "expr": "1", "cases": "nope", "else": "E" })),
+        Some(json!("E"))
+    );
+    assert_eq!(
+        otherwise(
+            json!({ "kind": "map", "expr": "1", "cases": [null, { "v": 1, "out": "A" }], "else": "E" })
+        ),
+        Some(json!("E")),
+        "no op: compared with <"
+    );
+    let mut out = |out: Json, kind| {
+        let binding: Binding = serde_json::from_value(
+            json!({ "kind": "map", "expr": "1", "cases": [{ "op": "==", "v": 1, "out": out }] }),
+        )
+        .unwrap();
+        evaluate_binding(&binding, &read, kind, &mut cache)
+    };
+    assert_eq!(
+        out(json!([1, 2]), Some(PropType::String)),
+        Some(json!("1,2"))
+    );
+    assert_eq!(
+        out(json!({ "a": 1 }), Some(PropType::String)),
+        Some(json!("[object Object]"))
+    );
+    assert_eq!(out(json!([5]), Some(PropType::Number)), Some(json!(5.0)));
+    assert_eq!(out(json!([]), Some(PropType::Boolean)), Some(json!(true)));
+}
+
+#[test]
+fn number_text_follows_javascript() {
+    let n = |s: &str| Value::Str(s.into()).num();
+    assert_eq!(n("0x10"), 16.0);
+    assert_eq!(n("0b11"), 3.0);
+    assert_eq!(n("0o17"), 15.0);
+    assert!(n("inf").is_nan());
+    assert!(n("infinity").is_nan());
+    assert!(n("nan").is_nan());
+    assert!(n("-0x10").is_nan());
+    assert_eq!(n("-Infinity"), f64::NEG_INFINITY);
+    assert_eq!(n("\u{feff}12"), 12.0, "U+FEFF is white space to JavaScript");
+    assert!(n("\u{85}12").is_nan(), "U+0085 is not");
+    assert_eq!(n(" \t"), 0.0);
+    assert_eq!(n("5."), 5.0);
+    assert!(n("1_0").is_nan());
+}
+
+#[test]
+fn error_positions_count_utf16_units() {
+    let error = parse("\"😀\" 1").unwrap_err();
+    assert_eq!(
+        (error.message.as_str(), error.pos),
+        ("unexpected \"1\" at 6", 5)
+    );
+    assert_eq!(parse("\u{feff}1"), parse("1"), "U+FEFF is white space");
+    assert_eq!(parse("\u{85} 1").unwrap_err().pos, 0, "U+0085 is not");
+}
+
+#[test]
+fn the_parse_cache_fits_a_large_screen() {
+    let mut cache = Cache::default();
+    cache.fit(2000);
+    assert_eq!(cache.limit(), 2000);
+    for i in 0..2000 {
+        assert!(cache.compile(&format!("{i} + 1")).is_ok());
+    }
+    assert_eq!(cache.len(), 2000);
+    cache.fit(10);
+    assert_eq!(cache.limit(), Cache::LIMIT, "never fewer than the default");
+    assert_eq!(cache.len(), Cache::LIMIT, "the oldest went");
+    assert!(cache.compile("1999 + 1").is_ok());
+}
+
+#[test]
+fn bound_widgets_are_evaluated_again_only_when_a_value_or_the_config_changes() {
+    use std::cell::Cell;
+
+    let input = input();
+    let mut layout = mimic::parse(&input.equipment, &input.connections);
+    let id = layout.widgets[0].id.clone();
+    let widget = &mut layout.widgets[0];
+    widget.config.insert(
+        "bindings".into(),
+        json!({ "label": { "kind": "expr", "expr": "\"L \" + text({wtp/level}, 1)" } }),
+    );
+    let widget = widget.clone();
+    let reads = Cell::new(0);
+    let level = Cell::new(1.25);
+    let read = |reference: &str| {
+        reads.set(reads.get() + 1);
+        (reference == "wtp/level").then(|| level.get())
+    };
+    let mut cache = BoundCache::default();
+    cache.frame();
+    let label = |cache: &mut BoundCache, widget: &Widget| {
+        cache
+            .bound(widget, &read)
+            .and_then(|w| w.text("label").map(str::to_owned))
+    };
+    assert_eq!(label(&mut cache, &widget).as_deref(), Some("L 1.3"));
+    let first = cache.widgets[&id].out.clone();
+    // Same value: the drawn widget is the one made before.
+    cache.frame();
+    assert_eq!(label(&mut cache, &widget).as_deref(), Some("L 1.3"));
+    assert_eq!(cache.widgets[&id].out, first);
+    level.set(2.0);
+    assert_eq!(label(&mut cache, &widget).as_deref(), Some("L 2.0"));
+    // A move keeps the parse, and draws at the new place.
+    let mut moved = widget.clone();
+    moved.x += 10.0;
+    assert_eq!(cache.bound(&moved, &read).map(|w| w.x), Some(moved.x));
+    // A new expression is parsed again.
+    let mut edited = moved.clone();
+    edited.config.insert(
+        "bindings".into(),
+        json!({ "label": { "kind": "expr", "expr": "\"M \" + {wtp/level}" } }),
+    );
+    assert_eq!(label(&mut cache, &edited).as_deref(), Some("M 2"));
+    // Unbound: nothing kept.
+    let mut plain = edited.clone();
+    plain.config.remove("bindings");
+    assert!(cache.bound(&plain, &read).is_none());
+    assert!(cache.is_empty());
+    assert!(reads.get() > 0);
+    // What is no longer drawn goes after a while.
+    assert!(cache.bound(&edited, &read).is_some());
+    for _ in 0..=BoundCache::KEEP_FRAMES + 64 {
+        cache.frame();
+    }
+    assert!(cache.is_empty());
+}
+
+// ── Loading and saving against a scripted server ───────────────────────────
+
+/// A server that answers each connection with the next of `answers`
+/// (status, body) and reports every request's line and body.
+fn scripted(
+    answers: Vec<(u16, &'static str)>,
+) -> (
+    crate::api::VoltrusApi,
+    std::sync::mpsc::Receiver<(String, String)>,
+) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+    let url = format!("http://{}", listener.local_addr().expect("address"));
+    let (report, requests) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for (status, body) in answers {
+            let Ok((mut connection, _)) = listener.accept() else {
+                return;
+            };
+            let mut head = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                if connection.read(&mut byte).unwrap_or(0) == 0 {
+                    return;
+                }
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head).into_owned();
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            let mut request_body = vec![0_u8; length];
+            let _ = connection.read_exact(&mut request_body);
+            let line = head.lines().next().unwrap_or_default().to_owned();
+            let _ = report.send((line, String::from_utf8_lossy(&request_body).into_owned()));
+            let _ = write!(
+                connection,
+                "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    let mut api = crate::api::VoltrusApi::new(&url);
+    api.token = Some("t".into());
+    (api, requests)
+}
+
+fn block<T>(future: impl std::future::Future<Output = T>) -> T {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(future)
+}
+
+fn lines(requests: &std::sync::mpsc::Receiver<(String, String)>) -> Vec<(String, String)> {
+    requests.try_iter().collect()
+}
+
+const EMPTY_ITEMS: &str = r#"{"items":[]}"#;
+
+#[test]
+fn a_failed_layout_read_is_an_error_not_an_older_server() {
+    for (status, body) in [
+        (500, r#"{"error":"database is locked"}"#),
+        (401, r#"{"error":"signed out"}"#),
+        (403, r#"{"error":"not allowed"}"#),
+        (200, r#"{"equipment":[],"connections":[]}"#),
+        (200, r#"{"equipment":[],"connections":[],"revision":""}"#),
+        (200, r#"{"equipment":"x","connections":[],"revision":"r1"}"#),
+    ] {
+        let (api, requests) =
+            scripted(vec![(status, body), (200, EMPTY_ITEMS), (200, EMPTY_ITEMS)]);
+        assert!(block(load(&api, "main")).is_err(), "{status} {body}");
+        let seen = lines(&requests);
+        assert_eq!(seen.len(), 1, "{status} {body}: no fallback, {seen:?}");
+    }
+}
+
+#[test]
+fn only_a_missing_endpoint_or_a_web_page_falls_back_to_the_two_lists() {
+    for (status, body) in [
+        (404, r#"{"error":"not found"}"#),
+        (405, ""),
+        (200, "<!doctype html><html></html>"),
+    ] {
+        let (api, requests) =
+            scripted(vec![(status, body), (200, EMPTY_ITEMS), (200, EMPTY_ITEMS)]);
+        let (layout, revision) = block(load(&api, "main")).expect("the two lists");
+        assert!(layout.widgets.is_empty());
+        assert_eq!(revision, None);
+        let seen = lines(&requests);
+        assert_eq!(seen.len(), 3, "{status}: {seen:?}");
+        assert!(seen[1].0.contains("/scada-equipment "), "{seen:?}");
+        assert!(seen[2].0.contains("/scada-connections "), "{seen:?}");
+    }
+}
+
+#[test]
+fn a_known_revision_goes_with_the_older_endpoints_too() {
+    let (api, requests) = scripted(vec![
+        (404, r#"{"error":"not found"}"#),
+        (200, r#"{"ok":true,"revision":"r2"}"#),
+        (200, r#"{"ok":true,"revision":"r3"}"#),
+    ]);
+    let saved = block(save(
+        &api,
+        "main",
+        Vec::new(),
+        Vec::new(),
+        Some("r1".into()),
+    ))
+    .unwrap();
+    assert_eq!(
+        saved,
+        Saved::Done {
+            revision: Some("r3".into())
+        }
+    );
+    let seen = lines(&requests);
+    assert!(seen[0].0.starts_with("PUT ") && seen[0].0.contains("/scada-layout "));
+    let body = |i: usize| serde_json::from_str::<Json>(&seen[i].1).unwrap();
+    assert_eq!(body(1)["base_revision"], "r1", "{seen:?}");
+    assert_eq!(
+        body(2)["base_revision"],
+        "r2",
+        "based on what the first made"
+    );
+
+    // A conflict on the first of them is a conflict.
+    let (api, _) = scripted(vec![
+        (405, ""),
+        (
+            409,
+            r#"{"error":"changed","code":"conflict","revision":"r9"}"#,
+        ),
+    ]);
+    let saved = block(save(
+        &api,
+        "main",
+        Vec::new(),
+        Vec::new(),
+        Some("r1".into()),
+    ))
+    .unwrap();
+    assert!(matches!(saved, Saved::Conflict { revision, .. } if revision == "r9"));
+}
+
+#[test]
+fn a_save_answer_without_a_revision_asks_for_it_and_errors_stay_errors() {
+    let (api, requests) = scripted(vec![
+        (200, r#"{"ok":true}"#),
+        (200, r#"{"equipment":[],"connections":[],"revision":"r4"}"#),
+    ]);
+    let saved = block(save(
+        &api,
+        "main",
+        Vec::new(),
+        Vec::new(),
+        Some("r1".into()),
+    ))
+    .unwrap();
+    assert_eq!(
+        saved,
+        Saved::Done {
+            revision: Some("r4".into())
+        }
+    );
+    assert_eq!(lines(&requests).len(), 2);
+
+    let (api, requests) = scripted(vec![
+        (500, r#"{"error":"disk full"}"#),
+        (200, "{}"),
+        (200, "{}"),
+    ]);
+    assert!(
+        block(save(
+            &api,
+            "main",
+            Vec::new(),
+            Vec::new(),
+            Some("r1".into())
+        ))
+        .is_err()
+    );
+    assert_eq!(lines(&requests).len(), 1, "no fallback to the two PUTs");
+
+    // No revision known (an older server): the two PUTs, no check.
+    let (api, requests) = scripted(vec![(200, "{}"), (200, "{}")]);
+    let saved = block(save(&api, "main", Vec::new(), Vec::new(), None)).unwrap();
+    assert_eq!(saved, Saved::Done { revision: None });
+    let seen = lines(&requests);
+    assert!(!seen[0].1.contains("base_revision"), "{seen:?}");
+}

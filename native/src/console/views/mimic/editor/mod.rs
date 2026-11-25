@@ -59,7 +59,7 @@ use vt_ui::theme::*;
 pub(super) use self::stage::paint_grid;
 use super::paint::{Hmi, Tessellations};
 use super::scene::StoreValues;
-use super::{Drawn, Frame, Loaded, State, Wire, active, focus_handle, redraw};
+use super::{Drawn, Frame, Loaded, State, Wire, active, focus_handle, redraw, remember_revision};
 use crate::console::keys::Dismiss;
 use crate::console::overlay::Overlay;
 use crate::console::screens::Screens;
@@ -138,6 +138,9 @@ const GUIDE_SNAP: f64 = 6.0;
 const SAVE: &str = "mimic.save";
 /// Loading the server's copy after a conflict ("Load theirs").
 const RELOAD: &str = "mimic.reload";
+/// The server's copy read again when the window comes back to the front,
+/// to learn of a save made elsewhere.
+pub(super) const REMOTE: &str = "mimic.remote";
 /// The unsaved-changes dialog.
 const DIALOG: &str = "mimic-unsaved";
 /// The dialog when a save found the screen changed elsewhere.
@@ -303,6 +306,116 @@ struct Conflict {
     after: Option<Leave>,
 }
 
+/// Unsaved edits kept when the session ended under them (the link
+/// failed, the token expired): restored when the same user signs in to
+/// the same server and opens the screen again.
+#[derive(Debug, Clone)]
+pub(crate) struct Draft {
+    /// The server and user they belong to.
+    session: (String, String),
+    screen: String,
+    /// The server's copy the edits started from, and the edits.
+    saved: Layout,
+    present: Layout,
+    /// The revision they were based on: a save after the restore still
+    /// conflicts when the screen changed meanwhile.
+    base: Option<String>,
+    /// The Designer was asked to switch to its screen after the sign-in.
+    launched: bool,
+}
+
+/// The kept draft; one of the states that outlive a session
+/// (`kept_across_sessions`).
+#[derive(Debug, Default)]
+pub(crate) struct Drafts {
+    draft: Option<Draft>,
+}
+
+/// The session is ending: keep the editor's unsaved edits.
+pub(crate) fn stash(console: &mut Console) {
+    let Some(state) = console.state_ref::<State>() else {
+        return;
+    };
+    let (Some(session), Some(editor)) = (state.session.clone(), state.edit.as_deref()) else {
+        return;
+    };
+    if !editor.history.dirty() {
+        return;
+    }
+    let draft = Draft {
+        session,
+        screen: editor.screen.clone(),
+        saved: editor.history.saved().clone(),
+        present: editor.layout().clone(),
+        base: editor.base.clone(),
+        launched: false,
+    };
+    console.state::<Drafts>().draft = Some(draft);
+}
+
+/// The signed-in server and user.
+fn session_of(console: &Console) -> Option<(String, String)> {
+    console
+        .user
+        .as_ref()
+        .map(|(user, _)| (console.server.clone(), user.clone()))
+}
+
+/// A draft of this session waits: open the Designer on its screen once.
+fn launch_draft(console: &mut Console) {
+    if editing(console) || !console.may_configure() {
+        return;
+    }
+    let session = session_of(console);
+    let Some(draft) = console
+        .state_ref::<Drafts>()
+        .and_then(|drafts| drafts.draft.as_ref())
+        .filter(|draft| !draft.launched && Some(&draft.session) == session.as_ref())
+    else {
+        return;
+    };
+    let screen = draft.screen.clone();
+    // Another screen: wait for the list, so the launch can switch to it.
+    let here = active(console) == screen;
+    let listed = console
+        .state_ref::<Screens>()
+        .is_some_and(|screens| screens.listed);
+    if !here && !listed {
+        return;
+    }
+    if console
+        .state_ref::<Launch>()
+        .is_some_and(|launch| launch.edit)
+    {
+        return;
+    }
+    // Switching screens is asked once; on its own screen the draft waits
+    // for the layout (the editor takes it when it opens).
+    if !here && let Some(draft) = console.state::<Drafts>().draft.as_mut() {
+        draft.launched = true;
+    }
+    let launch = console.state::<Launch>();
+    launch.edit = true;
+    if !here {
+        launch.screen = Some(screen);
+    }
+}
+
+/// The draft for `screen` in this session, taken.
+fn take_draft(console: &mut Console, screen: &str) -> Option<Draft> {
+    let session = session_of(console)?;
+    let drafts = console.state::<Drafts>();
+    if drafts
+        .draft
+        .as_ref()
+        .is_some_and(|draft| draft.session == session && draft.screen == screen)
+    {
+        drafts.draft.take()
+    } else {
+        None
+    }
+}
+
 /// The editor of the active screen.
 pub(crate) struct Editor {
     screen: String,
@@ -316,6 +429,11 @@ pub(crate) struct Editor {
     /// The server's copy being loaded after "Load theirs", and the leave
     /// to run once it is in.
     reloading: Option<Option<Leave>>,
+    /// The screen was saved elsewhere while this one has unsaved edits
+    /// (the web's `remoteChanged`): the banner offers their copy.
+    remote_changed: bool,
+    /// The check for a save made elsewhere, in flight.
+    checking: Option<i64>,
     /// The placement menu, open.
     menu: Option<DropMenu>,
     /// The inspector's binding editor, open on one property.
@@ -441,6 +559,9 @@ fn launch_screen(console: &mut Console) {
 /// Enter the edit mode asked for, once the active screen's mimic is in
 /// (called by the viewer's render; the entering itself runs after it).
 pub(super) fn launch_ready(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    if console.page == Page::Mimic && console.phase == Phase::Console {
+        launch_draft(console);
+    }
     let wanted = console
         .state_ref::<Launch>()
         .is_some_and(|launch| launch.edit);
@@ -479,16 +600,39 @@ pub(super) fn launch_ready(console: &mut Console, window: &mut Window, cx: &mut 
 /// Start editing the active screen's mimic as loaded.
 fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
     let screen = active(console);
+    let ready = matches!(
+        console.state::<State>().layouts.get(&screen),
+        Some(Loaded::Ready(_))
+    );
+    let draft = if ready {
+        take_draft(console, &screen)
+    } else {
+        None
+    };
     let state = console.state::<State>();
     let layout = match state.layouts.get(&screen) {
         Some(Loaded::Ready(layout)) => Layout::clone(layout),
         _ => return,
     };
-    let base = state.revisions.get(&screen).cloned().flatten();
+    let mut base = state.revisions.get(&screen).cloned().flatten();
+    let history = match draft {
+        Some(draft) => {
+            base = draft.base.or(base);
+            History::restored(draft.saved, draft.present)
+        }
+        None => History::new(layout),
+    };
+    let restored = history.dirty();
     let query = cx.new(|cx| TextInput::new(cx).placeholder("Search symbols and widgets"));
     let tag_query = cx.new(|cx| TextInput::new(cx).placeholder("Find a tag by name or key"));
     let tag_filter = cx.new(|cx| TextInput::new(cx).placeholder("Search tags"));
     let subscriptions = vec![
+        // Back to the front: has the screen been saved elsewhere?
+        cx.observe_window_activation(window, |console, window, _| {
+            if window.is_window_active() {
+                check_remote(console);
+            }
+        }),
         cx.subscribe_in(
             &query,
             window,
@@ -534,10 +678,12 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
     ];
     let editor = Editor {
         screen,
-        history: History::new(layout),
+        history,
         base,
         conflict: None,
         reloading: None,
+        remote_changed: false,
+        checking: None,
         menu: None,
         bind: None,
         selection: Vec::new(),
@@ -581,6 +727,13 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
     state.press = None;
     state.edit = Some(Box::new(editor));
     focus_stage(console, window, cx);
+    if restored {
+        console.show_toast(
+            "Your unsaved edits from before the sign-in are back; save to keep them",
+            false,
+            cx,
+        );
+    }
     cx.notify();
 }
 
@@ -876,6 +1029,10 @@ pub(super) fn on_reply(
         reloaded(console, reply, cx);
         return;
     }
+    if key.name == REMOTE {
+        remote_checked(console, key.arg, reply, cx);
+        return;
+    }
     if key.name != SAVE {
         return;
     }
@@ -895,9 +1052,14 @@ pub(super) fn on_reply(
             if let Some((screen, snapshot, named)) = sent {
                 if editor.screen == screen {
                     editor.history.mark_saved(snapshot);
-                    editor.base.clone_from(&revision);
+                    // A revision once known is never dropped: a save
+                    // whose answer named none stays based on the last.
+                    if revision.is_some() {
+                        editor.base.clone_from(&revision);
+                    }
+                    editor.remote_changed = false;
                 }
-                state.revisions.insert(screen.clone(), revision);
+                remember_revision(state, &screen, revision);
                 state.layouts.insert(screen, Loaded::Ready(Rc::new(named)));
             }
             let clean = edits_ref(console).is_none_or(|editor| !editor.history.dirty());
@@ -983,25 +1145,138 @@ fn resolve(console: &mut Console, answer: Resolve, window: &mut Window, cx: &mut
     match answer {
         Resolve::Cancel => focus_stage(console, window, cx),
         Resolve::Mine => save_on(console, conflict.after, Some(conflict.revision), cx),
-        Resolve::Theirs => {
-            let Some(editor) = edits(console) else {
-                return;
-            };
-            if editor.reloading.is_some() {
-                return;
-            }
-            editor.reloading = Some(conflict.after);
-            let screen = editor.screen.clone();
-            console.call(
-                CallKey::new(RELOAD),
-                Call::new(move |api| async move {
-                    let (layout, revision) = designer::load(&api, &screen).await?;
-                    Ok((screen, layout, revision))
-                }),
-            );
-        }
+        Resolve::Theirs => load_theirs(console, conflict.after),
     }
     cx.notify();
+}
+
+/// Load the server's copy over the edits ("Load theirs"); `after` runs
+/// once it is in.
+fn load_theirs(console: &mut Console, after: Option<Leave>) {
+    let Some(editor) = edits(console) else {
+        return;
+    };
+    if editor.reloading.is_some() {
+        return;
+    }
+    editor.reloading = Some(after);
+    let screen = editor.screen.clone();
+    console.call(
+        CallKey::new(RELOAD),
+        Call::new(move |api| async move {
+            let (layout, revision) = designer::load(&api, &screen).await?;
+            Ok((screen, layout, revision))
+        }),
+    );
+}
+
+/// Read the screen's revision again (the window came to the front), to
+/// learn of a save made elsewhere, as the web Designer refetches on focus.
+fn check_remote(console: &mut Console) {
+    let Some(editor) = edits(console) else {
+        return;
+    };
+    if editor.base.is_none()
+        || editor.saving.is_some()
+        || editor.reloading.is_some()
+        || editor.checking.is_some()
+        || editor.conflict.is_some()
+    {
+        return;
+    }
+    editor.next_save += 1;
+    let seq = editor.next_save;
+    editor.checking = Some(seq);
+    let screen = editor.screen.clone();
+    console.call(
+        CallKey::new(REMOTE).with(seq),
+        Call::new(move |api| async move {
+            let (layout, revision) = designer::load(&api, &screen).await?;
+            Ok((screen, layout, revision))
+        }),
+    );
+}
+
+/// The server's copy, read on focus: a clean editor takes it; one with
+/// unsaved edits shows the banner (the save would conflict anyway).
+fn remote_checked(console: &mut Console, seq: i64, reply: Reply, cx: &mut Context<Console>) {
+    let state = console.state::<State>();
+    let Some(editor) = state.edit.as_deref_mut() else {
+        return;
+    };
+    if editor.checking != Some(seq) {
+        return;
+    }
+    editor.checking = None;
+    // A save or a reload since: their answer wins.
+    if editor.saving.is_some() || editor.reloading.is_some() {
+        return;
+    }
+    let Ok((screen, layout, Some(revision))) = reply.take::<(String, Layout, Option<String>)>()
+    else {
+        return;
+    };
+    if screen != editor.screen || editor.base.as_deref() == Some(revision.as_str()) {
+        return;
+    }
+    if editor.history.dirty() {
+        editor.remote_changed = true;
+    } else {
+        editor.history = History::new(layout.clone());
+        editor.base = Some(revision.clone());
+        editor.remote_changed = false;
+        editor.prune();
+        remember_revision(state, &screen, Some(revision));
+        state.layouts.insert(screen, Loaded::Ready(Rc::new(layout)));
+    }
+    cx.notify();
+}
+
+/// The banner over the stage: the screen was saved elsewhere.
+fn remote_banner(theme: &Theme, cx: &mut Context<Console>) -> AnyElement {
+    div()
+        .absolute()
+        .top(SPACE_5)
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .id("designer-remote-changed")
+                .flex()
+                .items_center()
+                .gap(SPACE_3)
+                .pl(SPACE_5)
+                .pr(SPACE_2)
+                .py(SPACE_2)
+                .rounded(RADIUS_XL)
+                .bg(theme.elevated)
+                .border_1()
+                .border_color(theme.warning)
+                .text_size(FONT_SMALL)
+                .text_color(theme.fg)
+                .child("This screen was saved elsewhere while you were editing.")
+                .child(
+                    Button::new("designer-remote-reload", "Load theirs")
+                        .compact()
+                        .on_click(cx.listener(|console, _, _, cx| {
+                            load_theirs(console, None);
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("designer-remote-keep", "Keep editing")
+                        .compact()
+                        .on_click(cx.listener(|console, _, _, cx| {
+                            if let Some(editor) = edits(console) {
+                                editor.remote_changed = false;
+                            }
+                            cx.notify();
+                        })),
+                ),
+        )
+        .into_any_element()
 }
 
 /// The server's copy is in: the editor starts over from it, and the leave
@@ -1017,9 +1292,12 @@ fn reloaded(console: &mut Console, reply: Reply, cx: &mut Context<Console>) {
     match reply.take::<(String, Layout, Option<String>)>() {
         Ok((screen, layout, revision)) if screen == editor.screen => {
             editor.history = History::new(layout.clone());
-            editor.base.clone_from(&revision);
+            if revision.is_some() {
+                editor.base.clone_from(&revision);
+            }
+            editor.remote_changed = false;
             editor.prune();
-            state.revisions.insert(screen.clone(), revision);
+            remember_revision(state, &screen, revision);
             state.layouts.insert(screen, Loaded::Ready(Rc::new(layout)));
             console.show_toast("Loaded the screen as saved elsewhere", false, cx);
             if let Some(leave) = after {
@@ -1433,7 +1711,23 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
             }
         }
         Cmd::Cut => {
-            run(console, Cmd::Copy, window, cx);
+            // Only what the cut removes is copied: locked components stay
+            // on the stage and out of the clipboard, as Delete keeps them.
+            if let Some(editor) = edits(console)
+                && editor.line.is_none()
+                && !editor.selection.is_empty()
+            {
+                let cut = arrange::deletable(editor.history.present(), &editor.selection);
+                if cut.is_empty() {
+                    console.show_toast(
+                        "Locked components were kept; unlock them to cut",
+                        false,
+                        cx,
+                    );
+                    return;
+                }
+                editor.clip = edit::copy(editor.history.present(), &cut);
+            }
             run(console, Cmd::Delete, window, cx);
         }
         Cmd::Nudge(_, dy) if menu_open(console) => {
@@ -1546,7 +1840,9 @@ fn apply(
     cx: &mut Context<Console>,
 ) {
     if let Some(editor) = edits(console)
-        && editor.history.apply(edit, key)
+        && editor
+            .history
+            .apply_at(edit, key, Some(std::time::Instant::now()))
     {
         editor.prune();
     }
@@ -2135,6 +2431,7 @@ pub(super) fn render(
         return div().into_any_element();
     };
     let layout = editor.layout();
+    state.bound.borrow_mut().frame();
     let items: Vec<_> = layout
         .widgets
         .iter()
@@ -2179,6 +2476,7 @@ pub(super) fn render(
         }
     });
     let empty = layout.widgets.is_empty();
+    let remote_changed = editor.remote_changed && editor.conflict.is_none();
     let menu = editor.menu.clone().map(|menu| {
         let name = console
             .store
@@ -2283,6 +2581,7 @@ pub(super) fn render(
                         ),
                 )
             })
+            .when(remote_changed, |this| this.child(remote_banner(&theme, cx)))
             .when_some(menu.zip(menu_origin), |this, ((menu, name), origin)| {
                 this.child(menu_view(&menu, name, origin, &theme, cx))
             })
@@ -2997,6 +3296,56 @@ mod tests {
     }
 
     #[gpui::test]
+    fn cut_leaves_locked_components_out_of_the_clipboard(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        h.update(|console, window, cx| {
+            if let Some(editor) = edits(console) {
+                editor.selection = vec!["b".into()];
+            }
+            run(console, Cmd::Lock, window, cx);
+            if let Some(editor) = edits(console) {
+                editor.selection = vec!["a".into(), "b".into()];
+            }
+            run(console, Cmd::Cut, window, cx);
+        });
+        let ids = |h: &mut Harness| {
+            h.update(|console, _, _| {
+                edits_ref(console)
+                    .map(|editor| {
+                        editor
+                            .layout()
+                            .widgets
+                            .iter()
+                            .map(|w| w.id.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        assert_eq!(ids(&mut h), ["b"], "a cut, the locked b kept");
+        assert_eq!(
+            last_toast(&mut h),
+            "Locked components were kept; unlock them to delete"
+        );
+        h.update(|console, window, cx| run(console, Cmd::Paste, window, cx));
+        assert_eq!(ids(&mut h).len(), 2, "only a was copied");
+        // Only locked ones selected: nothing is cut or copied.
+        h.update(|console, window, cx| {
+            if let Some(editor) = edits(console) {
+                editor.selection = vec!["b".into()];
+                editor.clip = edit::Clip::default();
+            }
+            run(console, Cmd::Cut, window, cx);
+            run(console, Cmd::Paste, window, cx);
+        });
+        assert_eq!(ids(&mut h).len(), 2);
+        assert_eq!(
+            last_toast(&mut h),
+            "Locked components were kept; unlock them to cut"
+        );
+    }
+
+    #[gpui::test]
     fn align_and_distribute_are_one_undo_step_each(cx: &mut TestAppContext) {
         let mut h = editing_a(cx);
         h.update(|console, window, cx| {
@@ -3128,6 +3477,126 @@ mod tests {
         assert!(!dirty(&mut h));
         let base = h.update(|console, _, _| edits_ref(console).and_then(|e| e.base.clone()));
         assert_eq!(base.as_deref(), Some("rev-3"), "the next save builds on it");
+    }
+
+    /// The screen's layout read on focus, answered with revision `rev`.
+    fn answer_remote(h: &mut Harness, layout: Layout, rev: &str) {
+        let key = h
+            .calls()
+            .into_iter()
+            .find(|key| key.name == REMOTE)
+            .expect("the check");
+        let screen = h.update(|console, _, _| active(console));
+        h.reply(key, Reply::ok((screen, layout, Some(rev.to_owned()))));
+        h.draw();
+    }
+
+    #[gpui::test]
+    fn a_save_elsewhere_shows_the_banner_or_loads_into_a_clean_editor(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        let theirs = Layout {
+            widgets: vec![tank("t", 100.0)],
+            connections: Vec::new(),
+        };
+        h.update(|console, _, _| {
+            if let Some(editor) = edits(console) {
+                editor.base = Some("rev-1".into());
+            }
+            check_remote(console);
+        });
+        // Clean: their copy comes in.
+        answer_remote(&mut h, theirs.clone(), "rev-2");
+        let (ids, base) = h.update(|console, _, _| {
+            let editor = edits_ref(console).expect("editing");
+            (
+                editor
+                    .layout()
+                    .widgets
+                    .iter()
+                    .map(|w| w.id.clone())
+                    .collect::<Vec<_>>(),
+                editor.base.clone(),
+            )
+        });
+        assert_eq!(ids, ["t"]);
+        assert_eq!(base.as_deref(), Some("rev-2"));
+        // Unsaved edits: the banner, the edits kept.
+        h.update(|console, window, cx| {
+            let moved = Edit::Move(vec![("t".into(), 300.0, 200.0)]);
+            apply(console, &moved, None, window, cx);
+            check_remote(console);
+        });
+        answer_remote(&mut h, theirs.clone(), "rev-3");
+        let banner = h.update(|console, _, _| edits_ref(console).is_some_and(|e| e.remote_changed));
+        assert!(banner);
+        assert!(dirty(&mut h));
+        // Same revision: nothing to say.
+        h.update(|console, _, _| {
+            if let Some(editor) = edits(console) {
+                editor.remote_changed = false;
+                editor.base = Some("rev-3".into());
+            }
+            check_remote(console);
+        });
+        answer_remote(&mut h, theirs, "rev-3");
+        let banner = h.update(|console, _, _| edits_ref(console).is_some_and(|e| e.remote_changed));
+        assert!(!banner);
+    }
+
+    #[gpui::test]
+    fn unsaved_edits_outlive_a_failed_link_and_come_back_after_sign_in(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        h.update(|console, _, _| {
+            if let Some(editor) = edits(console) {
+                editor.base = Some("rev-1".into());
+            }
+        });
+        move_a(&mut h, 320.0);
+        h.event(crate::console::Event::Link(
+            voltrus_scada_native::runtime::Link::Failed("Session expired".into()),
+        ));
+        assert!(
+            h.update(|console, _, _| !editing(console)),
+            "the session ended"
+        );
+        let kept = h.update(|console, _, _| {
+            console
+                .state_ref::<Drafts>()
+                .and_then(|drafts| drafts.draft.as_ref().map(|d| d.present.widgets[0].x))
+        });
+        assert_eq!(kept, Some(320.0));
+        h.sign_in("admin");
+        h.update(|console, window, cx| {
+            console.show(Page::Mimic, window, cx);
+            let screen = active(console);
+            let layout = Layout {
+                widgets: vec![tank("a", 200.0), tank("b", 600.0)],
+                connections: Vec::new(),
+            };
+            console
+                .state::<State>()
+                .layouts
+                .insert(screen, Loaded::Ready(Rc::new(layout)));
+        });
+        // The viewer opens the Designer on the draft's screen by itself.
+        h.draw();
+        h.draw();
+        assert!(h.update(|console, _, _| editing(console)));
+        assert_eq!(widget(&mut h, "a").x, 320.0, "the edit is back");
+        assert!(dirty(&mut h));
+        let base = h.update(|console, _, _| edits_ref(console).and_then(|e| e.base.clone()));
+        assert_eq!(
+            base.as_deref(),
+            Some("rev-1"),
+            "still based on what it started from"
+        );
+        assert_eq!(
+            last_toast(&mut h),
+            "Your unsaved edits from before the sign-in are back; save to keep them"
+        );
+        // Undo goes back to the server's copy.
+        h.update(|console, window, cx| run(console, Cmd::Undo, window, cx));
+        assert_eq!(widget(&mut h, "a").x, 200.0);
     }
 
     #[gpui::test]

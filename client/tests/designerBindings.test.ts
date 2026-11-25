@@ -196,3 +196,10 @@ test('visibility at runtime: bound visible wins when it has a value', () => {
   assert.equal(shownAtRuntime(withBinding({}, 'visible', { kind: 'tag', tag: 'd/off' }), r), false)
   assert.equal(shownAtRuntime(withBinding({ visible: false }, 'visible', { kind: 'tag', tag: 'd/none' }), r), false, 'no value: fixed value')
 })
+
+test('expressions: only the listed functions, never names inherited from Object', () => {
+  for (const name of ['toString', 'valueOf', 'constructor', '__proto__', 'hasOwnProperty', 'isPrototypeOf']) {
+    assert.throws(() => parse(`${name}(1)`), (e: unknown) => e instanceof ExprError && e.message === `unknown name "${name}"` && e.pos === 0, name)
+  }
+  assert.equal(ev('abs(-2)'), 2)
+})
