@@ -47,7 +47,7 @@ pub fn actor_for_origin(user: &AuthUser, origin: ActionOrigin, operation: &str) 
         ActionOrigin::Mcp => "mcp",
         ActionOrigin::ApiKey => "api_key",
         ActionOrigin::Flow => "flow",
-        ActionOrigin::Session | ActionOrigin::Recipe => {
+        ActionOrigin::Session | ActionOrigin::Recipe | ActionOrigin::Mobile => {
             if user.username.starts_with("api_key:") {
                 "api_key"
             } else {
