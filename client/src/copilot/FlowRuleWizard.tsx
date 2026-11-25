@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useGenerateFlowRule } from '../queries/copilot'
+import { GenerationError } from './GenerationError'
 import { useSensors } from '../queries/sensors'
 
 export function FlowRuleWizard({ onProposal }: { onProposal: () => void }) {
@@ -16,6 +17,8 @@ export function FlowRuleWizard({ onProposal }: { onProposal: () => void }) {
     try {
       await gen.mutateAsync({ description, available_tags: tagKeys })
       onProposal()
+    } catch {
+      // Shown below from gen.error.
     } finally { setLoading(false) }
   }
 
@@ -37,6 +40,8 @@ export function FlowRuleWizard({ onProposal }: { onProposal: () => void }) {
           {tagKeys.map(k => <div key={k}>{k}</div>)}
         </div>
       </details>
+
+      <GenerationError error={gen.error} />
 
       <button onClick={handleGenerate} disabled={!description || loading}
         style={{ padding: '10px', borderRadius: 6, border: 'none', background: 'var(--primary)', color: '#fff', fontWeight: 600, cursor: 'pointer', opacity: !description ? 0.5 : 1 }}>

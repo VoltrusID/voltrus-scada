@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { PDF_GUIDANCE, datasheetFileError, looksLikePdf, parseEditedConfig } from '../src/copilot/proposalChecks.ts'
+import {
+  PDF_GUIDANCE, copilotRequestError, datasheetFileError, generationErrorMessage, looksLikePdf, parseEditedConfig,
+} from '../src/copilot/proposalChecks.ts'
 
 test('an invalid JSON edit is an error, not the original proposal', () => {
   const r = parseEditedConfig('[{"name": "v", "address": 40001')
@@ -29,4 +31,32 @@ test('copilot API calls use same-origin paths', () => {
   const src = readFileSync(new URL('../src/queries/copilot.ts', import.meta.url), 'utf8')
   assert.doesNotMatch(src, /[`'"]\/\/api\//)
   assert.match(src, /`\/api\/v1\/ai\/proposals\/\$\{id\}\/reject`/)
+})
+
+const refused = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+  copilotRequestError(new Response(JSON.stringify(body), { status, headers }))
+
+test('generation errors keep the server code and Retry-After', async () => {
+  const limited = await refused(429, { error: 'quota', code: 'ai_rate_limited', retry_after_secs: 20 })
+  assert.equal(limited.status, 429)
+  assert.equal(limited.code, 'ai_rate_limited')
+  assert.equal(limited.retryAfterSecs, 20)
+  // Only the header: still read.
+  const headerOnly = await refused(429, { error: 'quota', code: 'ai_rate_limited' }, { 'Retry-After': '7' })
+  assert.equal(headerOnly.retryAfterSecs, 7)
+  const notJson = await copilotRequestError(new Response('Bad gateway', { status: 502 }))
+  assert.equal(notJson.message, 'Request failed: 502')
+  assert.equal(notJson.code, undefined)
+})
+
+test('each generation error code gets a clear message', async () => {
+  const msg = async (status: number, body: unknown) => generationErrorMessage(await refused(status, body))
+  assert.match(await msg(502, { error: 'x', code: 'ai_truncated' }), /cut off.*Send less at a time/)
+  assert.match(await msg(400, { error: 'x', code: 'ai_invalid_api_key' }), /rejected the API key.*AI settings/)
+  assert.match(await msg(429, { error: 'x', code: 'ai_rate_limited', retry_after_secs: 30 }), /Try again in 30 s/)
+  assert.match(await msg(429, { error: 'x', code: 'ai_rate_limited' }), /Try again later/)
+  assert.match(await msg(400, { error: 'x', code: 'ai_not_configured' }), /AI settings/)
+  // No code (the PDF refusal): the server's message as is.
+  assert.equal(await msg(400, { error: PDF_GUIDANCE }), PDF_GUIDANCE)
+  assert.equal(generationErrorMessage(new Error('offline')), 'offline')
 })

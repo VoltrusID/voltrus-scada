@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useGenerateTagRename } from '../queries/copilot'
+import { GenerationError } from './GenerationError'
 import { useSensors } from '../queries/sensors'
 
 const CONVENTIONS = ['ISA-5.1', 'IEC-61131', 'KKS', 'descriptive', 'custom']
@@ -29,6 +30,8 @@ export function TagRenameWizard({ onProposal }: { onProposal: () => void }) {
     try {
       await gen.mutateAsync({ tags, convention, custom_pattern: convention === 'custom' ? customPattern : undefined })
       onProposal()
+    } catch {
+      // Shown below from gen.error.
     } finally { setLoading(false) }
   }
 
@@ -70,6 +73,8 @@ export function TagRenameWizard({ onProposal }: { onProposal: () => void }) {
           ))}
         </div>
       </div>
+
+      <GenerationError error={gen.error} />
 
       <button onClick={handleGenerate} disabled={selectedKeys.size === 0 || loading}
         style={{ padding: '10px', borderRadius: 6, border: 'none', background: 'var(--primary)', color: '#fff', fontWeight: 600, cursor: 'pointer', opacity: selectedKeys.size === 0 ? 0.5 : 1 }}>

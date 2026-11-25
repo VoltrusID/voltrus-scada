@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useGenerateAlarmThresholds } from '../queries/copilot'
+import { GenerationError } from './GenerationError'
 import { useSensors } from '../queries/sensors'
 
 const DEVICE_TYPES = [
@@ -32,6 +33,8 @@ export function AlarmThresholdWizard({ onProposal }: { onProposal: () => void })
     try {
       await gen.mutateAsync({ device_type: deviceType, tags })
       onProposal()
+    } catch {
+      // Shown below from gen.error.
     } finally { setLoading(false) }
   }
 
@@ -61,6 +64,8 @@ export function AlarmThresholdWizard({ onProposal }: { onProposal: () => void })
           ))}
         </div>
       </div>
+
+      <GenerationError error={gen.error} />
 
       <button onClick={handleGenerate} disabled={!deviceType || selectedIds.size === 0 || loading}
         style={{ padding: '10px', borderRadius: 6, border: 'none', background: 'var(--primary)', color: '#fff', fontWeight: 600, cursor: 'pointer', opacity: (!deviceType || selectedIds.size === 0) ? 0.5 : 1 }}>

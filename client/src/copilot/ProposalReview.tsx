@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useApproveProposal, useRejectProposal, useApplyProposal } from '../queries/copilot'
+import { useAiProposal, useApproveProposal, useRejectProposal, useApplyProposal } from '../queries/copilot'
 import type { AiProposal } from '../types'
 import { parseEditedConfig } from './proposalChecks'
 
@@ -8,6 +8,8 @@ const STATUS_COLORS: Record<string, { bg: string; fg: string }> = {
   approved: { bg: 'rgba(59,130,246,.15)', fg: '#3b82f6' },
   rejected: { bg: 'rgba(239,68,68,.15)', fg: '#ef4444' },
   applied: { bg: 'rgba(34,197,94,.15)', fg: '#22c55e' },
+  applying: { bg: 'rgba(245,158,11,.15)', fg: '#f59e0b' },
+  failed: { bg: 'rgba(239,68,68,.15)', fg: '#ef4444' },
 }
 
 function fmtTs(ts: number | null): string {
@@ -15,12 +17,23 @@ function fmtTs(ts: number | null): string {
   return new Date(ts * 1000).toLocaleString()
 }
 
-export function ProposalReview({ proposal, onBack }: { proposal: AiProposal; onBack: () => void }) {
+export function ProposalReview({ proposal: listed, onBack }: { proposal: AiProposal; onBack: () => void }) {
+  // The list entry can be stale (a failed apply changes the status): show the server's copy.
+  const { data: fresh } = useAiProposal(listed.id)
+  const proposal = fresh ?? listed
   const approve = useApproveProposal()
   const reject = useRejectProposal()
   const apply = useApplyProposal()
   const [editJson, setEditJson] = useState('')
   const [editError, setEditError] = useState<string | null>(null)
+
+  /** Clear the outcome of the previous action, so only the last one is shown. */
+  const startAction = () => {
+    approve.reset()
+    reject.reset()
+    apply.reset()
+    setEditError(null)
+  }
 
   const isPending = proposal.status === 'pending'
   const isApproved = proposal.status === 'approved'
@@ -29,12 +42,12 @@ export function ProposalReview({ proposal, onBack }: { proposal: AiProposal; onB
   const actionError = editError ?? (approve.error || apply.error || reject.error)?.message ?? null
 
   const handleApprove = () => {
+    startAction()
     const edited = parseEditedConfig(editJson)
     if (!edited.ok) {
       setEditError(edited.error)
       return
     }
-    setEditError(null)
     const body: { id: number; applied_config?: unknown } = { id: proposal.id }
     if (edited.config !== undefined) body.applied_config = edited.config
     approve.mutate(body, { onSuccess: onBack })
@@ -77,7 +90,7 @@ export function ProposalReview({ proposal, onBack }: { proposal: AiProposal; onB
       {isPending && (
         <div>
           <label style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Edit config (optional)</label>
-          <textarea value={editJson} onChange={e => { setEditJson(e.target.value); setEditError(null) }} placeholder="Paste modified JSON here..."
+          <textarea value={editJson} onChange={e => { setEditJson(e.target.value); startAction() }} placeholder="Paste modified JSON here..."
             rows={6} style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg)', color: 'var(--fg)', fontSize: 12, fontFamily: 'monospace', boxSizing: 'border-box', resize: 'vertical' }} />
         </div>
       )}
@@ -94,14 +107,14 @@ export function ProposalReview({ proposal, onBack }: { proposal: AiProposal; onB
               style={{ flex: 1, padding: '8px 16px', borderRadius: 6, border: 'none', background: '#22c55e', color: '#fff', fontWeight: 600, cursor: 'pointer' }}>
               {approve.isPending ? 'Approving...' : 'Approve'}
             </button>
-            <button onClick={() => reject.mutate(proposal.id, { onSuccess: onBack })} disabled={reject.isPending}
+            <button onClick={() => { startAction(); reject.mutate(proposal.id, { onSuccess: onBack }) }} disabled={reject.isPending}
               style={{ flex: 1, padding: '8px 16px', borderRadius: 6, border: '1px solid #ef4444', background: 'transparent', color: '#ef4444', cursor: 'pointer' }}>
               {reject.isPending ? 'Rejecting...' : 'Reject'}
             </button>
           </>
         )}
         {isApproved && (
-          <button onClick={() => apply.mutate(proposal.id, { onSuccess: onBack })} disabled={apply.isPending}
+          <button onClick={() => { startAction(); apply.mutate(proposal.id, { onSuccess: onBack }) }} disabled={apply.isPending}
             style={{ flex: 1, padding: '10px 16px', borderRadius: 6, border: 'none', background: 'var(--primary)', color: '#fff', fontWeight: 600, cursor: 'pointer', fontSize: 14 }}>
             {apply.isPending ? 'Applying...' : 'Apply to Production'}
           </button>

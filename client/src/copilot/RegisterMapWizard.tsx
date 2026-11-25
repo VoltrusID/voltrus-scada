@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useGenerateRegisterMap } from '../queries/copilot'
+import { GenerationError } from './GenerationError'
 import { PDF_GUIDANCE, datasheetFileError, looksLikePdf } from './proposalChecks'
 
 export function RegisterMapWizard({ onProposal }: { onProposal: () => void }) {
@@ -45,6 +46,8 @@ export function RegisterMapWizard({ onProposal }: { onProposal: () => void }) {
         device_id: deviceId || undefined,
       })
       onProposal()
+    } catch {
+      // Shown below from gen.error.
     } finally { setLoading(false) }
   }
 
@@ -89,6 +92,8 @@ export function RegisterMapWizard({ onProposal }: { onProposal: () => void }) {
           </pre>
         </details>
       )}
+
+      <GenerationError error={gen.error} />
 
       <button onClick={handleGenerate} disabled={!fileContent || !deviceName || loading}
         style={{ padding: '10px', borderRadius: 6, border: 'none', background: 'var(--primary)', color: '#fff', fontWeight: 600, cursor: 'pointer', opacity: (!fileContent || !deviceName) ? 0.5 : 1 }}>
