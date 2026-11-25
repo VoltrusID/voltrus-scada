@@ -62,7 +62,7 @@ Alarm floods are spread out: after 20 new-alarm pushes in a minute, the rest of
 that minute become one "N more alarms" push, and a site sends at most 600
 pushes an hour. A standby node of a hot-standby pair sends nothing.
 
-Core does not contact Voltrus servers. The connection to the push relay belongs
+Core does not contact Voltrus servers. The connection to the push relay ([protocol](mobile-relay.md)) belongs
 to the Enterprise add-on, which registers a `MobilePushSender`
 (`src/edition.rs`); without one, nothing is pushed. The relay checks the site's
 licence and passes the pushes to Apple and Google through Expo's push service.
