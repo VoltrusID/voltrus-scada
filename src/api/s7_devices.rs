@@ -176,11 +176,8 @@ pub async fn update_device(
         let tags = state.storage.list_s7_tags(id).await?;
         let mut s7_tags = Vec::new();
         for tag_row in &tags {
-            match S7Client::parse_tag_address(&tag_row.tag_address) {
-                Ok(mut s7_tag) => {
-                    s7_tag.name = Some(tag_row.name.clone());
-                    s7_tags.push(s7_tag)
-                }
+            match runtime_tag(tag_row) {
+                Ok(s7_tag) => s7_tags.push(s7_tag),
                 Err(_) => continue,
             }
         }
@@ -442,11 +439,8 @@ pub async fn start_device(
     let device_key = format!("s7_{}", device.id);
     let mut s7_tags = Vec::new();
     for tag_row in &tags {
-        match S7Client::parse_tag_address(&tag_row.tag_address) {
-            Ok(mut s7_tag) => {
-                s7_tag.name = Some(tag_row.name.clone());
-                s7_tags.push(s7_tag)
-            }
+        match runtime_tag(tag_row) {
+            Ok(s7_tag) => s7_tags.push(s7_tag),
             Err(e) => {
                 return Err(AppError(anyhow::anyhow!(
                     "Failed to parse tag '{}': {}",
@@ -607,4 +601,45 @@ pub async fn browse_device(
         "areas": areas,
         "count": areas.len(),
     })))
+}
+
+/// The poller's tag for a stored S7 tag row: its address read with its data
+/// type, as at startup (`Storage::get_all_s7_device_configs`), so a REAL at
+/// DB1.DBD0 decodes as REAL whether the poller starts with the server or
+/// through the API.
+fn runtime_tag(row: &crate::models::S7TagRow) -> anyhow::Result<crate::s7::S7Tag> {
+    let mut tag = crate::s7::S7Tag::resolve(&row.tag_address, &row.data_type)?;
+    tag.name = Some(row.name.clone());
+    Ok(tag)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_tag;
+    use crate::models::S7TagRow;
+    use crate::s7::S7DataType;
+
+    fn row(address: &str, data_type: &str) -> S7TagRow {
+        S7TagRow {
+            id: 1,
+            device_id: 1,
+            tag_address: address.into(),
+            name: "speed".into(),
+            display_name: String::new(),
+            data_type: data_type.into(),
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn runtime_tag_keeps_the_stored_data_type() {
+        let tag = runtime_tag(&row("DB1.DBD4", "real")).unwrap();
+        assert_eq!(tag.data_type, S7DataType::Real);
+        assert_eq!(tag.offset, 4);
+        assert_eq!(tag.name.as_deref(), Some("speed"));
+        assert_eq!(
+            runtime_tag(&row("DB1.DBD4", "")).unwrap().data_type,
+            S7DataType::DWord
+        );
+    }
 }

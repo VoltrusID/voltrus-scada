@@ -3,7 +3,8 @@
 Each site is its own Modbus device on the same simulator port, in its own address block (float32 big-endian,
 two words per tag, tags in the order declared below):
 
-    plts_cikarang   1000  Solar O&M: 1 MWp rooftop PV, eight inverters from four brands
+    plts_cikarang   1000  Solar O&M: 1 MWp rooftop PV, eight inverters from five brands, plus a Victron ESS
+                          (Cerbo GX on unit IDs 100, 227 and 225, see GX_DEVICES)
     genset_house    2000  Genset house: ATS/AMF panel (DSE7320 MKII) and a two-set synchronising panel (SmartGen HGM9520N)
     mdp_01          3000  Energy monitoring: PM5560 incomer, five PM5100 feeders, two Raritan PX3 rack PDUs
     booster_station 4000  Booster pump station: Danfoss VLT FC 302 and ABB ACS580 drives on constant header pressure
@@ -181,6 +182,72 @@ for n, (model, kw) in enumerate(PUMPS, 1):
     tag(p + 'code', f'P-0{n} Active Fault Code', '', 0, 9999, dec=0)
 
 
+# ── Victron ESS on the solar site, read the way a Cerbo GX serves it ──
+# Three Quattro 48/15000 (one per phase) carry the site's critical loads and buffer PV into a 61 kWh lithium bank
+# on a Lynx Smart BMS. A GX device answers each service on its own unit ID with int16/uint16 registers at the
+# addresses and scale factors of Victron's register list (scale: engineering value = raw x scale).
+GX_DEVICES: dict[str, dict] = {}
+_gx = None
+
+
+def gx_device(dev_id, name, unit_id):
+    global _gx
+    _gx = dev_id
+    GX_DEVICES[dev_id] = {'name': name, 'unit_id': unit_id, 'regs': []}
+
+
+def gx(addr, key, typ, scale, name, unit='', lo=0, hi=100, warn=0, crit=0, dec=1, lw=None, lc=None):
+    assert re.fullmatch(r'[A-Za-z0-9_ .-]+', name), name
+    META[key] = (name, unit, lo, hi, warn, crit, dec, lw, lc)
+    GX_DEVICES[_gx]['regs'].append((addr, key, typ, scale))
+
+
+ESS_KWH = 61.4
+gx_device('victron_gx_system', 'Victron Cerbo GX system (unit 100)', 100)
+for ph in (1, 2, 3):
+    gx(816 + ph, f'vic_cons_l{ph}', 'uint16', 1, f'ESS Critical Load L{ph}', 'W', 0, 15000, dec=0)
+for ph in (1, 2, 3):
+    gx(819 + ph, f'vic_grid_l{ph}', 'int16', 1, f'ESS Grid L{ph}', 'W', -15000, 15000, dec=0)
+gx(826, 'vic_source', 'int16', 1, 'ESS Active Input Source', '', 0, 240, dec=0)
+gx(840, 'vic_bat_v', 'uint16', 0.1, 'ESS Battery Voltage', 'V', 44, 58, dec=1)
+gx(841, 'vic_bat_i', 'int16', 0.1, 'ESS Battery Current', 'A', -600, 600, dec=1)
+gx(842, 'vic_bat_w', 'int16', 1, 'ESS Battery Power', 'W', -30000, 30000, dec=0)
+gx(843, 'vic_soc', 'uint16', 1, 'ESS Battery State of Charge', '%', 0, 100, dec=0, lw=20, lc=10)
+gx(844, 'vic_bat_state', 'uint16', 1, 'ESS Battery State', '', 0, 2, dec=0)
+gx_device('victron_gx_vebus', 'Victron 3 x Quattro 48-15000 VE.Bus (unit 227)', 227)
+for ph in (1, 2, 3):
+    gx(2 + ph, f'vic_in_v{ph}', 'uint16', 0.1, f'Quattro AC-in Voltage L{ph}', 'V', 180, 260, dec=1)
+for ph in (1, 2, 3):
+    gx(11 + ph, f'vic_in_p{ph}', 'int16', 10, f'Quattro AC-in Power L{ph}', 'W', -15000, 15000, dec=0)
+for ph in (1, 2, 3):
+    gx(14 + ph, f'vic_out_v{ph}', 'uint16', 0.1, f'Quattro AC-out Voltage L{ph}', 'V', 180, 260, dec=1, lw=207, lc=196)
+gx(21, 'vic_out_hz', 'int16', 0.01, 'Quattro AC-out Frequency', 'Hz', 45, 55, dec=2)
+for ph in (1, 2, 3):
+    gx(22 + ph, f'vic_out_p{ph}', 'int16', 10, f'Quattro AC-out Power L{ph}', 'W', 0, 15000, dec=0)
+gx(29, 'vic_active_in', 'uint16', 1, 'Quattro Active Input', '', 0, 240, dec=0)
+gx(31, 'vic_vebus_state', 'uint16', 1, 'Quattro VE.Bus State', '', 0, 252, dec=0)
+gx(32, 'vic_vebus_err', 'uint16', 1, 'Quattro VE.Bus Error', '', 0, 30, 0, 1, 0)
+gx(33, 'vic_switch', 'uint16', 1, 'Quattro Switch Position', '', 0, 4, dec=0)
+gx(64, 'vic_grid_lost', 'uint16', 1, 'Quattro Grid Lost Alarm', '', 0, 2, 1, 2, 0)
+gx_device('victron_gx_bms', 'Victron Lynx Smart BMS (unit 225)', 225)
+gx(259, 'vic_bms_v', 'uint16', 0.01, 'Lynx BMS Battery Voltage', 'V', 44, 58, dec=2)
+gx(261, 'vic_bms_i', 'int16', 0.1, 'Lynx BMS Battery Current', 'A', -600, 600, dec=1)
+gx(262, 'vic_bms_temp', 'int16', 0.1, 'Lynx BMS Battery Temperature', '°C', 0, 60, 40, 45, 1)
+gx(266, 'vic_bms_soc', 'uint16', 0.1, 'Lynx BMS State of Charge', '%', 0, 100, dec=1)
+gx(304, 'vic_bms_soh', 'uint16', 0.1, 'Lynx BMS State of Health', '%', 0, 100, dec=1)
+
+
+def gx_words(unit_id: int, values) -> dict[int, int] | None:
+    """Register words a GX device answers on `unit_id`, or None when no Victron service has that unit ID."""
+    for d in GX_DEVICES.values():
+        if d['unit_id'] == unit_id:
+            words = {}
+            for addr, key, typ, scale in d['regs']:
+                words[addr] = int(round(values[key] / scale)) & 0xFFFF
+            return words
+    return None
+
+
 def addresses() -> dict[int, str]:
     """Holding-register start address -> tag key, for every vertical tag."""
     out = {}
@@ -237,6 +304,53 @@ class Verticals:
         self.genset(dt)
         self.meters(dt)
         self.booster(dt)
+        self.ess(dt)
+
+    # Victron ESS: charges from PV surplus, shaves the afternoon peak, then floats. SOC moves 6x faster than real
+    # so a visitor sees it change; the Quattros pass the grid through to the critical loads all the time.
+    def ess(self, dt):
+        v, t = self.v, self.t
+        c = t % 900
+        soc = v['vic_bms_soc'] or 58.0
+        if c < 420:
+            p_bat = min(24000.0, 27 * v['pv_irr']) * (1 if soc < 92 else max(0.12, (100 - soc) / 8 * 0.6))
+            state = 3 if soc < 92 else 4
+        elif c < 600:
+            p_bat = -16000.0 if soc > 25 else 0.0
+            state = 9
+        else:
+            p_bat = 350.0 if soc < 99 else 0.0
+            state = 5
+        p_bat += random.gauss(0, 60)
+        soc = max(5.0, min(100.0, soc + p_bat * dt / 3600 / (ESS_KWH * 1000) * 100 * 6))
+        r = 0.004
+        ocv = 50.4 + 3.4 * soc / 100
+        i_bat = p_bat / ocv
+        vbat = ocv + i_bat * r
+        v['vic_bms_soc'] = soc
+        v['vic_soc'] = round(soc)
+        v['vic_bat_w'] = p_bat
+        v['vic_bat_i'] = v['vic_bms_i'] = i_bat
+        v['vic_bat_v'] = v['vic_bms_v'] = vbat
+        v['vic_bat_state'] = 1.0 if p_bat > 200 else 2.0 if p_bat < -200 else 0.0
+        v['vic_bms_temp'] = 27.5 + 2.5 * abs(i_bat) / 500 + 0.5 * math.sin(t / 600) + n(0.03)
+        v['vic_bms_soh'] = 97.4
+        loads = [3800 + 600 * math.sin(t / 130 + ph) + n(25) for ph in (0, 2.1, 4.2)]
+        for ph in (1, 2, 3):
+            vin = v['pv_grid_v'] / math.sqrt(3) + (0.3, -0.4, 0.2)[ph - 1] + n(0.2)
+            v[f'vic_in_v{ph}'] = vin
+            v[f'vic_out_v{ph}'] = vin - 0.6
+            v[f'vic_out_p{ph}'] = loads[ph - 1]
+            v[f'vic_in_p{ph}'] = loads[ph - 1] + p_bat / 3 / 0.95 if p_bat > 0 else loads[ph - 1] + p_bat / 3 * 0.95
+            v[f'vic_cons_l{ph}'] = loads[ph - 1]
+            v[f'vic_grid_l{ph}'] = v[f'vic_in_p{ph}']
+        v['vic_out_hz'] = v['pv_grid_hz']
+        v['vic_source'] = 1.0     # grid
+        v['vic_active_in'] = 0.0  # AC-in 1
+        v['vic_vebus_state'] = float(state)
+        v['vic_vebus_err'] = 0.0
+        v['vic_switch'] = 3.0     # on
+        v['vic_grid_lost'] = 0.0
 
     # Rooftop PV: clear-sky noon with passing clouds, clipping on the high-DC-ratio inverters, one inverter tripping.
     def solar(self, dt):
