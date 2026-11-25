@@ -385,30 +385,46 @@ fn layout_saved(outcome: crate::storage::LayoutSave) -> Result<impl IntoResponse
     }
 }
 
-/// `?published=1` on the layout GETs.
+/// `?published=1` / `?draft=1` on the layout GETs.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct ViewQuery {
     pub published: Option<String>,
+    pub draft: Option<String>,
 }
 
-/// Whether a read gets the published rows: asked for with `?published=1`, or
-/// always for roles that do not configure (operators see what is published).
-fn wants_published(auth: Option<&AuthUser>, q: &ViewQuery) -> bool {
-    let asked = matches!(
-        q.published
-            .as_deref()
-            .map(str::to_ascii_lowercase)
-            .as_deref(),
+fn flag(v: &Option<String>) -> bool {
+    matches!(
+        v.as_deref().map(str::to_ascii_lowercase).as_deref(),
         Some("1" | "true" | "yes")
-    );
-    asked || auth.is_some_and(|a| !super::auth_middleware::role_allows_configuration(&a.role))
+    )
+}
+
+/// Whether a read gets the published rows (docs/version-history.md):
+/// `?published=1` asks for them, `?draft=1` for the draft (roles that
+/// configure only). Without either, roles that do not configure get the
+/// published rows and roles that configure (sessions and integration keys
+/// alike) the draft, as before phase 3; a runtime reader that configures
+/// passes `?published=1`.
+fn wants_published(auth: Option<&AuthUser>, q: &ViewQuery) -> bool {
+    let configures =
+        auth.is_none_or(|a| super::auth_middleware::role_allows_configuration(&a.role));
+    if !configures || flag(&q.published) {
+        return true;
+    }
+    // `?draft=1`, or nothing: the draft.
+    let _explicit_draft = flag(&q.draft);
+    false
 }
 
 /// GET /api/screens/{id}/scada-equipment
 #[utoipa::path(
     get,
     path = "/api/v1/screens/{id}/scada-equipment",
-    params(("id" = String, Path, description = "Screen ID")),
+    params(
+        ("id" = String, Path, description = "Screen ID"),
+        ("published" = Option<String>, Query, description = "1: the rows operators see (the published copy, or the draft of a screen never published). Roles that do not configure always get these"),
+        ("draft" = Option<String>, Query, description = "1: the draft (the default for roles that configure, API keys included)"),
+    ),
     responses((status = 200, body = Vec<crate::models::ScadaEquipment>)),
     tag = "Layouts",
     security(("api_key" = []), ("cookie_auth" = []))
@@ -461,7 +477,11 @@ pub async fn save_scada_equipment(
 #[utoipa::path(
     get,
     path = "/api/v1/screens/{id}/scada-connections",
-    params(("id" = String, Path, description = "Screen ID")),
+    params(
+        ("id" = String, Path, description = "Screen ID"),
+        ("published" = Option<String>, Query, description = "1: the rows operators see (the published copy, or the draft of a screen never published). Roles that do not configure always get these"),
+        ("draft" = Option<String>, Query, description = "1: the draft (the default for roles that configure, API keys included)"),
+    ),
     responses((status = 200, body = Vec<crate::models::ScadaConnection>)),
     tag = "Layouts",
     security(("api_key" = []), ("cookie_auth" = []))
@@ -514,8 +534,12 @@ pub async fn save_scada_connections(
 #[utoipa::path(
     get,
     path = "/api/v1/screens/{id}/scada-layout",
-    params(("id" = String, Path, description = "Screen ID")),
-    responses((status = 200, description = "{equipment, connections, revision}")),
+    params(
+        ("id" = String, Path, description = "Screen ID"),
+        ("published" = Option<String>, Query, description = "1: the rows operators see (the published copy, or the draft of a screen never published). Roles that do not configure always get these"),
+        ("draft" = Option<String>, Query, description = "1: the draft (the default for roles that configure, API keys included)"),
+    ),
+    responses((status = 200, description = "{equipment, connections, revision, seq, view: draft|published, draft_differs}")),
     tag = "Layouts",
     security(("api_key" = []), ("cookie_auth" = []))
 )]
@@ -533,6 +557,7 @@ pub async fn get_scada_layout(
         "revision": view.revision,
         "seq": view.seq,
         "view": view.view,
+        "draft_differs": view.draft_differs,
     })))
 }
 

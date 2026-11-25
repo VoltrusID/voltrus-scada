@@ -288,6 +288,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
         const extra = [
           r.removed_connections.length ? `removed ${r.removed_connections.length} connection${r.removed_connections.length === 1 ? '' : 's'} that ended on it` : '',
           r.ungrouped.length ? `${r.ungrouped.join(', ')} restored ungrouped` : '',
+          r.missing_tags.length ? `bound to ${r.missing_tags.length} tag${r.missing_tags.length === 1 ? '' : 's'} that no longer exist${r.missing_tags.length === 1 ? 's' : ''}` : '',
         ].filter(Boolean).join('; ')
         toast.success(`Reverted${extra ? `: ${extra}` : ''}`)
         return

@@ -209,6 +209,10 @@ pub struct ImportPlan {
     /// Screens published by the import (`publish` option).
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub published: Vec<String>,
+    /// Screens the import filed a publish request for (`publish` with
+    /// approval required): an admin other than the importer approves them.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub publish_requested: Vec<String>,
 }
 
 impl ImportPlan {

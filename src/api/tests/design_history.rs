@@ -358,8 +358,8 @@ async fn saves_within_the_window_by_one_author_squash() {
     assert_eq!(h[0]["kind"], "add");
     assert_eq!(h[0]["after"]["x"], json!(9.0));
     assert_eq!(h[0]["squashed"], 2);
-    // Another author is a row of its own; added then removed by one author
-    // within the window is nothing at all.
+    // Another author is a row of its own; a removal is never squashed into
+    // the add before it (both stay states one can go back to).
     let eve = t.user("eve", "admin").await;
     t.call_as(&eve, "PUT", "/api/v1/screens/s1/scada-layout",
         Some(json!({"equipment": [eq("a", 9.0, json!({})), eq("tmp", 0.0, json!({}))], "connections": []}))).await;
@@ -371,7 +371,12 @@ async fn saves_within_the_window_by_one_author_squash() {
     )
     .await;
     let h = t.history("s1", "").await;
-    assert_eq!(h.len(), 1, "{h:?}");
+    assert_eq!(kinds(&h[..2]).len(), 2, "{h:?}");
+    assert_eq!(h.len(), 3, "{h:?}");
+    assert_eq!(
+        (h[0]["kind"].as_str(), h[1]["kind"].as_str()),
+        (Some("remove"), Some("add"))
+    );
     // A version pins its rows: the next save is a row of its own.
     t.call(
         "POST",
@@ -381,7 +386,7 @@ async fn saves_within_the_window_by_one_author_squash() {
     .await;
     t.put_layout("s1", vec![eq("a", 11.0, json!({}))], vec![])
         .await;
-    assert_eq!(t.history("s1", "").await.len(), 2);
+    assert_eq!(t.history("s1", "").await.len(), 4);
 }
 
 #[tokio::test]
@@ -1249,6 +1254,22 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
+/// A fresh folder inside the server's data folder, and its path relative
+/// to it.
+fn data_tmp(t: &T) -> (tempfile::TempDir, String) {
+    let data = crate::design_git::data_dir(&t.state.storage);
+    std::fs::create_dir_all(&data).unwrap();
+    let tmp = tempfile::tempdir_in(&data).unwrap();
+    let rel = tmp
+        .path()
+        .strip_prefix(&data)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    (tmp, rel)
+}
+
 #[tokio::test]
 async fn git_sync_pushes_the_published_project_to_a_bare_repo() {
     if !git_ok() {
@@ -1256,13 +1277,14 @@ async fn git_sync_pushes_the_published_project_to_a_bare_repo() {
         return;
     }
     let t = T::new().await;
-    let tmp = tempfile::tempdir().unwrap();
+    // A local remote and the working copy live in the data folder.
+    let (tmp, rel) = data_tmp(&t);
     let bare = tmp.path().join("plant.git");
     git(
         tmp.path(),
         &["init", "-q", "--bare", bare.to_str().unwrap()],
     );
-    let work = tmp.path().join("work");
+    let work = format!("{rel}/work");
 
     // Refused settings.
     let (s, _) = t
@@ -1280,7 +1302,7 @@ async fn git_sync_pushes_the_published_project_to_a_bare_repo() {
             Some(json!({
                 "enabled": true, "remote": bare.to_str().unwrap(), "branch": "main",
                 "path": "sites/plant.yaml", "push_on_publish": false,
-                "work_dir": work.to_str().unwrap(), "secret": "not-shown",
+                "work_dir": work, "secret": "not-shown",
             })),
         )
         .await;
@@ -1380,8 +1402,10 @@ async fn git_sync_pushes_the_published_project_to_a_bare_repo() {
 /// saved with its widgets restores with them whichever row's seq is named.
 #[tokio::test]
 async fn a_seq_inside_a_batch_means_after_the_batch() {
+    // The default squash window: the second save does not absorb the first
+    // (it changes objects the first one touched together with others only
+    // when it changes all of them, and then the whole batch goes).
     let t = T::new().await;
-    t.settings(json!({"squash_window_secs": 0})).await;
     t.put_layout(
         "s1",
         vec![eq("p", 0.0, json!({})), eq("q", 1.0, json!({}))],
@@ -1421,4 +1445,933 @@ async fn a_seq_inside_a_batch_means_after_the_batch() {
         .await;
     assert_eq!(s, StatusCode::CONFLICT);
     assert!(b["changes_since"].as_array().unwrap().len() <= 50);
+}
+
+// ── Review fixes: consistency of squashing, publish rules, git hardening ──
+
+/// A key of `role` created by the admin: (key, id).
+async fn key(t: &T, role: &str) -> (String, i64) {
+    let (s, k) = t
+        .call(
+            "POST",
+            "/api/v1/api-keys",
+            Some(json!({"name": format!("k-{role}"), "role": role})),
+        )
+        .await;
+    assert!(s.is_success(), "{k}");
+    (
+        k["key"].as_str().unwrap().to_string(),
+        k["id"].as_i64().unwrap(),
+    )
+}
+
+impl T {
+    async fn import_as(&self, cookie: &str, yaml: &str, query: &str) -> (StatusCode, Value) {
+        let req = http::Request::builder()
+            .method("POST")
+            .uri(format!("/api/v1/project/import{query}"))
+            .header("cookie", cookie)
+            .header("content-type", "application/yaml")
+            .body(axum::body::Body::from(yaml.to_string()))
+            .unwrap();
+        let resp = tower::ServiceExt::oneshot(self.app.clone(), req)
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn published_x(&self, screen: &str, i: usize) -> Value {
+        let (_, l) = self
+            .call(
+                "GET",
+                &format!("/api/v1/screens/{screen}/scada-layout?published=1"),
+                None,
+            )
+            .await;
+        l["equipment"][i]["x"].clone()
+    }
+}
+
+/// A live squash absorbs a whole batch or nothing: moving one of three
+/// objects saved together leaves the first batch whole, and a seq the
+/// squash removed is refused (410) instead of rebuilding a state that never
+/// existed. Squashing never lowers the head.
+#[tokio::test]
+async fn squashing_keeps_batches_whole_and_refuses_lost_seqs() {
+    let t = T::new().await;
+    let first = t
+        .put_layout(
+            "s1",
+            vec![eq("p", 0.0, json!({})), eq("q", 1.0, json!({}))],
+            vec![conn("c", "p", "q")],
+        )
+        .await;
+    let first_seq = first["seq"].as_i64().unwrap();
+    // Within the window: only p moves, the first batch (p, q, c) stays.
+    t.put_layout(
+        "s1",
+        vec![eq("p", 5.0, json!({})), eq("q", 1.0, json!({}))],
+        vec![conn("c", "p", "q")],
+    )
+    .await;
+    assert_eq!(t.history("s1", "").await.len(), 4);
+    let (s, st) = t
+        .call(
+            "GET",
+            &format!("/api/v1/screens/s1/state?at=seq:{first_seq}"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{st}");
+    assert_eq!(st["equipment"][0]["x"], json!(0.0));
+    assert_eq!(st["connections"].as_array().unwrap().len(), 1);
+
+    // A save of one object, then another of it: the second absorbs the first.
+    let one = t
+        .put_layout("s2", vec![eq("a", 0.0, json!({}))], vec![])
+        .await;
+    let one_seq = one["seq"].as_i64().unwrap();
+    t.put_layout("s2", vec![eq("a", 1.0, json!({}))], vec![])
+        .await;
+    let h = t.history("s2", "").await;
+    assert_eq!(h.len(), 1, "{h:?}");
+    assert_eq!(h[0]["kind"], "add");
+    assert_eq!(h[0]["squashed"], 1);
+    let (s, b) = t
+        .call(
+            "GET",
+            &format!("/api/v1/screens/s2/state?at=seq:{one_seq}"),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::GONE, "{b}");
+    assert_eq!(b["code"], "state_gone");
+    // Removing it is never squashed: added, then deleted.
+    t.put_layout("s2", vec![], vec![]).await;
+    assert_eq!(t.history("s2", "").await.len(), 2);
+    // Moved and moved back within the window: the rows cancel out, and the
+    // head still moves on.
+    t.put_layout("s3", vec![eq("a", 0.0, json!({}))], vec![])
+        .await;
+    t.state
+        .storage
+        .with_conn(|c| {
+            c.execute(
+                "UPDATE design_changes SET at_ms = at_ms - 3600000 WHERE screen_id = 's3'",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let two = t
+        .put_layout("s3", vec![eq("a", 1.0, json!({}))], vec![])
+        .await;
+    let back = t
+        .put_layout("s3", vec![eq("a", 0.0, json!({}))], vec![])
+        .await;
+    assert_eq!(t.history("s3", "").await.len(), 1);
+    assert!(back["seq"].as_i64().unwrap() > two["seq"].as_i64().unwrap());
+    let (s, b) = t
+        .call(
+            "PUT",
+            "/api/v1/screens/s3/scada-layout",
+            Some(json!({"equipment": [], "connections": [], "base_seq": back["seq"]})),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "the head the save answered is current: {b}"
+    );
+}
+
+/// Reverting a whole screen to a state follows the object rules too.
+#[tokio::test]
+async fn reverting_a_screen_drops_dangling_connections_and_lone_groups() {
+    let t = T::new().await;
+    t.settings(json!({"squash_window_secs": 0})).await;
+    // A state written straight into the log that has a connection without
+    // one of its widgets, and a group of one (an older log could).
+    t.put_layout(
+        "s1",
+        vec![eq("p", 0.0, json!({"group": "g"})), eq("q", 1.0, json!({}))],
+        vec![conn("c", "p", "q")],
+    )
+    .await;
+    let v = t
+        .call(
+            "POST",
+            "/api/v1/screens/s1/versions",
+            Some(json!({"name": "broken"})),
+        )
+        .await
+        .1;
+    let id = v["version"]["id"].as_i64().unwrap();
+    t.state
+        .storage
+        .with_conn(move |c| {
+            let snap = json!({"equipment": [{"screen_id": "s1", "equipment_id": "p", "equipment_type": "label",
+                "equipment_name": "", "x": 0.0, "y": 0.0, "width": 100.0, "height": 40.0, "rotation": 0.0,
+                "sensor_bindings": "[99999]", "config": "{\"group\":\"g\"}"}],
+                "connections": [{"screen_id": "s1", "connection_id": "c", "from_equipment": "p", "to_equipment": "q",
+                "waypoints": "[]", "connection_type": "flow"}]});
+            c.execute(
+                "UPDATE design_versions SET snapshot = ?2 WHERE id = ?1",
+                rusqlite::params![id, snap.to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (s, r) = t
+        .call(
+            "POST",
+            "/api/v1/screens/s1/revert",
+            Some(json!({"to": "broken"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    assert_eq!(r["removed_connections"], json!(["c"]));
+    assert_eq!(r["ungrouped"], json!(["p"]));
+    assert_eq!(r["missing_tags"], json!([99999]));
+    assert_eq!(t.ids("s1", "").await, (vec!["p".into()], vec![]));
+}
+
+/// Daily squashing merges one author's rows only, and states at or below
+/// what it merged are refused afterwards.
+#[tokio::test]
+async fn hourly_squash_keeps_authors_and_sources_apart() {
+    let t = T::new().await;
+    t.settings(json!({"squash_window_secs": 0})).await;
+    let bob = t.user("bob", "admin").await;
+    let mut seqs = Vec::new();
+    for (who, x) in [
+        (&t.admin, 1.0),
+        (&bob, 2.0),
+        (&t.admin, 3.0),
+        (&t.admin, 4.0),
+    ] {
+        let (s, b) = t
+            .call_as(
+                who,
+                "PUT",
+                "/api/v1/screens/s1/scada-layout",
+                Some(json!({"equipment": [eq("a", x, json!({}))], "connections": []})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        seqs.push(b["seq"].as_i64().unwrap());
+    }
+    let old = crate::timeutil::now_millis() - 40 * 86_400_000;
+    t.state
+        .storage
+        .with_conn(move |c| {
+            c.execute("UPDATE design_changes SET at_ms = ?1", [old])?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let report = t.state.storage.design_maintain().await.unwrap();
+    assert_eq!(
+        report.squashed, 2,
+        "admin's three rows become one: {report:?}"
+    );
+    let h = t.history("s1", "").await;
+    let who: Vec<&str> = h.iter().map(|c| c["username"].as_str().unwrap()).collect();
+    assert_eq!(who, ["admin", "bob"], "{h:?}");
+    let (s, b) = t
+        .call(
+            "GET",
+            &format!("/api/v1/screens/s1/state?at=seq:{}", seqs[1]),
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::GONE, "{b}");
+    let (_, hist) = t.call("GET", "/api/v1/screens/s1/history", None).await;
+    assert!(hist["floor"].as_i64().unwrap() >= seqs[3]);
+    // Retention settings are checked.
+    for bad in [
+        json!({"squash_window_secs": 3601}),
+        json!({"keep_days": 36_501}),
+        json!({"squash_after_days": u64::MAX}),
+    ] {
+        let (s, _) = t
+            .call("PUT", "/api/v1/settings/design-history", Some(bad.clone()))
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}");
+    }
+}
+
+/// Publish after import follows the site's switches: refused while
+/// publishing is off, publish requests with approval required (from a
+/// person only), nothing new when the draft is published already.
+#[tokio::test]
+async fn import_publish_follows_publishing_and_approval() {
+    let t = T::new().await;
+    t.settings(json!({"publishing": false})).await;
+    let (s, b) = t.import_as(&t.admin, PROJECT, "?publish=1").await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert_eq!(b["code"], "publishing_off");
+    assert!(t.history("s1", "").await.is_empty(), "nothing was written");
+
+    t.settings(json!({"publishing": true})).await;
+    let plan = t.import(PROJECT, "?publish=1").await;
+    assert_eq!(plan["published"], json!(["s1"]));
+    // The same document again: nothing to publish, no new version.
+    let plan = t.import(PROJECT, "?publish=1").await;
+    assert!(plan.get("published").is_none(), "{plan}");
+    let (_, v) = t.call("GET", "/api/v1/screens/s1/versions", None).await;
+    assert_eq!(v["versions"].as_array().unwrap().len(), 1);
+
+    t.settings(json!({"approval": "required"})).await;
+    let plan = t
+        .import(&PROJECT.replace("x: 200", "x: 300"), "?publish=1")
+        .await;
+    assert!(plan.get("published").is_none(), "{plan}");
+    assert_eq!(plan["publish_requested"], json!(["s1"]));
+    assert_eq!(t.published_x("s1", 1).await, json!(200.0));
+    let (_, st) = t
+        .call("GET", "/api/v1/screens/s1/design-status", None)
+        .await;
+    assert_eq!(st["pending"][0]["requested_by"], "admin");
+
+    // Keys and demo accounts may not file requests.
+    let (int, _) = key(&t, "integration").await;
+    let req = http::Request::builder()
+        .method("POST")
+        .uri("/api/v1/project/import?publish=1")
+        .header("X-API-Key", &int)
+        .header("content-type", "application/yaml")
+        .body(axum::body::Body::from(PROJECT.to_string()))
+        .unwrap();
+    let resp = tower::ServiceExt::oneshot(t.app.clone(), req)
+        .await
+        .unwrap();
+    assert!(
+        matches!(resp.status(), StatusCode::FORBIDDEN),
+        "{}",
+        resp.status()
+    );
+}
+
+/// With approval required a publish request needs a person: API keys and
+/// demo accounts are refused; nobody approves what they wrote, through a
+/// key of theirs either; two approvals at once publish once.
+#[tokio::test]
+async fn approval_is_by_someone_who_wrote_none_of_it() {
+    let t = T::new().await;
+    t.settings(json!({"approval": "required"})).await;
+    let bob = t.user("bob", "admin").await;
+    let carol = t.user("carol", "admin").await;
+    let demo = t.user("dora", "demo").await;
+    t.put_layout("s1", vec![eq("a", 0.0, json!({}))], vec![])
+        .await;
+
+    let (int, _) = key(&t, "integration").await;
+    let (s, b) = send_request(
+        &t.app,
+        "POST",
+        "/api/v1/screens/s1/publish",
+        Some(&int),
+        None,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{b}");
+    assert_eq!(b["code"], "approval_needs_person");
+    let (s, _) = t
+        .call_as(&demo, "POST", "/api/v1/screens/s1/publish", Some(json!({})))
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+
+    // Bob's key (created by bob) changes the screen; admin requests.
+    let (s, k) = t
+        .call_as(
+            &bob,
+            "POST",
+            "/api/v1/api-keys",
+            Some(json!({"name": "bobs", "role": "integration"})),
+        )
+        .await;
+    assert!(s.is_success(), "{k}");
+    let bobs = k["key"].as_str().unwrap().to_string();
+    let (s, _) = send_request(
+        &t.app,
+        "PUT",
+        "/api/v1/screens/s1/scada-equipment",
+        Some(&bobs),
+        None,
+        Some(json!({"items": [eq("a", 7.0, json!({}))]})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, p) = t
+        .call(
+            "POST",
+            "/api/v1/screens/s1/publish",
+            Some(json!({"name": "r1"})),
+        )
+        .await;
+    assert_eq!(p["status"], "pending", "{p}");
+    // Bob wrote part of it through his key: not his to approve.
+    let (s, b) = t
+        .call_as(&bob, "POST", "/api/v1/screens/s1/versions/r1/approve", None)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{b}");
+    assert_eq!(b["code"], "self_review");
+
+    // Carol and a second reviewer at once: one publishes, one is told.
+    let dave = t.user("dave", "admin").await;
+    let (a, b) = tokio::join!(
+        t.call_as(
+            &carol,
+            "POST",
+            "/api/v1/screens/s1/versions/r1/approve",
+            None
+        ),
+        t.call_as(
+            &dave,
+            "POST",
+            "/api/v1/screens/s1/versions/r1/approve",
+            None
+        ),
+    );
+    let mut statuses = [a.0, b.0];
+    statuses.sort();
+    assert_eq!(
+        statuses,
+        [StatusCode::OK, StatusCode::CONFLICT],
+        "{a:?} {b:?}"
+    );
+    assert_eq!(t.published_x("s1", 0).await, json!(7.0));
+
+    // A version older than the published one needs confirm_older.
+    let (_, old) = t
+        .call(
+            "POST",
+            "/api/v1/screens/s1/versions",
+            Some(json!({"name": "older"})),
+        )
+        .await;
+    assert_eq!(old["version"]["name"], "older");
+    t.put_layout("s1", vec![eq("a", 9.0, json!({}))], vec![])
+        .await;
+    t.call(
+        "POST",
+        "/api/v1/screens/s1/publish",
+        Some(json!({"name": "r2"})),
+    )
+    .await;
+    t.call_as(
+        &carol,
+        "POST",
+        "/api/v1/screens/s1/versions/r2/approve",
+        None,
+    )
+    .await;
+    assert_eq!(t.published_x("s1", 0).await, json!(9.0));
+    t.call(
+        "POST",
+        "/api/v1/screens/s1/publish",
+        Some(json!({"version": "older"})),
+    )
+    .await;
+    let (s, b) = t
+        .call_as(
+            &carol,
+            "POST",
+            "/api/v1/screens/s1/versions/older/approve",
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert_eq!(b["code"], "older_than_published");
+    let (s, b) = t
+        .call_as(
+            &carol,
+            "POST",
+            "/api/v1/screens/s1/versions/older/approve",
+            Some(json!({"confirm_older": true})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(t.published_x("s1", 0).await, json!(7.0));
+}
+
+/// Dropping approval (or turning publishing off) while approval is
+/// required waits for a second admin.
+#[tokio::test]
+async fn relaxing_approval_needs_a_second_admin() {
+    let t = T::new().await;
+    t.settings(json!({"approval": "required"})).await;
+    let bob = t.user("bob", "admin").await;
+    let (s, b) = t
+        .call(
+            "PUT",
+            "/api/v1/settings/design-history",
+            Some(json!({"approval": "none"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{b}");
+    assert_eq!(b["status"], "pending");
+    let (_, g) = t.call("GET", "/api/v1/settings/design-history", None).await;
+    assert_eq!(g["approval"], "required");
+    assert_eq!(g["pending_request"]["requested_by"], "admin");
+    // Not by the requester; a second request waits its turn.
+    let (s, _) = t
+        .call("POST", "/api/v1/settings/design-history/approve", None)
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = t
+        .call(
+            "PUT",
+            "/api/v1/settings/design-history",
+            Some(json!({"publishing": false})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    // Retention changes need nobody else.
+    t.settings(json!({"keep_days": 400})).await;
+    let (s, b) = t
+        .call_as(
+            &bob,
+            "POST",
+            "/api/v1/settings/design-history/approve",
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let (_, g) = t.call("GET", "/api/v1/settings/design-history", None).await;
+    assert_eq!(g["approval"], "none");
+    assert_eq!(g["pending_request"], Value::Null);
+    // Without approval required, one admin decides.
+    t.settings(json!({"publishing": false})).await;
+}
+
+/// A snapshot rollback restores what operators saw, not only the draft.
+#[tokio::test]
+async fn rollback_restores_the_published_screens() {
+    let t = T::new().await;
+    t.put_layout("s1", vec![eq("a", 1.0, json!({}))], vec![])
+        .await;
+    t.call(
+        "POST",
+        "/api/v1/screens/s1/publish",
+        Some(json!({"name": "one"})),
+    )
+    .await;
+    let snap = t
+        .state
+        .storage
+        .create_config_snapshot(Some("before-two"), None, "manual", Some("admin"))
+        .await
+        .unwrap();
+    t.put_layout("s1", vec![eq("a", 2.0, json!({}))], vec![])
+        .await;
+    t.call(
+        "POST",
+        "/api/v1/screens/s1/publish",
+        Some(json!({"name": "two"})),
+    )
+    .await;
+    assert_eq!(t.published_x("s1", 0).await, json!(2.0));
+    let (s, b) = t
+        .call(
+            "POST",
+            &format!("/api/v1/config/snapshots/{snap}/rollback"),
+            None,
+        )
+        .await;
+    assert!(s.is_success(), "{s} {b}");
+    assert_eq!(t.published_x("s1", 0).await, json!(1.0));
+    let (_, st) = t
+        .call("GET", "/api/v1/screens/s1/design-status", None)
+        .await;
+    assert_eq!(st["published"]["name"], "one");
+}
+
+/// A tag rename reaches saved versions: publishing an older one binds the
+/// tag by its new name.
+#[tokio::test]
+async fn a_tag_rename_reaches_saved_versions() {
+    let t = T::new().await;
+    t.import(PROJECT, "").await;
+    let mut layout = t.layout("s1").await;
+    let mut config: Value =
+        serde_json::from_str(layout["equipment"][1]["config"].as_str().unwrap()).unwrap();
+    config["bindings"] = json!({"label": {"kind": "tag", "tag": "plc_1/level"}});
+    layout["equipment"][1]["config"] = json!(config.to_string());
+    t.put_layout(
+        "s1",
+        layout["equipment"].as_array().unwrap().clone(),
+        layout["connections"].as_array().unwrap().clone(),
+    )
+    .await;
+    t.call(
+        "POST",
+        "/api/v1/screens/s1/versions",
+        Some(json!({"name": "bound"})),
+    )
+    .await;
+    let level = t
+        .state
+        .storage
+        .list_data_sources(None)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|d| d.key == "level")
+        .unwrap();
+    let (s, b) = t
+        .call(
+            "PUT",
+            &format!("/api/v1/data-sources/{}", level.id),
+            Some(json!({"key": "tank_level"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let (s, b) = t
+        .call(
+            "POST",
+            "/api/v1/screens/s1/publish",
+            Some(json!({"version": "bound"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let (_, l) = t
+        .call("GET", "/api/v1/screens/s1/scada-layout?published=1", None)
+        .await;
+    let c = l["equipment"][1]["config"].as_str().unwrap();
+    assert!(
+        c.contains("plc_1/tank_level") && !c.contains("plc_1/level\""),
+        "{c}"
+    );
+}
+
+/// A faceplate the published screen still opens is not deleted, though the
+/// draft no longer uses it; deleting an equipment instance unbinds the
+/// published widgets too.
+#[tokio::test]
+async fn published_screens_keep_their_faceplates_and_lose_deleted_instances() {
+    let t = T::new().await;
+    let (s, b) = t
+        .call(
+            "POST",
+            "/api/v1/faceplates",
+            Some(json!({"id": "fp", "name": "FP", "kind": "pump", "roles": [{"role": "run", "kind": "state"}]})),
+        )
+        .await;
+    assert!(s.is_success(), "{b}");
+    t.put_layout("s1", vec![eq("a", 0.0, json!({"faceplate": "fp"}))], vec![])
+        .await;
+    t.call("POST", "/api/v1/screens/s1/publish", Some(json!({})))
+        .await;
+    t.put_layout("s1", vec![eq("a", 0.0, json!({}))], vec![])
+        .await;
+    let (s, b) = t.call("DELETE", "/api/v1/faceplates/fp", None).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert!(b.to_string().contains("s1/a"), "{b}");
+
+    // An instance bound in the published copy only.
+    t.state
+        .storage
+        .with_conn(|c| {
+            c.execute(
+                "UPDATE scada_equipment_published SET config = '{\"equipment\":\"P-1\"}' WHERE screen_id = 's1'",
+                [],
+            )?;
+            c.execute(
+                "INSERT INTO equipment_instances (name, type_id, device_id, created_at, updated_at) VALUES ('P-1', 'none', 'd', 0, 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let out = t
+        .state
+        .storage
+        .delete_equipment_instance(
+            "P-1",
+            false,
+            &crate::storage::DesignActor::system("equipment"),
+        )
+        .await
+        .unwrap();
+    assert!(out.is_some());
+    let (_, l) = t
+        .call("GET", "/api/v1/screens/s1/scada-layout?published=1", None)
+        .await;
+    let c = l["equipment"][0]["config"].as_str().unwrap();
+    assert!(
+        c.contains("unboundEquipment") && !c.contains("\"equipment\""),
+        "{c}"
+    );
+}
+
+/// Version names never read as another state, and `id:`/`name:` pick one.
+#[tokio::test]
+async fn version_references_are_unambiguous() {
+    let t = T::new().await;
+    t.put_layout("s1", vec![eq("a", 0.0, json!({}))], vec![])
+        .await;
+    for bad in ["12", "draft", "published", "seq:3", "id:1"] {
+        let (s, b) = t
+            .call(
+                "POST",
+                "/api/v1/screens/s1/versions",
+                Some(json!({"name": bad})),
+            )
+            .await;
+        assert_eq!(s, StatusCode::CONFLICT, "{bad}: {b}");
+    }
+    let (_, v) = t
+        .call(
+            "POST",
+            "/api/v1/screens/s1/versions",
+            Some(json!({"name": "r"})),
+        )
+        .await;
+    let id = v["version"]["id"].as_i64().unwrap();
+    for r in [
+        format!("{id}"),
+        format!("id:{id}"),
+        "name:r".into(),
+        "r".into(),
+    ] {
+        let (s, b) = t
+            .call("GET", &format!("/api/v1/screens/s1/versions/{r}"), None)
+            .await;
+        assert_eq!(s, StatusCode::OK, "{r}: {b}");
+        assert_eq!(b["version"]["id"], id);
+    }
+    // With publishing off the published state says it shows the draft.
+    t.settings(json!({"publishing": false})).await;
+    let (_, st) = t
+        .call("GET", "/api/v1/screens/s1/state?at=published", None)
+        .await;
+    assert_eq!(st["state"]["publishing"], false);
+    assert_eq!(st["state"]["shows"], "draft");
+}
+
+/// The publish is checked against what was signed: a save after it was
+/// proposed is refused (409), as is a stale base, before any signature.
+#[tokio::test]
+async fn a_publish_refuses_a_draft_that_moved() {
+    let t = T::new().await;
+    let saved = t
+        .put_layout("s1", vec![eq("a", 0.0, json!({}))], vec![])
+        .await;
+    let base = saved["seq"].as_i64().unwrap();
+    t.put_layout(
+        "s1",
+        vec![eq("a", 1.0, json!({})), eq("b", 1.0, json!({}))],
+        vec![],
+    )
+    .await;
+    let (s, b) = t
+        .call(
+            "POST",
+            "/api/v1/screens/s1/publish",
+            Some(json!({"base_seq": base})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+    assert_eq!(b["code"], "conflict");
+    let (_, v) = t.call("GET", "/api/v1/screens/s1/versions", None).await;
+    assert!(
+        v["versions"].as_array().unwrap().is_empty(),
+        "nothing recorded"
+    );
+}
+
+/// Git sync settings refuse credentials in the remote, a token over
+/// http://, a working copy or a local remote outside the data folder.
+#[tokio::test]
+async fn git_settings_refuse_unsafe_remotes_and_folders() {
+    let t = T::new().await;
+    let outside = tempfile::tempdir().unwrap();
+    for (body, what) in [
+        (
+            json!({"remote": "https://bob:tok@git.example/x.git"}),
+            "userinfo",
+        ),
+        (
+            json!({"remote": "http://git.example/x.git", "auth": "token"}),
+            "http token",
+        ),
+        (
+            json!({"remote": "https://git.example/x.git", "work_dir": "/etc"}),
+            "absolute work_dir",
+        ),
+        (
+            json!({"remote": "https://git.example/x.git", "work_dir": "../x"}),
+            "work_dir escape",
+        ),
+        (
+            json!({"remote": outside.path().to_str().unwrap()}),
+            "local outside",
+        ),
+    ] {
+        let (s, b) = t
+            .call("PUT", "/api/v1/design/git", Some(body.clone()))
+            .await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{what}: {body} {b}");
+    }
+    // A quote is fine in a (relative) folder name: it is never put on a
+    // command line unquoted.
+    let (s, b) = t
+        .call(
+            "PUT",
+            "/api/v1/design/git",
+            Some(json!({"remote": "https://git.example/x.git", "work_dir": "it's"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+}
+
+/// A remote whose tree has the project file (or a folder on its path) as a
+/// symbolic link is refused, and nothing outside the repository is read or
+/// written.
+#[tokio::test]
+async fn git_sync_never_follows_symlinks_in_the_remote() {
+    if !git_ok() {
+        eprintln!("git not installed: skipped");
+        return;
+    }
+    let t = T::new().await;
+    let (tmp, rel) = data_tmp(&t);
+    let outside = tempfile::tempdir().unwrap();
+    let victim = outside.path().join("victim.yaml");
+    std::fs::write(&victim, "keep me\n").unwrap();
+    t.import(PROJECT, "").await;
+    t.call("POST", "/api/v1/screens/s1/publish", Some(json!({})))
+        .await;
+
+    for (n, (path, link_at, target)) in [
+        ("project.yaml", "project.yaml", victim.clone()),
+        ("sites/plant.yaml", "sites", outside.path().to_path_buf()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let bare = tmp.path().join(format!("evil{n}.git"));
+        git(
+            tmp.path(),
+            &["init", "-q", "--bare", bare.to_str().unwrap()],
+        );
+        let src = tmp.path().join(format!("src{n}"));
+        git(
+            tmp.path(),
+            &["init", "-q", "-b", "main", src.to_str().unwrap()],
+        );
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, src.join(link_at)).unwrap();
+        #[cfg(not(unix))]
+        {
+            let _ = (&target, link_at);
+            return;
+        }
+        git(&src, &["add", "-A"]);
+        git(
+            &src,
+            &[
+                "-c",
+                "user.name=x",
+                "-c",
+                "user.email=x@x",
+                "commit",
+                "-q",
+                "-m",
+                "evil",
+            ],
+        );
+        git(&src, &["push", "-q", bare.to_str().unwrap(), "main"]);
+        let (s, b) = t
+            .call(
+                "PUT",
+                "/api/v1/design/git",
+                Some(
+                    json!({"enabled": true, "remote": bare.to_str().unwrap(), "branch": "main",
+                    "path": path, "push_on_publish": false, "work_dir": format!("{rel}/work{n}")}),
+                ),
+            )
+            .await;
+        assert_eq!(s, StatusCode::OK, "{b}");
+        let (s, o) = t.call("POST", "/api/v1/design/git/sync", None).await;
+        assert_eq!(s, StatusCode::BAD_GATEWAY, "{path}: {o}");
+        assert!(
+            o["error"].as_str().unwrap().contains("symbolic link"),
+            "{o}"
+        );
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me\n");
+        assert!(!outside.path().join("plant.yaml").exists());
+        // The working copy is bare: nothing was checked out.
+        assert!(!tmp.path().join(format!("work{n}")).join(link_at).exists());
+    }
+}
+
+/// The author of a version cannot approve its publish request, though
+/// someone else filed it.
+#[tokio::test]
+async fn the_version_author_cannot_approve_it() {
+    let t = T::new().await;
+    t.settings(json!({"approval": "required"})).await;
+    let bob = t.user("bob", "admin").await;
+    let carol = t.user("carol", "admin").await;
+    t.call_as(
+        &carol,
+        "PUT",
+        "/api/v1/screens/s1/scada-layout",
+        Some(json!({"equipment": [eq("a", 1.0, json!({}))], "connections": []})),
+    )
+    .await;
+    // Bob records the version; carol's change is in it too.
+    let (s, v) = t
+        .call_as(
+            &bob,
+            "POST",
+            "/api/v1/screens/s1/versions",
+            Some(json!({"name": "bobs"})),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (_, p) = t
+        .call(
+            "POST",
+            "/api/v1/screens/s1/publish",
+            Some(json!({"version": "bobs"})),
+        )
+        .await;
+    assert_eq!(p["status"], "pending", "{p}");
+    for who in [&bob, &carol] {
+        let (s, b) = t
+            .call_as(
+                who,
+                "POST",
+                "/api/v1/screens/s1/versions/bobs/approve",
+                None,
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{b}");
+        assert_eq!(b["code"], "self_review");
+    }
+    let dave = t.user("dave", "admin").await;
+    let (s, b) = t
+        .call_as(
+            &dave,
+            "POST",
+            "/api/v1/screens/s1/versions/bobs/approve",
+            None,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
 }

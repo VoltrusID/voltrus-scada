@@ -94,6 +94,7 @@ pub async fn get_faceplate(
 pub async fn create_faceplate(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
     let f = parse(body)?;
@@ -102,7 +103,7 @@ pub async fn create_faceplate(
         .save_faceplate_as(
             &f,
             true,
-            &super::design_history::actor(&auth, false, None, "faceplate"),
+            &super::design_history::actor(&auth, api_key.is_some(), None, "faceplate"),
         )
         .await?
     {
@@ -128,6 +129,7 @@ pub async fn create_faceplate(
 pub async fn update_faceplate(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -143,7 +145,7 @@ pub async fn update_faceplate(
         .save_faceplate_as(
             &f,
             false,
-            &super::design_history::actor(&auth, false, None, "faceplate"),
+            &super::design_history::actor(&auth, api_key.is_some(), None, "faceplate"),
         )
         .await?
     {
@@ -169,6 +171,7 @@ pub async fn update_faceplate(
 pub async fn delete_faceplate(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     let users = state.storage.faceplate_users(&id).await?;
@@ -197,7 +200,7 @@ pub async fn delete_faceplate(
         .storage
         .delete_faceplate_as(
             &id,
-            &super::design_history::actor(&auth, false, None, "faceplate"),
+            &super::design_history::actor(&auth, api_key.is_some(), None, "faceplate"),
         )
         .await?
     {

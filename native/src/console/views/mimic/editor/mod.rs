@@ -526,6 +526,14 @@ pub(crate) fn editing(console: &Console) -> bool {
     edits_ref(console).is_some()
 }
 
+/// The editor is open or about to be: the mimic must be the draft.
+pub(crate) fn wants_draft(console: &Console) -> bool {
+    editing(console)
+        || console
+            .state_ref::<Launch>()
+            .is_some_and(|launch| launch.edit)
+}
+
 /// `--edit` with `--page mimic`: edit once the screen is in.
 pub(crate) fn launch(console: &mut Console, edit: bool, screen: Option<String>) {
     let launch = console.state::<Launch>();
@@ -583,6 +591,15 @@ pub(super) fn launch_ready(console: &mut Console, window: &mut Window, cx: &mut 
     let ready = console
         .state_ref::<State>()
         .is_some_and(|state| matches!(state.layouts.get(&screen), Some(Loaded::Ready(_))));
+    // Run mode showed the published copy: read the draft before editing.
+    if ready && super::shown(console).is_some_and(|shown| shown.published) {
+        cx.defer_in(window, move |console, _, cx| {
+            super::forget(console, &screen);
+            super::sync(console);
+            cx.notify();
+        });
+        return;
+    }
     if ready {
         console.state::<Launch>().edit = false;
         cx.defer_in(window, |console, window, cx| {
@@ -737,9 +754,17 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
     cx.notify();
 }
 
-/// Back to the viewer.
+/// Back to the viewer: a screen with a published copy is read again as
+/// operators see it (the draft just edited is not what they see).
 fn exit(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
-    console.state::<State>().edit = None;
+    let state = console.state::<State>();
+    let screen = state.edit.as_ref().map(|editor| editor.screen.clone());
+    state.edit = None;
+    if let Some(screen) = screen
+        && state.published.contains(&screen)
+    {
+        super::forget(console, &screen);
+    }
     focus_stage(console, window, cx);
     cx.notify();
 }
@@ -3477,6 +3502,87 @@ mod tests {
         assert!(!dirty(&mut h));
         let base = h.update(|console, _, _| edits_ref(console).and_then(|e| e.base.clone()));
         assert_eq!(base.as_deref(), Some("rev-3"), "the next save builds on it");
+    }
+
+    /// Answer the pending mimic read with `view`.
+    fn answer_layout(h: &mut Harness, view: designer::View) {
+        let key = h
+            .calls()
+            .into_iter()
+            .find(|key| key.name == "mimic.layout")
+            .expect("the mimic read");
+        h.reply(key, Reply::ok(view));
+        h.draw();
+    }
+
+    fn layout_with_a(x: f64) -> Layout {
+        Layout {
+            widgets: vec![tank("a", x)],
+            connections: Vec::new(),
+        }
+    }
+
+    #[gpui::test]
+    fn run_mode_shows_the_published_screen_and_the_editor_the_draft(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("admin");
+        h.update(|console, window, cx| console.show(Page::Mimic, window, cx));
+        h.draw();
+        answer_layout(
+            &mut h,
+            designer::View {
+                layout: layout_with_a(200.0),
+                revision: Some("r1".into()),
+                published: true,
+                draft_differs: true,
+            },
+        );
+        assert!(h.update(|console, _, _| crate::console::views::mimic::draft_note_shown(console)));
+        // Edit: the published rows are not what the editor changes; the
+        // draft is read first.
+        h.update(toggle);
+        h.draw();
+        assert!(!h.update(|console, _, _| editing(console)));
+        answer_layout(
+            &mut h,
+            designer::View {
+                layout: layout_with_a(300.0),
+                revision: Some("r1".into()),
+                published: false,
+                draft_differs: false,
+            },
+        );
+        h.draw();
+        let x = h.update(|console, _, _| {
+            edits_ref(console).and_then(|e| e.layout().widget("a").map(|w| w.x))
+        });
+        assert_eq!(x, Some(300.0), "the editor holds the draft");
+        assert!(!h.update(|console, _, _| crate::console::views::mimic::draft_note_shown(console)));
+        // Done: run mode reads what operators see again.
+        h.update(exit);
+        h.draw();
+        assert!(
+            h.calls().iter().any(|key| key.name == "mimic.layout"),
+            "the published copy is read again"
+        );
+    }
+
+    #[gpui::test]
+    fn operators_get_no_draft_note(cx: &mut TestAppContext) {
+        let mut h = Harness::new(cx);
+        h.sign_in("operator");
+        h.update(|console, window, cx| console.show(Page::Mimic, window, cx));
+        h.draw();
+        answer_layout(
+            &mut h,
+            designer::View {
+                layout: layout_with_a(200.0),
+                revision: Some("r1".into()),
+                published: true,
+                draft_differs: true,
+            },
+        );
+        assert!(!h.update(|console, _, _| crate::console::views::mimic::draft_note_shown(console)));
     }
 
     /// The screen's layout read on focus, answered with revision `rev`.

@@ -1704,3 +1704,27 @@ fn a_save_answer_without_a_revision_asks_for_it_and_errors_stay_errors() {
     let seen = lines(&requests);
     assert!(!seen[0].1.contains("base_revision"), "{seen:?}");
 }
+
+#[test]
+fn run_mode_asks_for_what_operators_see() {
+    let (api, requests) = scripted(vec![(
+        200,
+        r#"{"equipment":[],"connections":[],"revision":"r1","seq":4,"view":"published","draft_differs":true}"#,
+    )]);
+    let view = block(load_view(&api, "main", true)).expect("the view");
+    assert!(view.published && view.draft_differs);
+    assert_eq!(view.revision.as_deref(), Some("r1"));
+    let seen = lines(&requests);
+    assert!(seen[0].0.contains("/scada-layout?published=1 "), "{seen:?}");
+
+    // The editor reads the draft; a server without version history names
+    // no view: the rows are the draft.
+    let (api, requests) = scripted(vec![(
+        200,
+        r#"{"equipment":[],"connections":[],"revision":"r1"}"#,
+    )]);
+    let view = block(load_view(&api, "main", false)).expect("the view");
+    assert!(!view.published && !view.draft_differs);
+    let seen = lines(&requests);
+    assert!(seen[0].0.contains("/scada-layout "), "{seen:?}");
+}

@@ -45,8 +45,26 @@ Other changes visible to API clients:
   signatures ([edition-hooks.md](edition-hooks.md)).
 * The change log grows with every save. Consecutive saves of one widget by one
   person within 60 s are one row, and rows older than 30 days are squashed to
-  one per object per hour; set `keep_days` to prune (default: keep).
+  one per object and author per hour; set `keep_days` to prune (default:
+  keep). States by `seq:` at or below what retention squashed or pruned are
+  refused (410 `state_gone`).
 * Git sync needs the `git` command line on the server only if you turn it on.
+  It pushes the **whole project** (devices and their addresses, tags, flows,
+  settings), not only screens. Remotes must carry no credentials, token auth
+  needs `https://`, and a local remote and `work_dir` must be inside the data
+  folder.
+* A config snapshot (and so a rollback, including a go-live rollback) now
+  covers the screens' published copies: rolling back changes what operators
+  see, not only the draft. Snapshots taken before this release have no
+  published rows and leave them as they are.
+* Publish after import (`?publish=1`, `--publish`, MCP `publish`) follows the
+  site's switches: refused while publishing is off, publish requests when
+  approval is required, and the signed action `design_publish` where the
+  edition wants one (REST: `X-Voltrus-Signature` header; the CLI cannot sign).
+* With approval required, dropping it or turning publishing off waits for a
+  second admin (`POST /api/v1/settings/design-history/approve`).
+* Version names of digits only, `draft`, `published`, and names starting with
+  `seq:`, `id:` or `name:` are refused; `id:<n>` and `name:<name>` pick one.
 
 ## v0.53.0
 

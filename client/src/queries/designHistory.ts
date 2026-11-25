@@ -28,7 +28,8 @@ export interface DesignChange {
   squashed: number
 }
 
-export interface HistoryPage { changes: DesignChange[]; next_before_seq: number | null; users: string[] }
+/** `floor`: changes at or below it can no longer be previewed or reverted to by seq (retention). */
+export interface HistoryPage { changes: DesignChange[]; next_before_seq: number | null; users: string[]; floor?: number }
 
 export interface HistoryFilter { object?: string | null; objectType?: string | null; user?: string | null; batch?: string | null }
 
@@ -91,6 +92,8 @@ export interface DesignSettings {
   squash_window_secs: number
   squash_after_days: number
   keep_days: number
+  /** A change that relaxes approval, waiting for a second admin. */
+  pending_request?: { settings: Omit<DesignSettings, 'pending_request'>; requested_by: string; at_ms: number } | null
 }
 
 export interface LayoutRows { equipment: ScadaEquipmentItem[]; connections: ScadaConnectionItem[] }
@@ -128,10 +131,10 @@ export interface RevertBody {
 }
 
 export type RevertResult =
-  | { ok: true; batch: string | null; seq: number; revision: string; removed_connections: string[]; ungrouped: string[] }
+  | { ok: true; batch: string | null; seq: number; revision: string; removed_connections: string[]; ungrouped: string[]; missing_tags: number[] }
   | { ok: false; code: 'dangling_connection'; message: string; connection: string; missing: string[] }
   | { ok: false; code: 'conflict'; message: string; seq: number | null; revision: string | null; changesSince: ChangeSince[] }
-  | { ok: false; code: 'not_found' | 'error'; message: string }
+  | { ok: false; code: 'not_found' | 'state_gone' | 'error'; message: string }
 
 export type PublishResult =
   | { ok: true; status: 'published' | 'pending'; version: DesignVersion }
@@ -198,7 +201,7 @@ export async function revertScreen(screenId: string, body: RevertBody): Promise<
   if (r.ok) {
     return {
       ok: true, batch: b.batch ?? null, seq: b.seq, revision: b.revision,
-      removed_connections: b.removed_connections ?? [], ungrouped: b.ungrouped ?? [],
+      removed_connections: b.removed_connections ?? [], ungrouped: b.ungrouped ?? [], missing_tags: b.missing_tags ?? [],
     }
   }
   const message = b.error || `Request failed: ${r.status}`
@@ -208,7 +211,8 @@ export async function revertScreen(screenId: string, body: RevertBody): Promise<
   if (r.status === 409 && b.code === 'conflict') {
     return { ok: false, code: 'conflict', message, seq: b.seq ?? null, revision: b.revision ?? null, changesSince: b.changes_since ?? [] }
   }
-  return { ok: false, code: r.status === 404 ? 'not_found' : 'error', message }
+  // 410: the seq was squashed or pruned away (reload the history).
+  return { ok: false, code: r.status === 404 ? 'not_found' : r.status === 410 ? 'state_gone' : 'error', message }
 }
 
 /**
@@ -279,7 +283,8 @@ export function useScreenState(screenId: string, at: string | null) {
     queryKey: designKeys.state(screenId, at ?? ''),
     queryFn: () => fetchState(screenId, at!),
     enabled: at != null,
-    staleTime: at?.startsWith('seq:') ? Infinity : 0,
+    // A seq state can disappear (squashed or pruned: 410), so it is not cached for ever.
+    staleTime: at?.startsWith('seq:') ? 30_000 : 0,
   })
 }
 

@@ -15,7 +15,11 @@ use crate::models::ConfigSnapshot;
 /// The snapshot format is a JSON object of table name -> rows, so adding a
 /// table needs no migration: a snapshot taken before a table was listed has
 /// no key for it, and a rollback to it leaves that table as it is.
-const VERSIONED_TABLES: [&str; 11] = [
+///
+/// Screens' published copies (docs/version-history.md) are captured with the
+/// drafts: a rollback restores what operators saw at the snapshot too, not
+/// only the draft. The change log and the versions are history and stay.
+const VERSIONED_TABLES: [&str; 14] = [
     "devices",
     "data_sources",
     "flows",
@@ -25,6 +29,9 @@ const VERSIONED_TABLES: [&str; 11] = [
     "modbus_registers",
     "scada_equipment",
     "scada_connections",
+    "scada_equipment_published",
+    "scada_connections_published",
+    "design_screen_state",
     "equipment_types",
     "equipment_instances",
 ];

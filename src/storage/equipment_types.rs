@@ -393,6 +393,9 @@ impl Storage {
                 )
                 .context("unbind widget")?;
             }
+            // What operators see loses the binding too (a ref fix-up like a
+            // tag rename: the published copy must not open a deleted instance).
+            unbind_published(&tx, &name)?;
             let after = design_history::read_objects(&tx, design_history::Scope::Project)?;
             design_history::append(&tx, design_history::diff_objects(&before, &after), &actor)?;
             tx.commit().context("commit")?;
@@ -412,4 +415,31 @@ impl Storage {
         })
         .await
     }
+}
+
+/// Unbind the published widgets bound to equipment instance `name`, as the
+/// draft's are (`unboundEquipment` keeps the name).
+fn unbind_published(tx: &Connection, name: &str) -> Result<()> {
+    let rows: Vec<(String, String, String)> = {
+        let mut stmt =
+            tx.prepare("SELECT screen_id, equipment_id, config FROM scada_equipment_published")?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<Result<_, _>>()?
+    };
+    for (screen, id, config) in rows {
+        let Ok(Value::Object(mut c)) = serde_json::from_str::<Value>(&config) else {
+            continue;
+        };
+        if c.get("equipment").and_then(Value::as_str) != Some(name) {
+            continue;
+        }
+        c.remove("equipment");
+        c.insert("unboundEquipment".into(), Value::String(name.to_string()));
+        tx.execute(
+            "UPDATE scada_equipment_published SET config = ?3 WHERE screen_id = ?1 AND equipment_id = ?2",
+            rusqlite::params![screen, id, serde_json::to_string(&Value::Object(c))?],
+        )
+        .context("unbind published widget")?;
+    }
+    Ok(())
 }

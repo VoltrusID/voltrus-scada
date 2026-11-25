@@ -599,6 +599,7 @@ pub async fn update_type_as(
 pub async fn delete_type(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
     // A rollback point, unless the delete is refused anyway.
@@ -611,7 +612,7 @@ pub async fn delete_type(
     {
         snapshot(&state, &auth, &format!("equipment_type:{id}")).await;
     }
-    let actor = super::design_history::actor(&auth, false, None, "equipment")
+    let actor = super::design_history::actor(&auth, api_key.is_some(), None, "equipment")
         .with_note(format!("equipment_type:{id} deleted"));
     match state.storage.delete_equipment_type(&id, &actor).await? {
         TypeDelete::Deleted => {
@@ -1003,6 +1004,7 @@ pub async fn update_instance_as(
 pub async fn delete_instance(
     State(state): State<AppState>,
     Extension(auth): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
     Path(name): Path<String>,
     Query(q): Query<DryRunQuery>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -1020,7 +1022,7 @@ pub async fn delete_instance(
         .delete_equipment_instance(
             &name,
             q.dry_run,
-            &super::design_history::actor(&auth, false, None, "equipment")
+            &super::design_history::actor(&auth, api_key.is_some(), None, "equipment")
                 .with_note(format!("equipment_instance:{name} deleted")),
         )
         .await?

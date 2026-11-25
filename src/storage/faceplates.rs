@@ -144,7 +144,9 @@ impl Storage {
         .context("Task join failed")?
     }
 
-    /// Screens whose SCADA symbols open a faceplate, as (screen id, symbol id).
+    /// Screens whose SCADA symbols open a faceplate, as (screen id, symbol
+    /// id): in the draft or in what operators see (the published copy), so a
+    /// faceplate a published screen still opens is never deleted under it.
     pub async fn faceplate_users(&self, id: &str) -> anyhow::Result<Vec<(String, String)>> {
         let conn = self.conn.clone();
         let id = id.to_string();
@@ -153,7 +155,10 @@ impl Storage {
             let mut stmt = conn.prepare(
                 "SELECT screen_id, equipment_id FROM scada_equipment
                  WHERE json_valid(config) AND json_extract(config, '$.faceplate') = ?1
-                 ORDER BY screen_id, equipment_id",
+                 UNION
+                 SELECT screen_id, equipment_id FROM scada_equipment_published
+                 WHERE json_valid(config) AND json_extract(config, '$.faceplate') = ?1
+                 ORDER BY 1, 2",
             )?;
             let rows = stmt.query_map([&id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<Result<Vec<_>, _>>()

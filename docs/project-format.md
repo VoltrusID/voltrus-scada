@@ -337,7 +337,10 @@ first; any error aborts before anything is written.
   design history as one batch. Operators keep seeing each screen's published
   version until someone publishes; **`--publish`** (REST `?publish=1`, MCP
   `publish: true`) publishes every screen the import touched in the same
-  transaction.
+  transaction, with the rules of a publish: refused while publishing is off,
+  publish requests instead when approval is required, and signed where the
+  edition wants it (the command line cannot sign: publish in the Designer
+  then). A screen whose draft operators already see gets no new version.
 
 Export writes the draft, the engineering source. `voltrus project export
 <PATH> --published` (REST `GET /api/v1/project/export?published=1`, MCP

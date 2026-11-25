@@ -107,13 +107,37 @@ pub fn layout_path(screen: &str) -> String {
     format!("/api/v1/screens/{}/scada-layout", layout_id(screen))
 }
 
+/// `GET scada-layout?published=1`: what operators see (the published copy
+/// of the screen, or its draft when it was never published).
+pub fn published_layout_path(screen: &str) -> String {
+    format!("{}?published=1", layout_path(screen))
+}
+
 /// `GET scada-layout`: the rows and the layout's revision, read together.
+/// A server with version history also says which rows they are (`view`:
+/// `draft` or `published`) and, for the published ones, whether the draft
+/// differs from them.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct LayoutAnswer {
     pub equipment: Vec<EquipmentRow>,
     pub connections: Vec<ConnectionRow>,
     pub revision: String,
+    pub view: String,
+    pub draft_differs: bool,
+}
+
+/// A screen as one reader sees it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct View {
+    pub layout: Layout,
+    /// The draft's revision (a save is based on it); `None` from a server
+    /// without revisions.
+    pub revision: Option<String>,
+    /// The rows are the published copy (not the draft an editor changes).
+    pub published: bool,
+    /// The published copy is shown and the draft differs from it.
+    pub draft_differs: bool,
 }
 
 /// `PUT scada-layout`: equipment and connections in one transaction,
@@ -177,21 +201,44 @@ fn revision_in(answer: &Json) -> Option<String> {
 /// has no `scada-layout` (404, 405, or its web page instead of JSON):
 /// then the two lists, with no revision. Any other failure is the error.
 pub async fn load(api: &VoltrusApi, screen: &str) -> anyhow::Result<(Layout, Option<String>)> {
-    match api.get_json::<Json>(&layout_path(screen)).await {
+    let view = load_view(api, screen, false).await?;
+    Ok((view.layout, view.revision))
+}
+
+/// A screen's layout as the editor (`published: false`, the draft) or the
+/// run mode (`published: true`, what operators see) reads it. A server
+/// from before version history ignores `?published=1` and answers the only
+/// rows it has; one from before `scada-layout` gets the two lists.
+pub async fn load_view(api: &VoltrusApi, screen: &str, published: bool) -> anyhow::Result<View> {
+    let path = if published {
+        published_layout_path(screen)
+    } else {
+        layout_path(screen)
+    };
+    match api.get_json::<Json>(&path).await {
         Ok(answer) => {
             let revision = revision_in(&answer).ok_or_else(|| {
                 anyhow::anyhow!("the server's scada-layout answer has no revision")
             })?;
             let answer: LayoutAnswer = serde_json::from_value(answer)?;
             let layout = mimic::parse(&answer.equipment, &answer.connections);
-            return Ok((layout, Some(revision)));
+            let shown_published = answer.view == "published";
+            return Ok(View {
+                layout,
+                revision: Some(revision),
+                published: shown_published,
+                draft_differs: shown_published && answer.draft_differs,
+            });
         }
         Err(error) if older_server(&error) => {}
         Err(error) => return Err(error),
     }
     let equipment: Items<EquipmentRow> = api.get_json(&equipment_path(screen)).await?;
     let connections: Items<ConnectionRow> = api.get_json(&connections_path(screen)).await?;
-    Ok((mimic::parse(&equipment.items, &connections.items), None))
+    Ok(View {
+        layout: mimic::parse(&equipment.items, &connections.items),
+        ..View::default()
+    })
 }
 
 /// The layout's current revision (`GET scada-layout`), for a save whose

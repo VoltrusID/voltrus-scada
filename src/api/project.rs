@@ -105,6 +105,8 @@ pub enum ImportError {
     Unreadable(String),
     /// The server failed while planning or writing.
     Failed(anyhow::Error),
+    /// Refused before writing (publish not allowed, signature needed).
+    Refused(AppError),
 }
 
 impl std::fmt::Display for ImportError {
@@ -113,6 +115,7 @@ impl std::fmt::Display for ImportError {
             ImportError::Invalid(e) => e.fmt(f),
             ImportError::Unreadable(m) => f.write_str(m),
             ImportError::Failed(e) => write!(f, "{e:#}"),
+            ImportError::Refused(e) => write!(f, "{:#}", e.0),
         }
     }
 }
@@ -130,6 +133,7 @@ impl IntoResponse for ImportError {
                 .into_response(),
             ImportError::Unreadable(m) => AppError::bad_request(m).into_response(),
             ImportError::Failed(e) => AppError(e).into_response(),
+            ImportError::Refused(e) => e.into_response(),
         }
     }
 }
@@ -139,10 +143,13 @@ fn find_invalid(e: &anyhow::Error) -> Option<&InvalidProject> {
 }
 
 /// How an applied import is attributed and whether it publishes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ImportOptions {
     pub origin: crate::edition::ActionOrigin,
     pub publish: bool,
+    /// The electronic signature for publishing, when the edition wants one
+    /// (REST: the `X-Voltrus-Signature` header, JSON).
+    pub signature: Option<crate::models::SignatureInput>,
 }
 
 impl Default for ImportOptions {
@@ -150,8 +157,64 @@ impl Default for ImportOptions {
         Self {
             origin: crate::edition::ActionOrigin::Session,
             publish: false,
+            signature: None,
         }
     }
+}
+
+/// The checks of "publish after import", before anything is written: the
+/// rules of a publish from the Designer (docs/version-history.md). Publishing
+/// off refuses; with approval required the import files requests, which an
+/// API key or a demo account may not; the edition's signature for
+/// `design_publish` covers the document's hash.
+async fn authorize_import_publish(
+    state: &AppState,
+    auth: &AuthUser,
+    opts: &ImportOptions,
+    mode: Mode,
+    body: &str,
+) -> Result<project_yaml::ImportPublish, AppError> {
+    use crate::storage::design_history::Approval;
+    let settings = state.storage.design_settings().await?;
+    if !settings.publishing {
+        return Err(AppError(
+            super::RejectedJson(
+                StatusCode::CONFLICT,
+                json!({"error": project_yaml::PublishingOff.to_string(), "code": "publishing_off"}),
+            )
+            .into(),
+        ));
+    }
+    let request = settings.approval == Approval::Required;
+    if request {
+        super::design_history::check_requester(auth, opts.origin)?;
+    }
+    let sha = {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(body.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let signed = super::signature::authorize_action(
+        state,
+        auth,
+        opts.origin,
+        crate::edition::SignedAction::DesignPublish,
+        "project:import:publish".into(),
+        json!({
+            "stage": if request { "request" } else { "publish" },
+            "source": "import",
+            "mode": format!("{mode:?}").to_lowercase(),
+            "document_sha256": sha,
+        }),
+        opts.signature.as_ref(),
+    )
+    .await
+    .map_err(|e| AppError(super::RejectedJson(e.status(), e.body()).into()))?;
+    Ok(project_yaml::ImportPublish {
+        signature: signed.and_then(|s| s.id),
+    })
 }
 
 /// Parse `body` and plan (`dry_run`) or apply it. An applied import takes a
@@ -170,6 +233,15 @@ pub async fn run_import(
         None => ImportError::Unreadable(format!("{e:#}")),
     })?;
 
+    let publish = if opts.publish && !dry_run {
+        Some(
+            authorize_import_publish(state, auth, &opts, mode, body)
+                .await
+                .map_err(ImportError::Refused)?,
+        )
+    } else {
+        None
+    };
     let result = if dry_run {
         project_yaml::plan_import(&state.storage, &doc, mode).await
     } else {
@@ -185,10 +257,19 @@ pub async fn run_import(
             .await;
         let actor = super::design_history::actor_for_origin(auth, opts.origin, "import")
             .with_note(format!("Project import ({mode:?})"));
-        project_yaml::apply_import_as(&state.storage, &doc, mode, &actor, opts.publish).await
+        project_yaml::apply_import_as(&state.storage, &doc, mode, &actor, publish).await
     };
     let plan = result.map_err(|e| match find_invalid(&e) {
         Some(invalid) => ImportError::Invalid(invalid.clone()),
+        None if e.downcast_ref::<project_yaml::PublishingOff>().is_some() => {
+            ImportError::Refused(AppError(
+                super::RejectedJson(
+                    StatusCode::CONFLICT,
+                    json!({"error": e.to_string(), "code": "publishing_off"}),
+                )
+                .into(),
+            ))
+        }
         None => ImportError::Failed(e),
     })?;
 
@@ -201,7 +282,7 @@ pub async fn run_import(
             username: auth.username.clone(),
             resource: "project".to_string(),
             details: Some(format!(
-                "mode={mode:?} create={} update={} delete={}{}{}",
+                "mode={mode:?} create={} update={} delete={}{}{}{}",
                 plan.totals.create,
                 plan.totals.update,
                 plan.totals.delete,
@@ -213,6 +294,11 @@ pub async fn run_import(
                     String::new()
                 } else {
                     format!(" published={}", plan.published.join(","))
+                },
+                if plan.publish_requested.is_empty() {
+                    String::new()
+                } else {
+                    format!(" publish_requested={}", plan.publish_requested.join(","))
                 }
             )),
         });
@@ -227,6 +313,7 @@ pub async fn run_import(
     params(
         ("mode" = Option<String>, Query, description = "merge (default) or replace"),
         ("dry_run" = Option<String>, Query, description = "true: return the plan, write nothing"),
+        ("publish" = Option<String>, Query, description = "true: publish the screens the import touched (or file publish requests when approval is required); refused while publishing is off. The signature an edition wants goes in the X-Voltrus-Signature header (JSON)"),
     ),
     request_body(content = String, content_type = "application/yaml", description = "Project YAML (format voltrus-project/1)"),
     responses(
@@ -242,12 +329,24 @@ pub async fn import_project(
     Extension(auth): Extension<AuthUser>,
     api_key: Option<Extension<super::ApiKeyAuth>>,
     Query(q): Query<ImportQuery>,
+    headers: axum::http::HeaderMap,
     body: String,
 ) -> Result<Response, AppError> {
     let mode = parse_mode(q.mode.as_deref())?;
+    let signature = match headers
+        .get("x-voltrus-signature")
+        .map(|v| v.to_str().map(str::to_string))
+    {
+        None => None,
+        Some(Ok(text)) => Some(serde_json::from_str(&text).map_err(|e| {
+            AppError::bad_request(format!("X-Voltrus-Signature is not a signature: {e}"))
+        })?),
+        Some(Err(_)) => return Err(AppError::bad_request("X-Voltrus-Signature is not text")),
+    };
     let opts = ImportOptions {
         origin: super::signature::origin_of(&auth, api_key.is_some()),
         publish: truthy(&q.publish),
+        signature,
     };
     Ok(
         match run_import(&state, &auth, &body, mode, truthy(&q.dry_run), opts).await {

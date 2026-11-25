@@ -426,6 +426,44 @@ describe('draft and published reads', () => {
     )
   }
 
+  it('after Edit → Done on a published screen the draft is announced, with a link to publish it', async () => {
+    const openDesigner = vi.fn()
+    function Published() {
+      const rows = useScadaRows('s1', true, 'scada')
+      const [toolbar, setToolbar] = useState<React.ReactNode>(null)
+      return (
+        <>
+          <div>{toolbar}</div>
+          <ScadaView sensors={sensors as any} activeScreen="s1" scadaEquipment={rows.equipment.data ?? NONE} scadaConnections={rows.connections.data ?? NONE}
+            loaded={rows.loaded} onSave={noSave} onSensorClick={noClick} isAdmin onEditModeChange={rows.setEditing} toolbarSlotSetter={setToolbar}
+            onOpenDesigner={openDesigner} />
+        </>
+      )
+    }
+    const published = { version_id: 1, name: 'v1', upto_seq: 5, at_ms: NOW, by: 'ana', draft_differs: false }
+    server.status = { ...server.status, published }
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={qc}><DashboardStoreProvider value={createDashboardStore()}><Published /></DashboardStoreProvider></QueryClientProvider>)
+    await waitFor(() => expect(calls(/s1\/design-status/).length).toBeGreaterThan(0), T)
+    expect(screen.queryByTestId('scada-draft-differs')).toBeNull()
+    const edit = await screen.findByText('Edit')
+    await waitFor(() => expect((edit as HTMLButtonElement).disabled).toBe(false), T)
+    fireEvent.click(edit)
+    await waitFor(() => expect(calls(/scada-equipment$/)).toHaveLength(1), T)
+    await waitFor(() => expect(screen.queryByTestId('scada-loading-draft')).toBeNull(), T)
+    // The edits were saved to the draft: it differs from what operators see now.
+    server.status = { ...server.status, published: { ...published, draft_differs: true } }
+    const done = await screen.findByText('Done')
+    await waitFor(() => expect((done as HTMLButtonElement).disabled).toBe(false), T)
+    fireEvent.click(done)
+    await screen.findByText('Edit', {}, T)
+    const note = await screen.findByTestId('scada-draft-differs', {}, T)
+    expect(note.textContent).toContain('v1')
+    fireEvent.click(within(note).getByTestId('scada-draft-publish'))
+    expect(openDesigner).toHaveBeenCalled()
+    expect(within(note).getByTestId('scada-draft-publish').textContent).toBe('Publish in the Designer')
+  }, 20_000)
+
   it('the 2D runtime reads the published screen; its Edit mode and the Designer read the draft', async () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={qc}><DashboardStoreProvider value={createDashboardStore()}><Runtime /></DashboardStoreProvider></QueryClientProvider>)

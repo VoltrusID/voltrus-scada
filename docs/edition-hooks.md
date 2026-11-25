@@ -216,8 +216,10 @@ format is the same everywhere:
 | `mode_switch` | `PATCH /api/v1/data-sources/{id}/write-policy` (body fields plus `signature`) | `data_source:<id>:write_policy` | `{mode: "write_policy", tag_id, policy}` |
 | `mode_switch` | `POST /api/v1/config/snapshots/{id}/rollback` (optional body); it rewrites tags with their write policies | `config_snapshot:<id>:rollback` | `{mode: "config_rollback", snapshot_id}` |
 | `tag_write` | `POST /api/v1/voltrus-plc/devices/{id}/write` (body `{variable, value, reason?, signature?}`); the variable must be read by a tag of the device, whose write policy applies | `data_source:<id>` | as for `POST /api/v1/tags/{id}/write` |
-| `design_publish` | `POST /api/v1/screens/{id}/publish` (body `{…, signature?}`); MCP `publish_screen` (cannot sign) | `screen:<id>:publish` | `{stage: "publish"\|"request", screen_id, version, message, changes: {added, removed, changed}}` |
-| `design_publish` | `POST /api/v1/screens/{id}/versions/{v}/approve` (body `{note?, signature?}`) | `screen:<id>:publish` | `{stage: "approve", screen_id, version, requested_by, message}` |
+| `design_publish` | `POST /api/v1/screens/{id}/publish` (body `{…, signature?}`); MCP `publish_screen` (cannot sign) | `screen:<id>:publish` | `{stage: "publish"\|"request", screen_id, version, message, base_seq, published_version_id, changes: {added, removed, changed}}` (the diff from what operators see to the actual target) |
+| `design_publish` | `POST /api/v1/screens/{id}/versions/{v}/approve` (body `{note?, signature?, confirm_older?}`) | `screen:<id>:publish` | `{stage: "approve", screen_id, version, version_id, upto_seq, requested_by, message}` |
+| `design_publish` | `POST /api/v1/project/import?publish=1` (signature in the `X-Voltrus-Signature` header, JSON); MCP `project_apply_import` with `publish` (cannot sign); the CLI's `--publish` is refused when a signature is required | `project:import:publish` | `{stage: "publish"\|"request", source: "import", mode, document_sha256}` |
+| `design_publish` | `PUT /api/v1/settings/design-history` changing `publishing` or `approval` (body fields plus `signature`); `POST /api/v1/settings/design-history/approve` | `settings:design_history` | `{stage: "settings"\|"settings_request", before, after}`; `{stage: "settings_approve", after, requested_by}` |
 
 "Optional body" means the route accepts no body (as before) or a JSON body
 `{"signature": {...}}` with `Content-Type: application/json`.
@@ -230,7 +232,9 @@ of the load. The individual writes are then queued without asking again.
 Publishing a Designer screen ([version-history.md](version-history.md)) is
 one action in three stages: a direct publish when the site needs no approval
 (`publish`), the author's request when it does (`request`), and the second
-admin's approval (`approve`). A 21 CFR Part 11 edition answers all three with
+admin's approval (`approve`); turning publishing or approval off is the
+same action (stages `settings`, `settings_request`, `settings_approve`), as
+the switches decide what operators see. A 21 CFR Part 11 edition answers all three with
 a requirement (for example "Authored" and "Approved" meanings by stage); the
 signature id is kept on the version and in the audit entry. Core asks for
 none, and approval itself (a second admin, not the requester) is a site

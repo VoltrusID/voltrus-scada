@@ -1588,6 +1588,14 @@ pub fn create_router(state: AppState) -> Router {
             put(design_history::put_settings),
         )
         .route(
+            "/api/v1/settings/design-history/approve",
+            post(design_history::post_settings_approve),
+        )
+        .route(
+            "/api/v1/settings/design-history/reject",
+            post(design_history::post_settings_reject),
+        )
+        .route(
             "/api/v1/design/git",
             get(design_history::get_git).put(design_history::put_git),
         )

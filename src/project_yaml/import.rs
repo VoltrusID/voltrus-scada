@@ -87,15 +87,39 @@ pub async fn apply_import_guarded_as(
     run_async(storage, doc, mode, true, process_env(), Some(guard), actor).await
 }
 
+/// "Publish after import" (docs/version-history.md): the caller checked who
+/// may do it and got the signature the edition wants; the import follows the
+/// site's switches inside its transaction (publishing off refuses the whole
+/// import, approval required files publish requests instead).
+#[derive(Debug, Clone, Default)]
+pub struct ImportPublish {
+    /// The electronic signature recorded for it, if any.
+    pub signature: Option<String>,
+}
+
+/// An import asked to publish while publishing is off.
+#[derive(Debug)]
+pub struct PublishingOff;
+
+impl std::fmt::Display for PublishingOff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("publishing is turned off for this site: import without publishing (operators see the draft)")
+    }
+}
+
+impl std::error::Error for PublishingOff {}
+
 /// [`apply_import`]; the design objects it changes (screens' widgets and
 /// connections, equipment types and instances, faceplates) are logged in the
-/// design history as one batch by `actor`.
+/// design history as one batch by `actor`. With `publish`, every screen the
+/// import touched is published (or a publish request filed) in the same
+/// transaction.
 pub async fn apply_import_as(
     storage: &Storage,
     doc: &ProjectDoc,
     mode: Mode,
     actor: &DesignActor,
-    publish: bool,
+    publish: Option<ImportPublish>,
 ) -> Result<ImportPlan> {
     let doc = doc.clone();
     let actor = actor.clone();
@@ -139,7 +163,7 @@ async fn run_async(
     let doc = doc.clone();
     let actor = actor.clone();
     storage
-        .with_conn(move |conn| run(conn, &doc, mode, write, &*env, guard, &actor, false))
+        .with_conn(move |conn| run(conn, &doc, mode, write, &*env, guard, &actor, None))
         .await
 }
 
@@ -159,9 +183,19 @@ fn run(
     env: &(dyn Fn(&str) -> Option<String> + Send + Sync),
     guard: Option<Guard>,
     actor: &DesignActor,
-    publish: bool,
+    publish: Option<ImportPublish>,
 ) -> Result<ImportPlan> {
     let tx = conn.transaction().context("begin transaction")?;
+    let publish_settings = match &publish {
+        Some(_) if write => {
+            let s = design_history::read_settings(&tx)?;
+            if !s.publishing {
+                return Err(PublishingOff.into());
+            }
+            Some(s)
+        }
+        _ => None,
+    };
     let (snap, mut ctx) = export::read_all(&tx)?;
 
     // Equipment instances become tags, registers, flows and widget bindings
@@ -197,6 +231,7 @@ fn run(
         expanded,
         design_batch: None,
         published: Vec::new(),
+        publish_requested: Vec::new(),
     };
     let mut work: Vec<Work> = Vec::new();
     let mut secret_errors: Vec<Issue> = Vec::new();
@@ -345,9 +380,12 @@ fn run(
             design_history::diff_objects(&design_before, &design_after),
             actor,
         )?;
-        if publish {
+        if let (Some(p), Some(settings)) = (&publish, &publish_settings) {
             // "Publish after import": every screen the import touched, in the
-            // same transaction, as a version named after the batch.
+            // same transaction. A screen whose draft is what operators see
+            // already gets no new version; with approval required each gets
+            // a publish request instead.
+            let request = settings.approval == design_history::Approval::Required;
             let mut screens: Vec<String> = plan
                 .changes_in("screens")
                 .filter(|c| c.action != Action::Delete)
@@ -359,16 +397,19 @@ fn run(
             screens.sort();
             screens.dedup();
             for screen in screens {
-                let v = design_history::create_version(
+                let (done, _) = design_history::publish_draft(
                     &tx,
                     &screen,
-                    None,
                     "Published by a project import",
                     &actor.username,
-                    "saved",
+                    request,
+                    p.signature.as_deref(),
                 )?;
-                design_history::publish_version(&tx, &screen, v.id, &actor.username, None)?;
-                plan.published.push(screen);
+                match done {
+                    design_history::DraftPublish::Requested => plan.publish_requested.push(screen),
+                    design_history::DraftPublish::Unchanged => {}
+                    _ => plan.published.push(screen),
+                }
             }
         }
         plan.design_batch = batch.map(|b| b.batch);
@@ -416,7 +457,12 @@ fn delete_entity(tx: &Transaction<'_>, sec: &Section, row: &Row, ctx: &mut Ctx) 
     match &sec.kind {
         Kind::Plain(p) => delete_plain(tx, p, row, ctx),
         Kind::Tags => delete_tag(tx, row, ctx),
-        Kind::Screens => delete_screen(tx, &row.key),
+        Kind::Screens => {
+            delete_screen(tx, &row.key)?;
+            // Operators no longer see a screen the import removed (a written
+            // screen is cleared and rewritten, its published copy stays).
+            design_history::forget_published(tx, &row.key)
+        }
         Kind::Settings => write_settings(tx, &Mapping::new(), true),
     }
 }

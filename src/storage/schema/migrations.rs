@@ -697,7 +697,26 @@ pub(super) fn run_migrations(conn: &Connection) {
             waypoints TEXT NOT NULL DEFAULT '[]',
             connection_type TEXT NOT NULL DEFAULT 'power',
             PRIMARY KEY (screen_id, connection_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_design_changes_screen_seq
+            ON design_changes(screen_id, seq);
+        CREATE TABLE IF NOT EXISTS design_heads (
+            screen_id TEXT PRIMARY KEY,
+            seq INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS design_meta (
+            key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL
         );",
+    );
+    // A screen's change-log head never goes down (squashing and pruning
+    // delete rows), and versions keep their row counts so a list needs no
+    // snapshot parsing (-1: not counted yet).
+    let _ = conn.execute_batch(
+        "ALTER TABLE design_versions ADD COLUMN widgets INTEGER NOT NULL DEFAULT -1",
+    );
+    let _ = conn.execute_batch(
+        "ALTER TABLE design_versions ADD COLUMN connections INTEGER NOT NULL DEFAULT -1",
     );
 
     // Migration: alarms raised by a flow's alarm node used to be stored as

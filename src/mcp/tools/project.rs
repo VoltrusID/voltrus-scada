@@ -111,6 +111,7 @@ async fn run(ctx: &Ctx, args: Value, dry_run: bool) -> ToolResult {
     let opts = project::ImportOptions {
         origin: crate::edition::ActionOrigin::Mcp,
         publish: a.publish.unwrap_or(false),
+        signature: None,
     };
     let plan = project::run_import(&ctx.state, &ctx.user, &a.yaml, mode, dry_run, opts)
         .await

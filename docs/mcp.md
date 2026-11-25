@@ -140,11 +140,11 @@ saying so.
 | `create_version` | write | Record the screen's draft as a named version with a message. Changes nothing operators see. |
 | `diff_versions` | read (configure roles) | Compare two states (`draft`, `published`, `seq:<n>`, a version): added, removed, changed fields per object, and both as project YAML. Default: published → draft. |
 | `revert_screen` | write (destructive) | Put a screen or some objects back to an earlier state (`to`, `to_seq`, `object`, `objects`), written as new changes; a removed widget takes its connections along, a connection whose widget is gone is refused unless that widget is restored too. Draft only. |
-| `publish_screen` | **admin** | Make the draft (or a version) what operators see. Propose first (the diff and whether approval is needed), then `apply: true`; with approval required it files a request an administrator approves in the Designer. An edition that wants publishing signed refuses MCP. |
+| `publish_screen` | **admin** | Make the draft (or a version) what operators see. Propose first (the diff, whether approval is needed, and the `base_seq` it was read at), then `apply: true` with that `base_seq` (refused when the draft changed since); with approval required it files a request an administrator approves in the Designer (not from an API key). An edition that wants publishing signed refuses MCP. |
 | `import_catalog_template` | **admin** | Download a catalog template, check its sha256 and store it. Takes no URL. |
 | `project_export_yaml` | **admin** | The whole configuration as one `voltrus-project/1` YAML document (secrets as `${ENV}` references); `published: true` writes each screen's published rows. |
 | `project_plan_import` | **admin** | Dry run of a project import: what would be created, updated and deleted. Writes nothing. |
-| `project_apply_import` | **admin** | Import a project (`mode` merge or replace) in one transaction, after a rollback snapshot. Screens change as drafts; `publish: true` also publishes the screens it touched. Logged in the design history as source `mcp`. |
+| `project_apply_import` | **admin** | Import a project (`mode` merge or replace) in one transaction, after a rollback snapshot. Screens change as drafts; `publish: true` also publishes the screens it touched (refused while publishing is off; publish requests when approval is required; refused where the edition wants it signed). Logged in the design history as source `mcp`. |
 
 `write_tag`, `delete_device`, `delete_tag` and `project_apply_import` ask for
 confirmation first (see [Guardrails](#guardrails)), and `confirm_action` carries

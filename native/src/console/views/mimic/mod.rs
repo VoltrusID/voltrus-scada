@@ -132,6 +132,15 @@ struct Press {
     moved: bool,
 }
 
+/// Which rows of a screen are shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Shown {
+    /// The published copy (else the draft).
+    pub(crate) published: bool,
+    /// The published copy is shown and the draft differs from it.
+    pub(crate) draft_differs: bool,
+}
+
 /// A keyed camera move.
 #[derive(Clone, Copy)]
 struct Glide {
@@ -142,6 +151,13 @@ struct Glide {
 
 pub(crate) struct State {
     layouts: HashMap<String, Loaded>,
+    /// How each loaded layout was read: the published copy (run mode, what
+    /// operators see) or the draft (the editor), and with the published
+    /// copy whether the draft differs from it.
+    views: HashMap<String, Shown>,
+    /// Screens seen with a published copy: leaving the editor reads them
+    /// again as operators see them.
+    published: HashSet<String>,
     /// Each loaded layout's revision (`scada-layout`), which a Designer
     /// save is based on; `None` from a server without revisions.
     revisions: HashMap<String, Option<String>>,
@@ -199,6 +215,8 @@ impl Default for State {
     fn default() -> Self {
         Self {
             layouts: HashMap::new(),
+            views: HashMap::new(),
+            published: HashSet::new(),
             revisions: HashMap::new(),
             asks: HashMap::new(),
             next_ask: 0,
@@ -278,6 +296,8 @@ fn sync(console: &mut Console) {
         .map(|(user, _)| (console.server.clone(), user.clone()));
     let stress = console.stress.is_some();
     let screen = active(console);
+    // The editor works on the draft; run mode shows what operators see.
+    let published = !editor::wants_draft(console);
     let state = console.state::<State>();
     if state.session != session {
         *state = State {
@@ -299,7 +319,7 @@ fn sync(console: &mut Console) {
     state.layouts.insert(screen.clone(), Loaded::Loading);
     console.call(
         CallKey::new("mimic.layout").with(ask),
-        Call::new(move |api| async move { designer::load(&api, &screen).await }),
+        Call::new(move |api| async move { designer::load_view(&api, &screen, published).await }),
     );
 }
 
@@ -319,10 +339,34 @@ fn remember_revision(state: &mut State, screen: &str, revision: Option<String>) 
 /// Forget the active screen's mimic and fetch it again.
 fn reload(console: &mut Console) {
     let screen = active(console);
-    let state = console.state::<State>();
-    state.layouts.remove(&screen);
-    state.fetching.remove(&screen);
+    forget(console, &screen);
     sync(console);
+}
+
+/// Forget a screen's mimic (the next render fetches it again).
+pub(crate) fn forget(console: &mut Console, screen: &str) {
+    let state = console.state::<State>();
+    state.layouts.remove(screen);
+    state.views.remove(screen);
+    state.fetching.remove(screen);
+}
+
+/// Whether run mode tells the user the draft differs from what operators
+/// see (configurers only: they are the ones who can publish it).
+pub(crate) fn draft_note_shown(console: &Console) -> bool {
+    console.may_configure()
+        && console.stress.is_none()
+        && !editor::editing(console)
+        && shown(console).is_some_and(|shown| shown.draft_differs)
+}
+
+/// How the active screen's rows were read, once loaded.
+pub(crate) fn shown(console: &Console) -> Option<Shown> {
+    console
+        .state_ref::<State>()?
+        .views
+        .get(&active(console))
+        .copied()
 }
 
 fn focus_handle(console: &mut Console, cx: &mut Context<Console>) -> FocusHandle {
@@ -450,10 +494,20 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 return;
             };
             state.fetching.remove(&screen);
-            let loaded = match reply.take::<(Layout, Option<String>)>() {
-                Ok((layout, revision)) => {
-                    remember_revision(state, &screen, revision);
-                    Loaded::Ready(Rc::new(layout))
+            let loaded = match reply.take::<designer::View>() {
+                Ok(view) => {
+                    remember_revision(state, &screen, view.revision);
+                    state.views.insert(
+                        screen.clone(),
+                        Shown {
+                            published: view.published,
+                            draft_differs: view.draft_differs,
+                        },
+                    );
+                    if view.published {
+                        state.published.insert(screen.clone());
+                    }
+                    Loaded::Ready(Rc::new(view.layout))
                 }
                 Err(error) => Loaded::Failed(error),
             };
@@ -1412,6 +1466,9 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         }
     };
 
+    // A configurer sees what operators see here: say when the draft differs.
+    let draft_note = draft_note_shown(console).then(|| draft_banner(&theme));
+
     let stage_bg = anim::mix(theme.bg, hmi.stage, 0.6);
     let panel =
         faceplate_item.map(|item| faceplate::render(console, &item, &hmi, can_command, t, cx));
@@ -1477,6 +1534,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
         .flex_col()
         .size_full()
         .child(bar)
+        .children(draft_note)
         .child(
             div()
                 .flex()
@@ -1510,6 +1568,22 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 .children(panel),
         )
         .child(alarm_banner)
+        .into_any_element()
+}
+
+/// Text of the run mode's note to configurers when the draft differs from
+/// the published screen.
+pub(crate) const DRAFT_DIFFERS: &str = "The draft of this screen differs from what operators see. Edit shows the draft; publish it in the web Designer.";
+
+fn draft_banner(theme: &vt_ui::theme::Theme) -> AnyElement {
+    div()
+        .id("mimic-draft-differs")
+        .px(px(12.0))
+        .py(px(6.0))
+        .text_size(px(12.0))
+        .bg(theme.warning.opacity(0.12))
+        .text_color(theme.fg)
+        .child(DRAFT_DIFFERS)
         .into_any_element()
 }
 

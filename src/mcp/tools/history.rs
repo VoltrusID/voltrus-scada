@@ -149,7 +149,9 @@ pub fn tools() -> Vec<Tool> {
                 be published and whether the site needs an approval. With apply:true it records \
                 a version (name/message) and publishes it; when the site requires approval it \
                 files a request an administrator approves in the Designer instead. Show the \
-                diff to the user and apply only after they agree. A site whose edition wants an \
+                diff to the user and apply only after they agree, passing the proposal's \
+                base_seq: the publish is refused when the draft changed since the user saw the \
+                diff. A site whose edition wants an \
                 electronic signature for publishing refuses MCP (sign in the Designer). Limited \
                 to a signed-in admin.",
             access: Access::AdminWrite,
@@ -162,6 +164,7 @@ pub fn tools() -> Vec<Tool> {
                         "version": {"type": "string", "description": "Publish this version (id or name) instead of the draft."},
                         "name": {"type": "string", "maxLength": 100},
                         "message": {"type": "string", "maxLength": 2000},
+                        "base_seq": {"type": "integer", "minimum": 0, "description": "The base_seq of the proposal: refuse when the screen changed since."},
                         "apply": {"type": "boolean", "default": false}
                     },
                     "required": ["screen_id"],
@@ -364,11 +367,18 @@ async fn publish(ctx: &Ctx, args: Value) -> ToolResult {
         name: Option<String>,
         #[serde(default)]
         message: String,
+        base_seq: Option<i64>,
         #[serde(default)]
         apply: bool,
     }
     let a: Args = parse_args(args)?;
     if !a.apply {
+        let screen = a.screen_id.clone();
+        let base_seq = ctx
+            .state
+            .storage
+            .design_tx(move |c| crate::storage::design_history::head_seq(c, &screen))
+            .await?;
         let settings = ctx.state.storage.design_settings().await?;
         let target = a.version.clone().unwrap_or_else(|| "draft".into());
         let mut diff = api::diff(&ctx.state, &a.screen_id, "published", &target, true).await?;
@@ -380,8 +390,9 @@ async fn publish(ctx: &Ctx, args: Value) -> ToolResult {
             "publishing": settings.publishing,
             "needs_approval": settings.approval == crate::storage::design_history::Approval::Required,
             "would_publish": target,
+            "base_seq": base_seq,
             "diff": diff,
-            "next": "Show this diff to the user; call again with apply: true to publish.",
+            "next": "Show this diff to the user; call again with apply: true and this base_seq to publish.",
         }));
     }
     Ok(api::publish(
@@ -393,7 +404,7 @@ async fn publish(ctx: &Ctx, args: Value) -> ToolResult {
             version: a.version,
             name: a.name,
             message: a.message,
-            base_seq: None,
+            base_seq: a.base_seq,
             signature: None,
         },
     )

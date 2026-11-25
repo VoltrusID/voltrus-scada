@@ -617,7 +617,8 @@ async fn handle_project(args: &[String], legacy_config: bool) -> bool {
              {0} {cmd} schema [OUT.json]\n\n\
              PATH is a directory (one file per entity) or a single .yaml file.\n\
              --published exports each screen's published rows (what operators see);\n\
-             --publish publishes the screens an import touched (docs/version-history.md).\n\
+             --publish publishes the screens an import touched, or files publish requests\n\
+             when approval is required (docs/version-history.md).\n\
              Secrets are written as ${{ENV_NAME}} references and resolved from the\n\
              environment on import. See docs/project-format.md.",
             args[0]
@@ -781,6 +782,18 @@ async fn handle_project(args: &[String], legacy_config: bool) -> bool {
     } else {
         let actor = crate::storage::DesignActor::new(cli_user(), "cli", "import")
             .with_note(format!("voltrus {cmd} import {path}"));
+        let publish = if publish {
+            match cli_publish_check(&storage).await {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!("Cannot publish: {e}");
+                    eprintln!("Nothing was written.");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            None
+        };
         crate::project_yaml::apply_import_as(&storage, &doc, mode, &actor, publish).await
     };
     match result {
@@ -799,6 +812,38 @@ async fn handle_project(args: &[String], legacy_config: bool) -> bool {
             std::process::exit(1);
         }
     }
+}
+
+/// `--publish` from the command line follows the site's rules: refused
+/// while publishing is off, and when the edition wants an electronic
+/// signature for `design_publish` (nobody can sign here: import without
+/// `--publish` and publish in the Designer). With approval required the
+/// import files publish requests (the import does that in its transaction).
+async fn cli_publish_check(
+    storage: &crate::storage::Storage,
+) -> Result<crate::project_yaml::ImportPublish, String> {
+    let settings = storage
+        .design_settings()
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    if !settings.publishing {
+        return Err(crate::project_yaml::PublishingOff.to_string());
+    }
+    let ctx = crate::edition::ActionContext {
+        action: crate::edition::SignedAction::DesignPublish,
+        origin: crate::edition::ActionOrigin::Session,
+        username: cli_user(),
+        role: "admin".into(),
+        resource: "project:import:publish".into(),
+        details: serde_json::json!({"stage": "publish", "source": "import"}),
+    };
+    if let Some(r) = crate::edition::installed().signature_required(&ctx).await {
+        return Err(format!(
+            "publishing needs an electronic signature ({}), which the command line cannot give; import without --publish and publish in the Designer",
+            r.meaning
+        ));
+    }
+    Ok(crate::project_yaml::ImportPublish::default())
 }
 
 /// Who runs the CLI, for the design history (`cli:<os user>`).

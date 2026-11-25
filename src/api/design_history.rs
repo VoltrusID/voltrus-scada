@@ -9,6 +9,8 @@ use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use anyhow::Context as _;
+
 use super::{AppError, AppState, AuthUser, RejectedJson};
 use crate::edition::{ActionOrigin, SignedAction};
 use crate::models::SignatureInput;
@@ -127,16 +129,18 @@ impl HistoryQuery {
 
 pub async fn list_changes(state: &AppState, f: ChangeFilter) -> Result<Value, AppError> {
     let limit = f.limit.unwrap_or(100).clamp(1, 500);
-    let rows = state
+    let (rows, floor) = state
         .storage
-        .design_tx(move |c| h::list_changes(c, &f))
+        .design_tx(move |c| Ok((h::list_changes(c, &f)?, h::history_floor(c)?)))
         .await?;
     let next = (rows.len() as i64 >= limit)
         .then(|| rows.last().map(|r| r.seq))
         .flatten();
     let users: std::collections::BTreeSet<&str> =
         rows.iter().map(|r| r.username.as_str()).collect();
-    Ok(json!({"changes": rows, "next_before_seq": next, "users": users}))
+    // `floor`: changes at or below it cannot be previewed or reverted to by
+    // seq any more (retention squashed or pruned the log there).
+    Ok(json!({"changes": rows, "next_before_seq": next, "users": users, "floor": floor}))
 }
 
 /// GET /api/v1/screens/{id}/history
@@ -271,9 +275,17 @@ fn check_text(name: Option<&str>, message: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// A storage error as its answer: a taken or reserved version name is a
+/// 409, a `seq:` state retention or squashing removed a 410.
 fn version_error(e: anyhow::Error) -> AppError {
     if let Some(t) = e.downcast_ref::<h::NameTaken>() {
         return conflict(t.to_string(), "name_taken");
+    }
+    if let Some(g) = e.downcast_ref::<h::StateGone>() {
+        return rejected(
+            StatusCode::GONE,
+            json!({"error": g.to_string(), "code": "state_gone"}),
+        );
     }
     AppError(e)
 }
@@ -386,7 +398,8 @@ pub async fn get_state(
     let found = state
         .storage
         .design_tx(move |c| h::resolve_state(c, &id, &at))
-        .await?;
+        .await
+        .map_err(version_error)?;
     let Some((label, snap)) = found else {
         return Err(AppError::not_found("No such state"));
     };
@@ -440,7 +453,8 @@ pub async fn diff(
             }
             Ok(Ok(body))
         })
-        .await?;
+        .await
+        .map_err(version_error)?;
     out.map_err(AppError::not_found)
 }
 
@@ -548,7 +562,8 @@ pub async fn revert(
                 h::revert_objects(c, &screen_id, &objects, &base, &actor)
             }
         })
-        .await?;
+        .await
+        .map_err(version_error)?;
     match outcome {
         RevertOutcome::Done {
             batch,
@@ -556,6 +571,7 @@ pub async fn revert(
             revision,
             removed_connections,
             ungrouped,
+            missing_tags,
         } => Ok(json!({
             "ok": true,
             "batch": batch,
@@ -563,6 +579,7 @@ pub async fn revert(
             "revision": revision,
             "removed_connections": removed_connections,
             "ungrouped": ungrouped,
+            "missing_tags": missing_tags,
         })),
         RevertOutcome::Dangling {
             connection,
@@ -788,24 +805,79 @@ pub async fn revert_project_object(
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PublishBody {
-    /// Publish this version (id or name); without it the current draft is
-    /// recorded as a new version first.
+    /// Publish this version (`id:<n>`, `name:<name>`, or a bare id or name);
+    /// without it the current draft is recorded as a new version first.
     pub version: Option<String>,
     pub name: Option<String>,
     #[serde(default)]
     pub message: String,
-    /// The draft must still be at this seq (else 409).
+    /// The draft must still be at this seq (else 409). Without it the head
+    /// the publish was signed against is pinned, so a save made between the
+    /// signature and the publish is never published unseen.
     pub base_seq: Option<i64>,
     pub signature: Option<SignatureInput>,
+}
+
+/// What a publish was checked and signed against.
+struct Pinned {
+    /// The screen's head seq.
+    head: i64,
+    /// The published version then (`None`: never published).
+    published: Option<i64>,
+    /// The diff from what operators see to the target.
+    summary: Value,
 }
 
 enum Prepared {
     Version(Box<h::Version>),
     Conflict(crate::storage::LayoutSave),
     Missing,
+    /// What operators see changed since the publish was signed.
+    Moved(String),
+}
+
+fn conflict_of(c: crate::storage::LayoutSave) -> AppError {
+    match c {
+        crate::storage::LayoutSave::Conflict {
+            revision,
+            seq,
+            since,
+        } => super::layouts::conflict_error(revision, seq, since),
+        crate::storage::LayoutSave::Saved { .. } => {
+            AppError(anyhow::anyhow!("unexpected save outcome"))
+        }
+    }
+}
+
+/// Refuse a publish request from a principal that cannot be held to it: an
+/// API key or a demo account (with approval on, the requester is who the
+/// approver must differ from).
+pub(crate) fn check_requester(user: &AuthUser, origin: ActionOrigin) -> Result<(), AppError> {
+    if origin == ActionOrigin::ApiKey || user.username.starts_with("api_key:") {
+        return Err(rejected(
+            StatusCode::FORBIDDEN,
+            json!({
+                "error": "This site requires approval to publish: a publish request must come from a person signed in, not an API key",
+                "code": "approval_needs_person",
+            }),
+        ));
+    }
+    if user.role == "demo" {
+        return Err(rejected(
+            StatusCode::FORBIDDEN,
+            json!({
+                "error": "This site requires approval to publish: demo accounts cannot request a publish",
+                "code": "approval_needs_person",
+            }),
+        ));
+    }
+    Ok(())
 }
 
 /// Publish a screen, or file a publish request when approval is required.
+/// The signature covers the diff from what operators see to the actual
+/// target (the named version, or the draft at its current head), and the
+/// publish refuses when either moved after signing.
 pub async fn publish(
     state: &AppState,
     user: &AuthUser,
@@ -814,6 +886,15 @@ pub async fn publish(
     body: PublishBody,
 ) -> Result<Value, AppError> {
     check_text(body.name.as_deref(), &body.message)?;
+    if let Some(n) = body.name.as_deref().map(str::trim)
+        && !n.is_empty()
+        && h::reserved_name(n)
+    {
+        return Err(conflict(
+            h::NameTaken(n.to_string()).to_string(),
+            "name_taken",
+        ));
+    }
     let settings = state.storage.design_settings().await?;
     if !settings.publishing {
         return Err(conflict(
@@ -822,8 +903,50 @@ pub async fn publish(
         ));
     }
     let needs_approval = settings.approval == Approval::Required;
+    if needs_approval {
+        check_requester(user, origin)?;
+    }
     let stage = if needs_approval { "request" } else { "publish" };
-    let summary = diff(state, screen, "published", "draft", false).await?;
+
+    // Check the base and read what is signed before asking for a signature,
+    // so a stale base never consumes one.
+    let (screen_id, version_ref, base_seq) =
+        (screen.to_string(), body.version.clone(), body.base_seq);
+    let pinned = state
+        .storage
+        .design_tx(move |c| {
+            if let Some(seq) = base_seq {
+                let base = LayoutBase {
+                    revision: None,
+                    seq: Some(seq),
+                };
+                if let Some(conflict) = h::check_base(c, &screen_id, &base)? {
+                    return Ok(Err(Prepared::Conflict(conflict)));
+                }
+            }
+            let target = match &version_ref {
+                Some(r) => match h::get_version(c, &screen_id, r)? {
+                    Some((_, snap)) => snap,
+                    None => return Ok(Err(Prepared::Missing)),
+                },
+                None => h::read_draft(c, &screen_id)?,
+            };
+            let (_, shown) =
+                h::resolve_state(c, &screen_id, "published")?.context("published state")?;
+            Ok(Ok(Pinned {
+                head: h::head_seq(c, &screen_id)?,
+                published: h::published_state(c, &screen_id)?.map(|p| p.0),
+                summary: h::diff_layouts(&shown, &target)?["summary"].clone(),
+            }))
+        })
+        .await
+        .map_err(version_error)?;
+    let pinned = match pinned {
+        Ok(p) => p,
+        Err(Prepared::Missing) => return Err(AppError::not_found("No such version")),
+        Err(Prepared::Conflict(c)) => return Err(conflict_of(c)),
+        Err(_) => return Err(AppError(anyhow::anyhow!("unexpected publish outcome"))),
+    };
     let signed = super::signature::authorize_action(
         state,
         user,
@@ -835,7 +958,9 @@ pub async fn publish(
             "screen_id": screen,
             "version": body.version,
             "message": body.message,
-            "changes": summary["diff"]["summary"],
+            "base_seq": pinned.head,
+            "published_version_id": pinned.published,
+            "changes": pinned.summary,
         }),
         body.signature.as_ref(),
     )
@@ -848,16 +973,24 @@ pub async fn publish(
     let version_ref = body.version.clone();
     let name = body.name.clone();
     let message = body.message.trim().to_string();
-    let base_seq = body.base_seq;
     let sig = signature_id.clone();
     let prepared = state
         .storage
         .design_tx(move |c| {
-            if let Some(seq) = base_seq {
-                let base = LayoutBase { revision: None, seq: Some(seq) };
+            // The draft and what operators see are still what was signed.
+            if version_ref.is_none() {
+                let base = LayoutBase {
+                    revision: None,
+                    seq: Some(pinned.head),
+                };
                 if let Some(conflict) = h::check_base(c, &screen_id, &base)? {
                     return Ok(Prepared::Conflict(conflict));
                 }
+            }
+            if h::published_state(c, &screen_id)?.map(|p| p.0) != pinned.published {
+                return Ok(Prepared::Moved(
+                    "The screen was published by someone else meanwhile; review the new diff and publish again".into(),
+                ));
             }
             let version = match &version_ref {
                 Some(r) => match h::get_version(c, &screen_id, r)? {
@@ -875,13 +1008,12 @@ pub async fn publish(
             };
             if needs_approval {
                 c.execute(
-                    "UPDATE design_versions SET status = 'pending', requested_by = ?2, signature = COALESCE(?3, signature) WHERE id = ?1",
+                    "UPDATE design_versions SET status = 'pending', requested_by = ?2, signature = COALESCE(?3, signature),
+                       reviewed_by = NULL, review_note = NULL, reviewed_at_ms = NULL WHERE id = ?1",
                     rusqlite::params![version.id, username, sig],
                 )?;
                 return Ok(Prepared::Version(Box::new(
-                    h::get_version(c, &screen_id, &version.id.to_string())?
-                        .map(|x| x.0)
-                        .unwrap_or(version),
+                    h::version_by_id(c, &screen_id, version.id)?.unwrap_or(version),
                 )));
             }
             Ok(Prepared::Version(Box::new(h::publish_version(
@@ -897,14 +1029,8 @@ pub async fn publish(
     let version = match prepared {
         Prepared::Version(v) => *v,
         Prepared::Missing => return Err(AppError::not_found("No such version")),
-        Prepared::Conflict(crate::storage::LayoutSave::Conflict {
-            revision,
-            seq,
-            since,
-        }) => {
-            return Err(super::layouts::conflict_error(revision, seq, since));
-        }
-        Prepared::Conflict(_) => return Err(AppError(anyhow::anyhow!("unexpected"))),
+        Prepared::Conflict(c) => return Err(conflict_of(c)),
+        Prepared::Moved(m) => return Err(conflict(m, "published_moved")),
     };
     let mut details = format!(
         "version={} id={} upto_seq={} stage={stage}",
@@ -959,10 +1085,11 @@ fn signature_error(e: super::signature::SignatureError) -> AppError {
     post,
     path = "/api/v1/screens/{id}/publish",
     params(("id" = String, Path, description = "Screen id")),
-    request_body(description = "`{version?: id|name, name?, message?, base_seq?, signature?}`"),
+    request_body(description = "`{version?: id|name|id:<n>|name:<name>, name?, message?, base_seq?, signature?}`"),
     responses(
         (status = 200, description = "`{status: published|pending, version}`"),
-        (status = 409, description = "Publishing is off, the name is taken, or the draft moved past `base_seq`"),
+        (status = 403, description = "Approval is required and the caller is an API key or a demo account"),
+        (status = 409, description = "Publishing is off, the name is taken, the draft moved past `base_seq` (or past the head the publish was signed against), or the screen was published meanwhile"),
         (status = 428, description = "The edition wants an electronic signature"),
     ),
     tag = "Version history",
@@ -987,6 +1114,74 @@ pub struct ReviewBody {
     #[serde(default)]
     pub note: String,
     pub signature: Option<SignatureInput>,
+    /// Approve although the version is older than the one operators see now
+    /// (it would roll the screen back).
+    #[serde(default)]
+    pub confirm_older: bool,
+}
+
+/// Why a review was refused before anything was signed or written.
+enum ReviewCheck {
+    Ok(Box<h::Version>),
+    Missing,
+    NotPending(String),
+    SelfReview,
+    Older(String),
+}
+
+/// The checks of a review, run before the signature and again in the
+/// transaction that records it.
+fn review_check(
+    c: &rusqlite::Connection,
+    screen: &str,
+    vref: &str,
+    approver: &str,
+    approve: bool,
+    confirm_older: bool,
+) -> anyhow::Result<ReviewCheck> {
+    let Some((v, _)) = h::get_version(c, screen, vref)? else {
+        return Ok(ReviewCheck::Missing);
+    };
+    if v.status != "pending" {
+        return Ok(ReviewCheck::NotPending(format!(
+            "Version {} is not waiting for approval ({})",
+            v.name, v.status
+        )));
+    }
+    let me = h::principal(c, approver)?;
+    for author in h::version_authors(c, &v)? {
+        if h::principal(c, &author)? == me {
+            return Ok(ReviewCheck::SelfReview);
+        }
+    }
+    if approve
+        && !confirm_older
+        && let Some((pid, upto, _, _)) = h::published_state(c, screen)?
+        && pid != v.id
+        && upto > v.upto_seq
+    {
+        return Ok(ReviewCheck::Older(format!(
+            "Version {} is older than the version operators see now: approving it rolls the screen back. Send confirm_older: true to approve anyway",
+            v.name
+        )));
+    }
+    Ok(ReviewCheck::Ok(Box::new(v)))
+}
+
+fn review_refusal(c: ReviewCheck) -> AppError {
+    match c {
+        ReviewCheck::Missing => AppError::not_found("No such version"),
+        ReviewCheck::NotPending(m) => conflict(m, "not_pending"),
+        ReviewCheck::SelfReview => rejected(
+            StatusCode::FORBIDDEN,
+            json!({
+                "error": "A publish request must be approved or rejected by someone other than its requester, the version's author and the authors of its changes (API keys count as the person who made them)",
+                "code": "self_review",
+            }),
+        ),
+        ReviewCheck::Older(m) => conflict(m, "older_than_published"),
+        ReviewCheck::Ok(_) => AppError(anyhow::anyhow!("unexpected review check")),
+    }
 }
 
 /// Approve (`approve: true`) or reject a pending publish request.
@@ -1005,28 +1200,20 @@ pub async fn review(
             "Only an administrator signed in may approve or reject a publish request",
         ));
     }
-    let (screen_id, vref) = (screen.to_string(), version.to_string());
-    let found = state
+    let (screen_id, vref, me, confirm) = (
+        screen.to_string(),
+        version.to_string(),
+        user.username.clone(),
+        body.confirm_older,
+    );
+    let v = match state
         .storage
-        .design_tx(move |c| h::get_version(c, &screen_id, &vref))
-        .await?;
-    let Some((v, _)) = found else {
-        return Err(AppError::not_found("No such version"));
+        .design_tx(move |c| review_check(c, &screen_id, &vref, &me, approve, confirm))
+        .await?
+    {
+        ReviewCheck::Ok(v) => *v,
+        other => return Err(review_refusal(other)),
     };
-    if v.status != "pending" {
-        return Err(conflict(
-            format!(
-                "Version {} is not waiting for approval ({})",
-                v.name, v.status
-            ),
-            "not_pending",
-        ));
-    }
-    if v.requested_by.as_deref() == Some(user.username.as_str()) {
-        return Err(AppError::forbidden(
-            "A publish request must be approved or rejected by someone other than its requester",
-        ));
-    }
     let mut signed = None;
     if approve {
         signed = super::signature::authorize_action(
@@ -1039,6 +1226,8 @@ pub async fn review(
                 "stage": "approve",
                 "screen_id": screen,
                 "version": v.name,
+                "version_id": v.id,
+                "upto_seq": v.upto_seq,
                 "requested_by": v.requested_by,
                 "message": v.message,
             }),
@@ -1048,37 +1237,46 @@ pub async fn review(
         .map_err(signature_error)?;
     }
     let sig = signed.as_ref().and_then(|s| s.id.clone());
-    let (screen_id, username, note, vid) = (
+    let (screen_id, username, note, vref) = (
         screen.to_string(),
         user.username.clone(),
         body.note.clone(),
-        v.id,
+        format!("id:{}", v.id),
     );
+    // Check and act in one transaction: of two concurrent reviews only one
+    // finds the request pending.
     let out = state
         .storage
         .design_tx(move |c| {
-            h::review_version(
-                c,
-                vid,
-                if approve { "approved" } else { "rejected" },
-                &username,
-                note.trim(),
-            )?;
-            if approve {
-                h::publish_version(c, &screen_id, vid, &username, sig.as_deref())
-            } else {
-                Ok(h::get_version(c, &screen_id, &vid.to_string())?
-                    .map(|x| x.0)
-                    .expect("version exists"))
+            let v = match review_check(c, &screen_id, &vref, &username, approve, confirm)? {
+                ReviewCheck::Ok(v) => v,
+                other => return Ok(Err(other)),
+            };
+            let status = if approve { "approved" } else { "rejected" };
+            if !h::review_version(c, v.id, status, &username, note.trim())? {
+                return Ok(Err(ReviewCheck::NotPending(format!(
+                    "Version {} was reviewed by someone else meanwhile",
+                    v.name
+                ))));
             }
+            let out = if approve {
+                h::publish_version(c, &screen_id, v.id, &username, sig.as_deref())?
+            } else {
+                h::version_by_id(c, &screen_id, v.id)?.context("version exists")?
+            };
+            Ok(Ok(out))
         })
-        .await?;
+        .await?
+        .map_err(review_refusal)?;
     let mut details = format!(
         "version={} id={} requested_by={}",
         out.name,
         out.id,
         out.requested_by.clone().unwrap_or_default()
     );
+    if !body.note.trim().is_empty() {
+        details.push_str(&format!(" note={:?}", body.note.trim()));
+    }
     if let Some(s) = &signed {
         details.push_str(&s.audit_suffix());
     }
@@ -1103,8 +1301,8 @@ pub async fn review(
     post,
     path = "/api/v1/screens/{id}/versions/{v}/approve",
     params(("id" = String, Path, description = "Screen id"), ("v" = String, Path, description = "Version id or name")),
-    request_body(description = "`{note?, signature?}`"),
-    responses((status = 200, description = "`{status: published, version}`"), (status = 403, description = "Not an admin session, or the requester"), (status = 409, description = "Not pending"), (status = 428)),
+    request_body(description = "`{note?, signature?, confirm_older?}`"),
+    responses((status = 200, description = "`{status: published, version}`"), (status = 403, description = "Not an admin session, or the requester, the version's author or an author of its changes"), (status = 409, description = "Not pending (or reviewed meanwhile), or older than the published version without `confirm_older`"), (status = 428)),
     tag = "Version history",
     security(("cookie_auth" = []))
 )]
@@ -1144,52 +1342,348 @@ pub async fn post_reject(
 
 // ── Settings ──
 
+/// Setting holding a change of the design-history settings waiting for a
+/// second admin (one at a time).
+const SETTINGS_REQUEST_KEY: &str = "design_history_request";
+
+/// A change that lowers the protection of what operators see (approval
+/// dropped or publishing off) while approval is required: it waits for a
+/// second admin.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct SettingsRequest {
+    pub settings: DesignSettings,
+    pub requested_by: String,
+    pub at_ms: i64,
+    pub signature: Option<String>,
+}
+
+fn read_request(c: &rusqlite::Connection) -> anyhow::Result<Option<(String, SettingsRequest)>> {
+    use rusqlite::OptionalExtension;
+    let text: Option<String> = c
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            [SETTINGS_REQUEST_KEY],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(text
+        .filter(|t| !t.is_empty())
+        .and_then(|t| serde_json::from_str(&t).ok().map(|r| (t, r))))
+}
+
+fn write_setting(c: &rusqlite::Connection, key: &str, value: &str) -> anyhow::Result<()> {
+    c.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
+}
+
+/// A JSON object body (an empty body is `{}`).
+fn object_body(bytes: &[u8]) -> Result<serde_json::Map<String, Value>, AppError> {
+    match optional_body::<Value>(bytes)? {
+        Value::Null => Ok(serde_json::Map::new()),
+        Value::Object(m) => Ok(m),
+        _ => Err(AppError::bad_request("expected an object")),
+    }
+}
+
+/// `signature` of a body, taken out of it.
+fn take_signature(
+    obj: &mut serde_json::Map<String, Value>,
+) -> Result<Option<SignatureInput>, AppError> {
+    match obj.remove("signature") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => serde_json::from_value(v)
+            .map(Some)
+            .map_err(|e| AppError::bad_request(format!("invalid signature: {e}"))),
+    }
+}
+
 /// GET /api/v1/settings/design-history
 #[utoipa::path(
     get,
     path = "/api/v1/settings/design-history",
-    responses((status = 200, description = "`{publishing, approval, squash_window_secs, squash_after_days, keep_days}`")),
+    responses((status = 200, description = "`{publishing, approval, squash_window_secs, squash_after_days, keep_days, pending_request}`")),
     tag = "Version history",
     security(("api_key" = []), ("cookie_auth" = []))
 )]
 pub async fn get_settings(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
-    Ok(Json(state.storage.design_settings().await?))
+    let (settings, request) = state
+        .storage
+        .design_tx(|c| Ok((h::read_settings(c)?, read_request(c)?.map(|r| r.1))))
+        .await?;
+    let mut out = serde_json::to_value(settings)?;
+    out["pending_request"] = serde_json::to_value(request)?;
+    Ok(Json(out))
 }
 
-/// PUT /api/v1/settings/design-history (admin)
+/// PUT /api/v1/settings/design-history (admin). Changing `publishing` or
+/// `approval` is the signed action `design_publish` (stage `settings`). While
+/// approval is required, a change that drops it or turns publishing off is
+/// filed for a second admin (202) instead of applied.
 #[utoipa::path(
     put,
     path = "/api/v1/settings/design-history",
-    request_body(description = "`{publishing?, approval?: none|required, squash_window_secs?, squash_after_days?, keep_days?}`"),
-    responses((status = 200), (status = 400)),
+    request_body(description = "`{publishing?, approval?: none|required, squash_window_secs? (0-3600), squash_after_days? (0-36500), keep_days? (0-36500), signature?}`"),
+    responses(
+        (status = 200, description = "The settings"),
+        (status = 202, description = "`{status: pending, request}`: a second admin approves it (POST .../approve)"),
+        (status = 400), (status = 403), (status = 409, description = "Another change waits for approval"), (status = 428),
+    ),
     tag = "Version history",
     security(("cookie_auth" = []))
 )]
 pub async fn put_settings(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
-    Json(body): Json<Value>,
-) -> Result<impl IntoResponse, AppError> {
-    let mut merged = serde_json::to_value(state.storage.design_settings().await?)?;
-    let Some(obj) = body.as_object() else {
-        return Err(AppError::bad_request("expected an object"));
-    };
-    for (k, v) in obj {
+    api_key: Option<Extension<super::ApiKeyAuth>>,
+    body: axum::body::Bytes,
+) -> Result<Response, AppError> {
+    let origin = super::signature::origin_of(&user, api_key.is_some());
+    let mut obj = object_body(&body)?;
+    let signature = take_signature(&mut obj)?;
+    obj.remove("pending_request");
+    let old = state.storage.design_settings().await?;
+    let mut merged = serde_json::to_value(&old)?;
+    for (k, v) in &obj {
         merged[k] = v.clone();
     }
     let s: DesignSettings = serde_json::from_value(merged)
         .map_err(|e| AppError::bad_request(format!("invalid settings: {e}")))?;
-    if s.squash_window_secs > 3600 {
-        return Err(AppError::bad_request("squash_window_secs is at most 3600"));
+    s.validate().map_err(AppError::bad_request)?;
+    let protective = old.publishing != s.publishing || old.approval != s.approval;
+    let needs_second = old.approval == Approval::Required && old.relaxed_by(&s);
+    if needs_second {
+        check_requester(&user, origin)?;
+    }
+    let signed = if protective {
+        super::signature::authorize_action(
+            &state,
+            &user,
+            origin,
+            SignedAction::DesignPublish,
+            "settings:design_history".into(),
+            json!({
+                "stage": if needs_second { "settings_request" } else { "settings" },
+                "before": old,
+                "after": s,
+            }),
+            signature.as_ref(),
+        )
+        .await
+        .map_err(signature_error)?
+    } else {
+        None
+    };
+    let suffix = signed
+        .as_ref()
+        .map(|x| x.audit_suffix())
+        .unwrap_or_default();
+    if needs_second {
+        let request = SettingsRequest {
+            settings: s.clone(),
+            requested_by: user.username.clone(),
+            at_ms: crate::timeutil::now_millis(),
+            signature: signed.as_ref().and_then(|x| x.id.clone()),
+        };
+        let text = serde_json::to_string(&request)?;
+        let filed = state
+            .storage
+            .design_tx(move |c| {
+                if read_request(c)?.is_some() {
+                    return Ok(false);
+                }
+                write_setting(c, SETTINGS_REQUEST_KEY, &text)?;
+                Ok(true)
+            })
+            .await?;
+        if !filed {
+            return Err(conflict(
+                "Another change of these settings waits for approval: approve or reject it first",
+                "request_pending",
+            ));
+        }
+        state.audit_logger.log(crate::security::AuditEvent {
+            action: "design_history_settings_request".into(),
+            username: user.username.clone(),
+            resource: "settings:design_history".into(),
+            details: Some(format!("after={}{suffix}", serde_json::to_string(&s)?)),
+        });
+        return Ok((
+            StatusCode::ACCEPTED,
+            Json(json!({"status": "pending", "request": request})),
+        )
+            .into_response());
     }
     state.storage.save_design_settings(&s).await?;
     state.audit_logger.log(crate::security::AuditEvent {
         action: "design_history_settings".into(),
         username: user.username.clone(),
         resource: "settings:design_history".into(),
-        details: Some(serde_json::to_string(&s)?),
+        details: Some(format!(
+            "before={} after={}{suffix}",
+            serde_json::to_string(&old)?,
+            serde_json::to_string(&s)?
+        )),
     });
-    Ok(Json(s))
+    Ok(Json(s).into_response())
+}
+
+/// Approve or reject the settings change waiting for a second admin.
+async fn review_settings(
+    state: &AppState,
+    user: &AuthUser,
+    origin: ActionOrigin,
+    approve: bool,
+    body: &[u8],
+) -> Result<Response, AppError> {
+    let mut obj = object_body(body)?;
+    let signature = take_signature(&mut obj)?;
+    let note = match obj.remove("note") {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(n)) => n,
+        Some(_) => return Err(AppError::bad_request("note must be a string")),
+    };
+    if let Some(k) = obj.keys().next() {
+        return Err(AppError::bad_request(format!("unknown field `{k}`")));
+    }
+    check_text(None, &note)?;
+    if user.role != "admin" || origin != ActionOrigin::Session {
+        return Err(AppError::forbidden(
+            "Only an administrator signed in may approve or reject a settings change",
+        ));
+    }
+    let me = user.username.clone();
+    let pending = state
+        .storage
+        .design_tx(move |c| {
+            let Some((text, r)) = read_request(c)? else {
+                return Ok(None);
+            };
+            let mine = h::principal(c, &r.requested_by)? == h::principal(c, &me)?;
+            Ok(Some((text, r, mine)))
+        })
+        .await?;
+    let Some((text, request, mine)) = pending else {
+        return Err(AppError::not_found(
+            "No change of the design-history settings waits for approval",
+        ));
+    };
+    if mine {
+        return Err(rejected(
+            StatusCode::FORBIDDEN,
+            json!({"error": "A settings change must be approved or rejected by an admin other than its requester", "code": "self_review"}),
+        ));
+    }
+    let signed = if approve {
+        super::signature::authorize_action(
+            state,
+            user,
+            origin,
+            SignedAction::DesignPublish,
+            "settings:design_history".into(),
+            json!({
+                "stage": "settings_approve",
+                "after": request.settings,
+                "requested_by": request.requested_by,
+            }),
+            signature.as_ref(),
+        )
+        .await
+        .map_err(signature_error)?
+    } else {
+        None
+    };
+    let settings = request.settings.clone();
+    let applied = state
+        .storage
+        .design_tx(move |c| {
+            // Only the request that was checked (and signed for).
+            let n = c.execute(
+                "DELETE FROM settings WHERE key = ?1 AND value = ?2",
+                rusqlite::params![SETTINGS_REQUEST_KEY, text],
+            )?;
+            if n != 1 {
+                return Ok(false);
+            }
+            if approve {
+                write_setting(c, h::SETTINGS_KEY, &serde_json::to_string(&settings)?)?;
+            }
+            Ok(true)
+        })
+        .await?;
+    if !applied {
+        return Err(conflict(
+            "The settings change was reviewed by someone else meanwhile",
+            "not_pending",
+        ));
+    }
+    let mut details = format!(
+        "requested_by={} after={}",
+        request.requested_by,
+        serde_json::to_string(&request.settings)?
+    );
+    if !note.trim().is_empty() {
+        details.push_str(&format!(" note={:?}", note.trim()));
+    }
+    if let Some(s) = &signed {
+        details.push_str(&s.audit_suffix());
+    }
+    state.audit_logger.log(crate::security::AuditEvent {
+        action: if approve {
+            "design_history_settings_approve".into()
+        } else {
+            "design_history_settings_reject".into()
+        },
+        username: user.username.clone(),
+        resource: "settings:design_history".into(),
+        details: Some(details),
+    });
+    Ok(Json(json!({
+        "status": if approve { "applied" } else { "rejected" },
+        "settings": if approve { serde_json::to_value(&request.settings)? } else { Value::Null },
+    }))
+    .into_response())
+}
+
+/// POST /api/v1/settings/design-history/approve (another admin, signed in)
+#[utoipa::path(
+    post,
+    path = "/api/v1/settings/design-history/approve",
+    request_body(description = "`{note?, signature?}`"),
+    responses((status = 200, description = "`{status: applied, settings}`"), (status = 403), (status = 404), (status = 409), (status = 428)),
+    tag = "Version history",
+    security(("cookie_auth" = []))
+)]
+pub async fn post_settings_approve(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
+    body: axum::body::Bytes,
+) -> Result<Response, AppError> {
+    let origin = super::signature::origin_of(&user, api_key.is_some());
+    review_settings(&state, &user, origin, true, &body).await
+}
+
+/// POST /api/v1/settings/design-history/reject (another admin, signed in)
+#[utoipa::path(
+    post,
+    path = "/api/v1/settings/design-history/reject",
+    request_body(description = "`{note?}`"),
+    responses((status = 200, description = "`{status: rejected}`"), (status = 403), (status = 404), (status = 409)),
+    tag = "Version history",
+    security(("cookie_auth" = []))
+)]
+pub async fn post_settings_reject(
+    State(state): State<AppState>,
+    Extension(user): Extension<AuthUser>,
+    api_key: Option<Extension<super::ApiKeyAuth>>,
+    body: axum::body::Bytes,
+) -> Result<Response, AppError> {
+    let origin = super::signature::origin_of(&user, api_key.is_some());
+    review_settings(&state, &user, origin, false, &body).await
 }
 
 // ── Git sync ──
@@ -1206,7 +1700,7 @@ pub async fn put_settings(
 pub async fn get_git(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
     let config = crate::design_git::load_config(&state.storage).await?;
     Ok(Json(json!({
-        "config": config,
+        "config": config.redacted(),
         "has_secret": crate::design_git::has_secret(&state.storage).await,
         "status": crate::design_git::last_status(&state.storage).await,
     })))
@@ -1217,7 +1711,7 @@ pub async fn get_git(State(state): State<AppState>) -> Result<impl IntoResponse,
 #[utoipa::path(
     put,
     path = "/api/v1/design/git",
-    request_body(description = "`{enabled, remote, branch, path, auth: none|token|ssh_key, username, push_on_publish, author_email_domain, work_dir, secret?}`"),
+    request_body(description = "`{enabled, remote (no credentials in it; https:// for token auth; a local path only under the data folder), branch, path, auth: none|token|ssh_key, username, push_on_publish, author_email_domain, work_dir (relative, under the data folder), secret?}`"),
     responses((status = 200), (status = 400)),
     tag = "Version history",
     security(("cookie_auth" = []))
@@ -1225,11 +1719,9 @@ pub async fn get_git(State(state): State<AppState>) -> Result<impl IntoResponse,
 pub async fn put_git(
     State(state): State<AppState>,
     Extension(user): Extension<AuthUser>,
-    Json(mut body): Json<Value>,
+    body: axum::body::Bytes,
 ) -> Result<impl IntoResponse, AppError> {
-    let Some(obj) = body.as_object_mut() else {
-        return Err(AppError::bad_request("expected an object"));
-    };
+    let mut obj = object_body(&body)?;
     let secret = obj.remove("secret");
     let mut merged = serde_json::to_value(crate::design_git::load_config(&state.storage).await?)?;
     for (k, v) in obj.iter() {
@@ -1240,7 +1732,7 @@ pub async fn put_git(
     crate::design_git::save_config(&state.storage, &config)
         .await
         .map_err(|e| AppError::bad_request(format!("{e:#}")))?;
-    if let Some(secret) = secret {
+    if let Some(secret) = &secret {
         crate::design_git::save_secret(&state.storage, &state.auth_secret, secret.as_str()).await?;
     }
     state.audit_logger.log(crate::security::AuditEvent {
@@ -1248,12 +1740,16 @@ pub async fn put_git(
         username: user.username.clone(),
         resource: "settings:design_git".into(),
         details: Some(format!(
-            "enabled={} remote={} branch={} auth={:?}",
-            config.enabled, config.remote, config.branch, config.auth
+            "enabled={} remote={} branch={} auth={:?} secret={}",
+            config.enabled,
+            crate::design_git::redact(&config.remote),
+            config.branch,
+            config.auth,
+            if secret.is_some() { "changed" } else { "kept" }
         )),
     });
     Ok(Json(json!({
-        "config": config,
+        "config": config.redacted(),
         "has_secret": crate::design_git::has_secret(&state.storage).await,
     })))
 }

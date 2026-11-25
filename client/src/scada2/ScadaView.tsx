@@ -23,6 +23,7 @@ import { toast } from '../components/Toast'
 import { getScreenWidget, initialConfigOf, scadaSizeOf } from '../edition/widgets'
 import { isSignatureCancelled } from '../signature/logic'
 import { useRole } from '../RoleContext'
+import { useDesignStatus } from '../queries/designHistory'
 
 // Import all widgets to trigger registration
 import './widgets/SymbolWidget'
@@ -110,6 +111,8 @@ export const ScadaView: React.FC<Props> = ({
 }) => {
   const { canOperate } = useRole()
   const { data: faceplateDefs = [] } = useFaceplates()
+  // Run mode shows the published screen: an editor whose saved draft is not
+  // published yet is told so (edits otherwise seem to vanish after Done).
   const [history, dispatch] = useReducer(historyReducer, emptyHistory)
   const layout = history.present
   const dirty = history.present !== history.saved
@@ -156,6 +159,8 @@ export const ScadaView: React.FC<Props> = ({
   }, [sensors, onSave])
 
   // Tell the owner which rows to pass: the draft while editing, the published screen otherwise.
+  const { data: designStatus } = useDesignStatus(activeScreen, isAdmin && !editMode)
+  const draftDiffers = isAdmin && !editMode && !!designStatus?.publishing && !!designStatus.published?.draft_differs
   const editModeCb = useRef(onEditModeChange)
   editModeCb.current = onEditModeChange
   useEffect(() => { editModeCb.current?.(editMode) }, [editMode])
@@ -530,6 +535,25 @@ export const ScadaView: React.FC<Props> = ({
               color: 'var(--text-dim)', boxShadow: 'var(--shadow)',
             }}>
               {connectFrom ? 'Now click the target equipment · Esc to cancel' : 'Click the source equipment'}
+            </div>
+          )}
+          {draftDiffers && (
+            <div data-testid="scada-draft-differs" role="status" style={{
+              position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', zIndex: 15, maxWidth: '90%',
+              display: 'flex', alignItems: 'center', gap: 10, padding: '6px 12px', borderRadius: 8, fontSize: 12,
+              background: 'var(--card)', border: '1px solid var(--warn, var(--border))', color: 'var(--text)', boxShadow: 'var(--shadow)',
+            }}>
+              <span>
+                The draft differs from what operators see
+                {designStatus?.published?.name ? <> (published version <b>{designStatus.published.name}</b>)</> : null}.
+              </span>
+              {onOpenDesigner && (
+                <button data-testid="scada-draft-publish" onClick={onOpenDesigner} style={{
+                  border: 'none', background: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 12, fontWeight: 600, padding: 0,
+                }}>
+                  {designStatus?.approval === 'required' ? 'Request a publish in the Designer' : 'Publish in the Designer'}
+                </button>
+              )}
             </div>
           )}
           {editMode && !loaded && (

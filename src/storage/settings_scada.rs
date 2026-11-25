@@ -180,6 +180,9 @@ pub struct LayoutView {
     pub seq: i64,
     /// `draft` or `published`: which rows `equipment`/`connections` are.
     pub view: &'static str,
+    /// With the published rows: whether the draft differs from them (an
+    /// editor's unpublished work), for a "draft differs" banner.
+    pub draft_differs: bool,
 }
 
 pub(crate) fn layout_view(
@@ -189,8 +192,10 @@ pub(crate) fn layout_view(
 ) -> Result<LayoutView> {
     let revision = layout_revision(conn, screen_id)?;
     let seq = design_history::head_seq(conn, screen_id)?;
+    let draft = design_history::read_draft(conn, screen_id)?;
     if published && let Some(p) = design_history::read_published(conn, screen_id)? {
         return Ok(LayoutView {
+            draft_differs: p != draft,
             equipment: p.equipment,
             connections: p.connections,
             revision,
@@ -199,11 +204,12 @@ pub(crate) fn layout_view(
         });
     }
     Ok(LayoutView {
-        equipment: read_equipment(conn, screen_id)?,
-        connections: read_connections(conn, screen_id)?,
+        equipment: draft.equipment,
+        connections: draft.connections,
         revision,
         seq,
         view: "draft",
+        draft_differs: false,
     })
 }
 
