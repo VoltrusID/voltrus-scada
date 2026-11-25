@@ -113,25 +113,25 @@
     },
     {
       "id": "analog", "name": "Analog instrument", "category": "Instruments",
-      "description": "Transmitter (flow, pressure, level, analyser): one process value and an optional setpoint. The key is the prefix itself; give the unit and limits per instance.",
+      "description": "Transmitter (flow, pressure, level, analyser): one process value and an optional setpoint. The key is the prefix itself; give the unit and limits per instance. The setpoint is writable within its tag's range, with a reason.",
       "symbol": "isa_instrument", "faceplate": "analog",
       "tags": [
         {"role": "pv", "label": "Process value", "kind": "analog", "key": "{prefix}", "offset": 0, "required": true},
-        {"role": "sp", "label": "Setpoint", "kind": "setpoint", "key": "{prefix}_sp", "offset": 2, "write": {"writable": true}}
+        {"role": "sp", "label": "Setpoint", "kind": "setpoint", "key": "{prefix}_sp", "offset": 2, "write": {"writable": true, "requires_reason": true}}
       ],
       "bindings": {"primary": "pv"},
       "symbol_config": {"showValue": true}
     },
     {
       "id": "dosing_pump", "name": "Dosing pump", "category": "Pumps",
-      "description": "Chemical dosing pump: run feedback, trip, start/stop, dose and dose setpoint. Keys are {prefix}_pump_run, {prefix}_dose, ...",
+      "description": "Chemical dosing pump: run feedback, trip, start/stop, dose and dose setpoint. Keys are {prefix}_pump_run, {prefix}_dose, ... The dose setpoint is writable within its tag's range, at most 10 writes a minute, with a reason; narrow it per instance (overrides.dose_sp.write).",
       "symbol": "isa_pump_dosing", "faceplate": "dosing_pump",
       "tags": [
         {"role": "run", "label": "Running", "kind": "state", "key": "{prefix}_pump_run", "offset": 0, "min": 0, "max": 1, "decimals": 0, "required": true},
         {"role": "fault", "label": "Fault", "kind": "fault", "key": "{prefix}_pump_fault", "offset": 2, "min": 0, "max": 1, "decimals": 0, "alarm": {"crit": 1}},
         {"role": "cmd", "label": "Start / stop", "kind": "command", "key": "{prefix}_pump_cmd", "offset": 4, "min": 0, "max": 1, "decimals": 0, "write": {"writable": true, "min": 0, "max": 1}, "fallback": "run"},
         {"role": "dose", "label": "Dose", "kind": "analog", "key": "{prefix}_dose", "offset": 6, "unit": "mg/L", "decimals": 2},
-        {"role": "dose_sp", "label": "Dose setpoint", "kind": "setpoint", "key": "{prefix}_dose_sp", "offset": 8, "unit": "mg/L", "decimals": 2, "write": {"writable": true}}
+        {"role": "dose_sp", "label": "Dose setpoint", "kind": "setpoint", "key": "{prefix}_dose_sp", "offset": 8, "unit": "mg/L", "decimals": 2, "write": {"writable": true, "max_rate": 10, "requires_reason": true}}
       ],
       "bindings": {"primary": "run", "fault": "fault"},
       "symbol_config": {"showStatus": true, "writable": true}

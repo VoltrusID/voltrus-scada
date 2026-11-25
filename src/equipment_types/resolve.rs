@@ -55,6 +55,59 @@ pub struct NewRegister {
     pub register_type: String,
     pub register_area: String,
     pub scale: f64,
+    /// A register of that name is on the device already (its address is
+    /// checked against `address` by the expansion).
+    #[serde(skip)]
+    pub exists: bool,
+}
+
+/// 16-bit registers a value of `register_type` takes in `area` (coils and
+/// discrete inputs are one bit each).
+pub fn register_width(register_type: &str, area: &str) -> i64 {
+    if matches!(area, "coil" | "discrete") {
+        return 1;
+    }
+    match register_type {
+        "int16" | "uint16" => 1,
+        "float64" => 4,
+        _ => 2,
+    }
+}
+
+/// `register name → base + offset` of the roles of `inst` (of type `t`) that
+/// have an offset, when the instance has a base. What the instance's registers
+/// are expected to be at, so the expansion can tell its own register (moved
+/// with the base) from someone else's.
+pub fn expected_registers(t: &EquipmentType, inst: &EquipmentInstance) -> HashMap<String, i64> {
+    let mut out = HashMap::new();
+    let Some(base) = inst.base else {
+        return out;
+    };
+    let prefix = inst.prefix();
+    for tag in &t.tags {
+        let Some(offset) = tag.offset else { continue };
+        let over = inst.overrides.get(&tag.role).cloned().unwrap_or_default();
+        if over.skip {
+            continue;
+        }
+        let label = if tag.label.is_empty() {
+            tag.role.as_str()
+        } else {
+            tag.label.as_str()
+        };
+        let vars = Vars {
+            prefix: &prefix,
+            name: &inst.name,
+            device: &inst.device,
+            role: &tag.role,
+            label,
+        };
+        let pattern = over.key.unwrap_or_else(|| tag.key.clone());
+        if let Ok(key) = expand(&pattern, &vars, &|_| None) {
+            out.insert(key, base + offset);
+        }
+    }
+    out
 }
 
 /// What the type and the instance's override set on a tag.
@@ -210,10 +263,9 @@ pub fn resolve(t: &EquipmentType, inst: &EquipmentInstance, world: &World) -> Re
             roles.push(r);
             continue;
         }
-        if let (Some(base), Some(offset), Some(m)) = (inst.base, tag.offset, modbus)
-            && !m.registers.contains(&key)
-        {
-            if m.linked {
+        if let (Some(base), Some(offset), Some(m)) = (inst.base, tag.offset, modbus) {
+            let exists = m.registers.contains(&key);
+            if !exists && m.linked {
                 problems.push(format!(
                     "role '{}': device '{device}' follows a device template, so register '{key}' cannot be added (unlink it, or leave base out)",
                     tag.role
@@ -225,6 +277,7 @@ pub fn resolve(t: &EquipmentType, inst: &EquipmentInstance, world: &World) -> Re
                     register_type: tag.register_type.clone(),
                     register_area: tag.register_area.clone(),
                     scale: tag.scale,
+                    exists,
                 });
             }
         }
@@ -253,7 +306,22 @@ pub fn resolve(t: &EquipmentType, inst: &EquipmentInstance, world: &World) -> Re
             r.tag_id = target.tag_id;
         }
     }
+    let mut notes = Vec::new();
     for (r, tag) in roles.iter().zip(&t.tags) {
+        // A command without a tag of its own writes to the feedback it falls
+        // back to: allowed (that is what the WTP showcase does), but worth
+        // knowing.
+        if r.status == Status::Fallback
+            && r.kind == "command"
+            && r.attrs.write.writable == Some(true)
+            && let Some(target) = tag.fallback.as_deref().and_then(|f| t.tag(f))
+            && target.kind == "state"
+        {
+            notes.push(format!(
+                "role '{}' (command) has no tag of its own and falls back to '{}' ({}), the {} feedback: commands are written to the feedback tag. Give it a tag of its own (overrides.{}.key) or skip it",
+                r.role, target.role, r.reference, target.role, r.role
+            ));
+        }
         if r.status == Status::Missing && tag.required {
             problems.push(format!(
                 "required role '{}' has no tag: no tag '{}' on device '{device}'{}",
@@ -268,7 +336,6 @@ pub fn resolve(t: &EquipmentType, inst: &EquipmentInstance, world: &World) -> Re
         }
     }
 
-    let mut notes = Vec::new();
     let mut flows = Vec::new();
     for f in &t.flows {
         let vars = Vars {
@@ -352,17 +419,25 @@ fn map_strings(v: &Value, f: &mut dyn FnMut(&str) -> String) -> Value {
 }
 
 /// How a SCADA symbol is bound to an instance: the primary tag, the config
-/// keys set and the config keys removed.
+/// keys set, the keys set only as defaults and the config keys removed.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WidgetPatch {
     pub equipment_type: &'static str,
     pub sensor_id: Option<Value>,
     pub config: Map<String, Value>,
+    /// The type's `symbol_config`: set when the widget has no value of its
+    /// own for the key (a widget's own value is kept).
+    pub defaults: Map<String, Value>,
     pub remove: Vec<String>,
+    /// The `symbol_config` the instance had before (a type being changed):
+    /// a widget value equal to the old default follows the new one, and a
+    /// default the type drops is removed when the widget still has it.
+    #[serde(skip)]
+    pub prev_defaults: Option<Map<String, Value>>,
 }
 
-/// The binding of a symbol to `inst`. `config.label` is only a default: it
-/// is set when the symbol has no label (see [`apply_patch`]).
+/// The binding of a symbol to `inst`. `config.label` and `defaults` are only
+/// defaults: set when the symbol has no value (see [`apply_patch`]).
 pub fn widget_patch(t: &EquipmentType, inst: &EquipmentInstance, res: &Resolution) -> WidgetPatch {
     let handle = |role: Option<&str>| -> Option<Value> {
         let r = res.role(role?)?;
@@ -398,19 +473,46 @@ pub fn widget_patch(t: &EquipmentType, inst: &EquipmentInstance, res: &Resolutio
             None => remove.push((*key).to_string()),
         }
     }
-    for (k, v) in &t.symbol_config {
-        config.insert(k.clone(), v.clone());
-    }
     config.insert("label".into(), Value::String(inst.name.clone()));
     WidgetPatch {
         equipment_type: "symbol",
         sensor_id: handle(t.bindings.primary.as_deref()),
         config,
+        defaults: t.symbol_config.clone(),
         remove,
+        prev_defaults: None,
+    }
+}
+
+/// Tag handles a bound widget's config holds for its instance (the role map
+/// and the indicator tags).
+fn instance_handles(config: &Map<String, Value>) -> Vec<Value> {
+    let mut out: Vec<Value> = config
+        .get("faceplateMap")
+        .and_then(Value::as_object)
+        .map(|m| m.values().cloned().collect())
+        .unwrap_or_default();
+    for (_, key) in BINDING_KEYS {
+        if let Some(v) = config.get(*key) {
+            out.push(v.clone());
+        }
+    }
+    out
+}
+
+fn is_unset(v: Option<&Value>) -> bool {
+    match v {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => s.is_empty(),
+        _ => false,
     }
 }
 
 /// Apply a patch to a widget row. Returns whether anything changed.
+///
+/// `sensors[0]` becomes the primary tag; the widget's other tags stay, except
+/// those that were (or are now) the instance's own. The type's defaults and
+/// the label are set only where the widget has no value of its own.
 pub fn apply_patch(
     p: &WidgetPatch,
     equipment_type: &mut String,
@@ -419,19 +521,44 @@ pub fn apply_patch(
 ) -> bool {
     let before = (equipment_type.clone(), sensors.clone(), config.clone());
     *equipment_type = p.equipment_type.to_string();
-    *sensors = p.sensor_id.iter().cloned().collect();
+    let mut owned = instance_handles(config);
+    owned.extend(instance_handles(&p.config));
+    let extras: Vec<Value> = sensors
+        .iter()
+        .filter(|v| p.sensor_id.as_ref() != Some(*v) && !owned.contains(v))
+        .cloned()
+        .collect();
+    let mut next: Vec<Value> = p.sensor_id.iter().cloned().collect();
+    for v in extras {
+        if !next.contains(&v) {
+            next.push(v);
+        }
+    }
+    *sensors = next;
     for (k, v) in &p.config {
         if k == "label" {
-            let empty = match config.get("label") {
-                None | Some(Value::Null) => true,
-                Some(Value::String(s)) => s.is_empty(),
-                _ => false,
-            };
-            if empty {
+            if is_unset(config.get("label")) {
                 config.insert(k.clone(), v.clone());
             }
         } else {
             config.insert(k.clone(), v.clone());
+        }
+    }
+    let prev = p.prev_defaults.as_ref();
+    for (k, v) in &p.defaults {
+        let follow = match config.get(k) {
+            None | Some(Value::Null) => true,
+            Some(cur) => prev.and_then(|m| m.get(k)) == Some(cur),
+        };
+        if follow {
+            config.insert(k.clone(), v.clone());
+        }
+    }
+    if let Some(prev) = prev {
+        for (k, v) in prev {
+            if !p.defaults.contains_key(k) && config.get(k) == Some(v) {
+                config.remove(k);
+            }
         }
     }
     for k in &p.remove {

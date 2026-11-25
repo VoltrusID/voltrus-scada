@@ -2385,7 +2385,7 @@ async fn mcp_equipment_types_from_library_to_instance() {
         &f.app,
         key,
         "instantiate_equipment",
-        json!({"name": "P-1", "type": "pump", "device": "skid", "base": 0}),
+        json!({"name": "P-1", "type": "pump", "device": "skid", "base": 0, "dry_run": false}),
     )
     .await;
     assert_eq!(made["resolved"]["roles"][0]["status"], "bound", "{made}");
@@ -2442,4 +2442,131 @@ async fn mcp_equipment_types_from_library_to_instance() {
         .await
         .unwrap();
     assert_eq!(max, 60.0);
+}
+
+/// instantiate_equipment previews by default and refuses an instance that
+/// would take another one's prefix; operators and viewers (and read-only
+/// keys) cannot call the equipment write tools at all.
+#[tokio::test]
+async fn mcp_equipment_writes_are_guarded() {
+    let f = fixture().await;
+    let key = Auth::Bearer(&f.integration_key);
+    ok(
+        &f.app,
+        key,
+        "create_equipment_type",
+        json!({"from_library": "pump"}),
+    )
+    .await;
+    let (status, body) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/modbus-devices",
+        None,
+        Some(&f.admin_cookie()),
+        Some(json!({"id": "skid", "name": "Skid", "ip": "127.0.0.1", "port": 1, "registers": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    // Without dry_run it is a preview: nothing is written.
+    let preview = ok(
+        &f.app,
+        key,
+        "instantiate_equipment",
+        json!({"name": "P-101A", "type": "pump", "device": "skid", "base": 0}),
+    )
+    .await;
+    assert_eq!(preview["dry_run"], true, "{preview}");
+    assert_eq!(
+        f.storage
+            .list_equipment_instances(None)
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
+    ok(
+        &f.app,
+        key,
+        "instantiate_equipment",
+        json!({"name": "P-101A", "type": "pump", "device": "skid", "base": 0, "dry_run": false}),
+    )
+    .await;
+    for dry_run in [true, false] {
+        let err = tool_err(
+            &f.app,
+            key,
+            "instantiate_equipment",
+            json!({"name": "P101A", "type": "pump", "device": "skid", "base": 100, "dry_run": dry_run}),
+        )
+        .await;
+        assert!(
+            err.contains("prefix 'p101a' is the prefix of equipment instance 'P-101A'"),
+            "{err}"
+        );
+    }
+    assert_eq!(
+        f.storage
+            .list_equipment_instances(None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // The tool is marked destructive.
+    let (_, list) = rpc(&f.app, key, "tools/list", json!({})).await;
+    let tool = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "instantiate_equipment")
+        .unwrap()
+        .clone();
+    assert_eq!(tool["annotations"]["destructiveHint"], true, "{tool}");
+
+    // Operators, viewers and read-only keys are refused every write tool.
+    for (name, role) in [("olivia", "operator"), ("victor", "viewer")] {
+        let hash = crate::api::auth::hash_password("password-123");
+        f.storage.create_user(name, &hash, "", role).await.unwrap();
+    }
+    let olivia = format!(
+        "voltrus_token={}",
+        login_cookie(&f.app, "olivia", "password-123").await
+    );
+    let victor = format!(
+        "voltrus_token={}",
+        login_cookie(&f.app, "victor", "password-123").await
+    );
+    let calls = [
+        ("create_equipment_type", json!({"from_library": "valve"})),
+        (
+            "update_equipment_type",
+            json!({"type": {"id": "pump", "name": "Pump", "symbol": "isa_pump"}, "dry_run": false}),
+        ),
+        (
+            "instantiate_equipment",
+            json!({"name": "P-9", "type": "pump", "device": "skid", "base": 50, "dry_run": false}),
+        ),
+    ];
+    for auth in [
+        Auth::Cookie(&olivia),
+        Auth::Cookie(&victor),
+        Auth::Bearer(&f.api_key),
+    ] {
+        for (tool, args) in &calls {
+            let resp = call(&f.app, auth, tool, args.clone()).await;
+            assert_eq!(resp["error"]["code"], -32003, "{tool}: {resp}");
+        }
+    }
+    assert_eq!(
+        f.storage
+            .list_equipment_instances(None)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(f.storage.list_equipment_types().await.unwrap().len(), 1);
 }

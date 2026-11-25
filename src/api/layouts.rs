@@ -383,8 +383,6 @@ pub async fn save_scada_equipment(
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     let items = parse_equipment(&id, items_array(&body, "items")?);
-    // Symbols naming an equipment instance get its tags (docs/equipment-types.md).
-    let items = state.storage.bind_equipment_rows(items).await?;
     let base = base_revision(&body)?;
     let outcome = state
         .storage
@@ -479,7 +477,6 @@ pub async fn save_scada_layout(
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
     let equipment = parse_equipment(&id, items_array(&body, "equipment")?);
-    let equipment = state.storage.bind_equipment_rows(equipment).await?;
     let connections = parse_connections(&id, items_array(&body, "connections")?);
     let base = base_revision(&body)?;
     let outcome = state

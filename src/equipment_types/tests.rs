@@ -115,7 +115,8 @@ fn an_instance_binds_existing_tags_by_pattern_and_falls_back() {
         json!({"run": 2, "fault": 3, "cmd": 2})
     );
     assert_eq!(p.config["symbol"], "isa_pump_centrifugal");
-    assert_eq!(p.config["showStatus"], true);
+    assert_eq!(p.defaults["showStatus"], true, "symbol_config is a default");
+    assert!(!p.config.contains_key("showStatus"));
     assert!(p.remove.contains(&"runSensorId".to_string()));
 }
 
@@ -299,7 +300,11 @@ fn flows_are_copied_per_instance_with_refs() {
         &wtp(),
     );
     assert!(r.flows.is_empty());
-    assert!(r.notes[0].contains("trip-stop"), "{:?}", r.notes);
+    assert!(
+        r.notes.iter().any(|n| n.contains("trip-stop")),
+        "{:?}",
+        r.notes
+    );
 }
 
 #[test]
@@ -315,7 +320,11 @@ fn applying_a_patch_twice_changes_nothing_and_keeps_a_label() {
         .unwrap();
     assert!(apply_patch(&p, &mut kind, &mut sensors, &mut config));
     assert_eq!(kind, "symbol");
-    assert_eq!(sensors, vec![json!(2)]);
+    assert_eq!(
+        sensors,
+        vec![json!(2), json!(99)],
+        "the primary tag first; another tag of the widget stays"
+    );
     assert_eq!(config["label"], "Intake B", "a label is kept");
     assert_eq!(config["z"], 3, "other keys are kept");
     assert!(!config.contains_key("runSensorId"));
@@ -338,4 +347,70 @@ fn symbol_keys_include_the_library_files() {
     for k in symbols::SYMBOL_FILES {
         assert!(all.contains(k));
     }
+}
+
+#[test]
+fn a_command_that_falls_back_to_the_run_feedback_is_noted() {
+    let t = pump();
+    let i = inst(json!({"name": "P-101B", "type": "pump", "device": "wtp"}));
+    let r = resolve(&t, &i, &wtp());
+    assert_eq!(r.role("cmd").unwrap().status, Status::Fallback);
+    assert!(r.problems.is_empty(), "a note, not a problem");
+    assert!(
+        r.notes
+            .iter()
+            .any(|n| n.contains("role 'cmd'") && n.contains("falls back to 'run'")),
+        "{:?}",
+        r.notes
+    );
+}
+
+#[test]
+fn symbol_config_is_a_default_that_follows_the_type_unless_overridden() {
+    let t = pump();
+    let i = inst(json!({"name": "P-101B", "type": "pump", "device": "wtp"}));
+    let mut p = widget_patch(&t, &i, &resolve(&t, &i, &wtp()));
+    let mut kind = "symbol".to_string();
+    let mut sensors = Vec::new();
+    let mut config = json!({"equipment": "P-101B", "writable": false})
+        .as_object()
+        .cloned()
+        .unwrap();
+    apply_patch(&p, &mut kind, &mut sensors, &mut config);
+    assert_eq!(config["writable"], false, "the widget's own value");
+    assert_eq!(config["showStatus"], true, "a default it lacked");
+    // The type changes showStatus and drops writable: the old default
+    // follows, the override stays.
+    p.prev_defaults = Some(p.defaults.clone());
+    p.defaults = json!({"showStatus": false}).as_object().cloned().unwrap();
+    apply_patch(&p, &mut kind, &mut sensors, &mut config);
+    assert_eq!(config["showStatus"], false);
+    assert_eq!(config["writable"], false);
+    let mut plain = json!({"equipment": "P-101B", "writable": true})
+        .as_object()
+        .cloned()
+        .unwrap();
+    apply_patch(&p, &mut kind, &mut sensors, &mut plain);
+    assert!(
+        !plain.contains_key("writable"),
+        "a dropped default the widget still had is removed"
+    );
+}
+
+#[test]
+fn expected_registers_follow_base_offsets_and_overrides() {
+    let t = pump();
+    let i = inst(
+        json!({"name": "P-1", "type": "pump", "device": "skid", "base": 10,
+                        "overrides": {"speed": {"key": "p1_hz"}, "fault": {"skip": true}}}),
+    );
+    let m = super::resolve::expected_registers(&t, &i);
+    assert_eq!(m.get("p1_run"), Some(&10));
+    assert_eq!(m.get("p1_hz"), Some(&16));
+    assert!(!m.contains_key("p1_fault"));
+    let no_base = inst(json!({"name": "P-1", "type": "pump", "device": "skid"}));
+    assert!(super::resolve::expected_registers(&t, &no_base).is_empty());
+    assert_eq!(super::resolve::register_width("float64", "holding"), 4);
+    assert_eq!(super::resolve::register_width("float32", "coil"), 1);
+    assert_eq!(super::resolve::register_width("int16", "input"), 1);
 }

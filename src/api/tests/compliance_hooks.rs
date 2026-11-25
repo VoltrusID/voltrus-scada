@@ -1201,3 +1201,115 @@ async fn a_direct_plc_write_follows_the_tag_write_policy_and_signature() {
         write(json!({"variable": "speed", "value": 20.0, "signature": signature("admin")})).await;
     assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{body}");
 }
+
+/// An equipment write that changes a tag's write policy (here: instantiating
+/// a pump makes its command tag writable) needs the signature the
+/// write-policy route needs; the dry run does not, and lists the change. The
+/// audit entry lists every policy field before and after.
+#[tokio::test]
+async fn equipment_changes_to_write_policies_need_the_signature() {
+    let mut f = fixture(TestEdition::default()).await;
+    let admin = cookie(&f.app, "admin", "admin").await;
+    let call = |method: &'static str, uri: &'static str, body: Option<serde_json::Value>| {
+        let app = f.app.clone();
+        let admin = admin.clone();
+        async move { send_request(&app, method, uri, None, Some(&admin), body).await }
+    };
+    // Installing types changes no tag: no signature.
+    let (status, body) = call(
+        "POST",
+        "/api/v1/equipment-types/library/install",
+        Some(json!({"ids": ["pump"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = call(
+        "POST",
+        "/api/v1/modbus-devices",
+        Some(json!({"id": "plc", "name": "PLC", "ip": "127.0.0.1", "port": 1, "registers": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let inst = json!({"name": "P-1", "type": "pump", "device": "plc", "base": 0});
+    let (status, dry) = call(
+        "POST",
+        "/api/v1/equipment-instances?dry_run=true",
+        Some(inst.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dry}");
+    let cmd = dry["changes"]["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["key"] == "p1_cmd")
+        .unwrap()
+        .clone();
+    assert!(
+        cmd["diff"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({"field": "write.writable", "before": null, "after": true})),
+        "{cmd}"
+    );
+
+    let (status, body) = call("POST", "/api/v1/equipment-instances", Some(inst.clone())).await;
+    assert_eq!(status, StatusCode::PRECONDITION_REQUIRED, "{body}");
+    assert_eq!(body["signature_required"]["action"], "mode_switch");
+    assert!(
+        f.state
+            .storage
+            .get_equipment_instance("P-1")
+            .await
+            .unwrap()
+            .is_none(),
+        "nothing written without the signature"
+    );
+
+    drain(&mut f.audit);
+    let mut signed = inst.clone();
+    signed["signature"] = signature("admin");
+    let (status, body) = call("POST", "/api/v1/equipment-instances", Some(signed)).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let record = f.edition.records.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(record.resource, "equipment_instance:P-1:write_policy");
+    assert!(
+        record.details.to_string().contains("p1_cmd"),
+        "{}",
+        record.details
+    );
+    let entries = drain(&mut f.audit);
+    let entry = entries
+        .iter()
+        .find(|e| e.action == "create_equipment_instance")
+        .expect("audit entry");
+    let details = entry.details.clone().unwrap_or_default();
+    assert!(
+        details.contains("write.writable") && details.contains("signature=sig-"),
+        "{details}"
+    );
+
+    // An MCP client cannot sign: refused, nothing written.
+    let user = crate::api::AuthUser {
+        username: "admin".into(),
+        role: "admin".into(),
+    };
+    let resp = crate::api::equipment_types::create_instance_as(
+        &f.state,
+        &user,
+        ActionOrigin::Mcp,
+        false,
+        json!({"name": "P-2", "type": "pump", "device": "plc", "base": 100}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    assert!(
+        f.state
+            .storage
+            .get_equipment_instance("P-2")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}

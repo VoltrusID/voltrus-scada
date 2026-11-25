@@ -208,6 +208,15 @@ pub fn bind_rows(conn: &Connection, rows: &mut [ScadaEquipment]) -> Result<()> {
     Ok(())
 }
 
+/// What deleting an instance deletes and unbinds.
+#[derive(Debug, Clone, Default)]
+pub struct InstanceDelete {
+    /// Ids of its generated flows.
+    pub flows: Vec<String>,
+    /// `(screen_id, equipment_id)` of the widgets unbound.
+    pub widgets: Vec<(String, String)>,
+}
+
 /// Outcome of deleting a type.
 pub enum TypeDelete {
     Deleted,
@@ -293,25 +302,99 @@ impl Storage {
         .await
     }
 
-    pub async fn delete_equipment_instance(&self, name: &str) -> Result<bool> {
+    /// Delete an instance: its generated flows (`<prefix>-<id>` of its type's
+    /// flows) are deleted and the SCADA widgets bound to it are unbound
+    /// (`config.equipment` cleared, `config.unboundEquipment` set to the old
+    /// name; the symbol keeps its tags), so a later instance of the same name
+    /// does not take them over. Its tags and registers stay. `None` when there
+    /// is no such instance; with `dry_run` nothing is written.
+    pub async fn delete_equipment_instance(
+        &self,
+        name: &str,
+        dry_run: bool,
+    ) -> Result<Option<InstanceDelete>> {
         let name = name.to_string();
         self.with_conn(move |conn| {
-            Ok(conn
-                .execute("DELETE FROM equipment_instances WHERE name = ?1", [&name])
-                .context("delete equipment instance")?
-                > 0)
+            let tx = conn.transaction().context("begin transaction")?;
+            let Some(inst) = read_instances(&tx, Some(&name), None)?.into_iter().next() else {
+                return Ok(None);
+            };
+            let prefix = inst.prefix();
+            let mut flows: Vec<String> = Vec::new();
+            if let Some(t) = read_types(&tx, Some(&inst.type_id))?.into_iter().next() {
+                for f in &t.flows {
+                    let Some(id) = f.get("id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let id = resolve::flow_id(&prefix, id);
+                    let exists: bool = tx
+                        .query_row("SELECT 1 FROM flows WHERE id = ?1", [&id], |_| Ok(()))
+                        .is_ok();
+                    if exists {
+                        flows.push(id);
+                    }
+                }
+            }
+            flows.sort();
+            let mut widgets: Vec<(String, String, String)> = Vec::new();
+            {
+                let mut stmt =
+                    tx.prepare("SELECT screen_id, equipment_id, config FROM scada_equipment")?;
+                let mut rows = stmt.query([])?;
+                while let Some(r) = rows.next()? {
+                    let (screen, id, config): (String, String, String) =
+                        (r.get(0)?, r.get(1)?, r.get(2)?);
+                    let Ok(Value::Object(mut c)) = serde_json::from_str::<Value>(&config) else {
+                        continue;
+                    };
+                    if c.get("equipment").and_then(Value::as_str) != Some(name.as_str()) {
+                        continue;
+                    }
+                    c.remove("equipment");
+                    c.insert("unboundEquipment".into(), Value::String(name.clone()));
+                    widgets.push((screen, id, serde_json::to_string(&Value::Object(c))?));
+                }
+            }
+            widgets.sort();
+            let out = InstanceDelete {
+                flows: flows.clone(),
+                widgets: widgets
+                    .iter()
+                    .map(|(s, w, _)| (s.clone(), w.clone()))
+                    .collect(),
+            };
+            if dry_run {
+                return Ok(Some(out));
+            }
+            tx.execute("DELETE FROM equipment_instances WHERE name = ?1", [&name])
+                .context("delete equipment instance")?;
+            for id in &flows {
+                tx.execute("DELETE FROM flows WHERE id = ?1", [id])
+                    .context("delete flow")?;
+                tx.execute("DELETE FROM flow_runs WHERE flow_id = ?1", [id])
+                    .context("delete flow runs")?;
+            }
+            for (screen, id, config) in &widgets {
+                tx.execute(
+                    "UPDATE scada_equipment SET config = ?3 WHERE screen_id = ?1 AND equipment_id = ?2",
+                    rusqlite::params![screen, id, config],
+                )
+                .context("unbind widget")?;
+            }
+            tx.commit().context("commit")?;
+            Ok(Some(out))
         })
         .await
     }
 
-    /// See [`bind_rows`].
-    pub async fn bind_equipment_rows(
-        &self,
-        mut rows: Vec<ScadaEquipment>,
-    ) -> Result<Vec<ScadaEquipment>> {
+    /// Types whose symbols open faceplate `id`.
+    pub async fn faceplate_type_users(&self, id: &str) -> Result<Vec<String>> {
+        let id = id.to_string();
         self.with_conn(move |conn| {
-            bind_rows(conn, &mut rows)?;
-            Ok(rows)
+            Ok(conn
+                .prepare("SELECT id FROM equipment_types WHERE faceplate = ?1 ORDER BY id")?
+                .query_map([&id], |r| r.get(0))?
+                .collect::<Result<_, _>>()?)
         })
         .await
     }

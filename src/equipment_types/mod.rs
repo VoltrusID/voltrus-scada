@@ -38,6 +38,17 @@ pub const OWNED_CONFIG_KEYS: &[&str] = &[
     "interlockSensorId",
 ];
 
+/// Type ids that name a route under `/api/v1/equipment-types/`.
+pub const RESERVED_TYPE_IDS: &[&str] = &["library"];
+
+/// An instance's prefix as uniqueness compares it: in lower case, with what a
+/// flow id cannot hold turned into `-` (the form [`resolve::flow_id`] uses),
+/// so two prefixes that give the same flow ids are the same prefix.
+pub fn prefix_identity(prefix: &str) -> String {
+    let id = resolve::flow_id(prefix, "");
+    id.strip_suffix('-').unwrap_or(&id).to_string()
+}
+
 /// The symbol `config` key a [`TypeBindings`] entry fills.
 pub const BINDING_KEYS: &[(&str, &str)] = &[
     ("fault", "faultSensorId"),
@@ -430,6 +441,12 @@ impl EquipmentType {
             out.push(format!(
                 "id '{}' must be 1-64 lowercase letters, digits, '_' or '-'",
                 self.id
+            ));
+        }
+        if RESERVED_TYPE_IDS.contains(&self.id.as_str()) {
+            out.push(format!(
+                "id '{}' is reserved (it is a route: /api/v1/equipment-types/{})",
+                self.id, self.id
             ));
         }
         if self.name.trim().is_empty() {

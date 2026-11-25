@@ -130,6 +130,63 @@ pub struct TagChange {
     pub action: &'static str,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<String>,
+    /// Every attribute the change sets, with its value before and after
+    /// (`write.max`, `alarm.crit`, `unit`, ...; `before` is null for a new tag).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub diff: Vec<FieldDiff>,
+}
+
+/// One attribute of a tag, before and after.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct FieldDiff {
+    pub field: String,
+    pub before: serde_json::Value,
+    pub after: serde_json::Value,
+}
+
+impl TagChange {
+    /// The write-policy part of the diff (`write.*`).
+    pub fn policy_diff(&self) -> impl Iterator<Item = &FieldDiff> {
+        self.diff.iter().filter(|d| d.field.starts_with("write."))
+    }
+}
+
+/// Top-level attributes, and those of `alarm` and `write` one level down,
+/// that differ between two tag entities.
+fn tag_diff(before: Option<&Mapping>, after: &Mapping) -> Vec<FieldDiff> {
+    fn flat(e: Option<&Mapping>) -> BTreeMap<String, serde_json::Value> {
+        let mut out = BTreeMap::new();
+        let Some(e) = e else { return out };
+        for (k, v) in e {
+            let k = norm::display(k);
+            match v {
+                Value::Mapping(m) if k == "alarm" || k == "write" => {
+                    for (sk, sv) in m {
+                        out.insert(
+                            format!("{k}.{}", norm::display(sk)),
+                            norm::yaml_to_json(sv).unwrap_or(serde_json::Value::Null),
+                        );
+                    }
+                }
+                _ => {
+                    out.insert(k, norm::yaml_to_json(v).unwrap_or(serde_json::Value::Null));
+                }
+            }
+        }
+        out
+    }
+    let (a, b) = (flat(before), flat(Some(after)));
+    let keys: BTreeSet<&String> = a.keys().chain(b.keys()).collect();
+    keys.into_iter()
+        .filter_map(|k| {
+            let (x, y) = (a.get(k), b.get(k));
+            (x != y).then(|| FieldDiff {
+                field: k.clone(),
+                before: x.cloned().unwrap_or(serde_json::Value::Null),
+                after: y.cloned().unwrap_or(serde_json::Value::Null),
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -147,8 +204,19 @@ pub struct Expanded {
     pub tags: Vec<TagChange>,
     /// `device/register@address` of every register added.
     pub registers_added: Vec<String>,
+    /// `device/register@old->new` of every register of the instance moved to
+    /// a new address (its base or the type's offset changed).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub registers_moved: Vec<String>,
     /// Flow ids created or updated.
     pub flows: Vec<String>,
+    /// Of `flows`, those that exist and are overwritten.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub flows_updated: Vec<String>,
+    /// Flows the instance made before that it no longer has (its prefix or
+    /// its type's flows changed); deleted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub flows_removed: Vec<String>,
     /// Every SCADA widget bound to the instance.
     pub widgets: Vec<WidgetRef>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -179,8 +247,14 @@ impl Expanded {
         for r in &self.registers_added {
             parts.push(format!("+register {r}"));
         }
+        for r in &self.registers_moved {
+            parts.push(format!("~register {r}"));
+        }
         for f in &self.flows {
             parts.push(format!("flow {f}"));
+        }
+        for f in &self.flows_removed {
+            parts.push(format!("-flow {f}"));
         }
         if !self.widgets.is_empty() {
             parts.push(format!("{} widget(s)", self.widgets.len()));
@@ -327,6 +401,22 @@ fn apply_attrs(e: &Mapping, r: &RoleRes) -> Mapping {
         if let Some(v) = a.write.requires_reason {
             m.insert(text("requires_reason"), Value::Bool(v));
         }
+        // A writable tag without write limits is limited to its own range:
+        // a type never opens a tag to any value.
+        let range = (
+            e.get("min").and_then(Value::as_f64),
+            e.get("max").and_then(Value::as_f64),
+        );
+        if m.get("writable").and_then(Value::as_bool) == Some(true)
+            && let (Some(lo), Some(hi)) = range
+            && lo < hi
+        {
+            for (limit, v) in [("min", lo), ("max", hi)] {
+                if !m.contains_key(limit) {
+                    m.insert(text(limit), norm::real(v));
+                }
+            }
+        }
         e.insert(text("write"), Value::Mapping(m));
     }
     let mut errs = Vec::new();
@@ -351,14 +441,18 @@ fn new_tag(device: &str, r: &RoleRes, modbus: bool) -> Mapping {
     e
 }
 
-fn register_entity(reg: &resolve::NewRegister, sort_order: i64) -> Value {
-    let fields = match spec::section("modbus_devices")
+fn register_fields() -> &'static [spec::Field] {
+    match spec::section("modbus_devices")
         .and_then(|s| s.fields.iter().find(|f| f.name == "registers"))
         .map(|f| f.ty)
     {
         Some(spec::Ty::List(sub)) => sub,
         _ => &[],
-    };
+    }
+}
+
+fn register_entity(reg: &resolve::NewRegister, sort_order: i64) -> Value {
+    let fields = register_fields();
     let mut m = Mapping::new();
     m.insert(text("name"), text(reg.name.clone()));
     m.insert(text("address"), int(reg.address));
@@ -442,6 +536,65 @@ fn error(issues: &mut Vec<Issue>, at: String, message: String) {
     });
 }
 
+/// The 0-based wire address of a register entity.
+fn wire_address(m: &Mapping) -> i64 {
+    let address = m.get("address").and_then(Value::as_i64).unwrap_or(0);
+    let zero_based = m
+        .get("zero_based")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    match u16::try_from(address) {
+        Ok(a) => i64::from(crate::models::protocol_address(a, zero_based)),
+        Err(_) => address,
+    }
+}
+
+fn register_area_of(m: &Mapping) -> String {
+    match get_str(m, "register_area") {
+        a if a.is_empty() => "holding".into(),
+        a => a,
+    }
+}
+
+fn register_type_of(m: &Mapping) -> String {
+    match get_str(m, "register_type") {
+        t if t.is_empty() => "float32".into(),
+        t => t,
+    }
+}
+
+/// The first register of `regs` other than `name` that shares a 16-bit
+/// register (or a bit) with `address..address+width` in `area`.
+fn overlapping(regs: &[Value], name: &str, address: i64, width: i64, area: &str) -> Option<String> {
+    regs.iter().filter_map(Value::as_mapping).find_map(|m| {
+        let other = get_str(m, "name");
+        if other == name || register_area_of(m) != area {
+            return None;
+        }
+        let a = wire_address(m);
+        let w = resolve::register_width(&register_type_of(m), area);
+        (address < a + w && a < address + width).then(|| {
+            format!(
+                "'{other}' ({} {a}{})",
+                register_type_of(m),
+                if w > 1 {
+                    format!("-{}", a + w - 1)
+                } else {
+                    String::new()
+                }
+            )
+        })
+    })
+}
+
+fn span(address: i64, width: i64) -> String {
+    if width > 1 {
+        format!("{address}-{}", address + width - 1)
+    } else {
+        address.to_string()
+    }
+}
+
 /// Expand the document's equipment instances (see the module docs).
 /// Returns the document to import, what each instance generated, and
 /// problems (errors stop the import).
@@ -480,28 +633,67 @@ pub fn expand(
     }
 
     // Instances: the file's, plus stored instances of a type the file changes.
+    let stored_instances: BTreeMap<String, EquipmentInstance> = stored_rows(INSTANCES)
+        .iter()
+        .filter_map(|e| parse_instance(e).ok())
+        .map(|i| (i.name.clone(), i))
+        .collect();
     let mut instances: BTreeMap<String, EquipmentInstance> = BTreeMap::new();
     for e in doc.entities(INSTANCES) {
         if let Ok(i) = parse_instance(e) {
             instances.insert(i.name.clone(), i);
         }
     }
-    for e in stored_rows(INSTANCES) {
-        if let Ok(i) = parse_instance(&e)
-            && !instances.contains_key(&i.name)
-            && changed_types.contains(&i.type_id)
-        {
-            instances.insert(i.name.clone(), i);
+    let from_doc: HashSet<String> = instances.keys().cloned().collect();
+    for (name, i) in &stored_instances {
+        if !instances.contains_key(name) && changed_types.contains(&i.type_id) {
+            instances.insert(name.clone(), i.clone());
         }
     }
-    let all_instance_names: HashSet<String> = doc
-        .entities(INSTANCES)
-        .iter()
-        .map(|e| get_str(e, "name"))
-        .chain(stored_rows(INSTANCES).iter().map(|e| get_str(e, "name")))
-        .collect();
+    // Every instance once the import is done.
+    let mut after: BTreeMap<String, EquipmentInstance> = stored_instances.clone();
+    for name in &from_doc {
+        after.insert(name.clone(), instances[name].clone());
+    }
+    let all_instance_names: HashSet<String> = after.keys().cloned().collect();
     if instances.is_empty() {
         return (doc.clone(), Vec::new(), issues);
+    }
+
+    // Names and prefixes are unique without case (flow ids are lower case):
+    // `P101A` next to `P-101A` would share every tag and flow.
+    let mut blocked: HashSet<String> = HashSet::new();
+    for name in &from_doc {
+        let inst = &after[name];
+        let mine = crate::equipment_types::prefix_identity(&inst.prefix());
+        for (other, o) in &after {
+            if other == name {
+                continue;
+            }
+            let at = format!("{INSTANCES}[{name}]");
+            if other.to_lowercase() == name.to_lowercase() {
+                error(
+                    &mut issues,
+                    at.clone(),
+                    format!(
+                        "name '{name}' differs from equipment instance '{other}' only in case; instance names are compared without case"
+                    ),
+                );
+                blocked.insert(name.clone());
+            }
+            if crate::equipment_types::prefix_identity(&o.prefix()) == mine {
+                error(
+                    &mut issues,
+                    at,
+                    format!(
+                        "prefix '{}' is the prefix of equipment instance '{other}' ('{}') too; prefixes are compared without case, like the flow ids made from them. Give this instance its own prefix",
+                        inst.prefix(),
+                        o.prefix()
+                    ),
+                );
+                blocked.insert(name.clone());
+            }
+        }
     }
 
     let world = world_of(doc, snap, mode);
@@ -529,15 +721,48 @@ pub fn expand(
 
     let mut out: Vec<Expanded> = Vec::new();
     let mut patches: HashMap<String, resolve::WidgetPatch> = HashMap::new();
-    let mut owner: HashMap<(String, String), String> = HashMap::new();
     let mut new_tags: Vec<Mapping> = Vec::new();
 
+    // Tags the instances that are not expanded keep: an expanded instance
+    // may not take one of them.
+    let mut owner: HashMap<(String, String), String> = HashMap::new();
+    for (name, o) in &after {
+        if instances.contains_key(name) {
+            continue;
+        }
+        let Some(t) = types.get(&o.type_id) else {
+            continue;
+        };
+        for r in resolve::resolve(t, o, &world).roles {
+            if r.owns_tag() {
+                owner.insert((o.device.clone(), r.key.clone()), name.clone());
+            }
+        }
+    }
+
     for (name, inst) in &instances {
+        if blocked.contains(name) {
+            continue;
+        }
         let at = format!("{INSTANCES}[{name}]");
+        let listed = from_doc.contains(name);
+        // A stored instance pulled in by its type's change that cannot be
+        // expanded any more (its device was deleted, ...) is skipped with a
+        // warning instead of failing the change for every other instance.
+        let problem = |issues: &mut Vec<Issue>, message: String| {
+            if listed {
+                error(issues, at.clone(), message);
+            } else {
+                issues.push(Issue {
+                    severity: Severity::Warning,
+                    at: at.clone(),
+                    message: format!("{message}; this instance is skipped (not updated)"),
+                });
+            }
+        };
         let Some(t) = types.get(&inst.type_id) else {
-            error(
+            problem(
                 &mut issues,
-                at,
                 format!("unknown equipment type '{}'", inst.type_id),
             );
             continue;
@@ -545,11 +770,33 @@ pub fn expand(
         let problems = inst.problems(Some(t));
         let mut res = resolve::resolve(t, inst, &world);
         if !problems.is_empty() || !res.problems.is_empty() {
-            for p in problems.into_iter().chain(res.problems.drain(..)) {
-                error(&mut issues, at.clone(), p);
+            let all: Vec<String> = problems.into_iter().chain(res.problems.drain(..)).collect();
+            if listed {
+                for p in all {
+                    error(&mut issues, at.clone(), p);
+                }
+            } else {
+                problem(&mut issues, all.join("; "));
             }
             continue;
         }
+        // What the instance was before this import: its registers and flows
+        // are its own to move and replace.
+        let before = stored_instances.get(name);
+        let before_type = before.and_then(|b| stored_types.get(&b.type_id));
+        let expected_before: HashMap<String, i64> = match (before, before_type) {
+            (Some(b), Some(bt)) if b.device == inst.device => resolve::expected_registers(bt, b),
+            _ => HashMap::new(),
+        };
+        let own_flows: HashSet<String> = match (before, before_type) {
+            (Some(b), Some(bt)) => bt
+                .flows
+                .iter()
+                .filter_map(|f| f.get("id").and_then(serde_json::Value::as_str))
+                .map(|id| resolve::flow_id(&b.prefix(), id))
+                .collect(),
+            _ => HashSet::new(),
+        };
         // Tags made by this import are named by ref like the others.
         for r in &mut res.roles {
             if r.resolved() && r.tag_id.is_none() {
@@ -561,7 +808,10 @@ pub fn expand(
             type_id: t.id.clone(),
             tags: Vec::new(),
             registers_added: Vec::new(),
+            registers_moved: Vec::new(),
             flows: Vec::new(),
+            flows_updated: Vec::new(),
+            flows_removed: Vec::new(),
             widgets: Vec::new(),
             notes: res.notes.clone(),
             roles: Vec::new(),
@@ -578,6 +828,7 @@ pub fn expand(
                     reference: r.reference.clone(),
                     action: "bind",
                     fields: Vec::new(),
+                    diff: Vec::new(),
                 });
                 continue;
             }
@@ -595,33 +846,15 @@ pub fn expand(
                 continue;
             }
             if let Some(reg) = &r.register {
-                match devices.get_mut(&device) {
-                    Some(dev) => {
-                        let mut regs = match dev.get("registers") {
-                            Some(Value::Sequence(s)) => s.clone(),
-                            _ => Vec::new(),
-                        };
-                        if !regs
-                            .iter()
-                            .filter_map(Value::as_mapping)
-                            .any(|m| get_str(m, "name") == reg.name)
-                        {
-                            let n = regs.len() as i64;
-                            regs.push(register_entity(reg, n));
-                            dev.insert(text("registers"), Value::Sequence(regs));
-                            exp.registers_added
-                                .push(format!("{device}/{}@{}", reg.name, reg.address));
-                        }
-                    }
-                    None => error(
-                        &mut issues,
-                        at.clone(),
-                        format!(
-                            "device '{device}' is not in the project, so register '{}' cannot be added",
-                            reg.name
-                        ),
-                    ),
-                }
+                place_register(
+                    &mut devices,
+                    &device,
+                    reg,
+                    &expected_before,
+                    &mut exp,
+                    &mut issues,
+                    &at,
+                );
             }
             let fields_of = |a: &Mapping, b: &Mapping| -> Vec<String> {
                 let mut keys: BTreeSet<String> = BTreeSet::new();
@@ -639,6 +872,7 @@ pub fn expand(
                     reference: r.reference.clone(),
                     action: "bind",
                     fields: Vec::new(),
+                    diff: Vec::new(),
                 });
             } else if let Some(key) = stored_tag_key.get(&ident) {
                 let Some(entity) = tags.get_mut(key) else {
@@ -647,6 +881,7 @@ pub fn expand(
                 let before = entity.clone();
                 let after = apply_attrs(&before, r);
                 let fields = fields_of(&before, &after);
+                let diff = tag_diff(Some(&before), &after);
                 *entity = after;
                 exp.tags.push(TagChange {
                     key: r.key.clone(),
@@ -657,25 +892,43 @@ pub fn expand(
                         "update"
                     },
                     fields,
+                    diff,
                 });
             } else {
                 let modbus = world.modbus.contains_key(&device);
-                new_tags.push(apply_attrs(&new_tag(&device, r, modbus), r));
+                let made = apply_attrs(&new_tag(&device, r, modbus), r);
+                let diff = tag_diff(None, &made);
+                new_tags.push(made);
                 exp.tags.push(TagChange {
                     key: r.key.clone(),
                     reference: r.reference.clone(),
                     action: "create",
                     fields: Vec::new(),
+                    diff,
                 });
             }
         }
+        let mut wanted_ids: HashSet<String> = HashSet::new();
         for f in &res.flows {
             let id = f
                 .get("id")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default()
                 .to_string();
+            wanted_ids.insert(id.clone());
             if doc_flows.contains(&id) {
+                continue;
+            }
+            // A flow of that id that this instance did not make (a user's
+            // flow, or another instance's) is not overwritten.
+            if flows.stored.contains_key(&id) && !own_flows.contains(&id) {
+                error(
+                    &mut issues,
+                    at.clone(),
+                    format!(
+                        "flow '{id}' exists and was not made by this instance, so its copy of the type's flow cannot have that id; rename that flow or give the instance another prefix"
+                    ),
+                );
                 continue;
             }
             let wanted = match norm::json_to_yaml(f) {
@@ -703,6 +956,7 @@ pub fn expand(
                 Some(existing) => {
                     if *existing != wanted {
                         *existing = wanted;
+                        exp.flows_updated.push(id.clone());
                         exp.flows.push(id);
                     }
                 }
@@ -712,7 +966,20 @@ pub fn expand(
                 }
             }
         }
-        patches.insert(name.clone(), resolve::widget_patch(t, inst, &res));
+        let mut removed: Vec<String> = own_flows
+            .iter()
+            .filter(|id| {
+                !wanted_ids.contains(*id)
+                    && !doc_flows.contains(*id)
+                    && flows.stored.contains_key(*id)
+            })
+            .cloned()
+            .collect();
+        removed.sort();
+        exp.flows_removed = removed;
+        let mut patch = resolve::widget_patch(t, inst, &res);
+        patch.prev_defaults = before_type.map(|bt| bt.symbol_config.clone());
+        patches.insert(name.clone(), patch);
         exp.roles = res.roles;
         out.push(exp);
     }
@@ -765,6 +1032,122 @@ pub fn expand(
     flows.finish(&mut doc);
     screens.finish(&mut doc);
     (doc, out, issues)
+}
+
+/// Add the register a role needs to its Modbus device, or check the one
+/// that is there: a register is never put over another one (by address,
+/// with the width of its type), and an existing register at another address
+/// than base + offset is moved only when it is the instance's own (where its
+/// previous base and offset put it); otherwise that is an error.
+fn place_register(
+    devices: &mut Pool,
+    device: &str,
+    reg: &resolve::NewRegister,
+    expected_before: &HashMap<String, i64>,
+    exp: &mut Expanded,
+    issues: &mut Vec<Issue>,
+    at: &str,
+) {
+    let Some(dev) = devices.get_mut(device) else {
+        if !reg.exists {
+            error(
+                issues,
+                at.to_string(),
+                format!(
+                    "device '{device}' is not in the project, so register '{}' cannot be added",
+                    reg.name
+                ),
+            );
+        }
+        return;
+    };
+    let linked = dev.contains_key("template_id");
+    let mut regs = match dev.get("registers") {
+        Some(Value::Sequence(s)) => s.clone(),
+        _ => Vec::new(),
+    };
+    let width = resolve::register_width(&reg.register_type, &reg.register_area);
+    let pos = regs.iter().position(|v| {
+        v.as_mapping()
+            .is_some_and(|m| get_str(m, "name") == reg.name)
+    });
+    match pos {
+        Some(i) => {
+            let Some(m) = regs[i].as_mapping().cloned() else {
+                return;
+            };
+            let current = wire_address(&m);
+            if current == reg.address {
+                return;
+            }
+            let ours = expected_before.get(&reg.name) == Some(&current);
+            if linked || !ours {
+                error(
+                    issues,
+                    at.to_string(),
+                    format!(
+                        "register '{}' on device '{device}' is at address {current}, but the instance's base and the type's offset put it at {}; {}",
+                        reg.name,
+                        reg.address,
+                        if linked {
+                            "the device follows a device template, so it cannot be moved (change base to match, or leave base out)"
+                        } else {
+                            "set base so they agree, or leave base out to bind the register by its name"
+                        }
+                    ),
+                );
+                return;
+            }
+            let area = register_area_of(&m);
+            let w = resolve::register_width(&register_type_of(&m), &area);
+            if let Some(other) = overlapping(&regs, &reg.name, reg.address, w, &area) {
+                error(
+                    issues,
+                    at.to_string(),
+                    format!(
+                        "register '{}' cannot move to {area} {} on device '{device}': register {other} is there",
+                        reg.name,
+                        span(reg.address, w)
+                    ),
+                );
+                return;
+            }
+            let mut moved = m;
+            moved.insert(text("address"), int(reg.address));
+            moved.insert(text("zero_based"), Value::Bool(true));
+            let mut errs = Vec::new();
+            regs[i] = Value::Mapping(norm::normalize(register_fields(), &moved, "", &mut errs));
+            exp.registers_moved
+                .push(format!("{device}/{}@{current}->{}", reg.name, reg.address));
+        }
+        None => {
+            if linked {
+                // resolve() refused already.
+                return;
+            }
+            if let Some(other) =
+                overlapping(&regs, &reg.name, reg.address, width, &reg.register_area)
+            {
+                error(
+                    issues,
+                    at.to_string(),
+                    format!(
+                        "register '{}' ({} at {} {}) overlaps register {other} on device '{device}'",
+                        reg.name,
+                        reg.register_type,
+                        reg.register_area,
+                        span(reg.address, width)
+                    ),
+                );
+                return;
+            }
+            let n = regs.len() as i64;
+            regs.push(register_entity(reg, n));
+            exp.registers_added
+                .push(format!("{device}/{}@{}", reg.name, reg.address));
+        }
+    }
+    dev.insert(text("registers"), Value::Sequence(regs));
 }
 
 fn widgets_of(screen: &Mapping) -> Vec<Mapping> {

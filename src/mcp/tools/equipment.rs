@@ -3,12 +3,18 @@
 //! equipment in one line. They call the `/api/v1/equipment-types` and
 //! `/api/v1/equipment-instances` handlers (docs/equipment-types.md).
 
-use axum::extract::{Extension, Path, Query, State};
+use axum::extract::{Query, State};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{Access, Ctx, Tool, ToolError, ToolFuture, from_handler, parse_args};
-use crate::api::equipment_types::{self as api, DryRunQuery, InstanceQuery};
+use crate::api::equipment_types::{self as api, InstanceQuery};
+use crate::edition::ActionOrigin;
+
+/// A handler's response as a tool result.
+async fn answer(r: axum::response::Response) -> super::ToolResult {
+    from_handler(Ok::<_, crate::api::AppError>(r)).await
+}
 
 const TYPE_SCHEMA: &str = "An equipment type: {id (slug), name, description, category, symbol \
 (symbol key, e.g. isa_pump_centrifugal), faceplate (faceplate id or null), tags: [{role, label, \
@@ -95,11 +101,15 @@ pub fn tools() -> Vec<Tool> {
                 punctuation: p101a). With `base` on a Modbus device, missing roles get a \
                 register at base + offset and a tag. `overrides` change one role: {fault: {skip: \
                 true}}, {speed: {key: \"p301a_speed\"}}, limits or alarms. Answers the tag of each \
-                role (resolved.roles), what was created (changes) and the symbol binding. \
-                dry_run: true previews. A SCADA widget with config.equipment = the name is \
-                bound to it on save.",
+                role (resolved.roles), what it creates or changes (changes: every tag with \
+                its attributes before and after, registers added or moved, flows created or \
+                overwritten) and the symbol binding. It can change existing tags (limits, \
+                alarms, write policy) and flows, so by default this is a dry run; call again \
+                with dry_run: false to save. A change of a write policy needs an electronic \
+                signature where the edition asks for one, which an MCP client cannot give. A \
+                SCADA widget with config.equipment = the name is bound to it on save.",
             access: Access::Write,
-            destructive: false,
+            destructive: true,
             input_schema: || {
                 json!({
                     "type": "object",
@@ -112,7 +122,7 @@ pub fn tools() -> Vec<Tool> {
                         "description": {"type": "string"},
                         "symbol": {"type": "string", "description": "Symbol instead of the type's."},
                         "overrides": {"type": "object", "description": "Per role: {key, name, unit, min, max, decimals, alarm, write, skip}."},
-                        "dry_run": {"type": "boolean", "description": "Default false."}
+                        "dry_run": {"type": "boolean", "description": "Default true: preview only."}
                     },
                     "required": ["name", "type", "device"],
                     "additionalProperties": false
@@ -172,19 +182,15 @@ fn create_type(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
         let a: Args = parse_args(args)?;
         match (a.body, a.from_library) {
             (Some(body), None) => {
-                from_handler(
-                    api::create_type(
-                        State(ctx.state.clone()),
-                        Extension(ctx.user.clone()),
-                        axum::Json(body),
-                    )
-                    .await,
-                )
-                .await
+                answer(api::create_type_as(&ctx.state, &ctx.user, ActionOrigin::Mcp, body).await)
+                    .await
             }
-            (None, Some(id)) => Ok(api::install(&ctx.state, &ctx.user, Some(vec![id]))
-                .await
-                .map_err(ToolError::from)?),
+            (None, Some(id)) => {
+                match api::install(&ctx.state, &ctx.user, ActionOrigin::Mcp, Some(vec![id])).await {
+                    Ok(v) => Ok(v),
+                    Err(r) => answer(*r).await,
+                }
+            }
             _ => Err(ToolError::new(
                 "give exactly one of `type` and `from_library`",
             )),
@@ -208,15 +214,14 @@ fn update_type(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::new("type.id is required"))?
             .to_string();
-        from_handler(
-            api::update_type(
-                State(ctx.state.clone()),
-                Extension(ctx.user.clone()),
-                Path(id),
-                Query(DryRunQuery {
-                    dry_run: a.dry_run.unwrap_or(true),
-                }),
-                axum::Json(a.body),
+        answer(
+            api::update_type_as(
+                &ctx.state,
+                &ctx.user,
+                ActionOrigin::Mcp,
+                &id,
+                a.dry_run.unwrap_or(true),
+                a.body,
             )
             .await,
         )
@@ -231,15 +236,9 @@ fn instantiate(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
             .as_object_mut()
             .and_then(|o| o.remove("dry_run"))
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        from_handler(
-            api::create_instance(
-                State(ctx.state.clone()),
-                Extension(ctx.user.clone()),
-                Query(DryRunQuery { dry_run }),
-                axum::Json(body),
-            )
-            .await,
+            .unwrap_or(true);
+        answer(
+            api::create_instance_as(&ctx.state, &ctx.user, ActionOrigin::Mcp, dry_run, body).await,
         )
         .await
     })

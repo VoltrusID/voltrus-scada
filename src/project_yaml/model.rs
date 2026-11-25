@@ -148,6 +148,20 @@ impl std::fmt::Display for InvalidProject {
 
 impl std::error::Error for InvalidProject {}
 
+/// Returned (inside `anyhow::Error`) when an import's guard refuses what it
+/// finds inside the transaction (an entity created meanwhile, a change that
+/// differs from what was signed). Nothing is written; REST answers 409.
+#[derive(Debug, Clone)]
+pub struct Conflict(pub String);
+
+impl std::fmt::Display for Conflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Conflict {}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {

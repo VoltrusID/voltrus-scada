@@ -1815,7 +1815,27 @@ async fn equipment_problems_are_named() {
         (
             "base: 20, overrides",
             "base: 20, prefix: p1, overrides",
+            "prefix 'p1' is the prefix of equipment instance 'P-1'",
+        ),
+        (
+            "base: 20, overrides",
+            "base: 20, prefix: P1, overrides",
+            "prefix 'P1' is the prefix of equipment instance 'P-1'",
+        ),
+        (
+            "overrides: {fault: {skip: true}}",
+            "overrides: {fault: {skip: true}, run: {key: p1_run}}",
             "which equipment instance 'P-1' has too",
+        ),
+        (
+            "- {name: P-2",
+            "- {name: p-1",
+            "differs from equipment instance 'P-1' only in case",
+        ),
+        (
+            "base: 20, overrides",
+            "base: 12, overrides",
+            "overlaps register 'p1_fault'",
         ),
         (
             "bindings: {primary: run, fault: fault}",

@@ -4,11 +4,29 @@ use anyhow::{Context, Result};
 
 use crate::models::ConfigSnapshot;
 
-/// Configuration tables a snapshot captures and a rollback rewrites.
+/// Configuration tables a snapshot captures and a rollback rewrites, in the
+/// order a rollback rewrites them (a Modbus device before its registers:
+/// deleting the devices cascades to the registers).
 /// `alarms` is runtime history (with audit/journal rows cascading from it),
 /// not configuration, so it is never captured or rewritten; older snapshots
 /// that still carry an `alarms` key have it ignored on rollback.
-const VERSIONED_TABLES: [&str; 5] = ["devices", "data_sources", "flows", "screens", "recipes"];
+///
+/// The snapshot format is a JSON object of table name -> rows, so adding a
+/// table needs no migration: a snapshot taken before a table was listed has
+/// no key for it, and a rollback to it leaves that table as it is.
+const VERSIONED_TABLES: [&str; 11] = [
+    "devices",
+    "data_sources",
+    "flows",
+    "screens",
+    "recipes",
+    "modbus_devices",
+    "modbus_registers",
+    "scada_equipment",
+    "scada_connections",
+    "equipment_types",
+    "equipment_instances",
+];
 
 impl Storage {
     // ── Config Snapshot CRUD ──
