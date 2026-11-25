@@ -222,16 +222,27 @@ fn lex(src: &str) -> Result<Vec<(Tok, usize)>, ExprError> {
             continue;
         }
         if c == '{' {
-            let Some(end) = chars[i..].iter().position(|&ch| ch == '}') else {
+            // A backslash escapes the next character: `{dev/a\}b}` is `dev/a}b`.
+            let mut j = i + 1;
+            let mut raw = String::new();
+            while j < chars.len() && chars[j] != '}' {
+                if chars[j] == '\\' && j + 1 < chars.len() {
+                    raw.push(chars[j + 1]);
+                    j += 2;
+                } else {
+                    raw.push(chars[j]);
+                    j += 1;
+                }
+            }
+            if j >= chars.len() {
                 return Err(error("missing } after tag reference", i));
-            };
-            let reference: String = chars[i + 1..i + end].iter().collect();
-            let reference = reference.trim();
+            }
+            let reference = raw.trim();
             if reference.is_empty() {
                 return Err(error("empty tag reference", i));
             }
             out.push((Tok::Tag(reference.to_owned()), i));
-            i += end + 1;
+            i = j + 1;
             continue;
         }
         if c.is_ascii_alphabetic() || c == '_' {
@@ -298,7 +309,12 @@ pub const FUNCTIONS: [(&str, usize, usize, &str); 11] = [
     ("max", 1, 16, "max(a, b, ...)"),
     ("clamp", 3, 3, "clamp(x, lo, hi)"),
     ("if", 3, 3, "if(cond, then, else)"),
-    ("bit", 2, 2, "bit(x, n): bit n of an integer"),
+    (
+        "bit",
+        2,
+        2,
+        "bit(x, n): bit n (0-52) of an integer, two's complement for negatives",
+    ),
     ("scale", 5, 5, "scale(x, inLo, inHi, outLo, outHi)"),
     ("text", 1, 2, "text(x, decimals?)"),
 ];
@@ -316,9 +332,46 @@ fn precedence(op: &str) -> Option<u8> {
     })
 }
 
+/// Longest expression accepted, in characters (UTF-16 units, as the web
+/// counts them).
+pub const MAX_SOURCE: usize = 2048;
+/// Most nodes in one expression.
+pub const MAX_NODES: usize = 1000;
+/// Deepest nesting (also bounds the recursion of [`refs`] and
+/// [`evaluate`]).
+pub const MAX_DEPTH: usize = 100;
+
+/// `{ref}` text for a tag ref, escaping what the lexer treats specially.
+pub fn escape_ref(reference: &str) -> String {
+    let mut out = String::with_capacity(reference.len() + 2);
+    out.push('{');
+    for c in reference.chars() {
+        if c == '\\' || c == '}' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out.push('}');
+    out
+}
+
+/// A node's depth: 1 for a leaf. Bounded by [`MAX_DEPTH`] for any node
+/// the parser built.
+fn depth(node: &Node) -> usize {
+    1 + match node {
+        Node::Lit(_) | Node::Tag(_) => 0,
+        Node::Neg(a) | Node::Not(a) => depth(a),
+        Node::Bin(_, a, b) => depth(a).max(depth(b)),
+        Node::Cond(c, a, b) => depth(c).max(depth(a)).max(depth(b)),
+        Node::Call(_, args) => args.iter().map(depth).max().unwrap_or(0),
+    }
+}
+
 struct Parser {
     toks: Vec<(Tok, usize)>,
     at: usize,
+    nodes: usize,
+    nesting: usize,
 }
 
 impl Parser {
@@ -345,17 +398,55 @@ impl Parser {
         }
     }
 
+    /// A node built: counted, and its depth checked (a long
+    /// left-associative chain is caught too).
+    fn mk(&mut self, node: Node, pos: usize) -> Result<Node, ExprError> {
+        self.nodes += 1;
+        if self.nodes > MAX_NODES {
+            return Err(error(
+                format!("expression has more than {MAX_NODES} parts"),
+                pos,
+            ));
+        }
+        if depth(&node) > MAX_DEPTH {
+            return Err(error(
+                format!("expression is nested deeper than {MAX_DEPTH} levels"),
+                pos,
+            ));
+        }
+        Ok(node)
+    }
+
+    fn enter(&mut self) -> Result<(), ExprError> {
+        self.nesting += 1;
+        if self.nesting > MAX_DEPTH {
+            let pos = self.peek().1;
+            return Err(error(
+                format!("expression is nested deeper than {MAX_DEPTH} levels"),
+                pos,
+            ));
+        }
+        Ok(())
+    }
+
     fn primary(&mut self) -> Result<Node, ExprError> {
+        self.enter()?;
+        let node = self.primary_inner();
+        self.nesting -= 1;
+        node
+    }
+
+    fn primary_inner(&mut self) -> Result<Node, ExprError> {
         let (tok, pos) = self.take();
         match tok {
-            Tok::Num(text) => Ok(Node::Lit(Value::Num(text.parse().unwrap_or(f64::NAN)))),
-            Tok::Str(text) => Ok(Node::Lit(Value::Str(text))),
-            Tok::Tag(reference) => Ok(Node::Tag(reference)),
+            Tok::Num(text) => self.mk(Node::Lit(Value::Num(text.parse().unwrap_or(f64::NAN))), pos),
+            Tok::Str(text) => self.mk(Node::Lit(Value::Str(text)), pos),
+            Tok::Tag(reference) => self.mk(Node::Tag(reference), pos),
             Tok::Id(name) => {
                 match name.as_str() {
-                    "true" => return Ok(Node::Lit(Value::Bool(true))),
-                    "false" => return Ok(Node::Lit(Value::Bool(false))),
-                    "null" => return Ok(Node::Lit(Value::Null)),
+                    "true" => return self.mk(Node::Lit(Value::Bool(true)), pos),
+                    "false" => return self.mk(Node::Lit(Value::Bool(false)), pos),
+                    "null" => return self.mk(Node::Lit(Value::Null), pos),
                     _ => {}
                 }
                 let Some(&(function, least, most, doc)) =
@@ -381,15 +472,21 @@ impl Parser {
                     };
                     return Err(error(format!("{doc} takes {count} arguments"), pos));
                 }
-                Ok(Node::Call(function, args))
+                self.mk(Node::Call(function, args), pos)
             }
             Tok::Op("(") => {
                 let inner = self.ternary()?;
                 self.expect(")")?;
                 Ok(inner)
             }
-            Tok::Op("-") => Ok(Node::Neg(Box::new(self.primary()?))),
-            Tok::Op("!") => Ok(Node::Not(Box::new(self.primary()?))),
+            Tok::Op("-") => {
+                let a = self.primary()?;
+                self.mk(Node::Neg(Box::new(a)), pos)
+            }
+            Tok::Op("!") => {
+                let a = self.primary()?;
+                self.mk(Node::Not(Box::new(a)), pos)
+            }
             Tok::Op(op) => Err(error(format!("unexpected \"{op}\" at {}", pos + 1), pos)),
             Tok::End => Err(error("unexpected end of expression", pos)),
         }
@@ -405,34 +502,49 @@ impl Parser {
             let Some(prec) = precedence(op).filter(|prec| *prec >= least) else {
                 return Ok(left);
             };
-            self.take();
+            let (_, pos) = self.take();
             let right = self.binary(prec + 1)?;
-            left = Node::Bin(op, Box::new(left), Box::new(right));
+            left = self.mk(Node::Bin(op, Box::new(left), Box::new(right)), pos)?;
         }
     }
 
     fn ternary(&mut self) -> Result<Node, ExprError> {
+        self.enter()?;
+        let node = self.ternary_inner();
+        self.nesting -= 1;
+        node
+    }
+
+    fn ternary_inner(&mut self) -> Result<Node, ExprError> {
         let cond = self.binary(1)?;
         if self.peek_op("?") {
-            self.take();
+            let (_, pos) = self.take();
             let then = self.ternary()?;
             self.expect(":")?;
             let otherwise = self.ternary()?;
-            return Ok(Node::Cond(
-                Box::new(cond),
-                Box::new(then),
-                Box::new(otherwise),
-            ));
+            return self.mk(
+                Node::Cond(Box::new(cond), Box::new(then), Box::new(otherwise)),
+                pos,
+            );
         }
         Ok(cond)
     }
 }
 
-/// Parse an expression.
+/// Parse an expression. Text longer than [`MAX_SOURCE`], with more than
+/// [`MAX_NODES`] parts or nested deeper than [`MAX_DEPTH`] fails.
 pub fn parse(src: &str) -> Result<Node, ExprError> {
+    if src.encode_utf16().count() > MAX_SOURCE {
+        return Err(error(
+            format!("expression is longer than {MAX_SOURCE} characters"),
+            MAX_SOURCE,
+        ));
+    }
     let mut parser = Parser {
         toks: lex(src)?,
         at: 0,
+        nodes: 0,
+        nesting: 0,
     };
     let root = parser.ternary()?;
     let (tok, pos) = parser.peek().clone();
@@ -487,6 +599,27 @@ fn loosely_equal(a: &Value, b: &Value) -> bool {
         || (!matches!(a, Value::Null | Value::Str(_))
             && !matches!(b, Value::Null | Value::Str(_))
             && a.num() == b.num())
+}
+
+/// Decimals for `text()` and `round()`: an integer from 0 to 20 (what
+/// `toFixed` accepts).
+fn decimals(x: f64) -> f64 {
+    if x.is_finite() {
+        x.trunc().clamp(0.0, 20.0)
+    } else {
+        0.0
+    }
+}
+
+/// Bit `n` of the integer part of `x`, negatives as two's complement;
+/// `None` for a bit number outside 0-52.
+#[allow(clippy::float_cmp)]
+fn bit_of(x: f64, n: f64) -> Option<bool> {
+    if !x.is_finite() || n.fract() != 0.0 || !(0.0..=52.0).contains(&n) {
+        return None;
+    }
+    let q = (x.trunc() / 2f64.powf(n)).floor();
+    Some(((q % 2.0) + 2.0) % 2.0 == 1.0)
 }
 
 /// `Math.round`: halves toward +∞.
@@ -564,7 +697,13 @@ fn call(function: &str, args: &[Node], tag: &dyn Fn(&str) -> Option<f64>) -> Val
     if function == "text" {
         return match &values[0] {
             Value::Null => Value::Str(String::new()),
-            Value::Num(x) if values.len() > 1 => Value::Str(to_fixed(*x, values[1].num())),
+            Value::Num(x) if values.len() > 1 && x.is_finite() => {
+                let digits = match &values[1] {
+                    Value::Null => 0.0,
+                    value => decimals(value.num()),
+                };
+                Value::Str(to_fixed(*x, digits))
+            }
             value => Value::Str(value.text()),
         };
     }
@@ -582,7 +721,7 @@ fn call(function: &str, args: &[Node], tag: &dyn Fn(&str) -> Option<f64>) -> Val
     match function {
         "abs" => Value::Num(xs[0].abs()),
         "round" => {
-            let factor = 10f64.powf(xs.get(1).copied().unwrap_or(0.0));
+            let factor = 10f64.powf(xs.get(1).copied().map_or(0.0, decimals));
             Value::Num(js_round(xs[0] * factor) / factor)
         }
         "floor" => Value::Num(xs[0].floor()),
@@ -596,7 +735,7 @@ fn call(function: &str, args: &[Node], tag: &dyn Fn(&str) -> Option<f64>) -> Val
                 Value::Num(xs[2].min(xs[1].max(xs[0])))
             }
         }
-        "bit" => Value::Bool((xs[0] / 2f64.powf(xs[1])).floor() % 2.0 == 1.0),
+        "bit" => bit_of(xs[0], xs[1]).map_or(Value::Null, Value::Bool),
         "scale" => {
             if xs[2] == xs[1] {
                 Value::Null
@@ -608,23 +747,60 @@ fn call(function: &str, args: &[Node], tag: &dyn Fn(&str) -> Option<f64>) -> Val
     }
 }
 
-/// Parses once per distinct text (the web's `compile`).
+/// Evaluate, giving `Null` for anything that is not a number (`NaN`), as
+/// the web's `safeEvaluate` does. Bindings evaluate through this.
+pub fn safe_evaluate(node: &Node, tag: &dyn Fn(&str) -> Option<f64>) -> Value {
+    match evaluate(node, tag) {
+        Value::Num(x) if x.is_nan() => Value::Null,
+        value => value,
+    }
+}
+
+/// Parses once per distinct text (the web's `compile`): a bounded cache
+/// that drops the least recently used text first; text longer than
+/// [`MAX_SOURCE`] is not kept.
 #[derive(Debug, Default)]
 pub struct Cache {
-    parsed: HashMap<String, Result<Node, ExprError>>,
+    /// Each text's parse and when it was last asked for.
+    parsed: HashMap<String, (u64, Result<Node, ExprError>)>,
+    clock: u64,
+    /// The last oversized text's answer (always the length error).
+    oversized: Option<Result<Node, ExprError>>,
 }
 
 impl Cache {
-    /// Entries kept before the cache starts over.
+    /// Entries kept.
     pub const LIMIT: usize = 500;
 
     pub fn compile(&mut self, src: &str) -> &Result<Node, ExprError> {
-        if !self.parsed.contains_key(src) {
-            if self.parsed.len() > Self::LIMIT {
-                self.parsed.clear();
-            }
-            self.parsed.insert(src.to_owned(), parse(src));
+        if src.encode_utf16().count() > MAX_SOURCE {
+            return self.oversized.insert(parse(src));
         }
-        &self.parsed[src]
+        self.clock += 1;
+        let now = self.clock;
+        if let Some(entry) = self.parsed.get_mut(src) {
+            entry.0 = now;
+        } else {
+            if self.parsed.len() >= Self::LIMIT
+                && let Some(oldest) = self
+                    .parsed
+                    .iter()
+                    .min_by_key(|(_, (at, _))| *at)
+                    .map(|(key, _)| key.clone())
+            {
+                self.parsed.remove(&oldest);
+            }
+            self.parsed.insert(src.to_owned(), (now, parse(src)));
+        }
+        &self.parsed[src].1
+    }
+
+    /// Texts kept.
+    pub fn len(&self) -> usize {
+        self.parsed.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.parsed.is_empty()
     }
 }

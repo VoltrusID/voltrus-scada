@@ -48,8 +48,7 @@ use gpui::{
 };
 use voltrus_scada_native::designer::{self, bindings, expr};
 use voltrus_scada_native::mimic::{
-    self, Armed, Camera, ConnectionRow, Direction, EquipmentRow, Items, Layout, LineKind, Widget,
-    WidgetKind, connections_path, equipment_path,
+    self, Armed, Camera, Direction, Layout, LineKind, Widget, WidgetKind,
 };
 use voltrus_scada_native::runtime::{Call, CallKey, Command, Reply};
 use voltrus_scada_native::screens::OVERVIEW;
@@ -143,6 +142,9 @@ struct Glide {
 
 pub(crate) struct State {
     layouts: HashMap<String, Loaded>,
+    /// Each loaded layout's revision (`scada-layout`), which a Designer
+    /// save is based on; `None` from a server without revisions.
+    revisions: HashMap<String, Option<String>>,
     /// Calls in flight, by their key's argument: the screen they fetch.
     asks: HashMap<i64, String>,
     next_ask: i64,
@@ -194,6 +196,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             layouts: HashMap::new(),
+            revisions: HashMap::new(),
             asks: HashMap::new(),
             next_ask: 0,
             fetching: HashSet::new(),
@@ -292,12 +295,7 @@ fn sync(console: &mut Console) {
     state.layouts.insert(screen.clone(), Loaded::Loading);
     console.call(
         CallKey::new("mimic.layout").with(ask),
-        Call::new(move |api| async move {
-            let equipment: Items<EquipmentRow> = api.get_json(&equipment_path(&screen)).await?;
-            let connections: Items<ConnectionRow> =
-                api.get_json(&connections_path(&screen)).await?;
-            Ok(mimic::parse(&equipment.items, &connections.items))
-        }),
+        Call::new(move |api| async move { designer::load(&api, &screen).await }),
     );
 }
 
@@ -435,13 +433,16 @@ pub fn on_reply(console: &mut Console, key: CallKey, reply: Reply, cx: &mut Cont
                 return;
             };
             state.fetching.remove(&screen);
-            let loaded = match reply.take::<Layout>() {
-                Ok(layout) => Loaded::Ready(Rc::new(layout)),
+            let loaded = match reply.take::<(Layout, Option<String>)>() {
+                Ok((layout, revision)) => {
+                    state.revisions.insert(screen.clone(), revision);
+                    Loaded::Ready(Rc::new(layout))
+                }
                 Err(error) => Loaded::Failed(error),
             };
             state.layouts.insert(screen, loaded);
         }
-        "mimic.save" => editor::on_reply(console, key, reply, cx),
+        "mimic.save" | "mimic.reload" => editor::on_reply(console, key, reply, cx),
         "mimic.write" => {
             let state = console.state::<State>();
             state.sending = None;
@@ -1038,9 +1039,8 @@ fn animates(key: &str, live: &mimic::Live) -> bool {
     use mimic::EquipState::Running;
     match key {
         "pump" | "fan" | "conveyor" => live.state == Running,
-        "mixer" | "clarifier" | "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee" => {
-            live.run_state == Running
-        }
+        "mixer" | "clarifier" | "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee"
+        | "isa_line" | "isa_line_vertical" => live.run_state == Running,
         _ => false,
     }
 }
@@ -1095,14 +1095,7 @@ fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
     // Designer bindings (`config.bindings`): the widget as its live values
     // draw it, as the web's `applyBindings`.
     let bound = if bindings::has_bindings(&widget.config) {
-        let read = |reference: &str| {
-            store
-                .tags
-                .iter()
-                .find(|tag| is_ref(reference, &tag.info.device_id, &tag.info.key))
-                .map(|tag| tag.value)
-                .filter(|value| value.is_finite())
-        };
+        let read = |reference: &str| store.read_ref(reference);
         designer::bound(widget, &read, &mut state.exprs.borrow_mut())
     } else {
         None
@@ -1146,14 +1139,6 @@ fn prepare(console: &Console, widget: &Widget, state: &State) -> Item {
     }
 }
 
-/// Whether `reference` is the ref `device/key` (no allocation per tag).
-fn is_ref(reference: &str, device: &str, key: &str) -> bool {
-    reference.len() == device.len() + 1 + key.len()
-        && reference.starts_with(device)
-        && reference.as_bytes()[device.len()] == b'/'
-        && reference.ends_with(key)
-}
-
 /// A connection to draw: its route on the stage and how.
 struct Wire {
     points: Vec<(f64, f64)>,
@@ -1173,6 +1158,8 @@ struct Frame {
     focused: bool,
     /// The editor's grid under the widgets.
     grid: bool,
+    /// Drawn in the Designer: hidden widgets faded, none fully transparent.
+    designing: bool,
 }
 
 pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) -> AnyElement {
@@ -1396,6 +1383,7 @@ pub fn render(console: &mut Console, window: &mut Window, cx: &mut Context<Conso
                 drawn,
                 focused,
                 grid: false,
+                designing: false,
             };
             stage(frame, pressing, cx)
         }
@@ -1593,7 +1581,12 @@ fn paint_frame(frame: Frame, bounds: Bounds<Pixels>, window: &mut Window, cx: &m
         paint_wire(&mut canvas, &stage, wire, frame.t);
     }
     for item in &frame.items {
-        paint_item(&mut canvas, &stage, item, frame.t, frame.focused);
+        match designer::opacity(&item.widget, frame.designing) {
+            Some(alpha) => canvas.faded(alpha, |canvas| {
+                paint_item(canvas, &stage, item, frame.t, frame.focused);
+            }),
+            None => paint_item(&mut canvas, &stage, item, frame.t, frame.focused),
+        }
     }
 }
 

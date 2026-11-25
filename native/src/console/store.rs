@@ -352,6 +352,9 @@ pub struct Store {
     earliest: Cell<Option<Option<f64>>>,
     /// Counts tag list changes ([`Store::replace`]), for view caches.
     generation: u64,
+    /// Each tag's project ref (`device/key`, `device/key#2`…), both ways.
+    refs: HashMap<i64, String>,
+    by_ref: HashMap<String, i64>,
 }
 
 impl Store {
@@ -398,8 +401,41 @@ impl Store {
             .map(|tag| format!("{}\n{}", tag.info.name, tag.info.key).to_lowercase())
             .collect();
         self.all = (0..self.tags.len()).collect();
+        self.refs =
+            voltrus_scada_native::designer::bindings::refs_by_id(self.tags.iter().map(|tag| {
+                (
+                    tag.info.id,
+                    tag.info.device_id.as_str(),
+                    tag.info.key.as_str(),
+                )
+            }));
+        self.by_ref = self
+            .refs
+            .iter()
+            .map(|(id, reference)| (reference.clone(), *id))
+            .collect();
         self.filters.borrow_mut().clear();
         self.earliest.set(None);
+    }
+
+    /// A tag's project ref, numbered as the project file numbers tags that
+    /// share a `device/key` (the Designer's binding refs).
+    pub fn ref_of(&self, id: i64) -> Option<&str> {
+        self.refs.get(&id).map(String::as_str)
+    }
+
+    /// The tag a project ref names.
+    pub fn by_ref(&self, reference: &str) -> Option<i64> {
+        self.by_ref.get(reference).copied()
+    }
+
+    /// The live value of the tag a ref names, for binding expressions
+    /// (`None`: unknown tag or no finite value yet).
+    pub fn read_ref(&self, reference: &str) -> Option<f64> {
+        self.by_ref(reference)
+            .and_then(|id| self.get(id))
+            .map(|tag| tag.value)
+            .filter(|value| value.is_finite())
     }
 
     /// Keep a day of history for the tags `long` (data source ids, the

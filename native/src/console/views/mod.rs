@@ -188,7 +188,11 @@ impl Render for Console {
                 console.note_activity();
             }))
             .child(activity_on_scroll(cx))
-            .on_action(cx.listener(|console, _: &Quit, _, cx| {
+            .on_action(cx.listener(|console, _: &Quit, window, cx| {
+                // Unsaved Designer edits ask first (Save, Discard, Cancel).
+                if mimic::editor::holds(console, mimic::editor::Leave::Quit, window, cx) {
+                    return;
+                }
                 console.shutdown();
                 cx.quit();
             }))

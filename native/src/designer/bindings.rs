@@ -61,8 +61,32 @@ fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Json>, D
 pub struct MapCase {
     /// `==`, `>=`, `<=`, `>` or `<`.
     pub op: String,
+    /// The number compared with (not finite: the case never matches, and
+    /// the editor says the case needs a number).
+    #[serde(default = "nan", deserialize_with = "number_or_nan")]
     pub v: f64,
-    pub out: Json,
+    /// What the case gives; absent: the property keeps its fixed value.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub out: Option<Json>,
+}
+
+/// The comparison operators of a map case, in the editor's order.
+pub const OPS: [&str; 5] = ["==", ">=", ">", "<=", "<"];
+
+fn nan() -> f64 {
+    f64::NAN
+}
+
+/// A case's number: anything but a number (`null` for the web's `NaN`)
+/// is no number.
+fn number_or_nan<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    Ok(Json::deserialize(deserializer)?
+        .as_f64()
+        .unwrap_or(f64::NAN))
 }
 
 impl MapCase {
@@ -96,20 +120,42 @@ pub const COMMON_PROPS: [(&str, &str, PropType, bool); 2] = [
     ("opacity", "Opacity", PropType::Number, false),
 ];
 
-/// A tag's project ref: `device/key`.
+/// A tag's base project ref: `device/key`. A tag that shares it with
+/// others may have a numbered ref: see [`refs_by_id`].
 pub fn tag_ref(device_id: &str, key: &str) -> String {
     format!("{device_id}/{key}")
 }
 
-/// Refs to tag ids; the first tag of a duplicated ref wins.
+/// The ref of every tag, numbered as the project exporter does
+/// (`refsById`): tags in id order, the first with a given `device/key`
+/// gets the plain ref and the next ones `device/key#2`, `#3`… So a ref
+/// names the same tag in the console, the browser, the project file and
+/// on the server.
+pub fn refs_by_id<'a>(
+    tags: impl IntoIterator<Item = (i64, &'a str, &'a str)>,
+) -> HashMap<i64, String> {
+    let mut sorted: Vec<(i64, &str, &str)> = tags.into_iter().collect();
+    sorted.sort_by_key(|(id, ..)| *id);
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut out = HashMap::new();
+    for (id, device, key) in sorted {
+        let base = tag_ref(device, key);
+        let n = counts.entry(base.clone()).or_insert(0);
+        *n += 1;
+        let reference = if *n == 1 { base } else { format!("{base}#{n}") };
+        out.insert(id, reference);
+    }
+    out
+}
+
+/// Refs to tag ids (`refIndex`), numbered as [`refs_by_id`].
 pub fn ref_index<'a>(
     tags: impl IntoIterator<Item = (i64, &'a str, &'a str)>,
 ) -> HashMap<String, i64> {
-    let mut index = HashMap::new();
-    for (id, device, key) in tags {
-        index.entry(tag_ref(device, key)).or_insert(id);
-    }
-    index
+    refs_by_id(tags)
+        .into_iter()
+        .map(|(id, reference)| (reference, id))
+        .collect()
 }
 
 /// The bindings in a config, by property; entries that are not a binding
@@ -169,14 +215,24 @@ pub fn binding_errors(binding: &Binding, known: &dyn Fn(&str) -> bool) -> Vec<St
         Binding::Tag { tag } if tag.is_empty() => vec!["Pick a tag".into()],
         Binding::Tag { tag } if !known(tag) => vec![format!("Unknown tag {tag}")],
         Binding::Tag { .. } => Vec::new(),
-        Binding::Expr { expr } | Binding::Map { expr, .. } => match expr::parse(expr) {
-            Err(error) => vec![error.message],
-            Ok(node) => expr::refs(&node)
-                .into_iter()
-                .filter(|reference| !known(reference))
-                .map(|reference| format!("Unknown tag {{{reference}}}"))
-                .collect(),
-        },
+        Binding::Expr { expr } | Binding::Map { expr, .. } => {
+            let mut errors: Vec<String> = match expr::parse(expr) {
+                Err(error) => return vec![error.message],
+                Ok(node) => expr::refs(&node)
+                    .into_iter()
+                    .filter(|reference| !known(reference))
+                    .map(|reference| format!("Unknown tag {{{reference}}}"))
+                    .collect(),
+            };
+            if let Binding::Map { cases, .. } = binding {
+                for (i, case) in cases.iter().enumerate() {
+                    if !case.v.is_finite() {
+                        errors.push(format!("Case {} needs a number", i + 1));
+                    }
+                }
+            }
+            errors
+        }
     }
 }
 
@@ -200,18 +256,26 @@ pub fn binding_refs(config: &Map<String, Json>) -> BTreeSet<String> {
     out
 }
 
-/// A value as a property of `kind` takes it (`coerce`).
-pub fn coerce(value: &Json, kind: Option<PropType>) -> Json {
+/// A value as a property of `kind` takes it (`coerce`); `None` for a
+/// number property that gets no finite number (it keeps its fixed value).
+pub fn coerce(value: &Json, kind: Option<PropType>) -> Option<Json> {
     let as_expr = Value::from_json(value);
-    match kind {
+    Some(match kind {
         Some(PropType::Boolean) => match value {
             Json::Bool(_) => value.clone(),
             _ => Json::Bool(as_expr.truthy()),
         },
-        Some(PropType::Number) => match value {
-            Json::Number(_) | Json::Null => value.clone(),
-            _ => Value::Num(as_expr.num()).to_json(),
-        },
+        Some(PropType::Number) => {
+            let x = match value {
+                Json::Null => f64::NAN,
+                Json::String(s) if s.is_empty() => f64::NAN,
+                _ => as_expr.num(),
+            };
+            if !x.is_finite() {
+                return None;
+            }
+            Value::Num(x).to_json()
+        }
         Some(PropType::String) => match value {
             Json::Null => Json::String(String::new()),
             Json::Number(n) => {
@@ -223,7 +287,7 @@ pub fn coerce(value: &Json, kind: Option<PropType>) -> Json {
             other => Json::String(other.to_string()),
         },
         _ => value.clone(),
-    }
+    })
 }
 
 /// The value a binding gives now; `None` when it cannot be evaluated (the
@@ -235,12 +299,12 @@ pub fn evaluate_binding(
     cache: &mut Cache,
 ) -> Option<Json> {
     match binding {
-        Binding::Tag { tag } => read(tag).map(|v| coerce(&Value::Num(v).to_json(), kind)),
+        Binding::Tag { tag } => coerce(&Value::Num(read(tag)?).to_json(), kind),
         Binding::Expr { expr } => {
             let node = cache.compile(expr).as_ref().ok()?;
-            match expr::evaluate(node, read) {
+            match expr::safe_evaluate(node, read) {
                 Value::Null => None,
-                value => Some(coerce(&value.to_json(), kind)),
+                value => coerce(&value.to_json(), kind),
             }
         }
         Binding::Map {
@@ -249,16 +313,25 @@ pub fn evaluate_binding(
             otherwise,
         } => {
             let node = cache.compile(expr).as_ref().ok()?;
-            let x = match expr::evaluate(node, read) {
+            let x = match expr::safe_evaluate(node, read) {
                 Value::Bool(b) => f64::from(u8::from(b)),
                 Value::Num(x) => x,
                 _ => f64::NAN,
             };
             let hit = (!x.is_nan())
-                .then(|| cases.iter().find(|case| case.matches(x)))
+                .then(|| {
+                    cases
+                        .iter()
+                        .find(|case| case.v.is_finite() && case.matches(x))
+                })
                 .flatten();
-            let out = hit.map(|case| &case.out).or(otherwise.as_ref())?;
-            Some(coerce(out, kind))
+            // A hit case without a result keeps the fixed value (the web's
+            // `hit ? hit.out : b.else`).
+            let out = match hit {
+                Some(case) => case.out.as_ref(),
+                None => otherwise.as_ref(),
+            }?;
+            coerce(out, kind)
         }
     }
 }
@@ -287,6 +360,11 @@ pub fn apply_bindings(
     let mut out = config.clone();
     for (prop, binding) in bindings {
         let kind = types(&prop).or_else(|| common_type(&prop));
+        // Tag-picker fields hold tag ids, not values: never bound (the
+        // editor offers no binding for them).
+        if prop == BINDINGS_KEY || kind == Some(PropType::Tag) {
+            continue;
+        }
         if let Some(value) = evaluate_binding(&binding, read, kind, cache) {
             out.insert(prop, value);
         }
@@ -294,10 +372,25 @@ pub fn apply_bindings(
     Some(out)
 }
 
+/// Whether a widget is drawn at runtime (`shownAtRuntime`): its bound
+/// `visible` when that has a value, else the fixed one.
+pub fn shown_at_runtime(
+    config: &Map<String, Json>,
+    read: &dyn Fn(&str) -> Option<f64>,
+    cache: &mut Cache,
+) -> bool {
+    if let Some(binding) = binding_of(config, "visible")
+        && let Some(value) = evaluate_binding(&binding, read, Some(PropType::Boolean), cache)
+    {
+        return value != Json::Bool(false);
+    }
+    config.get("visible") != Some(&Json::Bool(false))
+}
+
 /// One line describing a binding, for the property grid.
 pub fn describe(binding: &Binding) -> String {
     match binding {
-        Binding::Tag { tag } => format!("{{{tag}}}"),
+        Binding::Tag { tag } => expr::escape_ref(tag),
         Binding::Expr { expr } => expr.clone(),
         Binding::Map { expr, cases, .. } => format!(
             "map {expr} ({} case{})",

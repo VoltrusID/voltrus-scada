@@ -18,7 +18,9 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const client = join(here, '../../../../client/src')
 const { loadLayoutFromAPI, saveLayoutToAPI } = await import(join(client, 'scada2/engine/layout.ts'))
-const { historyReducer, emptyHistory, bindPrimaryPatch } = await import(join(client, 'designer/model.ts'))
+const {
+  historyReducer, emptyHistory, bindPrimaryPatch, groupPatches, alignPatches, distributePatches, lockPatches,
+} = await import(join(client, 'designer/model.ts'))
 const { withBinding } = await import(join(client, 'designer/bindings.ts'))
 
 const input = JSON.parse(readFileSync(join(here, 'wtp-rows.json'), 'utf8'))
@@ -28,6 +30,9 @@ let h = historyReducer(emptyHistory, { type: 'load', doc: loadLayoutFromAPI(inpu
 const w = (id: string) => h.present.widgets.find((x: any) => x.id === id)
 const patch = (id: string, p: any, coalesce?: string) => {
   h = historyReducer(h, { type: 'edit', edit: { type: 'patch', patches: { [id]: p } }, coalesce })
+}
+const patches = (ps: Record<string, any>) => {
+  h = historyReducer(h, { type: 'edit', edit: { type: 'patch', patches: ps } })
 }
 
 // 1. Drag P-101A.
@@ -48,6 +53,25 @@ h = historyReducer(h, { type: 'redo' })
 patch('e033', { config: withBinding(w('e033').config, 'lineColor', { kind: 'map', expr: '{wtp/raw_turbidity}', cases: [{ op: '>=', v: 32, out: '#f04646' }, { op: '>=', v: 25, out: '#f5b21b' }], else: 'var(--cyan)' }) })
 // 8. A move that is undone: not saved.
 patch('e001', { x: 400, y: 400 })
+h = historyReducer(h, { type: 'undo' })
+// 9. Group the two pumps.
+patches(groupPatches(h.present, ['e012', 'e013'], 'g_pumps'))
+// 10. Align the valve and the pumps left.
+patches(alignPatches(h.present, ['e011', 'e012', 'e013'], 'left'))
+// 11. Distribute them vertically.
+patches(distributePatches(h.present, ['e011', 'e012', 'e013'], 'v'))
+// 12. Lock the tank; a left align with it moves only the KPI.
+patches(lockPatches(h.present, ['e016'], true))
+patches(alignPatches(h.present, ['e016', 'e003'], 'left'))
+// 13. The trend's opacity follows an expression.
+patch('e033', { config: withBinding(w('e033').config, 'opacity', { kind: 'expr', expr: '{wtp/raw_turbidity} > 30 ? 1 : 0.5' }) })
+// 14. Delete P-101B: its group of one dissolves.
+h = historyReducer(h, { type: 'edit', edit: { type: 'remove', ids: ['e013'] } })
+// 15. Group the valve with P-101A, then bring the group forward one step.
+patches(groupPatches(h.present, ['e011', 'e012'], 'g_intake'))
+h = historyReducer(h, { type: 'edit', edit: { type: 'order', ids: ['e011'], to: 'forward' } })
+// 16. Centre the label over the trend's width, then undo it: not saved.
+patches(alignPatches(h.present, ['e001', 'e033'], 'hcenter'))
 h = historyReducer(h, { type: 'undo' })
 
 const saved = saveLayoutToAPI(h.present, (x: any) => names.get(x.sensorId) || x.type)

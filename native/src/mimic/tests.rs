@@ -317,7 +317,8 @@ fn every_type_and_symbol_is_known() {
         assert_eq!(WidgetKind::parse(name), kind);
         assert_eq!(kind.as_str(), name);
     }
-    assert_eq!(SYMBOLS.len(), 31);
+    // The 31 of the shaded library and the 8 of ISA-101.
+    assert_eq!(SYMBOLS.len(), 39);
     let mut keys: Vec<&str> = SYMBOLS.iter().map(|def| def.key).collect();
     keys.sort_unstable();
     keys.dedup();
@@ -672,4 +673,154 @@ fn the_keyboard_visits_equipment_in_reading_order() {
     assert_eq!(neighbor(&layout, 1, Direction::Down, &candidates), Some(2));
     assert_eq!(neighbor(&layout, 1, Direction::Up, &candidates), None);
     assert_eq!(neighbor(&layout, 3, Direction::Left, &candidates), Some(2));
+}
+
+/// The ISA-101 library as `hmi/isa101.tsx` defines it: key, name, size,
+/// binding, stretch and ports (left, right, top, bottom).
+#[test]
+#[allow(clippy::type_complexity)]
+fn the_isa_101_symbols_are_the_webs() {
+    type Port = Option<(f64, f64)>;
+    let web: [(&str, &str, (f64, f64), (f64, f64), Binding, bool, [Port; 4]); 8] = [
+        (
+            "isa_pump",
+            "Pump (ISA-101)",
+            (100.0, 100.0),
+            (90.0, 104.0),
+            Binding::State,
+            false,
+            [Some((12.0, 54.0)), Some((94.0, 18.0)), None, None],
+        ),
+        (
+            "isa_motor",
+            "Motor (ISA-101)",
+            (100.0, 100.0),
+            (80.0, 96.0),
+            Binding::State,
+            false,
+            [None, Some((96.0, 50.0)), Some((50.0, 4.0)), None],
+        ),
+        (
+            "isa_valve",
+            "Valve (ISA-101)",
+            (100.0, 70.0),
+            (90.0, 92.0),
+            Binding::State,
+            false,
+            [Some((4.0, 45.0)), Some((96.0, 45.0)), None, None],
+        ),
+        (
+            "isa_control_valve",
+            "Control Valve (ISA-101)",
+            (100.0, 100.0),
+            (80.0, 100.0),
+            Binding::Value,
+            false,
+            [Some((4.0, 75.0)), Some((96.0, 75.0)), None, None],
+        ),
+        (
+            "isa_tank",
+            "Tank (ISA-101)",
+            (100.0, 160.0),
+            (90.0, 144.0),
+            Binding::Level,
+            false,
+            [
+                Some((4.0, 130.0)),
+                Some((96.0, 130.0)),
+                Some((50.0, 4.0)),
+                Some((50.0, 156.0)),
+            ],
+        ),
+        (
+            "isa_heat_exchanger",
+            "Heat Exchanger (ISA-101)",
+            (100.0, 100.0),
+            (80.0, 80.0),
+            Binding::None,
+            false,
+            [
+                Some((4.0, 50.0)),
+                Some((96.0, 50.0)),
+                Some((50.0, 4.0)),
+                Some((50.0, 96.0)),
+            ],
+        ),
+        (
+            "isa_line",
+            "Process Line (ISA-101)",
+            (200.0, 10.0),
+            (200.0, 10.0),
+            Binding::None,
+            true,
+            [None; 4],
+        ),
+        (
+            "isa_line_vertical",
+            "Process Line, vertical (ISA-101)",
+            (10.0, 200.0),
+            (10.0, 200.0),
+            Binding::None,
+            true,
+            [None; 4],
+        ),
+    ];
+    for (key, name, view_box, size, binding, stretch, [left, right, top, bottom]) in web {
+        let def = symbol_def(key).unwrap_or_else(|| panic!("{key} is in the library"));
+        assert_eq!(def.name, name, "{key}");
+        assert_eq!(def.category, Category::Isa101, "{key}");
+        assert_eq!(def.view_box, view_box, "{key}");
+        assert_eq!(def.size, size, "{key}");
+        assert_eq!(def.binding, binding, "{key}");
+        assert_eq!(def.stretch, stretch, "{key}");
+        assert_eq!(
+            (
+                def.ports.left,
+                def.ports.right,
+                def.ports.top,
+                def.ports.bottom
+            ),
+            (left, right, top, bottom),
+            "{key}"
+        );
+    }
+    // Valves open and close, whatever their category.
+    let valve = symbol_def("isa_valve").unwrap();
+    assert_eq!(state_text(valve, EquipState::Running), "OPEN");
+    assert_eq!(state_text(valve, EquipState::Stopped), "CLOSED");
+    let pump = symbol_def("isa_pump").unwrap();
+    assert_eq!(state_text(pump, EquipState::Running), "RUNNING");
+}
+
+/// The palette lists the ISA-101 library first, under its own category,
+/// with the tank's and the lines' own fields.
+#[test]
+fn the_palette_lists_isa_101_first() {
+    use edit::{CATEGORIES, category_name, palette_symbols, schema};
+    assert_eq!(CATEGORIES[0], Category::Isa101);
+    assert_eq!(category_name(Category::Isa101), "ISA-101");
+    let listed: Vec<&str> = palette_symbols("isa-101").map(|def| def.key).collect();
+    assert_eq!(
+        listed,
+        [
+            "isa_pump",
+            "isa_motor",
+            "isa_valve",
+            "isa_control_valve",
+            "isa_tank",
+            "isa_heat_exchanger",
+            "isa_line",
+            "isa_line_vertical"
+        ]
+    );
+    let keys = |key: &str| -> Vec<&'static str> {
+        schema(&widget("symbol", json!({ "symbol": key }), &[]))
+            .iter()
+            .map(|field| field.key)
+            .collect()
+    };
+    assert!(keys("isa_tank").contains(&"showPercent"));
+    assert!(keys("isa_line").contains(&"runSensorId"));
+    assert!(!keys("isa_line").contains(&"rotation"), "lines stretch");
+    assert!(keys("isa_pump").contains(&"faultSensorId"));
 }

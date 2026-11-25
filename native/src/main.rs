@@ -390,8 +390,9 @@ fn main() -> ExitCode {
                 let console =
                     cx.new(|cx| Console::new(runtime, events, catalog, launch, window, cx));
                 let weak = console.downgrade();
-                window.on_window_should_close(cx, move |_, cx| {
-                    // The kiosk lock keeps the window open.
+                window.on_window_should_close(cx, move |window, cx| {
+                    // The kiosk lock keeps the window open; unsaved
+                    // Designer edits ask first.
                     let locked = weak
                         .update(cx, |console, cx| {
                             let locked = console.kiosk_locked();
@@ -401,8 +402,9 @@ fn main() -> ExitCode {
                                     true,
                                     cx,
                                 );
+                                return true;
                             }
-                            locked
+                            console.holds_quit(window, cx)
                         })
                         .unwrap_or(false);
                     if locked {

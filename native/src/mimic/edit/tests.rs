@@ -104,7 +104,16 @@ fn manifests_follow_the_web_registry() {
 #[test]
 fn the_palette_searches_names_and_categories() {
     let valves: Vec<&str> = palette_symbols("VALV").map(|def| def.key).collect();
-    assert_eq!(valves, ["valve", "control_valve", "check_valve"]);
+    assert_eq!(
+        valves,
+        [
+            "valve",
+            "control_valve",
+            "check_valve",
+            "isa_valve",
+            "isa_control_valve"
+        ]
+    );
     let piping: Vec<&str> = palette_symbols("piping").map(|def| def.key).collect();
     assert_eq!(piping, ["pipe", "pipe_vertical", "pipe_elbow", "pipe_tee"]);
     assert_eq!(palette_symbols("  ").count(), SYMBOLS.len());
@@ -354,7 +363,7 @@ fn z_order_keeps_the_picked_widgets_order() {
     };
     let front = |ids: &[&str]| Edit::Reorder {
         ids: ids.iter().map(|id| (*id).to_owned()).collect(),
-        front: true,
+        to: Order::Front,
     };
     assert!(front(&["a"]).apply(&mut layout));
     assert_eq!(ids(&layout), ["b", "c", "a"]);
@@ -362,7 +371,7 @@ fn z_order_keeps_the_picked_widgets_order() {
     assert!(
         Edit::Reorder {
             ids: vec!["a".into(), "c".into()],
-            front: false
+            to: Order::Back
         }
         .apply(&mut layout)
     );

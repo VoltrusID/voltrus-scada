@@ -603,7 +603,8 @@ pub fn palette_widgets() -> impl Iterator<Item = &'static Manifest> {
 }
 
 /// The library's categories in the palette's order (`SYMBOL_CATEGORIES`).
-pub const CATEGORIES: [Category; 7] = [
+pub const CATEGORIES: [Category; 8] = [
+    Category::Isa101,
     Category::Rotating,
     Category::Valves,
     Category::Vessels,
@@ -615,6 +616,7 @@ pub const CATEGORIES: [Category; 7] = [
 
 pub fn category_name(category: Category) -> &'static str {
     match category {
+        Category::Isa101 => "ISA-101",
         Category::Rotating => "Rotating",
         Category::Valves => "Valves",
         Category::Vessels => "Vessels",
@@ -671,12 +673,14 @@ const ROTATIONS: &[(&str, &str)] = &[("0", "0°"), ("90", "90°"), ("180", "180�
 /// A symbol's own fields (`SymbolDef.fields`).
 fn own_fields(key: &str) -> &'static [Field] {
     match key {
-        "tank" | "tank_horizontal" | "silo" => VESSEL,
+        "tank" | "tank_horizontal" | "silo" | "isa_tank" => VESSEL,
         "mixer" => MIXER,
         "clarifier" => CLARIFIER,
         "gravity_filter" => GRAVITY_FILTER,
         "instrument" => INSTRUMENT,
-        "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee" => PIPE,
+        "pipe" | "pipe_vertical" | "pipe_elbow" | "pipe_tee" | "isa_line" | "isa_line_vertical" => {
+            PIPE
+        }
         _ => &[],
     }
 }
@@ -991,6 +995,112 @@ pub fn connection(id: String, from: &str, to: &str, kind: &str) -> Connection {
     }
 }
 
+// ── Groups and locks (the Designer's `config.group`, `config.locked`) ─────
+
+/// The config key of a widget's group id.
+pub const GROUP_KEY: &str = "group";
+/// The config key that locks a widget (`true`; absent when unlocked).
+pub const LOCKED_KEY: &str = "locked";
+
+/// A widget's group id (`groupOf`): a non-empty `config.group`.
+pub fn group_of(widget: &Widget) -> Option<&str> {
+    widget
+        .get(GROUP_KEY)
+        .and_then(Value::as_str)
+        .filter(|group| !group.is_empty())
+}
+
+/// Whether a widget is locked (`isLocked`): `config.locked` is `true`.
+pub fn is_locked(widget: &Widget) -> bool {
+    widget.get(LOCKED_KEY) == Some(&Value::Bool(true))
+}
+
+/// A group left with one member is no group: that member is ungrouped
+/// (`dissolveSingleGroups`).
+fn dissolve_single_groups(widgets: &mut [Widget]) {
+    let mut count: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for widget in widgets.iter() {
+        if let Some(group) = group_of(widget) {
+            *count.entry(group.to_owned()).or_default() += 1;
+        }
+    }
+    for widget in widgets.iter_mut() {
+        if group_of(widget).is_some_and(|group| count.get(group) == Some(&1)) {
+            widget.config.remove(GROUP_KEY);
+        }
+    }
+}
+
+/// Where [`Edit::Reorder`] moves the picked widgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Order {
+    Front,
+    Back,
+    /// One unit up, past the nearest unpicked neighbour.
+    Forward,
+    /// One unit down.
+    Backward,
+}
+
+/// The stacking order with `ids` (and their groups) moved `to`
+/// (`reorder` in the web Designer's model).
+fn reorder(widgets: Vec<Widget>, ids: &[String], to: Order) -> Vec<Widget> {
+    let picked_groups: HashSet<String> = widgets
+        .iter()
+        .filter(|w| ids.contains(&w.id))
+        .filter_map(|w| group_of(w).map(str::to_owned))
+        .collect();
+    let picked = |w: &Widget| {
+        ids.contains(&w.id) || group_of(w).is_some_and(|group| picked_groups.contains(group))
+    };
+    // Units in stacking order: a lone widget, or a group's members together
+    // (at its back-most member, members keeping their order).
+    let mut units: Vec<Vec<Widget>> = Vec::new();
+    let mut unit_of_group: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for widget in widgets {
+        match group_of(&widget).map(str::to_owned) {
+            None => units.push(vec![widget]),
+            Some(group) => {
+                if let Some(&at) = unit_of_group.get(&group) {
+                    units[at].push(widget);
+                } else {
+                    unit_of_group.insert(group, units.len());
+                    units.push(vec![widget]);
+                }
+            }
+        }
+    }
+    let is_picked = |unit: &Vec<Widget>| unit.iter().any(&picked);
+    match to {
+        Order::Front | Order::Back => {
+            let (moved, rest): (Vec<_>, Vec<_>) = units.into_iter().partition(|u| is_picked(u));
+            units = if to == Order::Front {
+                rest.into_iter().chain(moved).collect()
+            } else {
+                moved.into_iter().chain(rest).collect()
+            };
+        }
+        Order::Forward => {
+            let at: Vec<usize> = (0..units.len()).filter(|i| is_picked(&units[*i])).collect();
+            for i in at.into_iter().rev() {
+                if i + 1 < units.len() && !is_picked(&units[i + 1]) {
+                    units.swap(i, i + 1);
+                }
+            }
+        }
+        Order::Backward => {
+            let at: Vec<usize> = (0..units.len()).filter(|i| is_picked(&units[*i])).collect();
+            for i in at {
+                if i > 0 && !is_picked(&units[i - 1]) {
+                    units.swap(i, i - 1);
+                }
+            }
+        }
+    }
+    units.into_iter().flatten().collect()
+}
+
 // ── Edits (`layoutReducer`) ───────────────────────────────────────────────
 
 /// One change to a layout.
@@ -1029,9 +1139,10 @@ pub enum Edit {
     Name { id: String, name: String },
     /// Change a connection's type.
     Line { id: String, kind: String },
-    /// Bring widgets to the front or send them to the back, keeping their
-    /// order among themselves (`REORDER_WIDGET`).
-    Reorder { ids: Vec<String>, front: bool },
+    /// Restack widgets (the Designer's `order` edit): a group moves as one
+    /// unit and is never split by another widget, and the picked widgets
+    /// keep their order among themselves.
+    Reorder { ids: Vec<String>, to: Order },
     /// Several edits as one step.
     Many(Vec<Edit>),
 }
@@ -1059,6 +1170,9 @@ impl Edit {
                 layout
                     .widgets
                     .retain(|widget| !gone.contains(widget.id.as_str()));
+                if layout.widgets.len() != before.0 {
+                    dissolve_single_groups(&mut layout.widgets);
+                }
                 layout.connections.retain(|connection| {
                     !gone.contains(connection.from.as_str())
                         && !gone.contains(connection.to.as_str())
@@ -1143,17 +1257,9 @@ impl Edit {
                 line.kind.clone_from(kind);
                 true
             }
-            Self::Reorder { ids, front } => {
+            Self::Reorder { ids, to } => {
                 let before: Vec<String> = layout.widgets.iter().map(|w| w.id.clone()).collect();
-                let (picked, rest): (Vec<Widget>, Vec<Widget>) =
-                    std::mem::take(&mut layout.widgets)
-                        .into_iter()
-                        .partition(|widget| ids.contains(&widget.id));
-                layout.widgets = if *front {
-                    rest.into_iter().chain(picked).collect()
-                } else {
-                    picked.into_iter().chain(rest).collect()
-                };
+                layout.widgets = reorder(std::mem::take(&mut layout.widgets), ids, *to);
                 layout
                     .widgets
                     .iter()
@@ -1873,15 +1979,33 @@ pub fn paste(
     };
     let mut renamed: Vec<(String, String)> = Vec::with_capacity(clip.widgets.len());
     let mut widgets: Vec<Widget> = Vec::with_capacity(clip.widgets.len());
+    // A pasted group is a group of its own: new group ids (`duplicate`).
+    let mut groups: Vec<(String, String)> = Vec::new();
     for widget in &clip.widgets {
         let id = unique("w");
         renamed.push((widget.id.clone(), id.clone()));
-        widgets.push(Widget {
+        let mut copy = Widget {
             id,
             x: widget.x + dx,
             y: widget.y + dy,
+            // The copy is named by the save (the web drops the name too).
+            name: String::new(),
             ..widget.clone()
-        });
+        };
+        copy.config.remove(LOCKED_KEY);
+        if let Some(group) = group_of(widget).map(str::to_owned) {
+            let new_group = match groups.iter().find(|(old, _)| *old == group) {
+                Some((_, new)) => new.clone(),
+                None => {
+                    let new = unique("g");
+                    groups.push((group, new.clone()));
+                    new
+                }
+            };
+            copy.config
+                .insert(GROUP_KEY.to_owned(), Value::String(new_group));
+        }
+        widgets.push(copy);
     }
     let new_id = |old: &str| {
         renamed

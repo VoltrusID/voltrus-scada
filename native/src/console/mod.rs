@@ -1628,6 +1628,12 @@ impl Console {
 
     /// The window closes or the console quits: report a stress run, stop
     /// the runtime, which signs the session out of the server first.
+    /// Quitting waits while the Designer has unsaved edits: the dialog
+    /// asks first (and quits once answered). Whether it waits.
+    pub fn holds_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        views::mimic::editor::holds(self, views::mimic::editor::Leave::Quit, window, cx)
+    }
+
     pub fn shutdown(&mut self) {
         if let Some(report) = self.stress_report() {
             println!("{report}");

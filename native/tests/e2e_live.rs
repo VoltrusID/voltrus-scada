@@ -3066,19 +3066,20 @@ async fn live_data_manager_insights() {
     );
 }
 
-/// The Designer's save through the live server: the WTP fixture rows with
-/// Designer edits (a move, a label, a primary tag rebind that drops the
-/// stored name, a label expression) saved as `designer::rows` writes them
-/// to a screen of its own, read back the same, and the screen deleted.
+/// The Designer's save through the live server, as the web Designer saves:
+/// the WTP fixture rows with Designer edits (a move, a label, a primary tag
+/// rebind that drops the stored name, a label expression, a group, a lock
+/// and an align) put with one `PUT scada-layout` based on the revision
+/// loaded, read back the same; a save based on a stale revision is refused
+/// (409) and writes nothing; the screen deleted.
 #[tokio::test]
 async fn live_designer_save() {
     use serde::de::IgnoredAny;
     use voltrus_scada_native::api::Method;
-    use voltrus_scada_native::designer::{self, Binding};
+    use voltrus_scada_native::designer::arrange::{self, Align};
+    use voltrus_scada_native::designer::{self, Binding, Saved};
     use voltrus_scada_native::mimic::edit::{Edit, History};
-    use voltrus_scada_native::mimic::{
-        self, ConnectionRow, EquipmentRow, Items, connections_path, equipment_path,
-    };
+    use voltrus_scada_native::mimic::{self, ConnectionRow, EquipmentRow};
     use voltrus_scada_native::screens::Screen;
     let Ok(url) = std::env::var("VOLTRUS_E2E_URL") else {
         eprintln!("skipping: VOLTRUS_E2E_URL not set");
@@ -3098,6 +3099,7 @@ async fn live_designer_save() {
         serde_json::from_str(include_str!("fixtures/designer/wtp-rows.json")).expect("fixture");
     let mut history = History::new(mimic::parse(&fixture.equipment, &fixture.connections));
     let widget = |h: &History, id: &str| h.present().widget(id).expect(id).clone();
+    let ids = |list: &[&str]| list.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
     let edits = [
         Edit::Move(vec![("e012".into(), 200.0, 180.0)]),
         designer::set_label(&widget(&history, "e011"), "XV-101 Intake"),
@@ -3111,6 +3113,17 @@ async fn live_designer_save() {
     };
     let bound = designer::set_binding(&widget(&history, "e016"), "label", Some(&expr));
     assert!(history.apply(&bound, None));
+    for edit in [
+        arrange::group(history.present(), &ids(&["e012", "e013"]), "g_e2e"),
+        arrange::lock(history.present(), &ids(&["e016"]), true),
+        arrange::align(
+            history.present(),
+            &ids(&["e011", "e012", "e013"]),
+            Align::Left,
+        ),
+    ] {
+        assert!(history.apply(&edit.expect("an arrange edit"), None));
+    }
     let name = |_: i64| Some("Tag seven".to_owned());
     let (rows, lines) = designer::rows(history.present(), &name);
 
@@ -3122,42 +3135,60 @@ async fn live_designer_save() {
         )
         .await
         .expect("POST /screens");
-    api.send_json::<_, IgnoredAny>(
-        Method::PUT,
-        &equipment_path(&created.id),
-        &Items { items: rows },
+    let (empty, base) = designer::load(&api, &created.id)
+        .await
+        .expect("GET scada-layout");
+    assert!(empty.widgets.is_empty());
+    let base = base.expect("the server gives the layout's revision");
+    let saved = designer::save(
+        &api,
+        &created.id,
+        rows.clone(),
+        lines.clone(),
+        Some(base.clone()),
     )
     .await
-    .expect("PUT scada-equipment");
-    api.send_json::<_, IgnoredAny>(
-        Method::PUT,
-        &connections_path(&created.id),
-        &Items { items: lines },
-    )
-    .await
-    .expect("PUT scada-connections");
-    let saved: Items<EquipmentRow> = api
-        .get_json(&equipment_path(&created.id))
+    .expect("PUT scada-layout");
+    let Saved::Done {
+        revision: Some(revision),
+    } = saved
+    else {
+        panic!("saved with a new revision: {saved:?}");
+    };
+    assert_ne!(revision, base);
+    // A second editor still on the first revision is refused.
+    let stale = designer::save(&api, &created.id, Vec::new(), Vec::new(), Some(base))
         .await
-        .expect("the saved equipment");
-    let saved_lines: Items<ConnectionRow> = api
-        .get_json(&connections_path(&created.id))
+        .expect("an answer");
+    let Saved::Conflict {
+        revision: current, ..
+    } = stale
+    else {
+        panic!("a stale save is refused: {stale:?}");
+    };
+    assert_eq!(current, revision, "the conflict names the current revision");
+    let (back, read_revision) = designer::load(&api, &created.id)
         .await
-        .expect("the saved connections");
+        .expect("the saved layout");
     api.send_empty::<IgnoredAny>(Method::DELETE, &format!("/api/v1/screens/{}", created.id))
         .await
         .expect("DELETE /screens/{id}");
-    let back = mimic::parse(&saved.items, &saved_lines.items);
+    assert_eq!(read_revision.as_deref(), Some(revision.as_str()));
     assert_eq!(
         back,
         designer::named(history.present(), &name),
-        "the Designer's save reads back unchanged"
+        "the Designer's save reads back unchanged; the refused one wrote nothing"
     );
     let kpi = back.widget("e003").expect("e003");
     assert_eq!(kpi.name, "Tag seven", "the name follows the new tag");
     assert!(
         designer::bindings::binding_of(&back.widget("e016").expect("e016").config, "label")
             .is_some()
+    );
+    assert!(arrange::is_locked(back.widget("e016").expect("e016")));
+    assert_eq!(
+        arrange::group_of(back.widget("e013").expect("e013")),
+        Some("g_e2e")
     );
     println!(
         "designer save: {} rows read back unchanged",

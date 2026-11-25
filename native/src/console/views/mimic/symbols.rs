@@ -481,6 +481,13 @@ fn draw(c: &mut Canvas<'_>, s: &Sym<'_>) {
         "pipe" | "pipe_vertical" => straight_pipe(c, s),
         "pipe_elbow" => pipe_path(c, s, Shape::svg("M0 30 L20 30 Q30 30 30 40 L30 60")),
         "pipe_tee" => pipe_path(c, s, Shape::svg("M0 12 L80 12 M40 12 L40 50")),
+        "isa_pump" => isa_pump(c, s),
+        "isa_motor" => isa_motor(c, s),
+        "isa_valve" => isa_valve(c, s),
+        "isa_control_valve" => isa_control_valve(c, s),
+        "isa_tank" => isa_tank(c, s),
+        "isa_heat_exchanger" => isa_heat_exchanger(c, s),
+        "isa_line" | "isa_line_vertical" => isa_line(c, s),
         // `resolve` falls back to the pump for unknown keys.
         _ => pump(c, s),
     }
@@ -1095,6 +1102,151 @@ fn pipe_path(c: &mut Canvas<'_>, s: &Sym<'_>, shape: Shape) {
     pipe_stroke(c, &s.xf, &shape, 1.0, 1.0, flowing, s.t);
 }
 
+// ── ISA-101 (`hmi/isa101.tsx`) ──────────────────────────────────────────
+//
+// Flat and grey with thin outlines that never scale; colour only for an
+// abnormal state (fault red, stale magenta and dashed). Running or open is
+// a filled body, stopped or unknown a hollow one, so the state reads in
+// greyscale too. The fault blink is the whole drawing's, as for the rest.
+
+/// `stroke(state)`: the outline's colour and line.
+fn isa_outline(h: &Hmi, state: EquipState) -> (Hsla, Line) {
+    match state {
+        EquipState::Fault => (h.fault, Line::hairline(2.5).round()),
+        EquipState::Stale => (h.stale, Line::hairline(1.75).round().dashed(4.0, 3.0, 0.0)),
+        EquipState::Idle | EquipState::Running | EquipState::Stopped => {
+            (h.isa_line, Line::hairline(1.75).round())
+        }
+    }
+}
+
+/// `fill(state)`: filled while running, red on a fault, hollow otherwise.
+fn isa_fill(h: &Hmi, state: EquipState) -> Hsla {
+    match state {
+        EquipState::Running => h.isa_on,
+        EquipState::Fault => h.fault,
+        EquipState::Idle | EquipState::Stopped | EquipState::Stale => h.isa_off,
+    }
+}
+
+impl Sym<'_> {
+    /// An ISA part: filled with `fill` (none: unfilled), outlined.
+    fn isa(&self, c: &mut Canvas<'_>, shape: &Shape, fill: Option<Hsla>) {
+        if let Some(fill) = fill {
+            c.fill(&self.xf, shape, fill);
+        }
+        let (color, line) = isa_outline(c.hmi, self.state);
+        c.stroke(&self.xf, shape, color, line);
+    }
+}
+
+/// `M top+10 … Z`: the ISA tank's outline between `top` and `bottom`.
+const ISA_TANK: &str = "M6 26 Q6 16 16 16 L84 16 Q94 16 94 26 L94 150 L6 150 Z";
+const ISA_TANK_TOP: f32 = 16.0;
+const ISA_TANK_BOTTOM: f32 = 150.0;
+
+fn isa_pump(c: &mut Canvas<'_>, s: &Sym<'_>) {
+    let fill = isa_fill(c.hmi, s.state);
+    s.isa(c, &Shape::svg("M50 54 L50 18 L94 18 L94 30 L72 30"), None);
+    s.isa(c, &Shape::circle(50.0, 54.0, 34.0), Some(fill));
+    s.isa(c, &Shape::svg("M30 82 L22 96 L78 96 L70 82"), None);
+    s.isa(c, &Shape::svg("M2 54 L16 54"), None);
+}
+
+fn isa_motor(c: &mut Canvas<'_>, s: &Sym<'_>) {
+    let h = c.hmi;
+    s.isa(c, &Shape::svg("M84 50 L98 50"), None);
+    s.isa(
+        c,
+        &Shape::circle(50.0, 50.0, 34.0),
+        Some(isa_fill(h, s.state)),
+    );
+    let letter = match s.state {
+        EquipState::Running | EquipState::Fault => h.stage,
+        EquipState::Idle | EquipState::Stopped | EquipState::Stale => h.isa_line,
+    };
+    s.text(c, (50.0, 51.0), "M", Text::new(30.0, letter).semibold());
+}
+
+fn isa_valve(c: &mut Canvas<'_>, s: &Sym<'_>) {
+    let fill = isa_fill(c.hmi, s.state);
+    s.isa(
+        c,
+        &Shape::svg("M8 25 L50 45 L8 65 Z M92 25 L50 45 L92 65 Z"),
+        Some(fill),
+    );
+    s.isa(c, &Shape::svg("M50 45 L50 14"), None);
+    s.isa(c, &Shape::svg("M38 12 L62 12"), None);
+}
+
+fn isa_control_valve(c: &mut Canvas<'_>, s: &Sym<'_>) {
+    let off = c.hmi.isa_off;
+    s.isa(
+        c,
+        &Shape::svg("M8 55 L50 75 L8 95 Z M92 55 L50 75 L92 95 Z"),
+        Some(off),
+    );
+    s.isa(c, &Shape::svg("M50 75 L50 36"), None);
+    s.isa(c, &Shape::svg("M24 36 A26 26 0 0 1 76 36 Z"), Some(off));
+}
+
+/// The tank's level fill: from the bottom up to `level`, inside the walls.
+fn isa_level_rect(level: f32) -> (f32, f32, f32, f32) {
+    let h = (ISA_TANK_BOTTOM - ISA_TANK_TOP) * level.clamp(0.0, 1.0);
+    (7.0, ISA_TANK_BOTTOM - h, 86.0, h)
+}
+
+fn isa_tank(c: &mut Canvas<'_>, s: &Sym<'_>) {
+    let h = c.hmi;
+    let vessel = Shape::svg(ISA_TANK);
+    c.fill(&s.xf, &vessel, h.isa_off);
+    if let Some(level) = s.level {
+        let (x, y, w, height) = isa_level_rect(level);
+        c.fill(&s.xf, &Shape::rect(x, y, w, height), h.isa_level);
+    }
+    s.isa(c, &vessel, None);
+    // The level scale on the right wall: 0, 25, 50, 75, 100 %.
+    for i in 0..=4u8 {
+        let y = ISA_TANK_BOTTOM - (ISA_TANK_BOTTOM - ISA_TANK_TOP) * f32::from(i) / 4.0;
+        s.segment(c, (86.0, y), (94.0, y), h.isa_line, Line::hairline(1.0));
+    }
+    if let Some(level) = s.level.filter(|_| s.show_percent) {
+        let style = Text::new(18.0, h.isa_text).mono().semibold();
+        let middle = f32::midpoint(ISA_TANK_TOP, ISA_TANK_BOTTOM);
+        s.text(c, (50.0, middle), &percent(level), style);
+    }
+}
+
+fn isa_heat_exchanger(c: &mut Canvas<'_>, s: &Sym<'_>) {
+    let off = c.hmi.isa_off;
+    s.isa(c, &Shape::circle(50.0, 50.0, 40.0), Some(off));
+    s.isa(
+        c,
+        &Shape::svg("M4 50 L22 50 L34 30 L50 70 L66 30 L78 50 L96 50"),
+        None,
+    );
+    s.isa(c, &Shape::svg("M50 4 L50 10"), None);
+    s.isa(c, &Shape::svg("M50 90 L50 96"), None);
+}
+
+/// A process line: a thin grey line stretched to its box, dashes running
+/// along it while its flow tag runs (`hmi-flow`).
+fn isa_line(c: &mut Canvas<'_>, s: &Sym<'_>) {
+    let h = c.hmi;
+    let shape = if s.key == "isa_line_vertical" {
+        Shape::svg("M5 0 L5 200")
+    } else {
+        Shape::svg("M0 5 L200 5")
+    };
+    c.stroke(&s.xf, &shape, h.isa_line, Line::hairline(3.0).round());
+    if s.run == EquipState::Running {
+        let line = Line::hairline(3.0)
+            .round()
+            .dashed(6.0, 18.0, motion::flow(s.t));
+        c.stroke(&s.xf, &shape, h.isa_on, line);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1153,6 +1305,23 @@ mod tests {
             status: false,
         };
         assert_eq!(footer_centres(none, 50.0), [None; 3]);
+    }
+
+    #[test]
+    #[allow(clippy::float_cmp)]
+    fn the_isa_tank_fills_from_its_floor() {
+        assert_eq!(isa_level_rect(0.0), (7.0, 150.0, 86.0, 0.0));
+        assert_eq!(isa_level_rect(0.5), (7.0, 83.0, 86.0, 67.0));
+        assert_eq!(isa_level_rect(1.0), (7.0, 16.0, 86.0, 134.0));
+        assert_eq!(isa_level_rect(1.5), isa_level_rect(1.0));
+        // `M6 ${top + 10} Q6 ${top} 16 ${top} L84 ${top} Q94 ${top} 94 ${top + 10} L94 ${bottom} L6 ${bottom} Z`
+        let (top, bottom) = (ISA_TANK_TOP, ISA_TANK_BOTTOM);
+        let web = format!(
+            "M6 {} Q6 {top} 16 {top} L84 {top} Q94 {top} 94 {} L94 {bottom} L6 {bottom} Z",
+            top + 10.0,
+            top + 10.0
+        );
+        assert_eq!(web, ISA_TANK);
     }
 
     #[test]

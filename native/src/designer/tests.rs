@@ -9,13 +9,14 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde_json::{Value as Json, json};
 
+use super::arrange::{Align, Axis};
 use super::bindings::{
     Binding, MapCase, PropType, apply_bindings, binding_errors, binding_refs, evaluate_binding,
     ref_index, tag_ref, with_binding,
 };
 use super::expr::{Cache, ExprError, Value, evaluate, parse, refs, to_fixed};
 use super::*;
-use crate::mimic::edit::History;
+use crate::mimic::edit::{History, Order, Rect};
 use crate::mimic::{ConnectionRow, EquipmentRow};
 
 fn tags() -> HashMap<&'static str, Option<f64>> {
@@ -159,12 +160,12 @@ fn tag_expression_and_map_bindings_evaluate_with_the_property_type() {
             MapCase {
                 op: ">=".into(),
                 v: 95.0,
-                out: json!("#f04646"),
+                out: Some(json!("#f04646")),
             },
             MapCase {
                 op: ">=".into(),
                 v: 85.0,
-                out: json!("#f5b21b"),
+                out: Some(json!("#f5b21b")),
             },
         ],
         otherwise: Some(json!("#8b939e")),
@@ -355,6 +356,55 @@ fn edited() -> (History, usize) {
         None,
     );
     assert!(h.undo());
+    let ids = |list: &[&str]| list.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+    // 9. Group the two pumps.
+    let grouped = arrange::group(h.present(), &ids(&["e012", "e013"]), "g_pumps").unwrap();
+    apply(&mut h, grouped, None);
+    steps += 1;
+    // 10. Align the valve and the pumps left.
+    let aligned =
+        arrange::align(h.present(), &ids(&["e011", "e012", "e013"]), Align::Left).unwrap();
+    apply(&mut h, aligned, None);
+    steps += 1;
+    // 11. Distribute them vertically.
+    let spaced =
+        arrange::distribute(h.present(), &ids(&["e011", "e012", "e013"]), Axis::Vertical).unwrap();
+    apply(&mut h, spaced, None);
+    steps += 1;
+    // 12. Lock the tank; a left align with it moves only the KPI.
+    let locked = arrange::lock(h.present(), &ids(&["e016"]), true).unwrap();
+    apply(&mut h, locked, None);
+    let aligned = arrange::align(h.present(), &ids(&["e016", "e003"]), Align::Left).unwrap();
+    apply(&mut h, aligned, None);
+    steps += 2;
+    // 13. The trend's opacity follows an expression.
+    let faded = Binding::Expr {
+        expr: "{wtp/raw_turbidity} > 30 ? 1 : 0.5".into(),
+    };
+    let bound = set_binding(widget(&h, "e033"), "opacity", Some(&faded));
+    apply(&mut h, bound, None);
+    steps += 1;
+    // 14. Delete P-101B: its group of one dissolves.
+    let gone = Edit::Remove {
+        widgets: ids(&["e013"]),
+        connections: Vec::new(),
+    };
+    apply(&mut h, gone, None);
+    assert_eq!(arrange::group_of(widget(&h, "e012")), None);
+    steps += 1;
+    // 15. Group the valve with P-101A, then bring the group forward one step.
+    let grouped = arrange::group(h.present(), &ids(&["e011", "e012"]), "g_intake").unwrap();
+    apply(&mut h, grouped, None);
+    let forward = Edit::Reorder {
+        ids: ids(&["e011"]),
+        to: Order::Forward,
+    };
+    apply(&mut h, forward, None);
+    steps += 2;
+    // 16. Centre the label over the trend's width, then undo it: not saved.
+    let centred = arrange::align(h.present(), &ids(&["e001", "e033"]), Align::Center).unwrap();
+    apply(&mut h, centred, None);
+    assert!(h.undo());
     (h, steps)
 }
 
@@ -536,9 +586,592 @@ fn bound_widgets_draw_their_live_values() {
         Some("T-101 Raw"),
         "no value: the fixed label"
     );
+    // P-101B is deleted in step 14: back to before it.
+    let mut h = h;
+    while h.present().widget("e013").is_none() {
+        assert!(h.undo());
+    }
     let pump = widget(&h, "e013");
     assert!(!visible(&bound(pump, &|_| Some(0.0), &mut cache).unwrap()));
     assert!(visible(&bound(pump, &|_| Some(1.0), &mut cache).unwrap()));
     assert!(bound(widget(&h, "e012"), &|_| None, &mut cache).is_none());
     assert!(!locked(pump));
+}
+
+// ── The review fixes of the web Designer (#33) ─────────────────────────────
+
+#[test]
+fn oversized_or_too_deep_expressions_fail_to_parse() {
+    let long = format!("\"{}\"", "a".repeat(expr::MAX_SOURCE));
+    assert_eq!(
+        parse(&long).unwrap_err().message,
+        "expression is longer than 2048 characters"
+    );
+    let nested = format!("{}1{}", "(".repeat(150), ")".repeat(150));
+    assert_eq!(
+        parse(&nested).unwrap_err().message,
+        "expression is nested deeper than 100 levels"
+    );
+    // A long left-associative chain is deep too.
+    let chain = vec!["1"; 150].join(" + ");
+    assert_eq!(
+        parse(&chain).unwrap_err().message,
+        "expression is nested deeper than 100 levels"
+    );
+    let negations = format!("{}1", "-".repeat(150));
+    assert!(parse(&negations).is_err());
+    let wide = format!(
+        "max({})",
+        vec!["min(1, 2, 3, 4, 5, 6, 7, 8)"; 120].join(", ")
+    );
+    assert!(
+        parse(&wide).is_err(),
+        "more than 1000 parts or 16 arguments"
+    );
+    // A balanced tree of 1023 parts in 2045 characters.
+    fn tree(levels: u32) -> String {
+        if levels == 0 {
+            "1".into()
+        } else {
+            format!("({}+{})", tree(levels - 1), tree(levels - 1))
+        }
+    }
+    let many = tree(9);
+    assert!(many.len() < expr::MAX_SOURCE);
+    assert_eq!(
+        parse(&many).unwrap_err().message,
+        "expression has more than 1000 parts"
+    );
+    assert!(parse(&tree(8)).is_ok());
+    assert!(parse(&vec!["1"; 90].join(" + ")).is_ok());
+}
+
+#[test]
+fn tag_refs_escape_braces_and_backslashes() {
+    assert_eq!(expr::escape_ref("dev/a}b"), "{dev/a\\}b}");
+    assert_eq!(expr::escape_ref("dev/a\\b"), "{dev/a\\\\b}");
+    let node = parse("{dev/a\\}b} + {dev/a\\\\b}").unwrap();
+    assert_eq!(
+        refs(&node).into_iter().collect::<Vec<_>>(),
+        ["dev/a\\b", "dev/a}b"]
+    );
+    assert_eq!(
+        parse("{dev/a\\}").unwrap_err().message,
+        "missing } after tag reference"
+    );
+    assert_eq!(
+        super::bindings::describe(&Binding::Tag {
+            tag: "dev/a}b".into()
+        }),
+        "{dev/a\\}b}"
+    );
+}
+
+#[test]
+fn bit_text_and_round_clamp_their_arguments() {
+    assert_eq!(ev("bit(5, 0)"), Value::Bool(true));
+    assert_eq!(ev("bit(5, 1)"), Value::Bool(false));
+    assert_eq!(ev("bit(-1, 52)"), Value::Bool(true), "two's complement");
+    assert_eq!(ev("bit(5, 53)"), Value::Null);
+    assert_eq!(ev("bit(5, 1.5)"), Value::Null);
+    assert_eq!(ev("text(1.25, 99)"), text("1.25000000000000000000"));
+    assert_eq!(ev("text(1.5, -3)"), text("2"));
+    assert_eq!(ev("text(1.5, null)"), text("2"));
+    assert_eq!(ev("round(1.234567, 50)"), num(1.234_567));
+    assert_eq!(ev("round(2.5, -1)"), num(3.0));
+}
+
+#[test]
+fn a_binding_that_gives_no_number_keeps_the_fixed_value() {
+    let mut cache = Cache::default();
+    let read = |_: &str| Some(1.0);
+    let not_a_number = Binding::Expr {
+        expr: "\"abc\" * 2".into(),
+    };
+    assert_eq!(
+        evaluate_binding(&not_a_number, &read, Some(PropType::Number), &mut cache),
+        None
+    );
+    let empty = Binding::Expr {
+        expr: "\"\" + \"\"".into(),
+    };
+    assert_eq!(
+        evaluate_binding(&empty, &read, Some(PropType::Number), &mut cache),
+        None,
+        "empty text is no number"
+    );
+    // A case without a number never matches; one without a result keeps
+    // the fixed value rather than falling to "otherwise".
+    let map: Binding = serde_json::from_value(json!({
+        "kind": "map", "expr": "1",
+        "cases": [{ "op": "==", "v": null, "out": "x" }, { "op": "==", "v": 1 }],
+        "else": "else"
+    }))
+    .unwrap();
+    assert_eq!(
+        evaluate_binding(&map, &read, Some(PropType::String), &mut cache),
+        None
+    );
+    assert_eq!(binding_errors(&map, &|_| true), ["Case 1 needs a number"]);
+    let saved = serde_json::to_value(&map).unwrap();
+    assert_eq!(
+        saved["cases"][1],
+        json!({ "op": "==", "v": 1.0 }),
+        "no out written"
+    );
+}
+
+#[test]
+fn tag_pickers_are_never_bound_and_visibility_follows_its_binding() {
+    let mut cache = Cache::default();
+    let mut config = serde_json::Map::new();
+    config.insert(
+        "bindings".into(),
+        json!({
+            "runSensorId": { "kind": "tag", "tag": "wtp/level" },
+            "visible": { "kind": "expr", "expr": "{wtp/level} > 50" },
+        }),
+    );
+    let types = |prop: &str| (prop == "runSensorId").then_some(PropType::Tag);
+    let read = |_: &str| Some(80.0);
+    let out = apply_bindings(&config, &read, &types, &mut cache).unwrap();
+    assert!(!out.contains_key("runSensorId"));
+    assert_eq!(out["visible"], json!(true));
+    assert!(super::bindings::shown_at_runtime(
+        &config, &read, &mut cache
+    ));
+    assert!(!super::bindings::shown_at_runtime(
+        &config,
+        &|_| Some(10.0),
+        &mut cache
+    ));
+    config.insert("visible".into(), json!(false));
+    assert!(
+        !super::bindings::shown_at_runtime(&config, &|_| None, &mut cache),
+        "no value: the fixed one"
+    );
+}
+
+#[test]
+fn the_parse_cache_drops_the_least_recently_used_text() {
+    let mut cache = Cache::default();
+    for i in 0..Cache::LIMIT {
+        assert!(cache.compile(&format!("{i}")).is_ok());
+    }
+    // Text 0 is used again, so text 1 is the oldest.
+    assert!(cache.compile("0").is_ok());
+    assert!(cache.compile("new").is_err());
+    assert_eq!(cache.len(), Cache::LIMIT);
+    let long = "1".repeat(expr::MAX_SOURCE + 1);
+    assert!(cache.compile(&long).is_err());
+    assert_eq!(cache.len(), Cache::LIMIT, "oversized text is not kept");
+}
+
+#[test]
+fn duplicate_refs_are_numbered_in_id_order() {
+    let tags = [
+        (11, "wtp", "level"),
+        (4, "wtp", "level"),
+        (9, "", "calc"),
+        (20, "wtp", "level"),
+    ];
+    let refs = super::bindings::refs_by_id(tags);
+    assert_eq!(refs[&4], "wtp/level");
+    assert_eq!(refs[&11], "wtp/level#2");
+    assert_eq!(refs[&20], "wtp/level#3");
+    assert_eq!(refs[&9], "/calc");
+    let index = ref_index(tags);
+    assert_eq!(index["wtp/level#2"], 11);
+}
+
+// ── Groups, locks, align and distribute (`model.ts`) ──────────────────────
+
+fn boxed(id: &str, x: f64, y: f64, w: f64, h: f64) -> Widget {
+    Widget {
+        id: id.into(),
+        kind: crate::mimic::WidgetKind::parse("label"),
+        name: String::new(),
+        tags: Vec::new(),
+        signals: Vec::new(),
+        x,
+        y,
+        width: w,
+        height: h,
+        config: serde_json::Map::new(),
+    }
+}
+
+fn layout_of(widgets: Vec<Widget>) -> Layout {
+    Layout {
+        widgets,
+        connections: Vec::new(),
+    }
+}
+
+fn s(ids: &[&str]) -> Vec<String> {
+    ids.iter().map(|id| (*id).to_owned()).collect()
+}
+
+fn applied(layout: &Layout, edit: Option<Edit>) -> Layout {
+    let mut next = layout.clone();
+    assert!(edit.expect("an edit").apply(&mut next));
+    next
+}
+
+#[test]
+fn groups_select_move_and_delete_together() {
+    let base = layout_of(vec![
+        boxed("a", 0.0, 0.0, 10.0, 10.0),
+        boxed("b", 50.0, 0.0, 10.0, 10.0),
+        boxed("c", 100.0, 0.0, 10.0, 10.0),
+    ]);
+    assert_eq!(
+        arrange::group(&base, &s(&["a"]), "g"),
+        None,
+        "one is no group"
+    );
+    let grouped = applied(&base, arrange::group(&base, &s(&["a", "c"]), "g"));
+    assert_eq!(arrange::group_of(grouped.widget("a").unwrap()), Some("g"));
+    // Picking one member picks the group; ⇧ toggles the whole group.
+    assert_eq!(arrange::expand_to_groups(&grouped, &s(&["c"])), ["a", "c"]);
+    assert_eq!(
+        arrange::press_selection(&grouped, &[], "a", false),
+        ["a", "c"]
+    );
+    assert_eq!(
+        arrange::press_selection(&grouped, &s(&["b"]), "c", true),
+        ["b", "a", "c"]
+    );
+    assert_eq!(
+        arrange::press_selection(&grouped, &s(&["a", "b", "c"]), "c", true),
+        ["b"]
+    );
+    // The marquee touching one member takes the group.
+    let band = Rect {
+        x: 95.0,
+        y: -5.0,
+        width: 10.0,
+        height: 10.0,
+    };
+    assert_eq!(arrange::marquee(&grouped, band), ["a", "c"]);
+    // Regrouping moves members of another group into the new one.
+    let regrouped = applied(&grouped, arrange::group(&grouped, &s(&["c", "b"]), "h"));
+    assert_eq!(arrange::group_of(regrouped.widget("c").unwrap()), Some("h"));
+    // Deleting leaves "a" alone in "g": no group any more.
+    let mut deleted = regrouped.clone();
+    assert!(
+        Edit::Remove {
+            widgets: s(&["c"]),
+            connections: Vec::new()
+        }
+        .apply(&mut deleted)
+    );
+    assert_eq!(arrange::group_of(deleted.widget("a").unwrap()), None);
+    assert_eq!(arrange::group_of(deleted.widget("b").unwrap()), None);
+    // Ungroup takes the key away.
+    let ungrouped = applied(&grouped, arrange::ungroup(&grouped, &s(&["a", "c"])));
+    assert!(!ungrouped.widget("a").unwrap().config.contains_key("group"));
+    assert_eq!(arrange::ungroup(&ungrouped, &s(&["a"])), None);
+}
+
+#[test]
+fn locked_widgets_stay_put_and_are_not_band_selected_or_deleted() {
+    let base = layout_of(vec![
+        boxed("a", 0.0, 0.0, 10.0, 10.0),
+        boxed("b", 50.0, 20.0, 10.0, 10.0),
+    ]);
+    let locked = applied(&base, arrange::lock(&base, &s(&["a"]), true));
+    assert_eq!(locked.widget("a").unwrap().config["locked"], json!(true));
+    assert_eq!(arrange::lock(&locked, &s(&["a"]), true), None);
+    let everything = Rect {
+        x: -10.0,
+        y: -10.0,
+        width: 500.0,
+        height: 500.0,
+    };
+    assert_eq!(arrange::marquee(&locked, everything), ["b"]);
+    assert_eq!(arrange::select_all(&locked), ["b"]);
+    assert_eq!(arrange::deletable(&locked, &s(&["a", "b"])), ["b"]);
+    // Arrows move only the unlocked ones.
+    let moved = applied(&locked, arrange::nudge(&locked, &s(&["a", "b"]), 5.0, 0.0));
+    assert_eq!(moved.widget("a").unwrap().x, 0.0);
+    assert_eq!(moved.widget("b").unwrap().x, 55.0);
+    assert_eq!(arrange::nudge(&locked, &s(&["a"]), 5.0, 0.0), None);
+    // Align keeps it where it is, but aligns to it.
+    let aligned = applied(
+        &locked,
+        arrange::align(&locked, &s(&["a", "b"]), Align::Top),
+    );
+    assert_eq!(aligned.widget("b").unwrap().y, 0.0);
+    // ⌘L unlocks when everything picked is locked, else locks.
+    let both = applied(&locked, arrange::toggle_lock(&locked, &s(&["a", "b"])));
+    assert!(arrange::is_locked(both.widget("b").unwrap()));
+    let none = applied(&both, arrange::toggle_lock(&both, &s(&["a", "b"])));
+    assert!(!none.widget("a").unwrap().config.contains_key("locked"));
+    // A pasted copy is unlocked, unnamed, in a group of its own.
+    let mut named = applied(&both, arrange::group(&both, &s(&["a", "b"]), "g"));
+    named.widgets[0].name = "Pump".into();
+    let clip = edit::copy(&named, &s(&["a", "b"]));
+    let mut n = 0;
+    let Some(Edit::Add { widgets, .. }) = edit::paste(&named, &clip, 20.0, |prefix| {
+        n += 1;
+        format!("{prefix}{n}")
+    }) else {
+        panic!("an add");
+    };
+    assert!(
+        widgets
+            .iter()
+            .all(|w| !arrange::is_locked(w) && w.name.is_empty())
+    );
+    assert_eq!(arrange::group_of(&widgets[0]), Some("g2"));
+    assert_eq!(arrange::group_of(&widgets[1]), Some("g2"));
+}
+
+#[test]
+fn align_puts_every_edge_on_the_selection_box() {
+    let base = layout_of(vec![
+        boxed("a", 10.0, 10.0, 20.0, 20.0),
+        boxed("b", 100.0, 50.0, 41.0, 10.0),
+    ]);
+    let ab = s(&["a", "b"]);
+    let at = |mode: Align| {
+        let next = applied(&base, arrange::align(&base, &ab, mode));
+        let a = next.widget("a").unwrap();
+        let b = next.widget("b").unwrap();
+        ((a.x, a.y), (b.x, b.y))
+    };
+    assert_eq!(at(Align::Left), ((10.0, 10.0), (10.0, 50.0)));
+    assert_eq!(at(Align::Right), ((121.0, 10.0), (100.0, 50.0)));
+    // Centres round as JavaScript's Math.round: 10 + (131 - 41) / 2 = 55.
+    assert_eq!(at(Align::Center), ((66.0, 10.0), (55.0, 50.0)));
+    assert_eq!(at(Align::Top), ((10.0, 10.0), (100.0, 10.0)));
+    assert_eq!(at(Align::Bottom), ((10.0, 40.0), (100.0, 50.0)));
+    assert_eq!(at(Align::Middle), ((10.0, 25.0), (100.0, 30.0)));
+    assert_eq!(arrange::align(&base, &s(&["a"]), Align::Left), None);
+    // Already aligned: nothing to do, no undo step.
+    let done = applied(&base, arrange::align(&base, &ab, Align::Left));
+    assert_eq!(arrange::align(&done, &ab, Align::Left), None);
+    // One step: one undo puts both back.
+    let mut history = History::new(base.clone());
+    assert!(history.apply(&arrange::align(&base, &ab, Align::Top).unwrap(), None));
+    assert!(history.undo());
+    assert_eq!(history.present(), &base);
+}
+
+#[test]
+fn distribute_spaces_the_middle_ones_evenly() {
+    let base = layout_of(vec![
+        boxed("a", 0.0, 0.0, 10.0, 10.0),
+        boxed("c", 100.0, 0.0, 10.0, 10.0),
+        boxed("b", 20.0, 90.0, 20.0, 10.0),
+        boxed("d", 60.0, 0.0, 10.0, 10.0),
+    ]);
+    let all = s(&["a", "b", "c", "d"]);
+    // Span 110, sizes 50: gaps of 20 between neighbours by x.
+    let spaced = applied(&base, arrange::distribute(&base, &all, Axis::Horizontal));
+    let xs: Vec<f64> = ["a", "b", "d", "c"]
+        .iter()
+        .map(|id| spaced.widget(id).unwrap().x)
+        .collect();
+    assert_eq!(xs, [0.0, 30.0, 70.0, 100.0]);
+    assert_eq!(
+        arrange::distribute(&base, &s(&["a", "c"]), Axis::Horizontal),
+        None
+    );
+    let vertical = applied(
+        &base,
+        arrange::distribute(&base, &s(&["a", "b", "d"]), Axis::Vertical),
+    );
+    // By y: a 0, d 0, b 90: d moves between them.
+    assert_eq!(vertical.widget("d").unwrap().y, 45.0);
+    // A locked middle widget stays; the others still space around it.
+    let locked = applied(&base, arrange::lock(&base, &s(&["b"]), true));
+    let spaced = applied(
+        &locked,
+        arrange::distribute(&locked, &all, Axis::Horizontal),
+    );
+    assert_eq!(spaced.widget("b").unwrap().x, 20.0);
+    assert_eq!(spaced.widget("d").unwrap().x, 70.0);
+}
+
+#[test]
+fn restacking_keeps_a_group_together() {
+    let mut grouped = layout_of(vec![
+        boxed("a", 0.0, 0.0, 10.0, 10.0),
+        boxed("g1", 0.0, 0.0, 10.0, 10.0),
+        boxed("b", 0.0, 0.0, 10.0, 10.0),
+        boxed("g2", 0.0, 0.0, 10.0, 10.0),
+        boxed("c", 0.0, 0.0, 10.0, 10.0),
+    ]);
+    grouped = applied(&grouped, arrange::group(&grouped, &s(&["g1", "g2"]), "g"));
+    let order = |layout: &Layout| {
+        layout
+            .widgets
+            .iter()
+            .map(|w| w.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let to = |layout: &Layout, ids: &[&str], to: Order| {
+        let mut next = layout.clone();
+        Edit::Reorder { ids: s(ids), to }.apply(&mut next);
+        next
+    };
+    // The group is one unit at its back-most member.
+    assert_eq!(
+        order(&to(&grouped, &["g2"], Order::Front)),
+        ["a", "b", "c", "g1", "g2"]
+    );
+    assert_eq!(
+        order(&to(&grouped, &["g1"], Order::Back)),
+        ["g1", "g2", "a", "b", "c"]
+    );
+    assert_eq!(
+        order(&to(&grouped, &["g1"], Order::Forward)),
+        ["a", "b", "g1", "g2", "c"]
+    );
+    assert_eq!(
+        order(&to(&grouped, &["c"], Order::Backward)),
+        ["a", "g1", "g2", "c", "b"]
+    );
+    assert_eq!(
+        order(&to(&grouped, &["b"], Order::Backward)),
+        ["a", "b", "g1", "g2", "c"]
+    );
+    // At the bottom already: only the group is gathered (as the web's).
+    assert_eq!(
+        order(&to(&grouped, &["a"], Order::Backward)),
+        ["a", "g1", "g2", "b", "c"]
+    );
+    let gathered = to(&grouped, &["a"], Order::Backward);
+    let mut same = gathered.clone();
+    assert!(
+        !Edit::Reorder {
+            ids: s(&["a"]),
+            to: Order::Backward
+        }
+        .apply(&mut same)
+    );
+    assert!(
+        !Edit::Reorder {
+            ids: s(&["a"]),
+            to: Order::Backward
+        }
+        .apply(&mut same)
+    );
+}
+
+// ── A tag dropped on the empty stage (`dropChoices`, `pickDrop`) ──────────
+
+#[test]
+fn a_dropped_tag_offers_what_suits_it() {
+    let shape = |key: &'static str, unit: &'static str, min: f64, max: f64| arrange::TagShape {
+        key,
+        name: "",
+        unit,
+        min,
+        max,
+    };
+    let labels = |tag: Option<&arrange::TagShape<'_>>| {
+        arrange::drop_choices(tag)
+            .iter()
+            .map(|c| c.label)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        labels(Some(&shape("p101a_run", "", 0.0, 1.0))),
+        [
+            "Pump (ISA-101)",
+            "Valve (ISA-101)",
+            "Motor (ISA-101)",
+            "Status light",
+            "On/off indicator",
+            "Toggle (writes)",
+            "Number"
+        ]
+    );
+    assert_eq!(
+        labels(Some(&shape("intake_flow", "m³/h", 0.0, 500.0))),
+        [
+            "Number",
+            "Value indicator",
+            "Tank (ISA-101)",
+            "Control valve (ISA-101)",
+            "Bar",
+            "Gauge",
+            "Trend",
+            "Slider (writes)"
+        ]
+    );
+    // A level tag offers its tank first.
+    assert_eq!(
+        labels(Some(&shape("raw_tank_level", "m", 0.0, 5.0)))[0],
+        "Tank (ISA-101)"
+    );
+    assert_eq!(
+        labels(Some(&shape("fill", "%", 0.0, 100.0)))[0],
+        "Tank (ISA-101)"
+    );
+    assert_eq!(labels(None)[0], "Number");
+    // Every choice is something the console draws.
+    for choice in arrange::drop_choices(None)
+        .into_iter()
+        .chain(arrange::drop_choices(Some(&shape("x", "", 0.0, 1.0))))
+    {
+        match choice.placing {
+            edit::Placing::Symbol(key) => assert!(crate::mimic::symbol_def(key).is_some(), "{key}"),
+            edit::Placing::Widget(kind) => assert!(
+                edit::manifest(&crate::mimic::WidgetKind::parse(kind)).is_some(),
+                "{kind}"
+            ),
+        }
+    }
+}
+
+#[test]
+fn a_picked_choice_is_placed_centred_and_bound() {
+    let pump = arrange::drop_choices(Some(&arrange::TagShape {
+        key: "run",
+        name: "Pump run",
+        unit: "",
+        min: 0.0,
+        max: 1.0,
+    }))[0];
+    let widget = arrange::place_tag(pump, 7, Some("Pump run"), (403.0, 207.0), "w1".into());
+    // 90 × 104 centred on (403, 207), on the 10-pixel grid.
+    assert_eq!((widget.x, widget.y), (360.0, 160.0));
+    assert_eq!(widget.tags, [7]);
+    assert_eq!(widget.text("label"), Some("Pump run"));
+    assert_eq!(widget.flag("showStatus"), Some(true));
+    let number = arrange::drop_choices(None)[0];
+    let widget = arrange::place_tag(number, 7, Some("Flow"), (5.0, 5.0), "w2".into());
+    assert_eq!((widget.x, widget.y), (0.0, 0.0), "kept on the stage");
+    assert_eq!(
+        widget.text("label"),
+        None,
+        "widgets show the tag's own name"
+    );
+}
+
+#[test]
+fn designing_fades_hidden_widgets_and_keeps_some_opacity() {
+    let mut w = boxed("a", 0.0, 0.0, 10.0, 10.0);
+    assert_eq!(opacity(&w, true), None);
+    w.config.insert("opacity".into(), json!(0.05));
+    assert_eq!(opacity(&w, true), Some(0.15));
+    assert_eq!(opacity(&w, false), Some(0.05));
+    w.config.insert("opacity".into(), json!(3));
+    assert_eq!(opacity(&w, false), Some(1.0));
+    w.config.insert("visible".into(), json!(false));
+    assert_eq!(opacity(&w, true), Some(0.3));
+    // Every property but a tag picker binds.
+    let valve = boxed("v", 0.0, 0.0, 10.0, 10.0);
+    let props = properties(&valve);
+    assert_eq!(props.first().map(|p| p.key), Some("label"));
+    assert!(props.iter().any(|p| p.key == "visible" && p.bindable()));
+    assert!(
+        props
+            .iter()
+            .any(|p| p.key == "opacity" && p.kind == PropType::Number)
+    );
 }

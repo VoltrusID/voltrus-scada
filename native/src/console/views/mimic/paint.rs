@@ -65,6 +65,13 @@ pub(crate) struct Hmi {
     pub solar_grid: Hsla,
     pub power_line: Hsla,
     pub data_line: Hsla,
+    /// The ISA-101 library's own greys (`--isa-*`): outlines, a running
+    /// (filled) body, a stopped (hollow) body, the level and its text.
+    pub isa_line: Hsla,
+    pub isa_on: Hsla,
+    pub isa_off: Hsla,
+    pub isa_level: Hsla,
+    pub isa_text: Hsla,
     // Theme tokens, for the widgets.
     pub bg: Hsla,
     pub surface: Hsla,
@@ -79,6 +86,11 @@ pub(crate) struct Hmi {
     pub series: [Hsla; 6],
     pub white: Hsla,
     pub black: Hsla,
+}
+
+/// A colour written as `0xRRGGBB`.
+fn hex(rgb: u32) -> Hsla {
+    gpui::rgb(rgb).into()
 }
 
 impl Hmi {
@@ -120,6 +132,11 @@ impl Hmi {
             solar_grid: mix(theme.info, white, 0.35),
             power_line: mix(theme.warning, grey, 0.35),
             data_line: mix(theme.info, grey, 0.3),
+            isa_line: hex(if dark { 0xb4bcc6 } else { 0x3d434b }),
+            isa_on: hex(if dark { 0xc9d0d8 } else { 0x3d434b }),
+            isa_off: hex(if dark { 0x1d2128 } else { 0xeceef1 }),
+            isa_level: hex(if dark { 0x4a5361 } else { 0xb3bac3 }),
+            isa_text: hex(if dark { 0xe8edf2 } else { 0x111827 }),
             bg: theme.bg,
             surface: theme.surface,
             fg: theme.fg,

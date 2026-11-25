@@ -107,22 +107,29 @@ fn bind_selected(console: &mut Console, tag: i64, window: &mut Window, cx: &mut 
     }
 }
 
-/// A tag dropped on the stage: bind the component under the pointer.
+/// A tag dropped on the stage: bind the component under the pointer
+/// when it takes a tag and is not locked; else (the empty stage) the
+/// placement menu of what the tag can become (the web's `onDrop`).
 pub(super) fn drop_tag(
     console: &mut Console,
     tag: &TagDrag,
     window: &mut Window,
     cx: &mut Context<Console>,
 ) {
-    let Some(((x, y), _)) = stage_at(console, window.mouse_position()) else {
+    let pointer = window.mouse_position();
+    let Some(((x, y), _)) = stage_at(console, pointer) else {
         return;
     };
     let hit = edits_ref(console).and_then(|editor| {
-        edit::hit_widget(editor.layout(), x, y).map(|at| editor.layout().widgets[at].id.clone())
+        let layout = editor.layout();
+        edit::hit_widget(layout, x, y)
+            .map(|at| &layout.widgets[at])
+            .filter(|widget| edit::max_tags(widget) > 0 && !edit::is_locked(widget))
+            .map(|widget| widget.id.clone())
     });
     match hit {
         Some(id) => bind(console, &id, tag.id, window, cx),
-        None => console.show_toast("Drop the tag on a component to bind it", false, cx),
+        None => super::open_menu(console, tag.id, (x, y), pointer, cx),
     }
     focus_stage(console, window, cx);
 }
@@ -200,6 +207,31 @@ fn row_base(id: ElementId, selected: bool, theme: &Theme) -> gpui::Stateful<gpui
         .when(!selected, |this| this.hover(move |style| style.bg(hover)))
 }
 
+/// A small icon button in a tree row that applies `edit` (and does not
+/// select the row).
+fn toggle(
+    id: ElementId,
+    icon: Icon,
+    tooltip: &'static str,
+    color: gpui::Hsla,
+    edit: Edit,
+    cx: &mut Context<Console>,
+) -> AnyElement {
+    div()
+        .id(id)
+        .flex_none()
+        .p(px(2.0))
+        .rounded(RADIUS_SM)
+        .cursor_pointer()
+        .child(vt_ui::icon(icon, px(12.0), color))
+        .tooltip(move |_, cx| vt_ui::components::Tooltip::view(tooltip.into(), cx))
+        .on_click(cx.listener(move |console, _, window, cx| {
+            cx.stop_propagation();
+            apply(console, &edit, None, window, cx);
+        }))
+        .into_any_element()
+}
+
 /// The project tree: the screens, the edited one opened.
 fn project(console: &Console, theme: &Theme, cx: &mut Context<Console>) -> AnyElement {
     let Some(editor) = edits_ref(console) else {
@@ -263,6 +295,7 @@ fn project(console: &Console, theme: &Theme, cx: &mut Context<Console>) -> AnyEl
             let selected = editor.selection.contains(&widget.id);
             let hidden = !designer::visible(widget);
             let locked = designer::locked(widget);
+            let grouped = edit::group_of(widget).is_some();
             let bound = bindings::has_bindings(&widget.config);
             let label = widget
                 .text("label")
@@ -300,11 +333,52 @@ fn project(console: &Console, theme: &Theme, cx: &mut Context<Console>) -> AnyEl
                             .child("ƒ"),
                     )
                 })
-                .when(hidden, |this| {
-                    this.child(vt_ui::icon(Icon::Eye, px(12.0), theme.fg_dim))
+                .when(grouped, |this| {
+                    this.child(vt_ui::icon(Icon::Boxes, px(12.0), theme.fg_dim))
                 })
-                .when(locked, |this| {
-                    this.child(vt_ui::icon(Icon::Lock, px(12.0), theme.fg_dim))
+                // Hide / show and lock / unlock from the tree (`IconToggle`):
+                // shown when set, or on the selected row.
+                .when(hidden || selected, |this| {
+                    this.child(toggle(
+                        ElementId::NamedInteger(
+                            "designer-toggle-visible".into(),
+                            u64::try_from(at).unwrap_or(0),
+                        ),
+                        Icon::Eye,
+                        if hidden {
+                            "Show it"
+                        } else {
+                            "Hide it at runtime"
+                        },
+                        if hidden { theme.fg_dim } else { theme.fg_muted },
+                        Edit::Config {
+                            id: widget.id.clone(),
+                            key: "visible".into(),
+                            value: serde_json::Value::Bool(hidden),
+                        },
+                        cx,
+                    ))
+                })
+                .when(locked || selected, |this| {
+                    this.child(toggle(
+                        ElementId::NamedInteger(
+                            "designer-toggle-lock".into(),
+                            u64::try_from(at).unwrap_or(0),
+                        ),
+                        if locked { Icon::Lock } else { Icon::LockOpen },
+                        if locked { "Unlock" } else { "Lock" },
+                        if locked { theme.fg_dim } else { theme.fg_muted },
+                        Edit::Config {
+                            id: widget.id.clone(),
+                            key: edit::LOCKED_KEY.into(),
+                            value: if locked {
+                                serde_json::Value::Null
+                            } else {
+                                serde_json::Value::Bool(true)
+                            },
+                        },
+                        cx,
+                    ))
                 })
                 .child(
                     div()
