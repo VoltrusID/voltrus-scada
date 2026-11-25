@@ -312,7 +312,7 @@ fn default_alarm_type() -> String {
     "high".to_string()
 }
 
-/// `GET /api/v1/alarms/summary` (operator): open alarms nobody has
+/// `GET /api/v1/alarms/summary`: open alarms nobody has
 /// acknowledged by priority, shelved alarms, alarms raised in the last 24 h
 /// and the mean time to acknowledge them. Mirrors `models::AlarmSummary`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -326,7 +326,7 @@ pub struct AlarmSummary {
     pub avg_ack_time_secs: f64,
 }
 
-/// A row of `GET /api/v1/alarms/analytics?from=&to=` (operator): how often
+/// A row of `GET /api/v1/alarms/analytics?from=&to=`: how often
 /// a source alarmed in the window, most often first. Mirrors
 /// `models::AlarmAnalyticsEntry`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -339,7 +339,7 @@ pub struct AlarmAnalyticsEntry {
     pub last_triggered_at: i64,
 }
 
-/// A row of `GET /api/v1/alarms/audit` (operator), newest first. `details`
+/// A row of `GET /api/v1/alarms/audit`, newest first. `details`
 /// is free text, or JSON (`{"reason":…,"until":…}`) for a shelve. Mirrors
 /// `models::AlarmAuditEntry`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -353,7 +353,7 @@ pub struct AlarmAuditEntry {
     pub created_at: i64,
 }
 
-/// A row of `GET /api/v1/alarms/{id}/journal` (operator): one ISA-18.2
+/// A row of `GET /api/v1/alarms/{id}/journal`: one ISA-18.2
 /// lifecycle event (triggered, acknowledged, shelved, unshelved, resolved),
 /// oldest first. Mirrors `models::AlarmJournalEntry`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]

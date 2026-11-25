@@ -499,8 +499,8 @@ fn confirm_dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Consol
 
 // ── Detail ────────────────────────────────────────────────────────────────
 
-/// The sheet for alarm `id`: everything about it, its actions, and (for
-/// operators) its ISA-18.2 journal. j/k step through the list beneath.
+/// The sheet for alarm `id`: everything about it, its actions (for
+/// operators) and its ISA-18.2 journal. j/k step through the list beneath.
 pub(super) fn open_detail(
     console: &mut Console,
     id: i64,
@@ -689,7 +689,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
         );
     }
 
-    let journal = journal(console, id, operator, &theme, cx);
+    let journal = journal(console, id, &theme, cx);
     let hints: &[(&'static str, &'static str)] = if operator {
         &[
             ("J K", "Next"),
@@ -803,13 +803,7 @@ fn detail_sheet(console: &mut Console, _: &mut Window, cx: &mut Context<Console>
 }
 
 /// The ISA-18.2 lifecycle: each event, when and by whom.
-fn journal(
-    console: &Console,
-    id: i64,
-    operator: bool,
-    theme: &Theme,
-    cx: &Context<Console>,
-) -> Div {
+fn journal(console: &Console, id: i64, theme: &Theme, cx: &Context<Console>) -> Div {
     let section = div()
         .flex()
         .flex_col()
@@ -821,11 +815,6 @@ fn journal(
             .text_color(theme.fg_muted)
             .child(text)
     };
-    if !operator {
-        return section.child(note(
-            "The journal is kept for operators (operator, demo, integration, admin).".into(),
-        ));
-    }
     let journal = console
         .state_ref::<State>()
         .and_then(|state| state.journal.as_ref())

@@ -898,6 +898,21 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/alarms/active/count",
             get(alarms::active_alarm_count),
         )
+        // Alarm reads: the summary badges, analytics, audit trail and journal
+        // are what a viewer watches; handling alarms is operator tier.
+        .route("/api/v1/alarms/summary", get(alarms::get_alarm_summary))
+        .route(
+            "/api/v1/alarms/analytics",
+            get(alarms::list_alarm_analytics),
+        )
+        .route("/api/v1/alarms/audit", get(alarms::list_alarm_audit))
+        .route(
+            "/api/v1/alarms/{id}/journal",
+            get(alarms::get_alarm_journal),
+        )
+        // Annotations are read by any signed-in user; writing them is configuration.
+        .route("/api/v1/annotations", get(annotations::list_annotations))
+        .route("/api/v1/annotations/{id}", get(annotations::get_annotation))
         .route(
             "/api/v1/notifications/settings",
             get(notifications::list_notification_settings),
@@ -1069,19 +1084,9 @@ pub fn create_router(state: AppState) -> Router {
             "/api/v1/alarms/{id}/acknowledge",
             post(alarms::acknowledge_alarm),
         )
-        // Alarm management: shelving, audit trail, analytics, summary
+        // Shelving (the alarm reads are open to any signed-in user, above)
         .route("/api/v1/alarms/{id}/shelf", post(alarms::shelf_alarm))
         .route("/api/v1/alarms/{id}/unshelf", post(alarms::unshelf_alarm))
-        .route("/api/v1/alarms/audit", get(alarms::list_alarm_audit))
-        .route(
-            "/api/v1/alarms/{id}/journal",
-            get(alarms::get_alarm_journal),
-        )
-        .route(
-            "/api/v1/alarms/analytics",
-            get(alarms::list_alarm_analytics),
-        )
-        .route("/api/v1/alarms/summary", get(alarms::get_alarm_summary))
         // Recipes: an operator loads them; editing them is configuration.
         .route("/api/v1/recipes", get(recipes::list_recipes))
         .route("/api/v1/recipes/{id}", get(recipes::get_recipe))
@@ -1231,15 +1236,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/audit", get(audit_log::list_audit_logs))
         .route("/api/v1/audit/export", get(audit_log::export_audit_csv))
         // Annotation routes
-        .route(
-            "/api/v1/annotations",
-            get(annotations::list_annotations).post(annotations::create_annotation),
-        )
+        .route("/api/v1/annotations", post(annotations::create_annotation))
         .route(
             "/api/v1/annotations/{id}",
-            get(annotations::get_annotation)
-                .put(annotations::update_annotation)
-                .delete(annotations::delete_annotation),
+            put(annotations::update_annotation).delete(annotations::delete_annotation),
         )
         .route("/api/v1/tags/{id}/path", put(tag_tree::update_tag_path))
         .route(

@@ -24,6 +24,24 @@ pub async fn active_alarm_count(
     Ok(Json(json!({ "count": count })))
 }
 
+/// Most alarms one `GET /api/v1/alarms` returns. Any signed-in user (the
+/// public demo guest included) reads alarms, and every query holds the one
+/// SQLite connection the alarm evaluator and historian also need.
+pub const MAX_ALARM_LIST: i64 = 1000;
+/// Most rows one `GET /api/v1/alarms/audit` returns.
+pub const MAX_AUDIT_ROWS: u32 = 1000;
+/// Longest window `GET /api/v1/alarms/analytics` aggregates over.
+pub const MAX_ANALYTICS_SECS: i64 = 90 * 24 * 3600;
+
+/// The analytics window: `to` defaults to now, and `from` (default: all of
+/// it) is pulled forward so the window is at most [`MAX_ANALYTICS_SECS`].
+pub fn analytics_range(from: Option<i64>, to: Option<i64>, now: i64) -> (i64, i64) {
+    let to = to.unwrap_or(now);
+    let earliest = to.saturating_sub(MAX_ANALYTICS_SECS);
+    let from = from.map_or(earliest, |f| f.max(earliest));
+    (from, to)
+}
+
 #[derive(Debug, serde::Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
 pub struct AlarmListQuery {
     pub status: Option<String>,
@@ -56,7 +74,7 @@ pub async fn list_alarms(
     Query(params): Query<AlarmListQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let status = params.status.as_deref();
-    let limit = params.limit.unwrap_or(50);
+    let limit = params.limit.unwrap_or(50).clamp(1, MAX_ALARM_LIST);
     let mut alarms = state.storage.list_alarms(status, limit).await?;
 
     // Resolve source_name from data_sources
@@ -343,7 +361,7 @@ pub async fn list_alarm_audit(
     State(state): State<AppState>,
     Query(params): Query<AuditQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let limit = params.limit.unwrap_or(100);
+    let limit = params.limit.unwrap_or(100).clamp(1, MAX_AUDIT_ROWS);
     let entries = state
         .storage
         .list_alarm_audit(params.alarm_id, params.from, params.to, limit)
@@ -371,9 +389,10 @@ pub async fn list_alarm_analytics(
     State(state): State<AppState>,
     Query(params): Query<AnalyticsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    let (from, to) = analytics_range(params.from, params.to, crate::timeutil::now_secs());
     let entries = state
         .storage
-        .get_alarm_analytics(params.from, params.to)
+        .get_alarm_analytics(Some(from), Some(to))
         .await?;
     Ok(Json(entries))
 }

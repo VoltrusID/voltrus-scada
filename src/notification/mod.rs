@@ -58,14 +58,23 @@ pub async fn dispatch_alarm_notifications(
     });
 
     let triggered_at_str = format_triggered_at(alarm.triggered_at);
+    // A tag that has since been deleted: its unit is unknown, so show the
+    // numbers with the default decimals of a new tag.
+    let decimals = source_info.map_or(DEFAULT_DECIMALS, |s| s.decimals);
+    let unit = source_info.map(|s| s.unit.clone()).unwrap_or_default();
 
     let delivery = Delivery {
         severity: alarm.severity.clone(),
         source_key: alarm.source_key.clone(),
         source_name: source_name.clone(),
-        value: alarm.value,
-        threshold: alarm.threshold,
-        unit: source_info.map(|s| s.unit.clone()).unwrap_or_default(),
+        // Shown with the tag's decimals, not the raw float (2.602250099182129),
+        // and formatted once here so every channel prints what the alarm
+        // message says.
+        value: crate::alarm_eval::round_to_decimals(alarm.value, decimals),
+        threshold: crate::alarm_eval::round_limit(alarm.threshold, decimals),
+        value_text: crate::alarm_eval::format_reading(alarm.value, decimals, &unit),
+        threshold_text: crate::alarm_eval::format_limit(alarm.threshold, decimals, &unit),
+        unit,
         message: alarm.message.clone(),
         triggered_at: triggered_at_str.clone(),
         device_id: device_id.clone(),
@@ -96,6 +105,9 @@ pub async fn dispatch_alarm_notifications(
     .await;
 }
 
+/// Decimals for an alarm whose tag is gone (a new tag's default).
+const DEFAULT_DECIMALS: i64 = 1;
+
 /// One notification, whatever caused it (an alarm, or a flow's `notify` node).
 #[derive(Debug, Clone)]
 pub struct Delivery {
@@ -105,6 +117,10 @@ pub struct Delivery {
     pub value: f64,
     pub threshold: f64,
     pub unit: String,
+    /// `value` as shown to people, unit included (`2.60 m`).
+    pub value_text: String,
+    /// `threshold` as shown to people, unit included.
+    pub threshold_text: String,
     pub message: String,
     /// RFC 3339 time shown to the recipient.
     pub triggered_at: String,
@@ -162,6 +178,8 @@ pub async fn deliver_to_settings(
                     value: delivery.value,
                     threshold: delivery.threshold,
                     unit: delivery.unit.clone(),
+                    value_text: delivery.value_text.clone(),
+                    threshold_text: delivery.threshold_text.clone(),
                     message: delivery.message.clone(),
                     triggered_at: delivery.triggered_at.clone(),
                 };
@@ -192,10 +210,9 @@ pub async fn send_email(
         source_key: delivery.source_key.clone(),
         source_name: delivery.source_name.clone(),
         severity: delivery.severity.clone(),
-        value: delivery.value,
-        threshold: delivery.threshold,
+        value_text: delivery.value_text.clone(),
+        threshold_text: delivery.threshold_text.clone(),
         message: delivery.message.clone(),
-        unit: delivery.unit.clone(),
         triggered_at: delivery.triggered_at.clone(),
     };
     notifier.send_alarm_email(to, &data).await

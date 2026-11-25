@@ -242,10 +242,10 @@ fn wanted_lines(
         .collect()
 }
 
-/// Ask for the open tag's annotations (admin, demo, integration: the route is
-/// `demo_protected`, reads included).
+/// Ask for the open tag's annotations (any signed-in user reads them;
+/// writing them is configuration tier).
 fn ensure_notes(console: &mut Console, key: &str) {
-    if console.stress.is_some() || !console.may_configure() {
+    if console.stress.is_some() {
         return;
     }
     let state = console.state::<DetailState>();
@@ -626,6 +626,9 @@ fn save_note(console: &mut Console, window: &mut Window, cx: &mut Context<Consol
 
 /// Delete note `id` when it is one of the open tag's notes as shown.
 fn delete_note(console: &mut Console, id: i64) {
+    if !console.may_configure() {
+        return;
+    }
     let Some(index) = open_index(console) else {
         return;
     };
@@ -1429,16 +1432,8 @@ fn notes_section(
         .py(SPACE_7)
         .border_t_1()
         .border_color(theme.border);
-    if !console.may_configure() {
-        return section
-            .child(section_label("Notes", cx))
-            .child(note_line(
-                Icon::Lock,
-                "Notes need the admin, demo or integration role.".to_owned(),
-                theme.fg_dim,
-            ))
-            .into_any_element();
-    }
+    // Everyone reads the notes; adding and deleting them is configuration.
+    let editable = console.may_configure();
     let state = console.state::<DetailState>();
     let notes: Vec<Annotation> = state
         .notes
@@ -1508,15 +1503,17 @@ fn notes_section(
                                 .child(note.annotation_text.clone()),
                         ),
                 )
-                .child(
-                    IconButton::new(
-                        ElementId::NamedInteger("delete-note".into(), id.unsigned_abs()),
-                        Icon::Trash,
+                .when(editable, |this| {
+                    this.child(
+                        IconButton::new(
+                            ElementId::NamedInteger("delete-note".into(), id.unsigned_abs()),
+                            Icon::Trash,
+                        )
+                        .size(px(20.0))
+                        .tooltip("Delete the note")
+                        .on_click(cx.listener(move |console, _, _, _| delete_note(console, id))),
                     )
-                    .size(px(20.0))
-                    .tooltip("Delete the note")
-                    .on_click(cx.listener(move |console, _, _, _| delete_note(console, id))),
-                )
+                })
                 .when(ring, |this| this.child(focus_ring(&theme)))
                 .into_any_element()
         })
@@ -1536,14 +1533,16 @@ fn notes_section(
                         .child(notes.len().to_string()),
                 )
                 .child(div().flex_1())
-                .child(
-                    Button::new("add-note", "Add note")
-                        .compact()
-                        .icon(Icon::Plus)
-                        .on_click(cx.listener(|console, _, window, cx| {
-                            open_dialog(console, TagDialog::Note, window, cx);
-                        })),
-                ),
+                .when(editable, |this| {
+                    this.child(
+                        Button::new("add-note", "Add note")
+                            .compact()
+                            .icon(Icon::Plus)
+                            .on_click(cx.listener(|console, _, window, cx| {
+                                open_dialog(console, TagDialog::Note, window, cx);
+                            })),
+                    )
+                }),
         )
         .when_some(error, |this, error| {
             this.child(note_line(Icon::CircleAlert, error, theme.danger))

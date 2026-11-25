@@ -957,6 +957,8 @@ impl NodeConfig {
                     value: 0.0,
                     threshold: 0.0,
                     unit: String::new(),
+                    value_text: "0".to_string(),
+                    threshold_text: "0".to_string(),
                     message: text,
                     triggered_at: crate::notification::webhook::format_triggered_at(
                         crate::timeutil::now_secs(),

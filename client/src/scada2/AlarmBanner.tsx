@@ -2,7 +2,8 @@ import React from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import type { Alarm } from '../types'
-import { useAcknowledgeAlarm, fetchJson } from '../queries'
+import { useAcknowledgeAlarm, useSensors, fetchJson } from '../queries'
+import { formatAlarmLimit, formatAlarmReading } from '../alarmFormat'
 import { useRole } from '../RoleContext'
 
 export const ALARM_BANNER_ROWS = 3
@@ -22,6 +23,8 @@ export const AlarmBanner: React.FC = () => {
     refetchInterval: 3_000,
   })
   const ack = useAcknowledgeAlarm()
+  const { data: tags } = useSensors(true)
+  const tagByKey = React.useMemo(() => new Map((tags ?? []).map(s => [s.key, s])), [tags])
   const { canOperate } = useRole()
   const navigate = useNavigate()
 
@@ -52,6 +55,8 @@ export const AlarmBanner: React.FC = () => {
       ) : sorted.slice(0, ALARM_BANNER_ROWS).map(a => {
         const color = a.severity === 'critical' ? 'var(--hmi-fault)' : 'var(--hmi-warn)'
         const unacked = !a.acknowledged_at
+        const tag = tagByKey.get(a.source_key)
+        const fmt = (v: number) => formatAlarmReading(v, tag?.decimals, tag?.unit)
         return (
           <div key={a.id} style={{
             height: ROW_H, display: 'grid', gridTemplateColumns: '18px 76px minmax(160px, 1.1fr) 2fr 110px 92px', alignItems: 'center', gap: 10,
@@ -63,7 +68,7 @@ export const AlarmBanner: React.FC = () => {
             <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{clock(a.triggered_at)}</span>
             <span style={{ fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.source_name || a.source_key}</span>
             <span style={{ color: 'var(--text-dim)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {a.alarm_type === 'low' ? 'Low' : 'High'} {a.severity === 'critical' ? 'critical' : 'warning'}: {fmt(a.value)} (limit {fmt(a.threshold)})
+              {a.alarm_type === 'low' ? 'Low' : 'High'} {a.severity === 'critical' ? 'critical' : 'warning'}: {fmt(a.value)} (limit {formatAlarmLimit(a.threshold, tag?.decimals, tag?.unit)})
             </span>
             <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.08em', color: unacked ? color : 'var(--text-muted)' }}>
               {unacked ? 'UNACKED' : `ACK · ${a.acknowledged_by ?? ''}`}
@@ -90,4 +95,3 @@ function Count({ color, n, label }: { color: string; n: number; label: string })
   )
 }
 
-const fmt = (v: number) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2))
