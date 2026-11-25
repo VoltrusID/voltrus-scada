@@ -63,8 +63,13 @@ pub async fn dispatch_alarm_notifications(
         severity: alarm.severity.clone(),
         source_key: alarm.source_key.clone(),
         source_name: source_name.clone(),
-        value: alarm.value,
-        threshold: alarm.threshold,
+        // Shown with the tag's decimals, not the raw float (2.602250099182129).
+        value: source_info.map_or(alarm.value, |s| {
+            crate::alarm_eval::round_to_decimals(alarm.value, s.decimals)
+        }),
+        threshold: source_info.map_or(alarm.threshold, |s| {
+            crate::alarm_eval::round_to_decimals(alarm.threshold, s.decimals)
+        }),
         unit: source_info.map(|s| s.unit.clone()).unwrap_or_default(),
         message: alarm.message.clone(),
         triggered_at: triggered_at_str.clone(),

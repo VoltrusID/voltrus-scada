@@ -233,9 +233,90 @@ pub fn alarmable(tag: Option<TagValue>) -> Option<f64> {
         .map(|t| t.value)
 }
 
+/// The decimals a tag's values are shown with: its configured `decimals`,
+/// kept to 0..=6 so a bad setting neither panics nor prints float noise.
+fn shown_decimals(decimals: i64) -> usize {
+    decimals.clamp(0, 6) as usize
+}
+
+/// `value` rounded to the tag's decimals, for channels that carry a number
+/// (notification templates print it with `{}`).
+pub fn round_to_decimals(value: f64, decimals: i64) -> f64 {
+    let factor = 10f64.powi(shown_decimals(decimals) as i32);
+    let rounded = (value * factor).round() / factor;
+    if rounded.is_finite() { rounded } else { value }
+}
+
+/// `value` with the tag's decimals and unit, e.g. `2.60 m` or `85.0%`.
+pub fn format_reading(value: f64, decimals: i64, unit: &str) -> String {
+    let number = format!("{value:.*}", shown_decimals(decimals));
+    let unit = unit.trim();
+    if unit.is_empty() {
+        number
+    } else if unit.starts_with('%') || unit.starts_with('\u{b0}') {
+        format!("{number}{unit}")
+    } else {
+        format!("{number} {unit}")
+    }
+}
+
+/// The text of an alarm raised on `ds`: its value and the limit it crossed,
+/// both with the tag's decimals and unit.
+pub fn alarm_message(
+    ds: &DataSource,
+    severity: &str,
+    alarm_type: &str,
+    value: f64,
+    threshold: f64,
+) -> String {
+    let reading = format_reading(value, ds.decimals, &ds.unit);
+    let limit = format_reading(threshold, ds.decimals, &ds.unit);
+    if alarm_type == "low" {
+        format!("{} dropped to {reading} ({severity} low: {limit})", ds.name)
+    } else {
+        format!("{} reached {reading} ({severity}: {limit})", ds.name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alarm_messages_use_the_tag_decimals_and_unit() {
+        let mut tag = ds("wtp.filter1_headloss", 2.2, 2.6, serde_json::json!({}));
+        tag.name = "Filter F-301 Headloss".into();
+        tag.unit = "m".into();
+        tag.decimals = 2;
+        assert_eq!(
+            alarm_message(&tag, "critical", "high", 2.602250099182129, 2.6),
+            "Filter F-301 Headloss reached 2.60 m (critical: 2.60 m)"
+        );
+        tag.unit = "%".into();
+        tag.decimals = 1;
+        assert_eq!(
+            alarm_message(&tag, "warning", "low", 19.94999, 20.0),
+            "Filter F-301 Headloss dropped to 19.9% (warning low: 20.0%)"
+        );
+        tag.unit = String::new();
+        tag.decimals = 0;
+        assert_eq!(
+            alarm_message(&tag, "critical", "high", 1.0, 1.0),
+            "Filter F-301 Headloss reached 1 (critical: 1)"
+        );
+    }
+
+    #[test]
+    fn readings_round_to_sane_decimals() {
+        assert_eq!(
+            format_reading(2.602250099182129, 99, "mg/L"),
+            "2.602250 mg/L"
+        );
+        assert_eq!(format_reading(2.6, -3, "\u{b0}C"), "3\u{b0}C");
+        assert_eq!(round_to_decimals(2.602250099182129, 2), 2.6);
+        assert_eq!(round_to_decimals(1234.5678, 1), 1234.6);
+        assert_eq!(round_to_decimals(f64::MAX, 6), f64::MAX);
+    }
 
     fn ds(key: &str, warn: f64, crit: f64, cfg: serde_json::Value) -> DataSource {
         serde_json::from_value(serde_json::json!({

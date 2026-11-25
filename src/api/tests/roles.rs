@@ -258,8 +258,42 @@ async fn a_viewer_only_reads() {
         let (status, _) =
             send_request(&app, "POST", "/api/v1/flows/nope/run", None, Some(&c), None).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{user} cannot run a flow");
-        let (status, _) = send_request(&app, "GET", "/api/v1/alarms", None, Some(&c), None).await;
-        assert_eq!(status, StatusCode::OK, "{user} reads alarms");
+        // Every read the alarm panel and a trend make: a read-only demo login
+        // sees the summary badges, analytics, audit trail, journal and notes.
+        for uri in [
+            "/api/v1/alarms".to_string(),
+            "/api/v1/alarms/summary".to_string(),
+            "/api/v1/alarms/analytics".to_string(),
+            "/api/v1/alarms/audit".to_string(),
+            format!("/api/v1/alarms/{alarm}/journal"),
+            "/api/v1/annotations?tag_id=dev1.speed".to_string(),
+        ] {
+            let (status, body) = send_request(&app, "GET", &uri, None, Some(&c), None).await;
+            assert_eq!(status, StatusCode::OK, "{user} reads {uri}: {body}");
+        }
+        // Writing a note is still configuration.
+        let (status, _) = send_request(
+            &app,
+            "POST",
+            "/api/v1/annotations",
+            None,
+            Some(&c),
+            Some(json!({"tag_id": "dev1.speed", "data_timestamp": 1, "annotation_text": "x"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{user} cannot annotate");
+        for (method, uri) in [
+            ("POST", format!("/api/v1/alarms/{alarm}/shelf")),
+            ("POST", format!("/api/v1/alarms/{alarm}/unshelf")),
+            ("POST", "/api/v1/alarms".to_string()),
+        ] {
+            let (status, _) = send_request(&app, method, &uri, None, Some(&c), None).await;
+            assert_eq!(
+                status,
+                StatusCode::FORBIDDEN,
+                "{user} cannot {method} {uri}"
+            );
+        }
     }
 }
 

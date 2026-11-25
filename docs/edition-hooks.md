@@ -297,8 +297,8 @@ same value the deadband check uses.
 |---|---|
 | `admin` | everything, including users, roles, API keys, security, compliance |
 | `demo` | operate and configure (the public demo account) |
-| `operator` | operate: write tags within their write policy, cancel commands, acknowledge, shelve and unshelve alarms and read the alarm journal, summary, audit and analytics, list, view and load recipes, start, stop and run flows (any signed-in user may read flows and their runs), shift handover, log and close downtime. Cannot change devices, tags, write policies, screens, flows, recipes or settings |
-| `viewer`, `user` (legacy) | read only; cannot acknowledge alarms |
+| `operator` | operate: write tags within their write policy, cancel commands, acknowledge, shelve and unshelve alarms, list, view and load recipes, start, stop and run flows (any signed-in user may read flows and their runs), shift handover, log and close downtime. Cannot change devices, tags, write policies, screens, flows, recipes or settings |
+| `viewer`, `user` (legacy) | read only, including the alarm summary, analytics, audit trail and journal and the trend annotations; cannot acknowledge alarms or write annotations |
 | API key `integration` | like `demo` (scopes can narrow it to read-only) |
 | API key `api` | read only |
 

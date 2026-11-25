@@ -461,27 +461,9 @@ pub(crate) async fn serve(
                                     None => !has_unresolved && !in_cooldown,
                                 };
                                 if may_fire {
-                                    let msg = if alarm_type == "low" {
-                                        format!(
-                                            "{} dropped to {}{} ({} low: {}{})",
-                                            source.name,
-                                            value,
-                                            source.unit,
-                                            severity,
-                                            threshold,
-                                            source.unit
-                                        )
-                                    } else {
-                                        format!(
-                                            "{} reached {}{} ({}: {}{})",
-                                            source.name,
-                                            value,
-                                            source.unit,
-                                            severity,
-                                            threshold,
-                                            source.unit
-                                        )
-                                    };
+                                    let msg = crate::alarm_eval::alarm_message(
+                                        source, severity, alarm_type, value, threshold,
+                                    );
                                     match storage
                                         .create_alarm_with_type(
                                             &source.key,
