@@ -3,8 +3,11 @@ import { Rnd } from 'react-rnd'
 import type { SensorConfig, SensorData } from '../../types'
 import type { WidgetInstance } from './types'
 import { getWidgetComponent } from './registry'
-import { ScreenWidgetView } from '../../components/ScreenWidgetView'
+import { ScreenWidgetView, WidgetErrorBoundary, WidgetPlaceholder } from '../../components/ScreenWidgetView'
 import { framesWidget, valueStyle } from '../../valueStyle'
+import { applyBindings, hasBindings, liveReader, sharedRefIndex } from '../../designer/bindings'
+import { propTypesOf } from '../../designer/props'
+import { useTrackedCurrentValues } from '../../store/dashboardStore'
 
 interface WidgetShellProps {
   instance: WidgetInstance
@@ -42,11 +45,60 @@ const HANDLES = {
   bottomRight: corner({ right: -4, bottom: -4 }),
 }
 
-export default function WidgetShell({
-  instance, sensor, data, sensors, currentValues,
+/**
+ * The instance with its property bindings (Designer) applied to the live
+ * values. Same object when nothing is bound. Never throws: a binding that
+ * cannot be evaluated leaves its property at the fixed value.
+ */
+export function useBoundInstance(instance: WidgetInstance, sensors: SensorConfig[], currentValues: Record<string, SensorData>, active: boolean): WidgetInstance {
+  if (!active || !hasBindings(instance.config)) return instance
+  let config: Record<string, any>
+  try {
+    // One ref index per sensors array, shared by every widget on the screen.
+    config = applyBindings(instance.config, liveReader(sharedRefIndex(sensors), currentValues), propTypesOf(instance))
+  } catch {
+    return instance
+  }
+  return config === instance.config ? instance : { ...instance, config }
+}
+
+/** Renders `children` with the widget's bindings applied to the live values (faceplate titles follow a bound label). */
+export function LiveBound({ instance, sensors, children }: { instance: WidgetInstance; sensors: SensorConfig[]; children: (bound: WidgetInstance) => React.ReactNode }) {
+  const values = useTrackedCurrentValues()
+  return <>{children(useBoundInstance(instance, sensors, values, true))}</>
+}
+
+/** Where a widget that failed to draw was: a placeholder of its size, so the rest of the screen keeps running. */
+function BrokenWidget({ instance }: { instance: WidgetInstance }) {
+  return (
+    <div data-testid="widget-failed" style={{ position: 'absolute', left: instance.x, top: instance.y, width: instance.width, height: instance.height }}>
+      <WidgetPlaceholder text="This widget failed to draw" detail={instance.type} />
+    </div>
+  )
+}
+
+/**
+ * One widget on the 2D stage. Everything that runs for it (bindings, the
+ * widget's own drawing) is inside its own error boundary, so one bad widget
+ * shows a placeholder instead of taking the screen down.
+ */
+export default function WidgetShell(props: WidgetShellProps) {
+  return (
+    <WidgetErrorBoundary type={props.instance.type} resetKey={props.instance} fallback={<BrokenWidget instance={props.instance} />}>
+      <WidgetShellInner {...props} />
+    </WidgetErrorBoundary>
+  )
+}
+
+function WidgetShellInner({
+  instance: saved, sensor, data, sensors, currentValues,
   editMode, selected, scale, locked, onSelect, onMove, onResize, onWriteValue, activatable = false,
 }: WidgetShellProps) {
   const [hover, setHover] = useState(false)
+  // Bindings drive the drawing at runtime; the editor shows and edits the saved values.
+  const instance = useBoundInstance(saved, sensors, currentValues, !editMode)
+  const hidden = !editMode && instance.config?.visible === false
+  const opacity = !editMode && typeof instance.config?.opacity === 'number' ? Math.max(0, Math.min(1, instance.config.opacity)) : undefined
 
   // A click selects; only a real pointer drag moves. Selecting opens the inspector and can rescale
   // the stage mid-click, which react-rnd would otherwise report as a drag to a bogus position.
@@ -98,7 +150,7 @@ export default function WidgetShell({
       dragGrid={[10, 10]}
       resizeGrid={[10, 10]}
       resizeHandleStyles={selected ? HANDLES : undefined}
-      style={{ display: 'flex', zIndex: selected ? 5 : 2 }}
+      style={{ display: hidden ? 'none' : 'flex', zIndex: selected ? 5 : 2, opacity }}
     >
       <div
         onMouseDown={editMode ? () => onSelect(instance.id) : undefined}

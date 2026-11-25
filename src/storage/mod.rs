@@ -57,6 +57,7 @@ pub use login_failures::{
     SOURCE_LOCK_SECS, SOURCE_MAX_FAILURES,
 };
 pub use settings_audit::AuditChainReport;
+pub use settings_scada::LayoutSave;
 pub use settings_seed::{
     INITIAL_ADMIN_PASSWORD_FILE, initial_admin_password_path, remove_initial_admin_password,
 };

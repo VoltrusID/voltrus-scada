@@ -921,6 +921,20 @@ fn write_screen(
                 *reference = Value::Number(id.into());
             }
         }
+        // runSensorId by ref (a number is a legacy id, kept as is).
+        if let Some(c) = config.as_mut().and_then(Value::as_mapping_mut)
+            && let Some(Value::String(reference)) = c.get(export::RUN_TAG).cloned()
+        {
+            let tag = tag_id(
+                ctx,
+                &reference,
+                &format!("{} of a SCADA widget of screen '{id}'", export::RUN_TAG),
+            )?;
+            c.insert(
+                Value::String(export::RUN_TAG.into()),
+                Value::Number(tag.into()),
+            );
+        }
         args.push(yaml_to_sql(
             field(spec::SCADA_EQUIPMENT, "config"),
             config.as_ref(),

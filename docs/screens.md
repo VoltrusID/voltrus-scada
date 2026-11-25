@@ -120,3 +120,17 @@ operate permission.
 Limits: one definition has no graphics of its own (the symbol draws the equipment);
 roles are single tags (no arrays or nested equipment); MCP has no faceplate tools
 yet (an agent writes definitions and mappings through a project import).
+
+## Property bindings and the Designer
+
+Screens can also be edited in the **Voltrus Designer** (beta; the 2D view's
+**Designer** button, or `/designer?screen=<id>`), described in
+[designer.md](designer.md). It saves the same rows as the 2D view's Edit mode,
+which stays available.
+
+The Designer can bind any property of a widget to a tag, an expression or a
+value map (`config.bindings`, tags named by project ref `device/key`). At runtime
+the 2D view evaluates them in the browser on every live update: a bound label
+shows the expression's text, a bound `visible` hides the widget, a bound colour
+follows the map. A binding that has no value yet (unknown tag, no reading) leaves
+the property at its fixed value. The state colours above still apply on top.

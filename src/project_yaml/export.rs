@@ -95,7 +95,7 @@ pub fn order_rows(rows: &mut [Row]) {
     }
 }
 
-fn lenient_text(r: &SqlRow<'_>, i: usize) -> Result<String> {
+pub(crate) fn lenient_text(r: &SqlRow<'_>, i: usize) -> Result<String> {
     Ok(match r.get_ref(i)? {
         rusqlite::types::ValueRef::Text(b) | rusqlite::types::ValueRef::Blob(b) => {
             String::from_utf8_lossy(b).into_owned()
@@ -106,9 +106,11 @@ fn lenient_text(r: &SqlRow<'_>, i: usize) -> Result<String> {
     })
 }
 
-fn load_ctx(conn: &Connection) -> Result<Ctx> {
-    let mut ctx = Ctx::default();
+/// Every tag's project ref (`device/key`, `#n` from the second tag with the
+/// same device and key, in id order), by id.
+pub fn tag_refs(conn: &Connection) -> Result<Vec<(i64, String)>> {
     let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut out = Vec::new();
     let mut stmt = conn.prepare("SELECT id, device_id, key FROM data_sources ORDER BY id")?;
     let mut rows = stmt.query([])?;
     while let Some(r) = rows.next()? {
@@ -117,6 +119,14 @@ fn load_ctx(conn: &Connection) -> Result<Ctx> {
         let n = counts.entry(base.clone()).or_insert(0);
         *n += 1;
         let reference = if *n == 1 { base } else { format!("{base}#{n}") };
+        out.push((id, reference));
+    }
+    Ok(out)
+}
+
+fn load_ctx(conn: &Connection) -> Result<Ctx> {
+    let mut ctx = Ctx::default();
+    for (id, reference) in tag_refs(conn)? {
         ctx.tag_id_by_ref.insert(reference.clone(), id);
         ctx.tag_ref_by_id.insert(id, reference);
     }
@@ -614,6 +624,43 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
                     }
                     *map = out;
                 }
+                let symbol = m.get("equipment_id").map(display).unwrap_or_default();
+                // The tag a symbol's flow/run animation follows, also by ref.
+                if let Some(c) = v.as_mapping_mut() {
+                    let run = c.get(RUN_TAG).and_then(Value::as_i64);
+                    if let Some(id) = run {
+                        match ctx.tag_ref_by_id.get(&id) {
+                            Some(reference) => {
+                                c.insert(text(RUN_TAG), text(reference.clone()));
+                            }
+                            None => {
+                                c.remove(RUN_TAG);
+                                ctx.warnings.push(format!(
+                                    "{RUN_TAG} of SCADA widget '{symbol}' on screen '{screen}' is a missing tag ({id}); left out"
+                                ));
+                            }
+                        }
+                    }
+                }
+                // Property bindings already name tags by ref; flag the ones that name no tag.
+                if let Ok(json) = serde_json::to_value(&v) {
+                    for (prop, refs) in super::binding_refs::config_binding_refs(&json) {
+                        match refs {
+                            Ok(refs) => {
+                                for r in refs {
+                                    if !ctx.tag_id_by_ref.contains_key(&r) {
+                                        ctx.warnings.push(format!(
+                                            "screen '{screen}' widget '{symbol}': binding '{prop}' reads unknown tag '{r}'"
+                                        ));
+                                    }
+                                }
+                            }
+                            Err(e) => ctx.warnings.push(format!(
+                                "screen '{screen}' widget '{symbol}': binding '{prop}': {e}"
+                            )),
+                        }
+                    }
+                }
                 m.insert(text("config"), v);
             }
             scada_eq.entry(screen).or_default().push(m);
@@ -803,6 +850,10 @@ fn read_screens(conn: &Connection, sec: &Section, ctx: &mut Ctx) -> Result<Vec<R
 
 /// Key of a SCADA symbol's faceplate mapping (role -> tag) in its `config`.
 pub const FACEPLATE_MAP: &str = "faceplateMap";
+
+/// Key of the tag (an id in the database, a ref in the project) that animates
+/// a SCADA symbol's flow or run state, in its `config`.
+pub const RUN_TAG: &str = "runSensorId";
 
 pub const SETTING_KEYS: &[&str] = &["alarm_cooldown_secs", "naming_template", "naming_regex"];
 pub const OEE_PREFIX: &str = "oee_threshold_";

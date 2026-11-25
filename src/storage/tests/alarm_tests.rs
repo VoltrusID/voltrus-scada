@@ -864,44 +864,221 @@ async fn acknowledging_an_event_alarm_resolves_it() {
     );
 }
 
+/// A tag as the old vertical template instantiator wrote it: orange, named
+/// after its key, base in the middle of the range, the template id in
+/// source_config.
+async fn old_template_tag(
+    storage: &Storage,
+    key: &str,
+    name: &str,
+    (min, max): (f64, f64),
+    (warn, crit): (f64, f64),
+    cfg: &str,
+) -> i64 {
+    storage
+        .create_data_source(
+            key,
+            name,
+            "",
+            "#f97316",
+            min,
+            max,
+            warn,
+            crit,
+            (min + max) / 2.0,
+            0,
+            1,
+            "modbus",
+            cfg,
+            "vt_t",
+            None,
+            "gauge",
+        )
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn template_tags_with_the_old_limits_are_found() {
     let storage = Storage::new_in_memory().unwrap();
     storage.create_device("vt_t", "T", 0).await.unwrap();
-    let mk = |key: &'static str, min: f64, max: f64, warn: f64, crit: f64, cfg: &'static str| {
-        let storage = storage.clone();
-        async move {
-            storage
-                .create_data_source(
-                    key, key, "", "#f97316", min, max, warn, crit, 0.0, 0, 1, "modbus", cfg,
-                    "vt_t", None, "gauge",
-                )
-                .await
-                .unwrap()
-        }
-    };
-    let cfg = r#"{"template_id":"maritime"}"#;
+    let cfg = r#"{"template_id":"maritime","data_type":"float32"}"#;
     // Range as limits, untouched.
-    mk("vt_t:GPS_SPD", 0.0, 40.0, 0.0, 40.0, cfg).await;
+    old_template_tag(
+        &storage,
+        "vt_t:GPS_SPD",
+        "GPS_SPD",
+        (0.0, 40.0),
+        (0.0, 40.0),
+        cfg,
+    )
+    .await;
     // A critical "above" alarm replaced the maximum, the minimum (0) is no limit.
-    mk("vt_t:ENG1_TMP", 0.0, 120.0, 0.0, 95.0, cfg).await;
+    old_template_tag(
+        &storage,
+        "vt_t:ENG1_TMP",
+        "ENG1_TMP",
+        (0.0, 120.0),
+        (0.0, 95.0),
+        cfg,
+    )
+    .await;
     // A warning "below" alarm (tank low at 15) stored as a high limit; the
     // range maximum is still the critical limit.
-    mk("vt_t:TK-2_LVL", 0.0, 100.0, 15.0, 100.0, cfg).await;
+    old_template_tag(
+        &storage,
+        "vt_t:TK-2_LVL",
+        "TK-2_LVL",
+        (0.0, 100.0),
+        (15.0, 100.0),
+        cfg,
+    )
+    .await;
     // Configured since (flag written by the tag editor).
-    mk(
+    old_template_tag(
+        &storage,
         "vt_t:TK-3_LVL",
-        0.0,
-        100.0,
-        15.0,
-        100.0,
+        "TK-3_LVL",
+        (0.0, 100.0),
+        (15.0, 100.0),
         r#"{"template_id":"maritime","warn_enabled":true}"#,
+    )
+    .await;
+    // FEED template: "<signal> — <description>", range minimum above 0.
+    old_template_tag(
+        &storage,
+        "vt_t:PT-101",
+        "PT-101 — Discharge pressure",
+        (4.0, 20.0),
+        (4.0, 20.0),
+        r#"{"template_id":"feed_x","feed_template":true,"io_type":"AI"}"#,
+    )
+    .await;
+    // Renamed since: no longer the template's tag as written.
+    old_template_tag(
+        &storage,
+        "vt_t:GPS_HDG",
+        "Heading",
+        (0.0, 360.0),
+        (0.0, 360.0),
+        cfg,
     )
     .await;
     let old = storage.tags_with_old_seeded_limits().await.unwrap();
     assert!(old.first_start.is_empty());
-    assert_eq!(old.template_range, vec!["vt_t:GPS_SPD", "vt_t:TK-2_LVL"]);
+    assert_eq!(
+        old.template_range,
+        vec!["vt_t:GPS_SPD", "vt_t:TK-2_LVL", "vt_t:PT-101"]
+    );
     assert_eq!(old.below_as_high, vec!["vt_t:TK-2_LVL"]);
+}
+
+#[tokio::test]
+async fn fault_bits_with_a_critical_limit_at_1_are_not_flagged() {
+    let storage = Storage::new_in_memory().unwrap();
+    storage.create_device("vt_t", "T", 0).await.unwrap();
+    // The demo's fault bits: orange (the API default), range 0–1, critical
+    // at 1, base 0, renamed, set up by scenarios/wtp-hmi/seed.py.
+    storage
+        .create_data_source(
+            "pv_inv1_fault",
+            "Inverter 1 Fault",
+            "",
+            "#f97316",
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            0.0,
+            0,
+            0,
+            "modbus",
+            "{}",
+            "vt_t",
+            None,
+            "led",
+        )
+        .await
+        .unwrap();
+    // Even a template bit left exactly as the old instantiator wrote it:
+    // critical at 1 is how a fault bit alarms, so it can't be told apart.
+    old_template_tag(
+        &storage,
+        "vt_t:PMP1_FLT",
+        "PMP1_FLT",
+        (0.0, 1.0),
+        (0.0, 1.0),
+        r#"{"template_id":"wastewater_treatment","data_type":"bool"}"#,
+    )
+    .await;
+    // A bool/coil tag with another range.
+    old_template_tag(
+        &storage,
+        "vt_t:SAFE_ESTOP",
+        "SAFE_ESTOP",
+        (0.0, 2.0),
+        (0.0, 2.0),
+        r#"{"template_id":"elevator_ski_lift","register_area":"coil"}"#,
+    )
+    .await;
+    // FEED digital input.
+    old_template_tag(
+        &storage,
+        "vt_t:XS-101",
+        "XS-101 — Valve open",
+        (0.0, 1.0),
+        (0.0, 1.0),
+        r#"{"template_id":"feed_x","feed_template":true,"io_type":"DI"}"#,
+    )
+    .await;
+    assert!(
+        storage
+            .tags_with_old_seeded_limits()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn first_start_fixed_limits_need_the_whole_seeded_tag() {
+    let storage = Storage::new_in_memory().unwrap();
+    storage.create_device("plts_1", "PLTS 1", 0).await.unwrap();
+    let id = storage
+        .create_data_source(
+            "frequency",
+            "Frequency",
+            "Hz",
+            "#22c55e",
+            45.0,
+            55.0,
+            51.0,
+            52.0,
+            50.0,
+            0,
+            2,
+            "modbus",
+            "{}",
+            "plts_1",
+            None,
+            "sparkline",
+        )
+        .await
+        .unwrap();
+    let old = storage.tags_with_old_seeded_limits().await.unwrap();
+    assert_eq!(old.first_start, vec!["frequency"]);
+    // Same limits on a renamed tag: configured on purpose.
+    storage
+        .update_data_source(id, &serde_json::json!({"name": "Grid Frequency"}))
+        .await
+        .unwrap();
+    assert!(
+        storage
+            .tags_with_old_seeded_limits()
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]

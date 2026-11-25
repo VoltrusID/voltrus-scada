@@ -1,6 +1,7 @@
 import React from 'react'
 import type { WidgetInstance, ConnectionInstance } from '../widgets/types'
-import type { SensorData } from '../../types'
+import type { SensorConfig, SensorData } from '../../types'
+import { liveReader, sharedRefIndex, shownAtRuntime } from '../../designer/bindings'
 import { useTrackedCurrentValues } from '../../store/dashboardStore'
 import { portPoint, resolveSymbol } from '../hmi/resolve'
 import type { PortSide } from '../hmi/symbols'
@@ -8,6 +9,8 @@ import type { PortSide } from '../hmi/symbols'
 interface Props {
   widgets: WidgetInstance[]
   connections: ConnectionInstance[]
+  /** Tags, for widgets whose visibility is bound (Designer bindings). At runtime a line to a hidden widget is hidden. */
+  sensors?: SensorConfig[]
   /** Fixed values; omitted, the layer follows the live store (re-rendering only for tags that drive a flow). */
   currentValues?: Record<string, SensorData>
   editMode: boolean
@@ -155,17 +158,20 @@ export const CONNECTION_TYPES: { value: ConnectionInstance['connectionType']; la
   { value: 'data', label: 'Signal / data' },
 ]
 
-export const ConnectionLayer: React.FC<Props> = ({ widgets, connections, currentValues: fixedValues, editMode, selectedId, onSelect, pending }) => {
+export const ConnectionLayer: React.FC<Props> = ({ widgets, connections, sensors, currentValues: fixedValues, editMode, selectedId, onSelect, pending }) => {
   const liveValues = useTrackedCurrentValues()
   const currentValues = fixedValues ?? liveValues
   const byId = new Map(widgets.map(w => [w.id, w]))
+  // At runtime a connection to a hidden widget (fixed or bound `visible`) is hidden with it.
+  const read = !editMode ? liveReader(sharedRefIndex(sensors ?? []), currentValues) : null
+  const shown = (w: WidgetInstance) => !read || shownAtRuntime(w.config, read)
 
   return (
     <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 1, overflow: 'visible' }}>
       {connections.map(conn => {
         const from = byId.get(conn.fromWidgetId)
         const to = byId.get(conn.toWidgetId)
-        if (!from || !to) return null
+        if (!from || !to || !shown(from) || !shown(to)) return null
         const d = roundedPath(routeConnection(from, to, conn.waypoints))
         const selected = editMode && selectedId === conn.id
         // A pipe flows when the equipment at either end is running (tank → running pump counts).

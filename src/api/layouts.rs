@@ -258,46 +258,10 @@ pub async fn save_twin_camera(
     Ok(Json(json!({"ok": true})))
 }
 
-/// GET /api/screens/{id}/scada-equipment
-#[utoipa::path(
-    get,
-    path = "/api/v1/screens/{id}/scada-equipment",
-    params(("id" = String, Path, description = "Screen ID")),
-    responses((status = 200, body = Vec<crate::models::ScadaEquipment>)),
-    tag = "Layouts",
-    security(("api_key" = []), ("cookie_auth" = []))
-)]
-pub async fn get_scada_equipment(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<impl IntoResponse, AppError> {
-    let items = state.storage.get_scada_equipment(&id).await?;
-    Ok(Json(json!({"items": items})))
-}
-
-/// PUT /api/screens/{id}/scada-equipment
-#[utoipa::path(
-    put,
-    path = "/api/v1/screens/{id}/scada-equipment",
-    params(("id" = String, Path, description = "Screen ID")),
-    responses((status = 200, description = "SCADA equipment saved")),
-    tag = "Layouts",
-    security(("api_key" = []), ("cookie_auth" = []))
-)]
-pub async fn save_scada_equipment(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-    Json(body): Json<serde_json::Value>,
-) -> Result<impl IntoResponse, AppError> {
-    let arr = body
-        .get("items")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow::anyhow!("Expected {{\"items\": [...]}}"))?;
-
-    let mut items = Vec::new();
-    for item in arr {
-        items.push(ScadaEquipment {
-            screen_id: id.clone(),
+fn parse_equipment(screen_id: &str, arr: &[serde_json::Value]) -> Vec<ScadaEquipment> {
+    arr.iter()
+        .map(|item| ScadaEquipment {
+            screen_id: screen_id.to_string(),
             equipment_id: item["equipment_id"].as_str().unwrap_or("").to_string(),
             equipment_type: item["equipment_type"].as_str().unwrap_or("").to_string(),
             equipment_name: item["equipment_name"].as_str().unwrap_or("").to_string(),
@@ -318,11 +282,113 @@ pub async fn save_scada_equipment(
                 .unwrap_or_else(|| {
                     serde_json::to_string(&item["config"]).unwrap_or("{}".to_string())
                 }),
-        });
-    }
+        })
+        .collect()
+}
 
-    state.storage.save_scada_equipment(&id, &items).await?;
-    Ok(Json(json!({"ok": true})))
+fn parse_connections(screen_id: &str, arr: &[serde_json::Value]) -> Vec<ScadaConnection> {
+    arr.iter()
+        .map(|item| ScadaConnection {
+            screen_id: screen_id.to_string(),
+            connection_id: item["connection_id"].as_str().unwrap_or("").to_string(),
+            from_equipment: item["from_equipment"].as_str().unwrap_or("").to_string(),
+            to_equipment: item["to_equipment"].as_str().unwrap_or("").to_string(),
+            waypoints: item["waypoints"]
+                .as_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    serde_json::to_string(&item["waypoints"]).unwrap_or("[]".to_string())
+                }),
+            connection_type: item["connection_type"]
+                .as_str()
+                .unwrap_or("power")
+                .to_string(),
+        })
+        .collect()
+}
+
+fn items_array<'a>(
+    body: &'a serde_json::Value,
+    key: &str,
+) -> Result<&'a Vec<serde_json::Value>, AppError> {
+    body.get(key)
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| AppError::bad_request(format!("Expected {{\"{key}\": [...]}}")))
+}
+
+/// `base_revision` of a save body: a string, or absent/null for no check.
+fn base_revision(body: &serde_json::Value) -> Result<Option<String>, AppError> {
+    match body.get("base_revision") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(s)) => Ok(Some(s.clone())),
+        Some(_) => Err(AppError::bad_request("base_revision must be a string")),
+    }
+}
+
+/// Answer of a revision-checked save: 200 with the new revision, or 409 with the current one.
+fn layout_saved(outcome: crate::storage::LayoutSave) -> Result<Json<serde_json::Value>, AppError> {
+    match outcome {
+        crate::storage::LayoutSave::Saved { revision } => {
+            Ok(Json(json!({"ok": true, "revision": revision})))
+        }
+        crate::storage::LayoutSave::Conflict { revision } => Err(AppError(
+            super::RejectedJson(
+                axum::http::StatusCode::CONFLICT,
+                json!({
+                    "error": "This screen was changed by someone else since you opened it",
+                    "code": "conflict",
+                    "revision": revision,
+                }),
+            )
+            .into(),
+        )),
+    }
+}
+
+/// GET /api/screens/{id}/scada-equipment
+#[utoipa::path(
+    get,
+    path = "/api/v1/screens/{id}/scada-equipment",
+    params(("id" = String, Path, description = "Screen ID")),
+    responses((status = 200, body = Vec<crate::models::ScadaEquipment>)),
+    tag = "Layouts",
+    security(("api_key" = []), ("cookie_auth" = []))
+)]
+pub async fn get_scada_equipment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let items = state.storage.get_scada_equipment(&id).await?;
+    Ok(Json(json!({"items": items})))
+}
+
+/// PUT /api/screens/{id}/scada-equipment
+///
+/// Replaces the screen's equipment. With `base_revision` (from GET
+/// scada-layout or an earlier save), answers 409 when the screen changed since.
+#[utoipa::path(
+    put,
+    path = "/api/v1/screens/{id}/scada-equipment",
+    params(("id" = String, Path, description = "Screen ID")),
+    responses(
+        (status = 200, description = "SCADA equipment saved; body has the new `revision`"),
+        (status = 409, description = "`base_revision` is stale; body has the current `revision`")
+    ),
+    tag = "Layouts",
+    security(("api_key" = []), ("cookie_auth" = []))
+)]
+pub async fn save_scada_equipment(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, AppError> {
+    let items = parse_equipment(&id, items_array(&body, "items")?);
+    let base = base_revision(&body)?;
+    let outcome = state
+        .storage
+        .save_scada_layout(&id, Some(items), None, base)
+        .await?;
+    layout_saved(outcome)
 }
 
 /// GET /api/screens/{id}/scada-connections
@@ -343,11 +409,16 @@ pub async fn get_scada_connections(
 }
 
 /// PUT /api/screens/{id}/scada-connections
+///
+/// Replaces the screen's connections; `base_revision` as for scada-equipment.
 #[utoipa::path(
     put,
     path = "/api/v1/screens/{id}/scada-connections",
     params(("id" = String, Path, description = "Screen ID")),
-    responses((status = 200, description = "SCADA connections saved")),
+    responses(
+        (status = 200, description = "SCADA connections saved; body has the new `revision`"),
+        (status = 409, description = "`base_revision` is stale; body has the current `revision`")
+    ),
     tag = "Layouts",
     security(("api_key" = []), ("cookie_auth" = []))
 )]
@@ -356,34 +427,61 @@ pub async fn save_scada_connections(
     Path(id): Path<String>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
-    let arr = body
-        .get("items")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow::anyhow!("Expected {{\"items\": [...]}}"))?;
-
-    let mut connections = Vec::new();
-    for item in arr {
-        connections.push(ScadaConnection {
-            screen_id: id.clone(),
-            connection_id: item["connection_id"].as_str().unwrap_or("").to_string(),
-            from_equipment: item["from_equipment"].as_str().unwrap_or("").to_string(),
-            to_equipment: item["to_equipment"].as_str().unwrap_or("").to_string(),
-            waypoints: item["waypoints"]
-                .as_str()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| {
-                    serde_json::to_string(&item["waypoints"]).unwrap_or("[]".to_string())
-                }),
-            connection_type: item["connection_type"]
-                .as_str()
-                .unwrap_or("power")
-                .to_string(),
-        });
-    }
-
-    state
+    let connections = parse_connections(&id, items_array(&body, "items")?);
+    let base = base_revision(&body)?;
+    let outcome = state
         .storage
-        .save_scada_connections(&id, &connections)
+        .save_scada_layout(&id, None, Some(connections), base)
         .await?;
-    Ok(Json(json!({"ok": true})))
+    layout_saved(outcome)
+}
+
+/// GET /api/screens/{id}/scada-layout — equipment, connections and the
+/// layout's revision, read together.
+#[utoipa::path(
+    get,
+    path = "/api/v1/screens/{id}/scada-layout",
+    params(("id" = String, Path, description = "Screen ID")),
+    responses((status = 200, description = "{equipment, connections, revision}")),
+    tag = "Layouts",
+    security(("api_key" = []), ("cookie_auth" = []))
+)]
+pub async fn get_scada_layout(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, AppError> {
+    let (equipment, connections, revision) = state.storage.get_scada_layout(&id).await?;
+    Ok(Json(
+        json!({"equipment": equipment, "connections": connections, "revision": revision}),
+    ))
+}
+
+/// PUT /api/screens/{id}/scada-layout — replace equipment and connections in
+/// one transaction. With `base_revision`, answers 409 (and writes nothing)
+/// when the screen changed since that revision.
+#[utoipa::path(
+    put,
+    path = "/api/v1/screens/{id}/scada-layout",
+    params(("id" = String, Path, description = "Screen ID")),
+    request_body(description = "{equipment: [...], connections: [...], base_revision?: string}"),
+    responses(
+        (status = 200, description = "Saved; body has the new `revision`"),
+        (status = 409, description = "`base_revision` is stale; body has the current `revision`")
+    ),
+    tag = "Layouts",
+    security(("api_key" = []), ("cookie_auth" = []))
+)]
+pub async fn save_scada_layout(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> Result<impl IntoResponse, AppError> {
+    let equipment = parse_equipment(&id, items_array(&body, "equipment")?);
+    let connections = parse_connections(&id, items_array(&body, "connections")?);
+    let base = base_revision(&body)?;
+    let outcome = state
+        .storage
+        .save_scada_layout(&id, Some(equipment), Some(connections), base)
+        .await?;
+    layout_saved(outcome)
 }
