@@ -77,6 +77,7 @@ const PATHS: Record<string, React.ReactNode> = {
   edit: <><path d="M4 20h4L19 9l-4-4L4 16z" /><path d="M13.5 6.5l4 4" /></>,
   revert: <><path d="M9 14 4 9l5-5" /><path d="M4 9h11a5 5 0 0 1 0 10h-4" /></>,
   check: <path d="M5 12l5 5 9-10" />,
+  phone: <><rect x="6" y="2" width="12" height="20" rx="2" /><path d="M11 18h2" /></>,
 }
 
 export function Icon({ name, size = 14 }: { name: keyof typeof PATHS | string; size?: number }) {

@@ -2,8 +2,8 @@
 
 Design for the browser screen editor that replaces the 2D view's Edit mode:
 panes, bindings, a flat ISA-101 library, version history, live collaboration,
-mobile layouts and a widget SDK. Phases 1, 2, 3 and 4 are built; the later
-phases are designs, grounded in the code as it is on `main` after #29.
+mobile layouts and a widget SDK. Phases 1, 2, 3, 4 and 5 are built; phase 2b
+(the widget SDK) is a design, grounded in the code as it is on `main` after #29.
 
 Order: **1** editor, **2** symbol library and equipment types, **2b** widget SDK,
 **3** version history, **4** collaboration, **5** mobile and PWA. Version history
@@ -614,19 +614,167 @@ Screenshots (WTP showcase, two browsers, taken by the collaboration smoke run):
 ![A comment thread with a mention, pinned to a trend](images/designer-phase4/33-collab-comment-thread.webp)
 ![Cursors moving live](images/designer-phase4/34-two-cursors.gif)
 
-## Phase 5: mobile layouts and PWA
+## Phase 5: mobile layouts and PWA (built)
 
-* An operator layout is generated per screen, not drawn: components are ordered
-  by area (process areas become sections), then top-to-bottom, left-to-right
-  inside an area; each equipment symbol becomes a row (symbol thumbnail, label,
-  state, primary value, faceplate on tap); trends and tables become full-width
-  cards; decoration (lines, labels without bindings) is dropped. The generated
-  layout is stored as an override list (`config.mobile = {hide, order, span}`) only
-  when an engineer adjusts it in a *Mobile* preview pane, so regeneration keeps
-  their changes.
-* The client already registers a service worker (`sw-register.ts`); phase 5 adds a
-  manifest per site, offline shell, last-known values with their age, and push for
-  alarms (existing push subscriptions).
+On a phone (a window at most 640 px wide) the 2D view shows each screen as a
+list built for a thumb instead of the 1920×1080 stage. Engineers do not draw it:
+it is generated from the screen and adjusted in the Designer's *Mobile* pane.
+
+### The generated layout
+
+`client/src/scada2/mobile/operatorLayout.ts` (no React; tests in
+`client/tests/operatorLayout.test.ts`):
+
+* **Sections.** Every process area becomes a section titled with the area's
+  title. A component belongs to the smallest area that holds its centre.
+  Components outside any area come first, in a section with no title. Sections
+  follow the areas' reading order.
+* **Reading order** inside a section: top to bottom, then left to right. A
+  component whose vertical centre lies within the first component of a row is on
+  that row. Ties break by id, so the order is the same on every load.
+* **What each component becomes:**
+
+  | Component | On the phone |
+  |---|---|
+  | Equipment symbol with a tag, an equipment instance or a faceplate | a row: the symbol drawn small in its live state, label, state (Running, Stopped, Open, Fault…, plus Manual and Interlock), the value for level and value symbols; a tap opens its faceplate |
+  | Gauge, big number, indicator, bar, status light and other one-value widgets with a tag | a row: label, value with unit, alarm or quality state; a tap opens the faceplate or the trend popup, as on the stage |
+  | Trend, multi-pen trend, data table, bar and pie charts, annunciator, PID faceplate, add-on and custom widgets | a card with the widget drawn in it |
+  | Slider, number input, toggle, push button | a card with the control |
+  | Label with a binding | its text |
+  | Pipes, piping symbols (junctions, arrows, connectors), unbound drawings, plain labels, connections | dropped |
+  | A widget whose `visible` is fixed to false | dropped; a bound `visible` is applied live |
+
+* **Grid.** Two columns; everything is full width unless made half width.
+
+### Adjusting it: the Mobile pane
+
+The Designer's right column has a *Mobile* tab. *Arrange* lists the sections and
+their items as phones get them; each row has show/hide, half or full width, and
+move up/down; a section has show/hide and move up/down (it moves by its area).
+Plain labels are listed hidden and can be shown, as a heading. *Preview* draws
+the operator view with live values in a 360×640 phone frame. *Reset* removes
+every adjustment of the screen.
+
+Each adjustment is stored on the component it concerns, in its `config`:
+
+```json
+"mobile": { "hide": true, "order": 2, "span": 1 }
+```
+
+| Key | Meaning |
+|---|---|
+| `hide` | `true`: not on phones. `false`: shown although the generator drops it (a plain label) |
+| `order` | position in its section; on a process area, the section's position |
+| `span` | `1` half width, `2` full width (the default) |
+
+A component carries the key only while it differs from the generated layout:
+showing a hidden component again, or moving items back into the generated
+order, removes it. A move stores the position of every item of that section.
+When the screen changes later, the generator runs again over the adjusted
+components: an item without a position (one added since) is put right after the
+item that precedes it in the generated order, so it lands next to its
+neighbours; a deleted component takes its adjustment with it; a component moved
+into another area takes its adjustment along; gaps and duplicate positions are
+fine. A malformed value is ignored by the client.
+
+**It is a property like any other.** Because the key is in the row's config, an
+adjustment is one undo step, goes through the same save as any layout change
+(`PUT …/scada-layout` with `base_revision`/`base_seq`, 409 on conflict), is a
+change in the phase 3 change log under its component (blame and revert work),
+reaches operators only when the screen is published, and travels through the
+phase 4 collaboration document (config is a nested map, so one person hiding a
+pump while another moves it merge). Project files carry it unchanged
+(`voltrus-project/1`; `docs/project-schema.json` treats config as free JSON, so
+it did not change). The native console does not draw phone layouts, but it keeps
+the key when it saves a screen (`native/src/mimic/tests.rs`).
+
+**Checked on the server.** The shape is defined once, in
+`collab/src/mobile.rs`, shared by the server and the console: an object with
+only `hide` (boolean), `order` (a number within ±1,000,000) and `span` (1 or 2).
+A layout `PUT` that sets anything else is a 400 naming the component; a
+collaborative update that does is put back field by field and its author told
+(`DesignRejected`), like any other bad field; a project import reports it as a
+validation error. Only an override a write changes is checked, so an old row
+never blocks a save.
+
+### The operator view
+
+`client/src/scada2/mobile/OperatorView.tsx`, mounted by `ScadaView` in run mode
+on narrow screens (`LiveOperatorView.tsx` feeds it the live store):
+
+* Taps go through the same handlers as the stage: the same faceplate (opened as
+  a sheet at the bottom of the screen, closed by tapping outside), the same
+  trend popup. Faceplate commands and controls use the same command path
+  (`wsWriteTagResult`, falling back to `writeTag`), so write policies,
+  confirmations and electronic signatures apply unchanged. Controls get a write
+  handler only with the operate permission; a viewer sees the value without
+  buttons.
+* Operators read the published screen, as on the stage.
+* *Full screen* switches to the stage for the rest of the browser session;
+  *Phone layout* switches back.
+* Below the list a line says that alarm notifications on a phone come from the
+  Voltrus SCADA app, with a link to **Data → Phone app** to pair it
+  ([mobile.md](mobile.md)). The browser does not do Web Push.
+
+### Live, stale and offline
+
+A value is shown as live only while the live stream is connected, the browser is
+online, and the value was read less than a minute ago. Otherwise it is drawn
+muted with a dotted underline and its age (*30 min ago*), and a state text is
+muted with its age beside it. Without the live stream the header chip says
+*Offline* and a banner says the values are not live and when they last arrived.
+
+While live, the view keeps a snapshot of the screen in the browser's local
+storage every 15 seconds (`lastKnown.ts`): its rows, the tags it shows (name,
+unit, decimals, range) and their last values with the time each was read. Five
+screens per user are kept; a snapshot over 400 KB is not. Signing out deletes
+them, and another user signing in on the same browser does not see them.
+
+### PWA
+
+* **Service worker** (`client/public/sw.js`, registered by `sw-register.ts`):
+  pages are network first with the cached shell as the fallback; the built
+  assets (named by content hash) are cache first, at most 300 kept; translations
+  and icons are network first. `/api/` is never cached or answered by the worker.
+* **Offline start.** When the installed app (or a reload) cannot reach the server
+  at all, and this browser has a snapshot, it opens on the last screen seen with
+  its last-known values and their age, marked offline, with *Try again* and
+  *Sign in*. Nothing can be tapped or written. The offline view's code is
+  fetched once after sign-in, so the worker has it.
+* **Manifest per site.** Before sign-in the page links the static
+  `/manifest.json`. After sign-in it links
+  `GET /api/v1/site/manifest.webmanifest` (needs a session; the request carries
+  the cookie): `name` is the site's name as the phone app shows it (the admin's
+  *Site name on the phone*, else the licence's site name, else the white-label
+  title, else "Voltrus SCADA"), `short_name` that name cut to 12 characters at a
+  word, `theme_color` the white-label accent, and the white-label logo first among
+  the icons (an image `data:` URL, an http(s) link or a same-origin path). The
+  site name is never handed out without a sign-in.
+* `/favicon-192.png` and `/favicon-512.png` (the console's app icon) now exist,
+  so browsers offer to install the app.
+* Guest and demo (shared) accounts work as any other: the manifest needs only a
+  session, and snapshots stay in that browser.
+
+### Screenshots
+
+WTP showcase, taken by `scripts/smoke-mobile.sh` (phone: 390×844 at 2×).
+
+![The Mobile pane: sections, a hidden component, a half-width item](images/designer-phase5/40-designer-mobile-pane.webp)
+![The Mobile pane's phone preview](images/designer-phase5/41-designer-mobile-preview.webp)
+![The Plant Overview on a phone](images/designer-phase5/42-phone-operator-view.webp)
+![Cards further down](images/designer-phase5/43-phone-operator-cards.webp)
+![A faceplate as a bottom sheet](images/designer-phase5/44-phone-faceplate-sheet.webp)
+![Offline: values with their age](images/designer-phase5/45-phone-offline-banner.webp)
+![Opened with no server: the last-known screen](images/designer-phase5/46-phone-offline-start.webp)
+
+### Not in phase 5
+
+* Drag-and-drop reordering in the pane (up/down buttons only) and moving an item
+  into another section (it follows its area on the stage).
+* Per-device layouts (tablet vs phone); one phone layout per screen.
+* Values older than the snapshot are not back-filled with history when the
+  connection returns; the live stream resumes.
+* Web Push for alarms: removed in #36 in favour of the phone app.
 
 ## Migration from the scada2 editor
 
@@ -728,3 +876,23 @@ Screenshots (WTP showcase, two browsers, taken by the collaboration smoke run):
   in CI): two headless browsers as two users on one screen move, lock and
   edit at once and converge, see each other's cursors, a comment with a
   mention reaches the other, and the rows over REST hold both people's edits.
+* Phase 5: `client/tests/operatorLayout.test.ts` (sections, nested areas,
+  reading order, what is dropped, hide/show/span/move patches stored only when
+  they differ, regeneration with added, deleted and moved components, malformed
+  overrides, snapshots and ages), `client/tests/flow/designerMobile.test.tsx`
+  (the pane, undo, save with the base revision, reset, preview),
+  `flow/designerCollab` (adjustments through the shared document both ways,
+  per-user undo), `flow/operatorView.test.tsx` (the phone view, faceplate sheet
+  and its command, controls by permission, offline and stale values, the
+  snapshot, the offline start, the manifest link); `voltrus-collab` `mobile`
+  tests; server `collab::validate` (checked when changed),
+  `api::tests::scada_layout::phone_layout_overrides_are_checked_logged_and_published`
+  (400, 409 with the change named, change log, publish),
+  `api::tests::collab::phone_layout_overrides_in_a_session_are_kept_and_checked`,
+  `the_site_manifest_needs_a_sign_in_and_names_the_site`, the project round trip
+  and import validation; native
+  `mimic::tests::console_saves_keep_the_phone_layout_override`.
+  `client/e2e/mobile.smoke.mjs` (`scripts/smoke-mobile.sh`, in CI): the Mobile
+  pane saves `config.mobile`, an operator on a phone-sized browser gets the
+  layout and a faceplate sheet, offline shows ages, and a reload offline opens
+  the last-known screen from the service worker.

@@ -641,26 +641,8 @@ pub async fn summary(
         .clone();
     let site = crate::mobile::site_name(&state.storage, &settings, &license).await;
 
-    let branding = if license.white_label() {
-        let rows = state
-            .storage
-            .get_settings(&["brand_title", "brand_logo", "brand_accent"])
-            .await?;
-        let get = |k: &str| {
-            rows.iter()
-                .find(|s| s.key == k)
-                .map(|s| s.value.clone())
-                .unwrap_or_default()
-        };
-        let accent = if license.tier().theme_full() {
-            get("brand_accent")
-        } else {
-            String::new()
-        };
-        json!({"title": get("brand_title"), "logo": get("brand_logo"), "accent": accent})
-    } else {
-        json!({"title": "", "logo": "", "accent": ""})
-    };
+    let (title, logo, accent) = site_branding(&state, &license).await?;
+    let branding = json!({"title": title, "logo": logo, "accent": accent});
 
     let active = state.storage.list_alarms(Some("active"), 500).await?;
     let count = |p: &str| active.iter().filter(|a| a.priority == p).count();
@@ -827,5 +809,139 @@ mod tests {
             .unwrap();
         let back: PairingPayload = serde_json::from_slice(&json).unwrap();
         assert_eq!(back, payload);
+    }
+}
+
+/// The white-label branding phones and the web app show: title, logo
+/// (a `data:` URL or a link) and accent colour, each empty when white-label
+/// is not licensed (the accent also needs the full theme).
+async fn site_branding(
+    state: &AppState,
+    license: &crate::license::LicenseStatus,
+) -> Result<(String, String, String), AppError> {
+    if !license.white_label() {
+        return Ok(Default::default());
+    }
+    let rows = state
+        .storage
+        .get_settings(&["brand_title", "brand_logo", "brand_accent"])
+        .await?;
+    let get = |k: &str| {
+        rows.iter()
+            .find(|s| s.key == k)
+            .map(|s| s.value.trim().to_string())
+            .unwrap_or_default()
+    };
+    let accent = if license.tier().theme_full() {
+        get("brand_accent")
+    } else {
+        String::new()
+    };
+    Ok((get("brand_title"), get("brand_logo"), accent))
+}
+
+/// Whether `s` is a `#rgb` or `#rrggbb` colour.
+fn hex_colour(s: &str) -> bool {
+    s.strip_prefix('#')
+        .is_some_and(|h| (h.len() == 3 || h.len() == 6) && h.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// A brand logo usable as a manifest icon: an image `data:` URL, an http(s)
+/// link or a same-origin path.
+fn manifest_icon(logo: &str) -> Option<&str> {
+    let lower = logo.to_ascii_lowercase();
+    (lower.starts_with("data:image/")
+        || lower.starts_with("https://")
+        || lower.starts_with("http://")
+        || (logo.starts_with('/') && !logo.starts_with("//")))
+    .then_some(logo)
+}
+
+/// The short name of a manifest: the site name cut to 12 characters at a
+/// word boundary where it can be.
+fn short_name(name: &str) -> String {
+    const MAX: usize = 12;
+    if name.chars().count() <= MAX {
+        return name.to_string();
+    }
+    let cut: String = name.chars().take(MAX).collect();
+    match cut.rfind(' ') {
+        Some(i) if i >= 4 => cut[..i].to_string(),
+        _ => cut,
+    }
+}
+
+/// GET /api/v1/site/manifest.webmanifest — the web app manifest of this site
+/// (docs/designer.md, phase 5): installed on a phone's home screen, the HMI
+/// carries the site's name, white-label logo and accent. The page links the
+/// static `/manifest.json` until someone signs in, then this one, so the site
+/// name is never handed out without a sign-in.
+pub async fn site_manifest(State(state): State<AppState>) -> Result<impl IntoResponse, AppError> {
+    let settings = MobileSettings::load(&state.storage).await?;
+    let license = state
+        .license_status
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let name = crate::mobile::site_name(&state.storage, &settings, &license).await;
+    let (_, logo, accent) = site_branding(&state, &license).await?;
+    let theme = if hex_colour(&accent) {
+        accent
+    } else {
+        "#09090b".to_string()
+    };
+    let mut icons = Vec::new();
+    if let Some(src) = manifest_icon(&logo) {
+        icons.push(json!({"src": src, "sizes": "any", "purpose": "any"}));
+    }
+    icons.extend([
+        json!({"src": "/favicon-192.png", "sizes": "192x192", "type": "image/png"}),
+        json!({"src": "/favicon-512.png", "sizes": "512x512", "type": "image/png"}),
+    ]);
+    let body = json!({
+        "id": "/",
+        "name": name,
+        "short_name": short_name(&name),
+        "description": "Plant screens, alarms and live values",
+        "start_url": "/?source=pwa",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#09090b",
+        "theme_color": theme,
+        "icons": icons,
+    });
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/manifest+json",
+            ),
+            (axum::http::header::CACHE_CONTROL, "no-cache"),
+        ],
+        body.to_string(),
+    ))
+}
+
+#[cfg(test)]
+mod manifest_tests {
+    use super::*;
+
+    #[test]
+    fn short_names_cut_at_a_word() {
+        assert_eq!(short_name("Pabrik A"), "Pabrik A");
+        assert_eq!(short_name("Water Treatment Plant"), "Water");
+        assert_eq!(short_name("Clearwellstation"), "Clearwellsta");
+    }
+
+    #[test]
+    fn only_image_urls_become_icons() {
+        assert!(manifest_icon("data:image/png;base64,AAAA").is_some());
+        assert!(manifest_icon("https://x.example/logo.svg").is_some());
+        assert!(manifest_icon("/brand.png").is_some());
+        assert!(manifest_icon("//evil.example/x.png").is_none());
+        assert!(manifest_icon("javascript:alert(1)").is_none());
+        assert!(manifest_icon("").is_none());
+        assert!(hex_colour("#0af") && hex_colour("#00aaff"));
+        assert!(!hex_colour("red") && !hex_colour("#00aaf") && !hex_colour(""));
     }
 }

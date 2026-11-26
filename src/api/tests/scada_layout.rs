@@ -328,3 +328,170 @@ async fn export_warns_about_bindings_to_unknown_tags() {
         doc.warnings
     );
 }
+
+/// The phone layout override (`config.mobile`, docs/designer.md phase 5)
+/// goes through the same save as any other layout change: a malformed one is
+/// refused, a stale save is a 409 naming the change, it is in the change log
+/// under its widget, and publishing carries it to what operators read.
+#[tokio::test]
+async fn phone_layout_overrides_are_checked_logged_and_published() {
+    let (app, cookie) = app().await;
+    let uri = "/api/v1/screens/s1/scada-layout";
+    let (_, empty) = call(&app, &cookie, "GET", uri, None).await;
+    let (status, saved) = call(
+        &app,
+        &cookie,
+        "PUT",
+        uri,
+        Some(json!({
+            "equipment": [eq("a", 0.0, json!({})), eq("b", 200.0, json!({}))],
+            "connections": [],
+            "base_revision": empty["revision"],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let rev1 = saved["revision"].clone();
+    let seq1 = saved["seq"].clone();
+
+    // Malformed overrides are 400 on both save routes and write nothing.
+    for bad in [
+        json!({"span": 3}),
+        json!({"hide": "yes"}),
+        json!({"order": "first"}),
+        json!({"colour": "red"}),
+        json!([1, 2]),
+    ] {
+        let body = json!({
+            "equipment": [eq("a", 0.0, json!({"mobile": bad})), eq("b", 200.0, json!({}))],
+            "connections": [],
+            "base_revision": rev1,
+        });
+        let (status, err) = call(&app, &cookie, "PUT", uri, Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {err}");
+        assert!(err.to_string().contains("equipment a"), "{err}");
+        let (status, _) = call(
+            &app,
+            &cookie,
+            "PUT",
+            "/api/v1/screens/s1/scada-equipment",
+            Some(json!({"items": [eq("a", 0.0, json!({"mobile": bad}))]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    let (_, got) = call(&app, &cookie, "GET", uri, None).await;
+    assert_eq!(got["revision"], rev1);
+
+    // A valid one saves, and the GET returns it as written.
+    let mobile = json!({"hide": true, "order": 1, "span": 1});
+    let (status, saved) = call(
+        &app,
+        &cookie,
+        "PUT",
+        uri,
+        Some(json!({
+            "equipment": [eq("a", 0.0, json!({"mobile": mobile})), eq("b", 200.0, json!({}))],
+            "connections": [],
+            "base_revision": rev1,
+            "base_seq": seq1,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let (_, got) = call(&app, &cookie, "GET", uri, None).await;
+    let config: Value =
+        serde_json::from_str(got["equipment"][0]["config"].as_str().unwrap()).unwrap();
+    assert_eq!(config["mobile"], mobile);
+
+    // Someone saving from the old revision (hiding b) gets a 409 that names
+    // the change to a, and the override stays.
+    let (status, conflict) = call(
+        &app,
+        &cookie,
+        "PUT",
+        uri,
+        Some(json!({
+            "equipment": [eq("a", 0.0, json!({})), eq("b", 200.0, json!({"mobile": {"hide": true}}))],
+            "connections": [],
+            "base_revision": rev1,
+            "base_seq": seq1,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
+    assert!(
+        conflict["changes_since"]
+            .to_string()
+            .contains("\"object_id\":\"a\""),
+        "{conflict}"
+    );
+    let (_, after) = call(&app, &cookie, "GET", uri, None).await;
+    assert_eq!(after["revision"], saved["revision"]);
+
+    // The change log has it under widget a.
+    let (status, hist) = call(
+        &app,
+        &cookie,
+        "GET",
+        "/api/v1/screens/s1/history?object=a&limit=1",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{hist}");
+    let change = &hist["changes"][0];
+    assert_eq!(change["kind"], "update", "{hist}");
+    assert!(
+        change["after"]["config"]
+            .as_str()
+            .unwrap()
+            .contains("\"mobile\"")
+    );
+    assert!(
+        !change["before"]["config"]
+            .as_str()
+            .unwrap()
+            .contains("\"mobile\"")
+    );
+
+    // Published, operators read it.
+    let (status, b) = call(
+        &app,
+        &cookie,
+        "POST",
+        "/api/v1/screens/s1/publish",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{b}");
+    let (_, published) = call(&app, &cookie, "GET", &format!("{uri}?published=1"), None).await;
+    assert_eq!(published["view"], "published");
+    let config: Value =
+        serde_json::from_str(published["equipment"][0]["config"].as_str().unwrap()).unwrap();
+    assert_eq!(config["mobile"], mobile);
+}
+
+#[tokio::test]
+async fn the_site_manifest_needs_a_sign_in_and_names_the_site() {
+    let (app, cookie) = app().await;
+    let uri = "/api/v1/site/manifest.webmanifest";
+    let (status, _) = send_request(&app, "GET", uri, None, None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = call(
+        &app,
+        &cookie,
+        "PUT",
+        "/api/v1/mobile/settings",
+        Some(json!({"site_name": "Pabrik Air Bersih", "push_details": false, "pinned_tags": [], "public_urls": []})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, m) = call(&app, &cookie, "GET", uri, None).await;
+    assert_eq!(status, StatusCode::OK, "{m}");
+    assert_eq!(m["name"], "Pabrik Air Bersih");
+    assert_eq!(m["short_name"], "Pabrik Air");
+    assert_eq!(m["display"], "standalone");
+    assert_eq!(m["start_url"], "/?source=pwa");
+    let icons = m["icons"].as_array().unwrap();
+    assert!(icons.iter().any(|i| i["sizes"] == "512x512"));
+}

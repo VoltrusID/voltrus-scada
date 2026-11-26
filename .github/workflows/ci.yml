@@ -125,6 +125,13 @@ jobs:
         timeout-minutes: 10
         run: scripts/smoke-collab.sh target/release/voltrus
 
+      # Phone operator layout and PWA: the Designer's Mobile pane saves
+      # config.mobile, an operator on a phone-sized browser gets the layout,
+      # and offline the installed shell shows last-known values with their age.
+      - name: Phone layout and PWA smoke (headless Chrome, phone viewport)
+        timeout-minutes: 10
+        run: scripts/smoke-mobile.sh target/release/voltrus
+
   # The container image (Dockerfile): built and started, never pushed.
   docker:
     name: Docker image (build and start)

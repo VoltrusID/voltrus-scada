@@ -887,3 +887,60 @@ fn the_palette_lists_isa_101_first() {
     let valve = keys("isa_valve_gate");
     assert!(valve.contains(&"actuator"), "{valve:?}");
 }
+
+/// The web Designer's phone layout override (`config.mobile`, docs/designer.md
+/// phase 5) is not drawn by the console, but a console save after edits
+/// (move, resize, a setting, restack) writes it back untouched.
+#[test]
+fn console_saves_keep_the_phone_layout_override() {
+    let mobile = json!({"hide": true, "order": 3, "span": 1});
+    let equipment = [
+        EquipmentRow {
+            equipment_id: "p".into(),
+            equipment_type: "symbol".into(),
+            equipment_name: "P-1".into(),
+            width: 90.0,
+            height: 90.0,
+            sensor_bindings: "[3]".into(),
+            config: json!({"symbol": "isa_pump", "mobile": mobile, "z": 0}).to_string(),
+            ..EquipmentRow::default()
+        },
+        EquipmentRow {
+            equipment_id: "t".into(),
+            equipment_type: "trend".into(),
+            width: 300.0,
+            height: 160.0,
+            config: json!({"mobile": {"span": 2}, "z": 1}).to_string(),
+            ..EquipmentRow::default()
+        },
+    ];
+    let mut layout = parse(&equipment, &[]);
+    for e in [
+        edit::Edit::Move(vec![("p".into(), 40.0, 50.0)]),
+        edit::Edit::Resize {
+            id: "t".into(),
+            x: 10.0,
+            y: 10.0,
+            width: 320.0,
+            height: 180.0,
+        },
+        edit::Edit::Config {
+            id: "p".into(),
+            key: "label".into(),
+            value: json!("Feed pump"),
+        },
+        edit::Edit::Reorder {
+            ids: vec!["p".into()],
+            to: edit::Order::Front,
+        },
+    ] {
+        assert!(e.apply(&mut layout), "{e:?}");
+    }
+    let (rows, _) = to_rows(&layout);
+    let config = |id: &str| -> serde_json::Value {
+        serde_json::from_str(&rows.iter().find(|r| r.equipment_id == id).unwrap().config).unwrap()
+    };
+    assert_eq!(config("p")["mobile"], mobile);
+    assert_eq!(config("p")["label"], "Feed pump");
+    assert_eq!(config("t")["mobile"], json!({"span": 2}));
+}

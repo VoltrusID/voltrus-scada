@@ -441,5 +441,68 @@
   },
   "history": {
     "loadFailed": "Der Verlauf konnte nicht geladen werden."
+  },
+  "operator": {
+    "live": "Live",
+    "offline": "Offline",
+    "offlineSince": "Nicht live. Letzte Werte empfangen um {{time}} ({{age}}).",
+    "reconnecting": "Verbindung unterbrochen, neuer Versuch läuft. Die angezeigten Werte sind nicht live.",
+    "retry": "Erneut versuchen",
+    "signIn": "Anmelden",
+    "stageView": "Vollbild",
+    "phoneView": "Handy-Ansicht",
+    "empty": "Auf diesem Bild gibt es noch nichts, was ein Handy anzeigen kann.",
+    "failed": "Dieses Element konnte nicht gezeichnet werden",
+    "notLive": "nicht live",
+    "open": "{{name}}: Details öffnen",
+    "manual": "Hand",
+    "interlock": "Verriegelung",
+    "alarmsHint": "Alarmbenachrichtigungen auf diesem Handy kommen aus der App Voltrus SCADA.",
+    "pairPhone": "Dieses Handy koppeln",
+    "age": {
+      "now": "gerade eben",
+      "s": "vor {{n}} s",
+      "min": "vor {{n}} min",
+      "h": "vor {{n}} h",
+      "d": "vor {{n}} d"
+    },
+    "state": {
+      "idle": "Bereit",
+      "running": "Läuft",
+      "stopped": "Gestoppt",
+      "fault": "Störung",
+      "nodata": "Keine Daten",
+      "open": "Offen",
+      "closed": "Geschlossen"
+    }
+  },
+  "designerMobile": {
+    "title": "Handy",
+    "arrange": "Anordnen",
+    "preview": "Vorschau",
+    "adjusted_one": "{{count}} angepasst",
+    "adjusted_other": "{{count}} angepasst",
+    "adjustedOne": "Für Handys angepasst",
+    "reset": "Zurücksetzen",
+    "resetHint": "Alle Handy-Anpassungen dieses Bildes entfernen",
+    "hint": "Handys erhalten dieses Layout, erzeugt aus dem Bild: Bereiche werden zu Abschnitten, gelesen von oben nach unten und von links nach rechts. Änderungen werden je Komponente gespeichert und bleiben bei Änderungen am Bild erhalten.",
+    "empty": "Auf diesem Bild wird noch nichts auf Handys angezeigt: binden Sie zuerst Tags an Komponenten.",
+    "outsideAreas": "Außerhalb von Bereichen",
+    "untitledArea": "Bereich ohne Titel",
+    "hide": "Auf Handys ausblenden",
+    "show": "Auf Handys anzeigen",
+    "hideSection": "Diesen Abschnitt auf Handys ausblenden",
+    "showSection": "Diesen Abschnitt auf Handys anzeigen",
+    "half": "Halbe Breite",
+    "full": "Volle Breite",
+    "up": "Nach oben",
+    "down": "Nach unten",
+    "kind": {
+      "equipment": "Anlage",
+      "value": "Wert",
+      "card": "Karte",
+      "control": "Bedienelement",
+      "note": "Beschriftung"
+    }
   }
 }

@@ -162,6 +162,27 @@ describe('Designer in a live session', () => {
     await waitFor(() => expect(readDoc(stand.ben).widgets.map(w => w.x)).toEqual([100, 400]), { timeout: 2000 })
   })
 
+  it('phone layout adjustments travel through the shared document both ways (phase 5)', async () => {
+    setup()
+    await waitFor(() => expect(screen.getByTestId('designer-collab-status').textContent).toContain('Live'), { timeout: 10_000 })
+    await waitFor(() => expect(screen.getAllByTestId('designer-widget')).toHaveLength(2))
+    fireEvent.click(screen.getByTestId('designer-tab-mobile'))
+    // Plain labels are hidden on phones; showing one is an edit of the shared document, not a PUT.
+    fireEvent.click(await screen.findByTestId('designer-mobile-hide-a'))
+    await waitFor(() => expect(readDoc(stand.ben).widgets.find(w => w.id === 'a')!.config.mobile).toEqual({ hide: false }), { timeout: 2000 })
+    expect(puts).toHaveLength(0)
+    // Ben shows the other one at half width: the pane follows.
+    stand.ben.transact(() => {
+      ((stand.ben.getMap('widgets').get('b') as Y.Map<any>).get('config') as Y.Map<any>).set('mobile', { hide: false, span: 1 })
+    })
+    await waitFor(() => expect(screen.getByTestId('designer-mobile-item-b').dataset.hidden).toBe('false'))
+    expect(screen.getByTestId('designer-mobile-span-b').textContent).toBe('½')
+    // Undo is mine only: it takes back my change, not Ben's.
+    key('z', { ctrlKey: true })
+    await waitFor(() => expect(readDoc(stand.ben).widgets.find(w => w.id === 'a')!.config.mobile).toBeUndefined(), { timeout: 2000 })
+    expect(readDoc(stand.ben).widgets.find(w => w.id === 'b')!.config.mobile).toEqual({ hide: false, span: 1 })
+  })
+
   it('shows the other person: avatar, cursor with name, selection outline, and their edits', async () => {
     setup()
     await waitFor(() => expect(screen.getAllByTestId('designer-widget')).toHaveLength(2), { timeout: 10_000 })

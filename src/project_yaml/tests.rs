@@ -79,7 +79,7 @@ INSERT INTO twin_connections (screen_id,from_id,to_id) VALUES ('plts_1','inv1','
 INSERT INTO scada_equipment (screen_id,equipment_id,equipment_type,equipment_name,x,y,width,height,rotation,sensor_bindings,config) VALUES
   ('plts_1','w1','gauge','Voltage gauge',10,20,100,60,0,'[1,2]','{"z":1,"label":"V"}'),
   ('plts_1','w3','symbol','',200,0,90,100,0,'[1]','{"equipment":"PLTS-1 V","faceplate":"pump_std","faceplateMap":{"run":1},"label":"PLTS-1 V","showValue":true,"symbol":"meter"}'),
-  ('plts_1','w2','tank','',0,0,100,60,45,'[]','{"faceplate":"pump_std","faceplateMap":{"run":1,"fault":2},"runSensorId":4,"bindings":{"label":{"kind":"expr","expr":"text({plts_1/power#2}, 1) + \" kW\""},"visible":{"kind":"tag","tag":"plts_1/voltage"}}}');
+  ('plts_1','w2','tank','',0,0,100,60,45,'[]','{"faceplate":"pump_std","faceplateMap":{"run":1,"fault":2},"runSensorId":4,"bindings":{"label":{"kind":"expr","expr":"text({plts_1/power#2}, 1) + \" kW\""},"visible":{"kind":"tag","tag":"plts_1/voltage"}},"mobile":{"hide":true,"order":2,"span":1}}');
 INSERT INTO faceplates (id,name,kind,description,created_at,updated_at) VALUES ('pump_std','Pump','pump','',100,100);
 INSERT INTO faceplate_roles (faceplate_id,role,label,kind,required,sort_order) VALUES
   ('pump_std','run','Running','state',1,0),('pump_std','fault','','fault',0,1),('pump_std','cmd','Start / stop','command',0,2);
@@ -450,6 +450,11 @@ async fn import_recreates_everything_with_cross_references_intact() {
         "text({plts_1/power#2}, 1) + \" kW\""
     );
     assert_eq!(config["bindings"]["visible"]["tag"], "plts_1/voltage");
+    // The phone layout override (docs/designer.md, phase 5) comes back as it was.
+    assert_eq!(
+        config["mobile"],
+        serde_json::json!({"hide": true, "order": 2, "span": 1})
+    );
     assert_eq!(
         scalar_i64(
             &b,
@@ -848,7 +853,7 @@ scripts:
     // Property bindings and the run tag of SCADA widgets name tags by ref too.
     let scada = doc_of(&SMALL.replace(
         "  - ref: d1/v\n",
-        "  - ref: d1/v\n  scada:\n    equipment:\n    - equipment_id: w\n      equipment_type: symbol\n      config:\n        runSensorId: d1/run\n        bindings:\n          label: {kind: expr, expr: 'text({d1/v}) + {d1/nope}'}\n          visible: {kind: tag, tag: d1/gone}\n          color: {kind: loop}\n",
+        "  - ref: d1/v\n  scada:\n    equipment:\n    - equipment_id: w\n      equipment_type: symbol\n      config:\n        runSensorId: d1/run\n        bindings:\n          label: {kind: expr, expr: 'text({d1/v}) + {d1/nope}'}\n          visible: {kind: tag, tag: d1/gone}\n          color: {kind: loop}\n        mobile: {span: 4, hide: maybe}\n",
     ));
     let joined = validate_doc(&scada, None, false)
         .iter()
@@ -866,6 +871,10 @@ scripts:
         "{joined}"
     );
     assert!(joined.contains("unknown binding kind 'loop'"), "{joined}");
+    assert!(
+        joined.contains("config.mobile") && joined.contains("mobile."),
+        "{joined}"
+    );
     assert!(
         joined.contains("config.runSensorId") && joined.contains("unknown tag 'd1/run'"),
         "{joined}"

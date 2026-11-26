@@ -439,5 +439,67 @@
   },
   "history": {
     "loadFailed": "Riwayat tidak dapat dimuat."
+  },
+  "operator": {
+    "live": "Langsung",
+    "offline": "Luring",
+    "offlineSince": "Tidak langsung. Nilai terakhir diterima pukul {{time}} ({{age}}).",
+    "reconnecting": "Koneksi terputus, menyambung ulang. Nilai yang tampil bukan nilai langsung.",
+    "retry": "Coba lagi",
+    "signIn": "Masuk",
+    "stageView": "Layar penuh",
+    "phoneView": "Tata letak ponsel",
+    "empty": "Belum ada yang bisa ditampilkan di ponsel dari layar ini.",
+    "failed": "Item ini gagal digambar",
+    "notLive": "tidak langsung",
+    "open": "{{name}}: buka detail",
+    "manual": "Manual",
+    "interlock": "Interlock",
+    "alarmsHint": "Notifikasi alarm di ponsel ini datang dari aplikasi Voltrus SCADA.",
+    "pairPhone": "Pasangkan ponsel ini",
+    "age": {
+      "now": "baru saja",
+      "s": "{{n}} dtk lalu",
+      "min": "{{n}} mnt lalu",
+      "h": "{{n}} jam lalu",
+      "d": "{{n}} hr lalu"
+    },
+    "state": {
+      "idle": "Diam",
+      "running": "Berjalan",
+      "stopped": "Berhenti",
+      "fault": "Gangguan",
+      "nodata": "Tanpa data",
+      "open": "Terbuka",
+      "closed": "Tertutup"
+    }
+  },
+  "designerMobile": {
+    "title": "Ponsel",
+    "arrange": "Atur",
+    "preview": "Pratinjau",
+    "adjusted_other": "{{count}} diubah",
+    "adjustedOne": "Diubah untuk ponsel",
+    "reset": "Atur ulang",
+    "resetHint": "Hapus semua penyesuaian ponsel di layar ini",
+    "hint": "Ponsel mendapat tata letak ini, dibuat dari layar: area menjadi bagian, dibaca dari atas ke bawah dan kiri ke kanan. Perubahan disimpan per komponen dan tetap ada saat layar diedit.",
+    "empty": "Belum ada yang tampil di ponsel dari layar ini: ikat tag ke komponen terlebih dahulu.",
+    "outsideAreas": "Di luar area",
+    "untitledArea": "Area tanpa judul",
+    "hide": "Sembunyikan di ponsel",
+    "show": "Tampilkan di ponsel",
+    "hideSection": "Sembunyikan bagian ini di ponsel",
+    "showSection": "Tampilkan bagian ini di ponsel",
+    "half": "Setengah lebar",
+    "full": "Lebar penuh",
+    "up": "Naikkan",
+    "down": "Turunkan",
+    "kind": {
+      "equipment": "peralatan",
+      "value": "nilai",
+      "card": "kartu",
+      "control": "kontrol",
+      "note": "label"
+    }
   }
 }

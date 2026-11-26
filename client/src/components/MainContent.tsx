@@ -46,6 +46,8 @@ interface Props {
   isAdmin: boolean
   scadaToolbarSlotSetter?: (slot: React.ReactNode) => void
   onOpenDesigner?: () => void
+  /** Open Data → Phone app (the phone view's alarm hint). */
+  onPairPhone?: () => void
   screenName?: string
   dashboardWidgets?: DashboardWidget[]
   onDashboardWidgetsChange?: (widgets: DashboardWidget[]) => void
@@ -59,7 +61,7 @@ export function MainContent({
   twinLayouts, twinCamera, twinConnections, sensors,
   saveScadaEquipmentMut, saveScadaConnectionsMut, saveTwinLayoutMut,
   saveTwinConnectionsMut, updateSensorMut, fetchOk, isAdmin,
-  scadaToolbarSlotSetter, screenName, dashboardWidgets, onDashboardWidgetsChange, onOpenDesigner,
+  scadaToolbarSlotSetter, screenName, dashboardWidgets, onDashboardWidgetsChange, onOpenDesigner, onPairPhone,
 }: Props) {
   const queryClient = useQueryClient()
 
@@ -136,6 +138,8 @@ export function MainContent({
           isAdmin={isAdmin}
           toolbarSlotSetter={scadaToolbarSlotSetter}
           onOpenDesigner={onOpenDesigner}
+          screenName={screenName}
+          onPairPhone={onPairPhone}
         />
       </Suspense>
     )

@@ -441,5 +441,68 @@
   },
   "history": {
     "loadFailed": "History could not be loaded."
+  },
+  "operator": {
+    "live": "Live",
+    "offline": "Offline",
+    "offlineSince": "Not live. Last values received at {{time}} ({{age}}).",
+    "reconnecting": "Connection lost, reconnecting. The values shown are not live.",
+    "retry": "Try again",
+    "signIn": "Sign in",
+    "stageView": "Full screen",
+    "phoneView": "Phone layout",
+    "empty": "Nothing on this screen to show on a phone yet.",
+    "failed": "This item failed to draw",
+    "notLive": "not live",
+    "open": "{{name}}: open details",
+    "manual": "Manual",
+    "interlock": "Interlock",
+    "alarmsHint": "Alarm notifications on this phone come from the Voltrus SCADA app.",
+    "pairPhone": "Pair this phone",
+    "age": {
+      "now": "just now",
+      "s": "{{n}} s ago",
+      "min": "{{n}} min ago",
+      "h": "{{n}} h ago",
+      "d": "{{n}} d ago"
+    },
+    "state": {
+      "idle": "Idle",
+      "running": "Running",
+      "stopped": "Stopped",
+      "fault": "Fault",
+      "nodata": "No data",
+      "open": "Open",
+      "closed": "Closed"
+    }
+  },
+  "designerMobile": {
+    "title": "Mobile",
+    "arrange": "Arrange",
+    "preview": "Preview",
+    "adjusted_one": "{{count}} adjusted",
+    "adjusted_other": "{{count}} adjusted",
+    "adjustedOne": "Adjusted for phones",
+    "reset": "Reset",
+    "resetHint": "Remove every phone adjustment of this screen",
+    "hint": "Phones get this layout, generated from the screen: areas become sections, read top to bottom and left to right. Changes are kept per component and survive edits to the screen.",
+    "empty": "Nothing on this screen shows on a phone yet: bind tags to components first.",
+    "outsideAreas": "Outside areas",
+    "untitledArea": "Untitled area",
+    "hide": "Hide on phones",
+    "show": "Show on phones",
+    "hideSection": "Hide this section on phones",
+    "showSection": "Show this section on phones",
+    "half": "Half width",
+    "full": "Full width",
+    "up": "Move up",
+    "down": "Move down",
+    "kind": {
+      "equipment": "equipment",
+      "value": "value",
+      "card": "card",
+      "control": "control",
+      "note": "label"
+    }
   }
 }

@@ -12,6 +12,11 @@ also gets a push notification for every new alarm, wherever it is.
 
 A site takes up to 50 paired phones.
 
+The HMI itself also works in a phone's browser: screens show as the phone
+operator layout, and it can be installed on the home screen with the site's name
+([designer.md](designer.md#phase-5-mobile-layouts-and-pwa-built)). The browser
+does not receive alarm notifications; that is this app's job.
+
 ## Pairing a phone
 
 Open **Data → Phone app** in the HMI and click **Show QR code**. In the app, tap
