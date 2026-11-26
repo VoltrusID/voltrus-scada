@@ -48,6 +48,7 @@ import { PropertyEditor } from './PropertyEditor'
 import { ChoiceDialog, D, Dialog, DialogBtn, Icon, Pane, Sep, SmallBtn, Tabs, ToolBtn, input, mono } from './ui'
 import { BlameInfo, HistoryList, type HistoryObject } from './history'
 import { MobilePane } from './MobilePane'
+import { mobileLabel } from '../scada2/mobile/OperatorView'
 import { PublishDialog, VersionsList } from './versions'
 import { CompareView } from './diffView'
 import { StageView } from './StageView'
@@ -985,7 +986,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
                 )}
                 {rightTab === 'mobile' && (
                   <MobilePane widgets={doc.widgets} sensors={sensors} selection={selection} onSelect={setSelection} onPatch={patch}
-                    labelOf={w => String(w.config?.label || w.config?.title || w.config?.text || w.name || nameOf(w))}
+                    labelOf={w => mobileLabel(w, sensors.find(s => s.id === w.sensorId)) || nameOf(w)}
                     readOnly={!!previewAt} screenName={screenName} />
                 )}
                 {rightTab === 'versions' && (

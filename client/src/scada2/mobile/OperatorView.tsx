@@ -161,6 +161,19 @@ const linkBtn: React.CSSProperties = {
   padding: 0, border: 'none', background: 'none', color: 'var(--cyan)', textDecoration: 'underline', cursor: 'pointer', font: 'inherit',
 }
 
+/**
+ * The name a phone shows for a component: its label or title, else (for
+ * equipment) its saved name, else its tag's name. Saved names that only
+ * repeat the widget type ("big_number") are skipped.
+ */
+export function mobileLabel(w: WidgetInstance, sensor: SensorConfig | undefined, kind?: MobileItem['kind']): string {
+  const c = w.config ?? {}
+  const named = w.name && w.name !== w.type ? w.name : ''
+  const own = c.label || c.title || c.text
+  const rest = kind === 'equipment' ? named || sensor?.name : sensor?.name || named
+  return String(own || rest || w.type)
+}
+
 type ItemProps = OperatorViewProps & { item: MobileItem; widget: WidgetInstance; now: number; age: (ts: number | undefined, now: number) => string }
 
 const STATE_KEY: Record<EquipState, string> = { idle: 'idle', running: 'running', stopped: 'stopped', fault: 'fault', stale: 'nodata' }
@@ -181,12 +194,13 @@ function OperatorItem({ item, widget, sensors, values, live, onOpen, activatable
   const sensor = instance.sensorId != null ? sensors.find(s => s.id === instance.sensorId) : undefined
   const data = instance.sensorId != null ? values[String(instance.sensorId)] : undefined
   const fresh = isLiveValue(live, data, now)
-  const label = String(instance.config?.label || instance.config?.text || instance.name || sensor?.name || instance.type)
+  const label = mobileLabel(instance, sensor, item.kind)
   const canTap = !!onOpen && (activatable?.(instance) ?? false)
   const tap = canTap ? () => onOpen!(instance.id) : undefined
   const selected = selectedId === instance.id
   const vs = valueStyle(data)
-  const valueText = data && Number.isFinite(data.value) ? data.value.toFixed(sensor?.decimals ?? 1) : '—'
+  const decimals = typeof instance.config?.decimals === 'number' ? Math.max(0, Math.min(6, instance.config.decimals)) : sensor?.decimals ?? 1
+  const valueText = data && Number.isFinite(data.value) ? data.value.toFixed(decimals) : '—'
   const staleNote = data && !fresh ? age(data.ts_ms, now) || t('operator.notLive') : ''
 
   const box: React.CSSProperties = {

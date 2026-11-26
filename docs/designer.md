@@ -762,7 +762,7 @@ WTP showcase, taken by `scripts/smoke-mobile.sh` (phone: 390×844 at 2×).
 ![The Mobile pane: sections, a hidden component, a half-width item](images/designer-phase5/40-designer-mobile-pane.webp)
 ![The Mobile pane's phone preview](images/designer-phase5/41-designer-mobile-preview.webp)
 ![The Plant Overview on a phone](images/designer-phase5/42-phone-operator-view.webp)
-![Cards further down](images/designer-phase5/43-phone-operator-cards.webp)
+![Trends as full-width cards](images/designer-phase5/43-phone-operator-cards.webp)
 ![A faceplate as a bottom sheet](images/designer-phase5/44-phone-faceplate-sheet.webp)
 ![Offline: values with their age](images/designer-phase5/45-phone-offline-banner.webp)
 ![Opened with no server: the last-known screen](images/designer-phase5/46-phone-offline-start.webp)

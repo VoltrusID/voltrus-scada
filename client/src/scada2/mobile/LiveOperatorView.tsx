@@ -2,25 +2,15 @@
 // live while the live stream is connected and the browser is online, keeps a
 // last-known snapshot of the screen while live, and says how old the values
 // are once it is not.
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ScadaConnectionItem, ScadaEquipmentItem, SensorConfig } from '../../types'
 import { useTrackedCurrentValues, useWsConnected } from '../../store/dashboardStore'
+import { useOnline } from '../../hooks/useOnline'
 import { OperatorView, type OperatorViewProps } from './OperatorView'
 import { pickValues, saveSnapshot, snapshotUser, tagIdsOf } from './lastKnown'
 
 /** How often the snapshot is refreshed while live. */
 export const SNAPSHOT_EVERY_MS = 15_000
-
-function subscribeOnline(cb: () => void) {
-  window.addEventListener('online', cb)
-  window.addEventListener('offline', cb)
-  return () => { window.removeEventListener('online', cb); window.removeEventListener('offline', cb) }
-}
-
-/** `navigator.onLine`, following the browser's online and offline events. */
-export function useOnline(): boolean {
-  return useSyncExternalStore(subscribeOnline, () => navigator.onLine, () => true)
-}
 
 type Props = Omit<OperatorViewProps, 'values' | 'live' | 'asOf'> & {
   screen: string

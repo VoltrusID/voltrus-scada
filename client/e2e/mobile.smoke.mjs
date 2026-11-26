@@ -125,7 +125,12 @@ try {
   assert.ok(await p.locator('[data-testid^=operator-item-]').count() > 4, 'rows on the phone')
   assert.equal(await p.getAttribute('link[rel=manifest]', 'href'), '/api/v1/site/manifest.webmanifest')
   await phoneShot('42-phone-operator-view')
-  await p.evaluate(() => document.querySelector('[data-testid=operator-view]')?.scrollBy(0, 700))
+  // The trends: a section of cards.
+  await p.evaluate(() => {
+    const sections = [...document.querySelectorAll('[data-testid=operator-view] section')]
+    const trends = sections.find(s => /trend/i.test(s.querySelector('h2')?.textContent ?? '')) ?? sections[sections.length - 1]
+    trends?.scrollIntoView({ block: 'start' })
+  })
   await p.waitForTimeout(400)
   await phoneShot('43-phone-operator-cards')
   await p.evaluate(() => document.querySelector('[data-testid=operator-view]')?.scrollTo(0, 0))
