@@ -1830,3 +1830,62 @@ async fn deleting_a_screen_ends_its_session_and_its_comments() {
         .unwrap();
     assert_eq!(left, 0);
 }
+
+/// A phone layout override (`config.mobile`, docs/designer.md phase 5) made
+/// in a live session merges with another editor's change to the same widget,
+/// is written and logged under its author; a malformed one is put back as it
+/// arrives and its author is told, like any other bad field.
+#[tokio::test]
+async fn phone_layout_overrides_in_a_session_are_kept_and_checked() {
+    let t = T::new().await;
+    t.user("bob", "admin").await;
+    let mut a = Client::new(&t, "ca", "admin");
+    let mut b = Client::new(&t, "cb", "bob");
+    a.join(&t).await;
+    b.join(&t).await;
+    // Bob hides a on phones while the admin moves it.
+    b.edit(&t, |txn| {
+        change(txn, "a", |w| {
+            w.config
+                .insert("mobile".into(), json!({"hide": true, "span": 1}));
+        })
+    })
+    .await;
+    a.edit(&t, |txn| change(txn, "a", |w| w.x = 77.0)).await;
+    sync_all(&t, &mut [&mut a, &mut b]).await;
+    assert_eq!(a.screen(), b.screen());
+    let w = a.widget("a").unwrap();
+    assert_eq!(
+        (w.x, &w.config["mobile"]),
+        (77.0, &json!({"hide": true, "span": 1}))
+    );
+    t.flush().await.expect("something to write");
+    let rows = t.rows().await;
+    assert_eq!(rows["a"].0, 77.0);
+    assert_eq!(rows["a"].1["mobile"], json!({"hide": true, "span": 1}));
+    let changes = t.history().await;
+    assert!(
+        changes.iter().any(|c| c["object_id"] == "a"
+            && c["after"]["config"]
+                .as_str()
+                .unwrap_or("")
+                .contains("\"mobile\"")),
+        "{changes:?}"
+    );
+
+    // A malformed override is put back everywhere; the author hears why.
+    a.edit(&t, |txn| {
+        change(txn, "c", |w| {
+            w.config.insert("mobile".into(), json!({"span": 5}));
+        })
+    })
+    .await;
+    sync_all(&t, &mut [&mut a, &mut b]).await;
+    assert_eq!(a.rejected.len(), 1, "{:?}", a.rejected);
+    assert!(a.rejected[0].1.contains("mobile.span"), "{:?}", a.rejected);
+    for c in [&a, &b] {
+        assert!(c.widget("c").unwrap().config.get("mobile").is_none());
+    }
+    t.flush().await;
+    assert!(t.rows().await["c"].1.get("mobile").is_none());
+}

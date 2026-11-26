@@ -174,6 +174,11 @@ screens:
 a faceplate the project does not define (or, in merge mode, the database does not
 hold) and a `faceplateMap` entry that names an unknown tag.
 
+A component's phone layout adjustment travels in its config too:
+`config: {mobile: {hide: true, order: 2, span: 1}}` (every key optional; `span`
+is 1 or 2). Validation reports any other shape. See
+[designer.md](designer.md#phase-5-mobile-layouts-and-pwa-built).
+
 ### Equipment types and instances
 
 An equipment type says once what one piece of equipment is; an instance is one

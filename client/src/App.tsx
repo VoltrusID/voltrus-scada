@@ -40,6 +40,8 @@ import { onPasswordChangeRequired, onSessionEnded } from './queries/fetch'
 import { useSessionActivity } from './hooks/useSessionActivity'
 import { extractDashboardWidgets, withDashboardWidgets, type DashboardWidget } from './dashboardWidgets'
 import { dashboardSizeOf, getScreenWidget } from './edition/widgets'
+import { applySiteManifest } from './sw-register'
+import { clearSnapshots, loadSnapshot, setSnapshotUser, type ScreenSnapshot } from './scada2/mobile/lastKnown'
 
 // Lazy-loaded heavy components — only fetched when opened
 const DashboardSettings = lazy(() => import('./DashboardSettings').then(m => ({ default: m.DashboardSettings })))
@@ -62,6 +64,9 @@ const MqttBrokerPanel = lazy(() => import('./MqttBrokerPanel').then(m => ({ defa
 const EdrCompatPanel = lazy(() => import('./EdrCompatPanel').then(m => ({ default: m.EdrCompatPanel })))
 const ScriptEditor = lazy(() => import('./components/ScriptEditor').then(m => ({ default: m.ScriptEditor })))
 const Designer = lazy(() => import('./designer/Designer').then(m => ({ default: m.Designer })))
+// The installed app opened with no server to reach: the last screen with its last-known values.
+const loadOfflineOperator = () => import('./scada2/mobile/OfflineOperator')
+const OfflineOperator = lazy(loadOfflineOperator)
 
 // Stable fallbacks while a query has no data: a fresh `[]` per render would
 // re-run every effect and memo that depends on it.
@@ -83,6 +88,8 @@ export function AppInner() {
   const [mustChangePassword, setMustChangePassword] = useState(false)
   const [passwordExpired, setPasswordExpired] = useState(false)
   const [sessionPolicy, setSessionPolicy] = useState<SessionPolicy>(NO_SESSION_POLICY)
+  /** No server reached at start-up, and this device has a last-known screen to show. */
+  const [offlineSnapshot, setOfflineSnapshot] = useState<ScreenSnapshot | null>(null)
   // Signed in and not held to a password change: the app may load its data.
   const sessionReady = authed && !mustChangePassword
 
@@ -309,6 +316,7 @@ export function AppInner() {
     setSharedAccount(sess.shared)
     setMustChangePassword(sess.mustChangePassword); setPasswordExpired(sess.passwordExpired)
     setAuthed(sess.authenticated); setAuthRole(sess.role); setAuthUser(sess.username); setSessionPolicy(sess.policy)
+    setSnapshotUser(sess.authenticated ? sess.username : '')
   }, [])
   const signedOut = useCallback(() => {
     setSharedAccount(false); setAuthed(false); setAuthRole('user'); setAuthUser(''); setSessionPolicy(NO_SESSION_POLICY)
@@ -317,8 +325,20 @@ export function AppInner() {
   useEffect(() => {
     // A reload while the password must still be changed comes back to that screen.
     fetchJson<any>('/api/v1/auth/me').then(d => { applySession(sessionFromAuthBody(d)); setAuthLoading(false) })
-      .catch(() => { signedOut(); setAuthLoading(false) })
+      .catch(err => {
+        // The server could not be reached at all (not a refused session): show the last-known screen, if any.
+        if (err instanceof TypeError || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+          try { setOfflineSnapshot(loadSnapshot(localStorage)) } catch { /* no storage */ }
+        }
+        signedOut(); setAuthLoading(false)
+      })
   }, [applySession, signedOut])
+
+  // Installable with the site's name once signed in; the offline view's code is fetched (and cached by the service worker) while online.
+  useEffect(() => {
+    applySiteManifest(document, authed)
+    if (authed && 'serviceWorker' in navigator) void loadOfflineOperator().catch(() => {})
+  }, [authed])
 
   const handleLogin = async (username: string, password: string) => {
     setLoginError('')
@@ -358,6 +378,8 @@ export function AppInner() {
   const handleLogout = async () => {
     authedRef.current = false
     cancelAllSignaturePrompts(); disconnectWS(); storeActions.clearData()
+    // Last-known values stay on this device only for whoever stays signed in.
+    try { clearSnapshots(localStorage) } catch { /* no storage */ }
     await fetchOk('/api/v1/auth/logout', { method: 'POST' }).catch(() => {})
     endSession()
   }
@@ -522,6 +544,13 @@ export function AppInner() {
   // ── Render gates ─────────────────────────────────────────────────
   if (!i18nReady) return <div className="viewport-height" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>Loading...</div>
   if (authLoading) return <div className="viewport-height" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg)', color: 'var(--muted)', fontFamily: 'var(--font-ui)' }}>{t('common.loading')}</div>
+  if (!authed && offlineSnapshot) {
+    return (
+      <Suspense fallback={null}>
+        <OfflineOperator snapshot={offlineSnapshot} onRetry={() => window.location.reload()} onSignIn={() => setOfflineSnapshot(null)} />
+      </Suspense>
+    )
+  }
   if (!authed) return <LoginScreen onLogin={handleLogin} onExternalLogin={handleExternalLogin} error={loginError} branding={branding} />
 
   if (mustChangePassword) {
@@ -670,6 +699,7 @@ export function AppInner() {
               scadaToolbarSlotSetter={setScadaToolbarSlot}
               onOpenDesigner={canConfigure ? openDesigner : undefined}
               screenName={screens.find(sc => sc.id === activeScreen)?.name}
+              onPairPhone={() => navigate({ to: '/data', search: prev => ({ ...prev, tab: 'mobile' }) })}
               saveScadaConnectionsMut={saveScadaConnectionsMut}
               saveTwinLayoutMut={saveTwinLayoutMut}
               saveTwinConnectionsMut={saveTwinConnectionsMut}

@@ -537,6 +537,13 @@ fn check_screen(ctx: &mut Ctx<'_>, e: &Mapping, at: &str) {
             }
         }
         if let Some(json) = config.and_then(|c| serde_json::to_value(c).ok()) {
+            // The phone layout override (docs/designer.md, phase 5).
+            if let Some(Err(e)) = json
+                .get(voltrus_collab::mobile::KEY)
+                .map(voltrus_collab::mobile::check)
+            {
+                ctx.error(format!("{at}.scada.equipment[{i}].config.mobile"), e);
+            }
             for (prop, refs) in super::binding_refs::config_binding_refs(&json) {
                 let path = if prop.is_empty() {
                     format!("{at}.scada.equipment[{i}].config.bindings")

@@ -38,7 +38,7 @@
    "y": 300.0
   },
   {
-   "config": "{\"symbol\": \"pump\", \"label\": \"P-101A\", \"showStatus\": true, \"writable\": true, \"z\": 12}",
+   "config": "{\"symbol\": \"pump\", \"label\": \"P-101A\", \"showStatus\": true, \"writable\": true, \"z\": 12, \"mobile\": {\"order\": 1, \"span\": 1}}",
    "equipment_id": "e012",
    "equipment_name": "P-101A",
    "equipment_type": "symbol",
@@ -74,7 +74,7 @@
    "y": 250.0
   },
   {
-   "config": "{\"lineColor\": \"var(--cyan)\", \"z\": 33}",
+   "config": "{\"lineColor\": \"var(--cyan)\", \"z\": 33, \"mobile\": {\"hide\": true}}",
    "equipment_id": "e033",
    "equipment_name": "trend",
    "equipment_type": "trend",

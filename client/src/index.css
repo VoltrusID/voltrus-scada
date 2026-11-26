@@ -434,3 +434,9 @@ nav[role="navigation"] button:hover {
 @media (prefers-reduced-motion: reduce) {
   .hmi-spin, .hmi-agitate, .hmi-flow { animation: none; }
 }
+
+/* ── Phone operator view (docs/designer.md, phase 5) ── */
+/* A faceplate opens as a sheet at the bottom of the screen. */
+.vt-operator-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, .45); }
+.vt-operator-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 41; max-height: 85vh; overflow-y: auto; }
+.vt-operator-sheet > * { position: static !important; width: auto !important; max-height: none !important; border-radius: 12px 12px 0 0 !important; }

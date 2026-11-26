@@ -953,6 +953,11 @@ pub fn create_router(state: AppState) -> Router {
                 .delete(mobile::delete_this_device),
         )
         .route("/api/v1/mobile/summary", get(mobile::summary))
+        // The web app manifest with the site's name and branding (phase 5 PWA).
+        .route(
+            "/api/v1/site/manifest.webmanifest",
+            get(mobile::site_manifest),
+        )
         .route(
             "/api/v1/alarms/active/count",
             get(alarms::active_alarm_count),

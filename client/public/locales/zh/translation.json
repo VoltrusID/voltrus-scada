@@ -439,5 +439,67 @@
   },
   "history": {
     "loadFailed": "无法加载历史数据。"
+  },
+  "operator": {
+    "live": "实时",
+    "offline": "离线",
+    "offlineSince": "非实时。最后一次收到数值的时间为 {{time}}（{{age}}）。",
+    "reconnecting": "连接已断开，正在重新连接。显示的数值不是实时值。",
+    "retry": "重试",
+    "signIn": "登录",
+    "stageView": "全屏",
+    "phoneView": "手机布局",
+    "empty": "此画面暂无可在手机上显示的内容。",
+    "failed": "此项绘制失败",
+    "notLive": "非实时",
+    "open": "{{name}}：打开详情",
+    "manual": "手动",
+    "interlock": "联锁",
+    "alarmsHint": "此手机上的报警通知来自 Voltrus SCADA 应用。",
+    "pairPhone": "配对此手机",
+    "age": {
+      "now": "刚刚",
+      "s": "{{n}} 秒前",
+      "min": "{{n}} 分钟前",
+      "h": "{{n}} 小时前",
+      "d": "{{n}} 天前"
+    },
+    "state": {
+      "idle": "空闲",
+      "running": "运行",
+      "stopped": "停止",
+      "fault": "故障",
+      "nodata": "无数据",
+      "open": "打开",
+      "closed": "关闭"
+    }
+  },
+  "designerMobile": {
+    "title": "手机",
+    "arrange": "排列",
+    "preview": "预览",
+    "adjusted_other": "已调整 {{count}} 项",
+    "adjustedOne": "已为手机调整",
+    "reset": "重置",
+    "resetHint": "移除此画面的所有手机调整",
+    "hint": "手机使用由画面生成的此布局：区域成为分组，按从上到下、从左到右的顺序排列。调整按组件保存，编辑画面后仍然保留。",
+    "empty": "此画面暂无在手机上显示的内容：请先为组件绑定标签。",
+    "outsideAreas": "区域之外",
+    "untitledArea": "未命名区域",
+    "hide": "在手机上隐藏",
+    "show": "在手机上显示",
+    "hideSection": "在手机上隐藏此分组",
+    "showSection": "在手机上显示此分组",
+    "half": "半宽",
+    "full": "全宽",
+    "up": "上移",
+    "down": "下移",
+    "kind": {
+      "equipment": "设备",
+      "value": "数值",
+      "card": "卡片",
+      "control": "控件",
+      "note": "标签"
+    }
   }
 }

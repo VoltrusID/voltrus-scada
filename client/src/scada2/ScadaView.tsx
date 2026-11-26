@@ -24,6 +24,9 @@ import { getScreenWidget, initialConfigOf, scadaSizeOf } from '../edition/widget
 import { isSignatureCancelled } from '../signature/logic'
 import { useRole } from '../RoleContext'
 import { useDesignStatus } from '../queries/designHistory'
+import { useTranslation } from 'react-i18next'
+import { LiveOperatorView } from './mobile/LiveOperatorView'
+import { useNarrowScreen, usePhoneLayoutChoice } from './mobile/narrow'
 
 // Import all widgets to trigger registration
 import './widgets/SymbolWidget'
@@ -71,6 +74,10 @@ interface Props {
    * (edit) or the published ones (run); `loaded` is false until they arrive.
    */
   onEditModeChange?: (editing: boolean) => void
+  /** The screen's name (the phone view's title). */
+  screenName?: string
+  /** Open the phone app pairing page (the phone view's alarm hint links to it). */
+  onPairPhone?: () => void
 }
 
 type Selection = { kind: 'widget' | 'connection'; id: string } | null
@@ -107,9 +114,13 @@ const ZOOM_STEPS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.25, 1.5, 2]
 
 export const ScadaView: React.FC<Props> = ({
   sensors, activeScreen, scadaEquipment, scadaConnections, loaded,
-  onSave, onSensorClick, isAdmin, toolbarSlotSetter, onOpenDesigner, onEditModeChange,
+  onSave, onSensorClick, isAdmin, toolbarSlotSetter, onOpenDesigner, onEditModeChange, screenName, onPairPhone,
 }) => {
   const { canOperate } = useRole()
+  const { t } = useTranslation()
+  // On a phone, run mode shows the generated operator layout (docs/designer.md, phase 5) unless the operator asked for the stage.
+  const narrow = useNarrowScreen()
+  const [stageChosen, chooseStage] = usePhoneLayoutChoice()
   const { data: faceplateDefs = [] } = useFaceplates()
   // Run mode shows the published screen: an editor whose saved draft is not
   // published yet is told so (edits otherwise seem to vanish after Done).
@@ -455,6 +466,15 @@ export const ScadaView: React.FC<Props> = ({
   const fpRef = faceplateWidget ? faceplateOf(faceplateWidget.config) : null
   const fpDef = fpRef ? faceplateDefs.find(d => d.id === fpRef.id) : undefined
   const mapped = fpRef && fpDef ? { def: fpDef, map: fpRef.map } : null
+  const phone = !editMode && narrow && !stageChosen
+
+  /** Run mode: a tap opens the widget's faceplate, or the trend of its tag. */
+  const activateWidget = (id: string) => {
+    const w = layout.widgets.find(x => x.id === id)
+    if (w && opensFaceplate(w)) setFaceplateId(cur => (cur === id ? null : id))
+    else if (w && w.sensorId != null && !CONTROL_TYPES.has(w.type)) openTrend(w.sensorId)
+  }
+  const isActivatable = (w: WidgetInstance) => opensFaceplate(w) || (w.sensorId != null && !CONTROL_TYPES.has(w.type))
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -467,7 +487,23 @@ export const ScadaView: React.FC<Props> = ({
             onPickTag={id => setPendingSensor({ sensorId: id, ...placeAt(100, 100) })}
           />
         )}
-        <div style={{ position: 'absolute', top: 0, bottom: 0, left: editMode ? PANEL_WIDTH : 0, right: rightOpen ? INSPECTOR_WIDTH : 0 }}>
+        <div style={{ position: 'absolute', top: 0, bottom: 0, left: editMode ? PANEL_WIDTH : 0, right: rightOpen ? INSPECTOR_WIDTH : 0, ...(phone ? { display: 'flex', flexDirection: 'column' } : {}) }}>
+          {phone ? (
+            <LiveOperatorView
+              screen={activeScreen}
+              screenName={screenName}
+              equipment={scadaEquipment}
+              connections={scadaConnections}
+              widgets={layout.widgets}
+              sensors={sensors}
+              onOpen={activateWidget}
+              activatable={isActivatable}
+              onWriteValue={canOperate ? handleWriteValue : undefined}
+              selectedId={faceplateWidget?.id ?? null}
+              onShowStage={() => chooseStage(true)}
+              onPairPhone={onPairPhone}
+            />
+          ) : (
           <ScadaCanvas
             layout={layout}
             sensors={sensors}
@@ -478,16 +514,12 @@ export const ScadaView: React.FC<Props> = ({
             cursor={tool === 'connect' ? 'crosshair' : undefined}
             locked={tool === 'connect'}
             onScaleChange={setScale}
-            onSelectWidget={editMode ? handleSelectWidget : (id => {
-              const w = layout.widgets.find(x => x.id === id)
-              if (w && opensFaceplate(w)) setFaceplateId(cur => (cur === id ? null : id))
-              else if (w && w.sensorId != null && !CONTROL_TYPES.has(w.type)) openTrend(w.sensorId)
-            })}
+            onSelectWidget={editMode ? handleSelectWidget : activateWidget}
             onMoveWidget={(id, x, y) => dispatch({ type: 'MOVE_WIDGET', id, x, y })}
             onResizeWidget={(id, x, y, width, height) => dispatch({ type: 'RESIZE_WIDGET', id, x, y, width, height })}
             onDrop={handleDrop}
             onWriteValue={canOperate ? handleWriteValue : undefined}
-            isActivatable={w => opensFaceplate(w) || (w.sensorId != null && !CONTROL_TYPES.has(w.type))}
+            isActivatable={isActivatable}
             onClickEmpty={() => { setSelection(null); setConnectFrom(null); setFaceplateId(null) }}
             onPointerMove={editMode && connectFrom ? (x, y) => setPointer({ x, y }) : undefined}
           >
@@ -501,8 +533,20 @@ export const ScadaView: React.FC<Props> = ({
               pending={connectFrom && pointer ? { fromId: connectFrom, ...pointer } : null}
             />
           </ScadaCanvas>
+          )}
+          {!editMode && narrow && stageChosen && (
+            <button type="button" data-testid="operator-phone-layout" onClick={() => chooseStage(false)} style={{
+              position: 'absolute', top: 8, left: 8, zIndex: 16, padding: '6px 10px', minHeight: 32, borderRadius: 6, fontSize: 12, fontWeight: 600,
+              border: '1px solid var(--border)', background: 'var(--card)', color: 'var(--fg)', boxShadow: 'var(--shadow)', cursor: 'pointer',
+            }}>{t('operator.phoneView')}</button>
+          )}
+          {faceplateWidget && phone && (
+            <div className="vt-operator-backdrop" onClick={() => setFaceplateId(null)} aria-hidden />
+          )}
           {faceplateWidget && (
             // Bindings apply to the faceplate too: a bound label is its title.
+            // On a phone it opens as a sheet at the bottom of the screen.
+            <div className={phone ? 'vt-operator-sheet' : undefined} style={phone ? undefined : { display: 'contents' }}>
             <LiveBound instance={faceplateWidget} sensors={sensors}>{fw => (
               mapped ? (
                 <MappedFaceplate
@@ -527,6 +571,7 @@ export const ScadaView: React.FC<Props> = ({
                 />
               ) : null
             )}</LiveBound>
+            </div>
           )}
           {editMode && tool === 'connect' && (
             <div style={{

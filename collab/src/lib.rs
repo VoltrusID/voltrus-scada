@@ -8,6 +8,7 @@
 pub mod document;
 pub mod fractional;
 pub mod guard;
+pub mod mobile;
 pub mod wire;
 
 pub use yrs;

@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import type { SensorConfig } from '../types'
 import type { ConnectionInstance, ScadaWidgetType, WidgetInstance } from '../scada2/widgets/types'
 import { WIDGET_MANIFESTS } from '../scada2/widgets/registry'
@@ -46,6 +47,8 @@ import { bindInstancePatch, configOf, instanceOf, widgetsByInstance } from './eq
 import { PropertyEditor } from './PropertyEditor'
 import { ChoiceDialog, D, Dialog, DialogBtn, Icon, Pane, Sep, SmallBtn, Tabs, ToolBtn, input, mono } from './ui'
 import { BlameInfo, HistoryList, type HistoryObject } from './history'
+import { MobilePane } from './MobilePane'
+import { mobileLabel } from '../scada2/mobile/OperatorView'
 import { PublishDialog, VersionsList } from './versions'
 import { CompareView } from './diffView'
 import { StageView } from './StageView'
@@ -68,7 +71,7 @@ interface Conflict { revision: string; seq: number | null; message: string; chan
 interface RevertAsk { body: RevertBody; title: string; message: React.ReactNode }
 interface Dangling { body: RevertBody; connection: string; missing: string[] }
 
-type RightTab = 'properties' | 'history' | 'versions' | 'comments'
+type RightTab = 'properties' | 'history' | 'versions' | 'comments' | 'mobile'
 
 const ZOOM_STEPS = [0.1, 0.25, 0.33, 0.5, 0.67, 0.75, 1, 1.25, 1.5, 2, 3, 4]
 const isTyping = (t: EventTarget | null) => t instanceof HTMLElement && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))
@@ -111,6 +114,7 @@ function usePersisted<T>(key: string, initial: T): [T, (v: T | ((p: T) => T)) =>
 }
 
 export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage }: Props) {
+  const { t } = useTranslation()
   const { data: screens = [] } = useScreens(true)
   const { data: sensors = [] } = useSensors(true)
   const screen = requested === 'all' && screens.length ? screens[0].id : requested
@@ -917,6 +921,7 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
                   { id: 'properties', label: 'Properties', icon: 'faceplate', disabled: !!previewAt },
                   { id: 'history', label: 'History', icon: 'history' },
                   { id: 'versions', label: 'Versions', icon: 'version' },
+                  { id: 'mobile', label: t('designerMobile.title'), icon: 'phone' },
                   ...(hasPhase4 ? [{ id: 'comments' as const, label: `Comments${comments.some(c => c.parent_id == null && !c.resolved) ? ` (${comments.filter(c => c.parent_id == null && !c.resolved).length})` : ''}`, icon: 'edit' }] : []),
                 ]} />
                 <div style={{ flex: 1 }} />
@@ -978,6 +983,11 @@ export function Designer({ screen: requested, onOpenScreen, onClose, onOpenPage 
                       else setTool('comment')
                     }}
                     hint="Select a component and press New comment, or press M and click the stage." />
+                )}
+                {rightTab === 'mobile' && (
+                  <MobilePane widgets={doc.widgets} sensors={sensors} selection={selection} onSelect={setSelection} onPatch={patch}
+                    labelOf={w => mobileLabel(w, sensors.find(s => s.id === w.sensorId)) || nameOf(w)}
+                    readOnly={!!previewAt} screenName={screenName} />
                 )}
                 {rightTab === 'versions' && (
                   <VersionsList screen={screen} me={{ username: me?.username ?? '', isAdmin }} canConfigure={canConfigure} publishing={publishing && !!status?.published}

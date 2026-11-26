@@ -359,6 +359,51 @@ pub(crate) fn conflict_error(
     )
 }
 
+/// The `mobile` key of a row's `config` (the phone layout override), if the
+/// config is a JSON object that has one.
+fn mobile_of(config: &str) -> Option<serde_json::Value> {
+    serde_json::from_str::<serde_json::Value>(config)
+        .ok()?
+        .get(voltrus_collab::mobile::KEY)
+        .cloned()
+}
+
+/// Refuse (400) a save whose rows set a malformed phone layout override
+/// (docs/designer.md, phase 5). As for collaborative updates, only overrides
+/// the save changes are checked, so a row written before never blocks a save.
+async fn check_mobile_overrides(
+    state: &AppState,
+    id: &str,
+    rows: &[crate::models::ScadaEquipment],
+) -> Result<(), AppError> {
+    let changed: Vec<(&str, serde_json::Value)> = rows
+        .iter()
+        .filter_map(|r| mobile_of(&r.config).map(|m| (r.equipment_id.as_str(), m)))
+        .collect();
+    if changed.is_empty() {
+        return Ok(());
+    }
+    let current: std::collections::HashMap<String, serde_json::Value> = state
+        .storage
+        .get_scada_equipment(id)
+        .await?
+        .into_iter()
+        .filter_map(|r| mobile_of(&r.config).map(|m| (r.equipment_id, m)))
+        .collect();
+    for (eq_id, m) in changed {
+        if current.get(eq_id) == Some(&m) {
+            continue;
+        }
+        if let Err(e) = voltrus_collab::mobile::check(&m) {
+            return Err(AppError::bad_request(format!(
+                "equipment {}: {e}",
+                eq_id.chars().take(128).collect::<String>()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Answer of a checked save: 200 with the new revision and seq (and the
 /// change-log batch), or 409 with the current ones.
 /// Save a screen's rows under its collaboration lock (docs/collaboration.md):
@@ -373,6 +418,9 @@ pub(crate) async fn save_locked(
     base: crate::storage::LayoutBase,
     actor: &crate::storage::DesignActor,
 ) -> Result<crate::storage::LayoutSave, AppError> {
+    if let Some(rows) = &equipment {
+        check_mobile_overrides(state, id, rows).await?;
+    }
     let guard = state.collab.before_write(state, id).await;
     let outcome = state
         .storage

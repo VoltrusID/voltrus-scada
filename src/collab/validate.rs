@@ -152,6 +152,15 @@ pub fn check_widget(
     if !sensors.is_array() {
         return Err("tag bindings are not a list".into());
     }
+    // The phone layout override (phase 5): only a changed one is checked.
+    let prev_mobile = prev.and_then(|p| {
+        serde_json::from_str::<Value>(&p.config)
+            .ok()
+            .and_then(|c| c.get(voltrus_collab::mobile::KEY).cloned())
+    });
+    if cfg.get(voltrus_collab::mobile::KEY) != prev_mobile.as_ref() {
+        voltrus_collab::mobile::check_config(cfg)?;
+    }
     let Some(ctx) = ctx else {
         for (prop, refs) in config_binding_refs(&config) {
             if let Err(e) = refs {
@@ -486,5 +495,49 @@ mod tests {
             connections: vec![],
         };
         assert_eq!(check(&prev, &next, None).len(), 1);
+    }
+
+    #[test]
+    fn the_phone_layout_override_is_checked_when_it_changes() {
+        let prev = Rows {
+            widgets: vec![w("a", "{}")],
+            connections: vec![],
+        };
+        let ok = Rows {
+            widgets: vec![w("a", r#"{"mobile":{"hide":true,"order":2,"span":1}}"#)],
+            connections: vec![],
+        };
+        assert!(check(&prev, &ok, Some(&ctx())).is_empty());
+        assert!(check(&prev, &ok, None).is_empty());
+        for (config, want) in [
+            (r#"{"mobile":{"span":3}}"#, "mobile.span"),
+            (r#"{"mobile":{"hide":"yes"}}"#, "mobile.hide"),
+            (r#"{"mobile":[1]}"#, "not an object"),
+            (r#"{"mobile":{"script":"x"}}"#, "not a known key"),
+        ] {
+            let bad = Rows {
+                widgets: vec![w("a", config)],
+                connections: vec![],
+            };
+            for c in [Some(ctx()), None] {
+                let p = check(&prev, &bad, c.as_ref());
+                assert_eq!(p.len(), 1, "{config}");
+                assert!(p[0].reason.contains(want), "{} vs {want}", p[0].reason);
+                assert!(!p[0].remove, "an existing widget is put back, not removed");
+            }
+        }
+        // An override written before (not by this change) does not stop a move.
+        let old = w("a", r#"{"mobile":{"span":7}}"#);
+        let mut moved = old.clone();
+        moved.x = 30.0;
+        let prev = Rows {
+            widgets: vec![old],
+            connections: vec![],
+        };
+        let next = Rows {
+            widgets: vec![moved],
+            connections: vec![],
+        };
+        assert!(check(&prev, &next, Some(&ctx())).is_empty());
     }
 }

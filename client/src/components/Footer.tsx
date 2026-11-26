@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useWsConnected, useLiveTransport } from '../store/dashboardStore'
+import { useOnline } from '../hooks/useOnline'
 import type { Screen } from '../types'
 import { useLicense } from '../LicenseContext'
 import { siteLabel, supportLabel, supportState } from '../edition/license'
@@ -24,7 +25,10 @@ const VIEW_LABEL_KEYS: Record<Props['viewMode'], string> = {
 
 export function Footer({ activeAlarmCount, alarmsUnavailable = false, viewMode, activeScreen, screens }: Props) {
   const { t, i18n } = useTranslation()
-  const wsConnected = useWsConnected()
+  // Not live once the browser is offline, even before the socket notices.
+  const socketUp = useWsConnected()
+  const online = useOnline()
+  const wsConnected = socketUp && online
   const transport = useLiveTransport()
   const license = useLicense()
   const site = siteLabel(license)
