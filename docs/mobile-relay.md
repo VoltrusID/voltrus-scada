@@ -161,7 +161,7 @@ the relay as a secret). For each target it builds one Expo message:
 
 | `event` | Title | Body | Kind |
 |---|---|---|---|
-| `raised`, details on | `{site_name}: {priority}` (localised) | `{source_name}: {message} ({value} {unit})` | alert |
+| `raised`, details on | `{site_name}: {priority}` (localised) | `{source_name}: {message} ({value} {unit})`; the name is left out when the message starts with it, the reading when the message has a number in it (Core's own messages have both) | alert |
 | `raised`, details off | `{site_name}` | "New alarm" / "Alarm baru" | alert |
 | `summary` | `{site_name}` | "{held_back} more alarms" / "{held_back} alarm lagi" | alert |
 | `acknowledged`, `resolved`, `shelved` | none | none | data only |
