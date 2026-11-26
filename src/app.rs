@@ -908,6 +908,7 @@ pub(crate) async fn serve(
         smtp_config,
         config_path: config_path.to_string(),
         ws_manager: ws_manager.clone(),
+        collab: Default::default(),
         mqtt_broker_state,
         network_manager: network_manager.clone(),
         health_monitor,
@@ -919,6 +920,7 @@ pub(crate) async fn serve(
     };
 
     api::stream::spawn_data_broadcaster(cache.clone(), storage.clone(), Some(ws_manager.clone()));
+    let state_for_shutdown = state.clone();
     // Alarm pushes to paired phones, through the relay the edition registers.
     crate::mobile::spawn_dispatcher(
         storage.clone(),
@@ -943,9 +945,19 @@ pub(crate) async fn serve(
     // open connections (live-data WebSockets never end on their own) get
     // DRAIN_TIMEOUT to finish.
     let (draining_tx, draining_rx) = tokio::sync::oneshot::channel::<()>();
+    let collab_state = state_for_shutdown;
     let shutdown = async move {
         shutdown.await;
         tracing::info!("Shutting down, saving data...");
+        // Designer edits not yet written to the draft rows
+        // (docs/collaboration.md): no more are taken from here (clients keep
+        // what is refused and send it to the next session), then what the
+        // sessions hold is written.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            collab_state.collab.shutdown(&collab_state),
+        )
+        .await;
         flush_before_exit(
             &flush_tx,
             &shutdown_audit,

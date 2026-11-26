@@ -40,6 +40,17 @@ jobs:
       - name: Test
         run: cargo test
 
+      # A build without the default protocol features: a module gated on the
+      # wrong feature only shows up here.
+      - name: Build without default features
+        run: cargo check --no-default-features --features modbus
+
+      # The collaboration document shared by the server and the native console.
+      - name: Collaboration crate (clippy, test)
+        run: |
+          cargo clippy -p voltrus-collab --all-targets -- -D warnings
+          cargo test -p voltrus-collab
+
   client:
     name: Web client (typecheck, test, build)
     runs-on: ubuntu-latest
@@ -107,6 +118,12 @@ jobs:
       - name: Designer browser smoke (headless Chrome)
         timeout-minutes: 10
         run: scripts/smoke-designer.sh target/release/voltrus
+
+      # Live collaboration: two browsers on one screen converge, see each
+      # other's cursors and comments, and the rows hold both people's edits.
+      - name: Designer collaboration smoke (two headless Chromes)
+        timeout-minutes: 10
+        run: scripts/smoke-collab.sh target/release/voltrus
 
   # The container image (Dockerfile): built and started, never pushed.
   docker:

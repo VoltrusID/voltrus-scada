@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   createVersion, publishScreen, reviewVersion, useScreenDiff, useVersions, type DesignStatus, type DesignVersion,
 } from '../queries/designHistory'
@@ -171,15 +171,17 @@ function RejectDialog({ v, onReject, onCancel }: { v: DesignVersion; onReject: (
  * message, and what operators will see change. With approval required it
  * files a request instead. Unsaved edits are saved first (Save & publish).
  */
-export function PublishDialog({ screen, status, versions, version, dirty, save, baseSeq, onClose, onDone }: {
+export function PublishDialog({ screen, status, versions, version, dirty, live = false, save, baseSeq, onClose, onDone }: {
   screen: string
   status: DesignStatus | undefined
   versions: DesignVersion[]
   /** Publish this version instead of the draft. */
   version?: { id: string; label: string }
   dirty: boolean
+  /** A live session edits the draft: the check is against the draft the diff showed. */
+  live?: boolean
   save: () => Promise<boolean>
-  /** The draft's change-log head as loaded (read after any save). */
+  /** The draft's change-log head as loaded (read after any save); not used when live. */
   baseSeq: () => number | null
   onClose: () => void
   onDone: () => void
@@ -195,6 +197,14 @@ export function PublishDialog({ screen, status, versions, version, dirty, save, 
   const current = status?.published?.name ?? null
   const willSave = dirty && !version
   const verb = approval ? 'Request publish' : 'Publish'
+  /** The draft's head as the summary shows it. */
+  const shownSeq = (() => {
+    const to = diff.data?.to
+    return to?.kind === 'draft' && typeof to.seq === 'number' ? to.seq : null
+  })()
+  const waitDiff = live && !version && shownSeq == null && diff.isLoading
+  // Live edits go to the draft every couple of seconds: write them now, so the summary has them.
+  useEffect(() => { if (live && !version) void save() }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = async () => {
     if (busy) return
@@ -204,8 +214,13 @@ export function PublishDialog({ screen, status, versions, version, dirty, save, 
       if (willSave && !(await save())) { setError('The screen was not saved, so nothing was published.'); return }
       const r = await publishScreen(screen, version
         ? { version: version.id, message }
-        : { name, message, baseSeq: baseSeq() })
+        : { name, message, baseSeq: live ? shownSeq : baseSeq() })
       if (r.ok) { setResult({ status: r.status, version: r.version }); onDone(); return }
+      if (r.code === 'conflict' && live && !version) {
+        void diff.refetch()
+        setError('The draft changed since this summary was shown. Check the updated summary and publish again.')
+        return
+      }
       setError(r.code === 'conflict'
         ? 'The screen was changed by someone else since you loaded it. Close this, check the change, and publish again.'
         : r.message)
@@ -231,7 +246,7 @@ export function PublishDialog({ screen, status, versions, version, dirty, save, 
 
   return (
     <Dialog title={version ? `${verb} ${version.label}` : `${verb} this screen`} onCancel={onClose} testId="designer-publish-dialog" actions={<>
-      <DialogBtn primary onClick={() => { void submit() }} disabled={busy} testId="designer-publish-confirm">
+      <DialogBtn primary onClick={() => { void submit() }} disabled={busy || waitDiff} testId="designer-publish-confirm">
         {busy ? 'Working…' : willSave ? `Save & ${verb.toLowerCase()}` : verb}
       </DialogBtn>
       <DialogBtn onClick={onClose} testId="designer-publish-cancel">Cancel</DialogBtn>

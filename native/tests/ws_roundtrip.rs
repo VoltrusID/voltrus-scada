@@ -293,3 +293,216 @@ fn signatures_are_optional_on_the_wire() {
         other => panic!("wrong variant: {other:?}"),
     }
 }
+
+#[test]
+fn design_frames_roundtrip_with_binary_payloads() {
+    use voltrus_scada_native::ws_types::{DesignLimits, DesignRejectedObject};
+    let data = vec![0u8, 1, 2, 255];
+    let bytes = enc(&ClientMessage::DesignSync {
+        screen: "s1".into(),
+        data: data.clone(),
+    });
+    // The payload travels as MessagePack `bin` (0xc4), not an array of ints.
+    assert!(
+        bytes.windows(2).any(|w| w == [0xc4, 4]),
+        "bin8 of 4 bytes: {bytes:02x?}"
+    );
+    match rmp_serde::from_slice(&bytes).unwrap() {
+        ClientMessage::DesignSync { data: back, .. } => assert_eq!(back, data),
+        other => panic!("wrong variant: {other:?}"),
+    }
+    let messages = [
+        ServerMessage::DesignJoined {
+            screen: "s1".into(),
+            epoch: "e".into(),
+            resync: false,
+            user: "ana".into(),
+            color: "#123456".into(),
+            protocol: 1,
+            limits: DesignLimits {
+                max_update: 1,
+                max_rate: 2,
+                max_doc: 3,
+                max_awareness: 4,
+                flush_ms: 5,
+                idle_ms: 6,
+            },
+        },
+        ServerMessage::DesignAwareness {
+            screen: "s1".into(),
+            data: vec![1],
+        },
+        ServerMessage::DesignError {
+            screen: "s1".into(),
+            code: "disabled".into(),
+            message: "off".into(),
+            reload: false,
+        },
+        ServerMessage::DesignRejected {
+            screen: "s1".into(),
+            objects: vec![DesignRejectedObject {
+                object_type: "widget".into(),
+                object_id: "w".into(),
+                reason: "x".into(),
+            }],
+        },
+        ServerMessage::DesignFlushed {
+            screen: "s1".into(),
+            seq: 7,
+            at_ms: 1,
+            users: vec!["ana".into()],
+            acked: Some(3),
+        },
+        ServerMessage::DesignSessions { sessions: vec![] },
+        ServerMessage::DesignComment {
+            screen: "s1".into(),
+            event: "created".into(),
+            comment: serde_json::json!({"id": 1}),
+        },
+    ];
+    for msg in &messages {
+        let bytes = rmp_serde::to_vec_named(msg).unwrap();
+        let _: ServerMessage = rmp_serde::from_slice(&bytes).unwrap();
+    }
+}
+
+/// Every collaboration frame of the server's `ws_types.rs` is mirrored here
+/// with the same fields.
+#[test]
+fn design_frames_match_the_servers() {
+    let server = include_str!("../../src/ws_types.rs");
+    let native = include_str!("../src/ws_types.rs");
+    let frames = [
+        ("DesignJoin {", &["screen", "protocol", "epoch"][..]),
+        ("DesignSync {", &["screen", "data"][..]),
+        ("DesignAwareness {", &["screen", "data"][..]),
+        ("DesignLeave {", &["screen"][..]),
+        ("DesignFlush {", &["screen"][..]),
+        (
+            "DesignJoined {",
+            &["epoch", "resync", "user", "color", "protocol", "limits"][..],
+        ),
+        ("DesignError {", &["code", "message", "reload"][..]),
+        ("DesignRejected {", &["objects"][..]),
+        ("DesignFlushed {", &["seq", "at_ms", "users", "acked"][..]),
+        ("DesignSessions {", &["sessions"][..]),
+        ("DesignComment {", &["event", "comment"][..]),
+        (
+            "pub struct DesignLimits {",
+            &[
+                "max_update",
+                "max_rate",
+                "max_doc",
+                "max_awareness",
+                "flush_ms",
+                "idle_ms",
+            ][..],
+        ),
+        (
+            "pub struct DesignRejectedObject {",
+            &["object_type", "object_id", "reason"][..],
+        ),
+        ("pub struct DesignSessionInfo {", &["screen", "users"][..]),
+        ("pub struct DesignUser {", &["user", "color"][..]),
+    ];
+    for (head, fields) in frames {
+        for (side, text) in [("server", server), ("native", native)] {
+            let at = text
+                .find(head)
+                .unwrap_or_else(|| panic!("{side} has no `{head}`"));
+            let body = &text[at..at + text[at..].find('}').unwrap()];
+            for field in fields {
+                assert!(
+                    body.contains(&format!("{field}:")),
+                    "{side} `{head}` has no field {field}"
+                );
+            }
+        }
+    }
+}
+
+/// The fields newer servers add: kept when present, defaulted from an
+/// older server's frames (no `acked`, no `idle_ms`), and left out of the
+/// encoding when there is no `acked`.
+#[test]
+fn design_ack_and_idle_fields_roundtrip_and_default() {
+    use voltrus_scada_native::ws_types::DesignLimits;
+    let flushed = ServerMessage::DesignFlushed {
+        screen: "s1".into(),
+        seq: 9,
+        at_ms: 1,
+        users: vec![],
+        acked: Some(12),
+    };
+    let bytes = rmp_serde::to_vec_named(&flushed).unwrap();
+    match rmp_serde::from_slice(&bytes).unwrap() {
+        ServerMessage::DesignFlushed { acked, users, .. } => {
+            assert_eq!(acked, Some(12));
+            assert!(users.is_empty(), "an acknowledgement alone");
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+    let none = ServerMessage::DesignFlushed {
+        screen: "s1".into(),
+        seq: 9,
+        at_ms: 1,
+        users: vec!["ana".into()],
+        acked: None,
+    };
+    let bytes = rmp_serde::to_vec_named(&none).unwrap();
+    assert!(
+        !bytes.windows(5).any(|w| w == b"acked"),
+        "no `acked` key when there is none"
+    );
+
+    // An older server's frames, written as maps without the new keys.
+    #[derive(serde::Serialize)]
+    struct OldFlushed<'a> {
+        r#type: &'a str,
+        screen: &'a str,
+        seq: i64,
+        at_ms: i64,
+        users: Vec<&'a str>,
+    }
+    let old = rmp_serde::to_vec_named(&OldFlushed {
+        r#type: "DesignFlushed",
+        screen: "s1",
+        seq: 3,
+        at_ms: 1,
+        users: vec!["ana"],
+    })
+    .unwrap();
+    match rmp_serde::from_slice(&old).unwrap() {
+        ServerMessage::DesignFlushed { acked, seq, .. } => {
+            assert_eq!((acked, seq), (None, 3));
+        }
+        other => panic!("wrong variant: {other:?}"),
+    }
+    #[derive(serde::Serialize)]
+    struct OldLimits {
+        max_update: usize,
+        max_rate: u32,
+        max_doc: usize,
+        max_awareness: usize,
+        flush_ms: u64,
+    }
+    let old = rmp_serde::to_vec_named(&OldLimits {
+        max_update: 1,
+        max_rate: 2,
+        max_doc: 3,
+        max_awareness: 4,
+        flush_ms: 5,
+    })
+    .unwrap();
+    let limits: DesignLimits = rmp_serde::from_slice(&old).unwrap();
+    assert_eq!(limits.idle_ms, 0, "0: the default idle limit");
+    let back: DesignLimits = rmp_serde::from_slice(
+        &rmp_serde::to_vec_named(&DesignLimits {
+            idle_ms: 9,
+            ..limits
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(back.idle_ms, 9);
+}

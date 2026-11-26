@@ -14,7 +14,13 @@ pub async fn wizard_create(
     Extension(_auth): Extension<AuthUser>,
     Json(config): Json<WizardConfig>,
 ) -> Result<impl IntoResponse, AppError> {
-    let result = crate::wizard::execute_wizard(&state.storage, config).await?;
+    // The wizard writes screen rows (FEED templates): live Designer
+    // sessions are written first and take its rows in after
+    // (docs/collaboration.md).
+    state.collab.flush_all(&state).await;
+    let result = crate::wizard::execute_wizard(&state.storage, config).await;
+    state.collab.absorb_all(&state).await;
+    let result = result?;
     Ok(Json(result))
 }
 

@@ -211,24 +211,91 @@ console adds the History pane later from the same routes (`/history`,
 `Frame`s painted by the existing mimic painter. Publishing needs the
 signature flow, which the console already has (`signature.rs`).
 
-## Live collaboration (phase 4): yrs natively
+## Live collaboration (phase 4): yrs natively (built)
 
-The web uses Yjs; the server holds the authoritative doc in `yrs`. The console
-uses **`yrs` directly**, the same crate as the server, so:
+The web uses Yjs; the server holds the authoritative document in `yrs`. The
+console uses **`yrs` directly, through the same crate as the server**
+(`collab/`, `voltrus-collab`), so there is no JS bridge and no second CRDT:
+the console's document, the server's and their encoding are the same code
+(one pinned `yrs` version in the workspace; `DesignJoin` carries
+`voltrus_collab::PROTOCOL`). The document is the one
+[collaboration.md](collaboration.md#the-document) fixes: a `widgets` map of
+maps with `config` and `config.bindings` nested, `connections`, and the
+stacking order as a fractional index `zi` on each widget (not in
+`config.z`: rows get their integer `z` when the server writes them).
 
-* no JS bridge and no second CRDT implementation: the console's doc and the
-  server's are the same code and the same encoding (pin one `yrs` version in
-  the workspace; `DesignJoin` carries the protocol version);
-* the doc layout is the one designer.md fixes (`widgets` map of `Y.Map`s with
-  `config` nested, `connections`, z-order as fractional indexes in
-  `config.z`), wrapped by a `designer::collab` module that maps `Edit`s to
-  transactions and remote updates back to `Layout` changes;
-* undo becomes `yrs::UndoManager` scoped to the local origin, which keeps
-  phase 1's one-edit-one-step behaviour (the `History` API stays, its
-  implementation swaps);
-* sync messages ride the console's existing WebSocket (`runtime.rs`
-  already reconnects and re-authenticates); presence cursors and selections
-  paint on the stage canvas like the guides do today.
+What the console does (`native/src/designer/collab.rs`, the editor glue in
+`native/src/console/views/mimic/editor/live.rs`):
+
+* **Joining.** Opening the Designer sends `DesignJoin` on the console's
+  existing WebSocket (`runtime.rs` forwards `Design*` frames both ways as
+  `Command::Design` / `Event::Design`; its reconnects and re-authentication
+  are the live data's). The server's document replaces the copy loaded over
+  REST; edits made before it arrived (unsaved work kept across a sign-in,
+  or typed while joining) are written into it as one edit.
+* **Live edits.** The editor keeps its `History` and every edit path as they
+  were. Every 40 ms (`collab::BATCH`) the difference between the layout the
+  session last saw and the editor's is applied to the document field by
+  field (`document::apply_rows`) in a transaction with the local origin,
+  and the merged update goes out (within the server's rate). Remote updates
+  come back as a new layout; the selection, tool and gesture stay. ⌘S asks
+  the server to write the draft now (`DesignFlush`) instead of a `PUT`; the
+  bar says *Live · with ana, bob*, and Done sends `DesignLeave`. Updates go
+  out within `max(1, max_rate − 10)` sync messages a second (step messages
+  count), each under `max_update − 64` bytes (fewer queued updates are merged
+  per frame; one edit too large to send is taken back with an error).
+  Presence goes out at least every `idle_ms / 3` as a keepalive.
+* **Unwritten edits.** Every `DesignSync` the console sends is numbered from
+  its latest `DesignJoined`; each local, undo or redo edit records the
+  objects and fields it changed (`document::touched_between`) and that
+  record rides with its message until a `DesignFlushed` whose `acked`
+  covers the number. Leaving while anything is queued, sent but not
+  acknowledged, or offline opens *Edits not written yet*: Save flushes and
+  closes once the write covers everything, *Leave anyway* leaves.
+* **Undo** is `yrs`'s `UndoManager` scoped to the local origin: ⌘Z takes
+  back this console's edits only, never someone else's. A new editor step
+  starts a new undo item; the steps of one drag or one field's typing (one
+  coalescing key within a second) are one item, as in phase 1.
+* **Presence.** The console sends its cursor, selection and view (stage
+  centre and zoom) as y-protocols awareness; the others show as coloured
+  initials in the bar, their cursors as coloured arrows with their names on
+  the stage and their selections as outlines in their colour. Following
+  another person's view is web-only for now.
+* **Offline, dropped and restarts.** While the link is down edits go on
+  into the document; back on the same session the y-sync exchange merges
+  both sides. When the server drops the console from the session
+  (`DesignError` `resync`, `not_joined`, `idle` or `rate_limited`), it joins
+  again with the same document and epoch (at once, 1 s after
+  `rate_limited`; repeated drops back off up to 32 s), and its unwritten
+  edits ride on the step 2 it sends. When the server lost the session (a
+  restart: new epoch, or `resync: true`), the console takes the server's
+  document and writes every edit not yet acknowledged, sent or not, into it
+  again field by field (`document::replay`): an object someone else deleted
+  stays deleted and their edits to other fields stand. It says *The live
+  session restarted; N unsaved changes were applied again*. Incoming updates
+  pass the same structural check as on the server
+  (`voltrus_collab::guard`), so a deeply nested update is refused, not a
+  crash.
+* **Older servers** (no answer to `DesignJoin` within 5 s), collaboration
+  turned off (`DesignError disabled`) or not allowed: the session is off and
+  the editor saves whole layouts with the conflict check, as before.
+
+Tests (no server, no GPU): `designer::collab::tests` runs consoles against
+a relay built from the shared crate (convergence of concurrent edits on
+different and on the same fields, remote updates, undo of own edits only,
+one drag as one undo item, work from before joining, offline edits through
+a reconnect and through a server restart, sent but unwritten edits through a
+restart, acknowledgement by message number, rejoining after a drop and the
+back-off, pacing and splitting, an update too large to send, the keepalive,
+a stack bomb from the server, a reorder rewriting one index, presence both
+ways, batching, fallbacks); the editor's `a_live_session_shares_edits_and_saves_through_the_server`
+and `without_collaboration_the_editor_saves_layouts` drive the real editor;
+`tests/ws_roundtrip.rs` checks the frames against the server's
+`ws_types.rs`.
+
+Not yet native: comments, *Follow* a person's view, and who edits which
+screen in the screen list (the web Designer has them; the console receives
+`DesignSessions` and `DesignComment` and ignores them for now).
 
 A real advantage of native here: a GPUI frame repaints a 2,000-widget stage
 with remote cursors at display rate, where the browser's DOM stage struggles.
@@ -306,9 +373,8 @@ shown to others and the save refuses them before the server would.
 * **Unsaved changes.** Done, another screen, another page, back/forward,
   signing out, ⌘Q and closing the window ask first: Save, Discard, Cancel.
 
-Later: the shared crate and the WASM build, the History pane (phase 3),
-collaboration (phase 4), match size and the faceplate editor in the
-inspector.
+Later: the WASM build, the History pane (phase 3), comments and follow
+mode of phase 4, match size and the faceplate editor in the inspector.
 
 Screenshots: the console built from this branch against the WTP showcase
 (`scenarios/wtp-hmi`, server from this branch); the symbol library screen is

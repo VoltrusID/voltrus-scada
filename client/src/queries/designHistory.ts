@@ -84,6 +84,8 @@ export interface DesignStatus {
   last_version: DesignVersion | null
   changes_since_version: number
   pending: DesignVersion[]
+  /** Live collaboration (phase 4); absent on an older server. */
+  collaboration?: { enabled: boolean; protocol: number; editors: { user: string; color: string }[] }
 }
 
 export interface DesignSettings {
@@ -92,6 +94,8 @@ export interface DesignSettings {
   squash_window_secs: number
   squash_after_days: number
   keep_days: number
+  /** Live collaboration in the Designer (phase 4). */
+  collaboration?: boolean
   /** A change that relaxes approval, waiting for a second admin. */
   pending_request?: { settings: Omit<DesignSettings, 'pending_request'>; requested_by: string; at_ms: number } | null
 }

@@ -361,6 +361,29 @@ pub(crate) fn conflict_error(
 
 /// Answer of a checked save: 200 with the new revision and seq (and the
 /// change-log batch), or 409 with the current ones.
+/// Save a screen's rows under its collaboration lock (docs/collaboration.md):
+/// with a live session open, its pending edits are written first (so `base`
+/// is checked against what the editors see) and this write is merged into
+/// its document afterwards, so the editors see it at once.
+pub(crate) async fn save_locked(
+    state: &AppState,
+    id: &str,
+    equipment: Option<Vec<crate::models::ScadaEquipment>>,
+    connections: Option<Vec<crate::models::ScadaConnection>>,
+    base: crate::storage::LayoutBase,
+    actor: &crate::storage::DesignActor,
+) -> Result<crate::storage::LayoutSave, AppError> {
+    let guard = state.collab.before_write(state, id).await;
+    let outcome = state
+        .storage
+        .save_scada_layout(id, equipment, connections, base, actor)
+        .await;
+    if let Some(g) = guard {
+        g.absorb(state).await;
+    }
+    Ok(outcome?)
+}
+
 fn layout_saved(outcome: crate::storage::LayoutSave) -> Result<impl IntoResponse, AppError> {
     match outcome {
         crate::storage::LayoutSave::Saved {
@@ -466,10 +489,7 @@ pub async fn save_scada_equipment(
     let items = parse_equipment(&id, items_array(&body, "items")?);
     let base = layout_base(&body)?;
     let actor = super::design_history::request_actor(&auth, api_key.is_some(), &headers, "save");
-    let outcome = state
-        .storage
-        .save_scada_layout(&id, Some(items), None, base, &actor)
-        .await?;
+    let outcome = save_locked(&state, &id, Some(items), None, base, &actor).await?;
     layout_saved(outcome)
 }
 
@@ -522,10 +542,7 @@ pub async fn save_scada_connections(
     let connections = parse_connections(&id, items_array(&body, "items")?);
     let base = layout_base(&body)?;
     let actor = super::design_history::request_actor(&auth, api_key.is_some(), &headers, "save");
-    let outcome = state
-        .storage
-        .save_scada_layout(&id, None, Some(connections), base, &actor)
-        .await?;
+    let outcome = save_locked(&state, &id, None, Some(connections), base, &actor).await?;
     layout_saved(outcome)
 }
 
@@ -588,9 +605,14 @@ pub async fn save_scada_layout(
     let connections = parse_connections(&id, items_array(&body, "connections")?);
     let base = layout_base(&body)?;
     let actor = super::design_history::request_actor(&auth, api_key.is_some(), &headers, "save");
-    let outcome = state
-        .storage
-        .save_scada_layout(&id, Some(equipment), Some(connections), base, &actor)
-        .await?;
+    let outcome = save_locked(
+        &state,
+        &id,
+        Some(equipment),
+        Some(connections),
+        base,
+        &actor,
+    )
+    .await?;
     layout_saved(outcome)
 }

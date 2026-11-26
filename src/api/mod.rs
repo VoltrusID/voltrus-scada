@@ -10,6 +10,7 @@ pub mod auth;
 mod auth_middleware;
 #[cfg(feature = "bacnet")]
 mod bacnet_devices;
+pub(crate) mod collab;
 pub(crate) mod commands;
 mod compression;
 mod config_snapshots;
@@ -128,6 +129,8 @@ pub struct AppState {
     pub smtp_config: Arc<tokio::sync::RwLock<Option<crate::models::SmtpConfig>>>,
     pub config_path: String,
     pub ws_manager: Arc<crate::ws_manager::WsManager>,
+    /// Live collaboration sessions of the Designer (docs/collaboration.md).
+    pub collab: Arc<crate::collab::CollabManager>,
     #[cfg(feature = "mqtt-broker")]
     pub mqtt_broker_state: Option<crate::mqtt_broker::MqttBrokerState>,
     #[cfg(not(feature = "mqtt-broker"))]
@@ -199,6 +202,14 @@ impl AppError {
     pub fn not_found(message: impl Into<String>) -> Self {
         AppError(anyhow::Error::new(Rejected(
             StatusCode::NOT_FOUND,
+            message.into(),
+        )))
+    }
+
+    /// An error answered with 429 and `{"error": message}`.
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        AppError(anyhow::Error::new(Rejected(
+            StatusCode::TOO_MANY_REQUESTS,
             message.into(),
         )))
     }
@@ -1499,6 +1510,16 @@ pub fn create_router(state: AppState) -> Router {
             .route(
                 "/api/v1/design/history",
                 get(design_history::project_history),
+            )
+            // Live collaboration (docs/collaboration.md): sessions and comments.
+            .route("/api/v1/design/sessions", get(collab::list_sessions))
+            .route(
+                "/api/v1/screens/{id}/comments",
+                get(collab::list_comments).post(collab::post_comment),
+            )
+            .route(
+                "/api/v1/screens/{id}/comments/{cid}",
+                patch(collab::patch_comment).delete(collab::delete_comment),
             )
             .route(
                 "/api/v1/design/revert",

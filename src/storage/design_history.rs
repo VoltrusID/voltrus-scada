@@ -175,6 +175,9 @@ pub struct DesignSettings {
     /// Rows older than this many days are deleted, except those a version
     /// points at (0: keep forever).
     pub keep_days: u64,
+    /// Live collaboration in the Designer (docs/collaboration.md). Off, the
+    /// Designer saves whole layouts as in phases 1 and 3.
+    pub collaboration: bool,
 }
 
 impl Default for DesignSettings {
@@ -185,6 +188,7 @@ impl Default for DesignSettings {
             squash_window_secs: 60,
             squash_after_days: 30,
             keep_days: 0,
+            collaboration: true,
         }
     }
 }
@@ -550,6 +554,28 @@ fn raise_head(conn: &Connection, screen_id: &str, seq: i64) -> Result<()> {
     Ok(())
 }
 
+/// Per screen, bumped by every [`append`] that touches it: an open
+/// collaboration session compares its screen's count to notice writes made
+/// outside it (docs/collaboration.md).
+static DESIGN_WRITES: std::sync::LazyLock<std::sync::Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// How many writes [`append`] made to `screen` (see [`DESIGN_WRITES`]).
+pub fn design_writes(screen: &str) -> u64 {
+    DESIGN_WRITES
+        .lock()
+        .map(|m| m.get(screen).copied().unwrap_or(0))
+        .unwrap_or(0)
+}
+
+fn count_writes(screens: &BTreeSet<String>) {
+    if let Ok(mut m) = DESIGN_WRITES.lock() {
+        for s in screens.iter().filter(|s| !s.is_empty()) {
+            *m.entry(s.clone()).or_default() += 1;
+        }
+    }
+}
+
 /// Append `changes` as one batch by `actor`. Nothing is written (and `None`
 /// returned) when there is no change. When the previous batch of these
 /// objects is by the same author, source and squashable operation, younger
@@ -565,6 +591,7 @@ pub fn append(
     if changes.is_empty() {
         return Ok(None);
     }
+    count_writes(&changes.iter().map(|c| c.key.screen_id.clone()).collect());
     let settings = read_settings(conn)?;
     let at_ms = crate::timeutil::now_millis();
     let batch = new_batch_id(at_ms);

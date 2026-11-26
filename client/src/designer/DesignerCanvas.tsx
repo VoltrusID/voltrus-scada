@@ -38,7 +38,7 @@ interface Props {
   showRulers: boolean
   guides: Guide[]
   onGuidesChange: (g: Guide[]) => void
-  tool: 'select' | 'connect'
+  tool: 'select' | 'connect' | 'comment'
   connectFrom: string | null
   onConnectPick: (id: string) => void
   selectedConnection: string | null
@@ -47,6 +47,16 @@ interface Props {
   onEdit: (e: Edit, coalesce?: string) => void
   onDrop: (d: CanvasDrop, x: number, y: number, target: string | null, client: { x: number; y: number }) => void
   onCursor: (p: { x: number; y: number } | null) => void
+  /** Drawn over the stage in screen pixels (other people's cursors, selections, comment pins); `sx` turns stage units into pixels. */
+  overlay?: (sx: (v: number) => number) => React.ReactNode
+  /** The visible part of the stage changed: its centre in stage units and the scale. */
+  onViewport?: (v: { cx: number; cy: number; scale: number }) => void
+  /** Show this centre and scale (following someone); `n` changes for every request. */
+  viewTo?: { cx: number; cy: number; scale: number; n: number } | null
+  /** The user panned or zoomed themselves. */
+  onUserView?: () => void
+  /** Comment tool: a click on the stage, with the component under it. */
+  onCommentAt?: (pt: { x: number; y: number }, target: string | null) => void
 }
 
 type Handle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
@@ -112,6 +122,26 @@ export function DesignerCanvas(p: Props) {
     setScroll({ left: el.scrollLeft, top: el.scrollTop })
   }, [scale]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Report the visible centre (presence and follow mode).
+  useEffect(() => {
+    if (!p.onViewport || vp.w === 0) return
+    p.onViewport({ cx: Math.round((scroll.left + vp.w / 2 - offX) / scale), cy: Math.round((scroll.top + vp.h / 2 - offY) / scale), scale })
+  }, [scroll, scale, vp.w, vp.h]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Follow: scroll (and zoom) so the requested centre is in the middle.
+  useEffect(() => {
+    const t = p.viewTo
+    const el = viewportRef.current
+    if (!t || !el || vp.w === 0) return
+    if (Math.abs(t.scale - scale) > 0.001) {
+      zoomAnchor.current = { sx: t.cx, sy: t.cy, cx: vp.w / 2, cy: vp.h / 2 }
+      p.onZoomTo(t.scale)
+      return
+    }
+    el.scrollLeft = offX + t.cx * scale - vp.w / 2
+    el.scrollTop = offY + t.cy * scale - vp.h / 2
+  }, [p.viewTo?.n]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const toStage = useCallback((clientX: number, clientY: number) => {
     const r = stageRef.current!.getBoundingClientRect()
     return { x: (clientX - r.left) / scale, y: (clientY - r.top) / scale }
@@ -135,6 +165,7 @@ export function DesignerCanvas(p: Props) {
       if (!(e.ctrlKey || e.metaKey)) return
       e.preventDefault()
       const { scale: s, onZoomTo } = latest.current
+      latest.current.onUserView?.()
       const next = Math.max(0.1, Math.min(4, s * (e.deltaY < 0 ? 1.15 : 1 / 1.15)))
       const r = el.getBoundingClientRect()
       const st = stageRef.current!.getBoundingClientRect()
@@ -248,6 +279,7 @@ export function DesignerCanvas(p: Props) {
     if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) document.activeElement.blur()
     if (e.button === 1 || (e.button === 0 && space)) {
       const el = viewportRef.current!
+      p.onUserView?.()
       begin({ kind: 'pan', cx: e.clientX, cy: e.clientY, left: el.scrollLeft, top: el.scrollTop }, e)
       return
     }
@@ -255,6 +287,7 @@ export function DesignerCanvas(p: Props) {
     const target = (e.target as HTMLElement).closest('[data-wid]') as HTMLElement | null
     const pt = toStage(e.clientX, e.clientY)
     const additive = e.shiftKey || e.ctrlKey || e.metaKey
+    if (p.tool === 'comment') { e.preventDefault(); p.onCommentAt?.({ x: Math.round(pt.x), y: Math.round(pt.y) }, target?.dataset.wid ?? null); return }
     if (!target) {
       begin({ kind: 'marquee', sx: pt.x, sy: pt.y, x: pt.x, y: pt.y, additive, base: selection }, e)
       return
@@ -332,7 +365,7 @@ export function DesignerCanvas(p: Props) {
   const marquee = drag?.kind === 'marquee' ? drag : null
   const guideDrag = drag?.kind === 'guide' ? drag : null
   const sx = (v: number) => v * scale
-  const cursor = drag?.kind === 'pan' || space ? 'grab' : p.tool === 'connect' ? 'crosshair' : 'default'
+  const cursor = drag?.kind === 'pan' || space ? 'grab' : p.tool === 'connect' ? 'crosshair' : p.tool === 'comment' ? 'copy' : 'default'
 
   return (
     <div style={{ position: 'relative', flex: 1, minWidth: 0, minHeight: 0, background: 'var(--bg)', overflow: 'hidden' }}>
@@ -435,6 +468,7 @@ export function DesignerCanvas(p: Props) {
                 </g>
               )}
             </svg>
+            {p.overlay?.(sx)}
             {/* Resize handles: real elements so they take the pointer */}
             {single && !isLocked(single) && p.tool === 'select' && !moving && HANDLES.map(h => {
               const cx = h.includes('w') ? 0 : h.includes('e') ? 1 : 0.5

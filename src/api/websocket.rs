@@ -352,9 +352,19 @@ async fn handle_socket(
         RECHECK_INTERVAL,
     );
 
+    // Access changes anywhere (a role, a sign-out, a revoked key) are
+    // checked at once, not only every RECHECK_INTERVAL.
+    let mut access = crate::storage::ACCESS.subscribe();
     loop {
         tokio::select! {
             _ = recheck.tick() => {
+                if !principal.still_granted(&state_loop, &grant).await {
+                    tracing::info!("WS: {} lost access, closing conn={}", username, conn_id);
+                    close_revoked(&mut sink).await;
+                    break;
+                }
+            }
+            Ok(()) = access.changed() => {
                 if !principal.still_granted(&state_loop, &grant).await {
                     tracing::info!("WS: {} lost access, closing conn={}", username, conn_id);
                     close_revoked(&mut sink).await;
@@ -400,6 +410,7 @@ async fn handle_socket(
                             &ws_manager_loop,
                             &state_loop,
                             &principal,
+                            Some(&grant),
                         ).await;
                         if after == After::Close {
                             close_revoked(&mut sink).await;
@@ -429,6 +440,7 @@ async fn handle_socket(
         }
     }
 
+    state_loop.collab.disconnect(&state_loop, &conn_id_loop);
     ws_manager_loop.disconnect(&conn_id_loop);
     tracing::info!("WS: disconnected conn={}", conn_id);
 }
@@ -445,12 +457,86 @@ async fn close_revoked(sink: &mut futures_util::stream::SplitSink<WebSocket, Mes
         .await;
 }
 
+/// Whether a connection may still edit screens (live Designer sessions,
+/// docs/collaboration.md). Checked again whenever access changed anywhere
+/// since its last check ([`crate::storage::ACCESS`]: a role, a password, a
+/// disabled user, a sign-out, a revoked key), so a downgrade or revocation
+/// takes effect at its next message instead of at the periodic recheck. One
+/// that may no longer edit leaves every session: `Err` says what the socket
+/// does next.
+async fn collab_access(
+    state: &AppState,
+    conn_id: &str,
+    screen: &str,
+    principal: &WsPrincipal,
+    grant: Option<&Grant>,
+) -> Result<(), After> {
+    let generation = *crate::storage::ACCESS.borrow();
+    if state.collab.verified(conn_id) == Some(generation) {
+        return Ok(());
+    }
+    let role = principal.current_role(state).await;
+    let alive = match (&role, grant, principal) {
+        (Some(_), Some(g), WsPrincipal::User(user)) => {
+            g.role == *role.as_ref().unwrap_or(&g.role) && g.session.alive(state, user).await
+        }
+        _ => true,
+    };
+    match role {
+        Some(r) if alive && super::auth_middleware::role_allows_configuration(&r) => {
+            state.collab.set_verified(conn_id, generation);
+            Ok(())
+        }
+        Some(r) if alive => {
+            tracing::warn!("WS: {} (role={r}) may not edit screens", principal.name());
+            refuse_editing(
+                state,
+                conn_id,
+                screen,
+                "editing screens needs a role that may configure",
+            );
+            Err(After::Continue)
+        }
+        _ => {
+            refuse_editing(
+                state,
+                conn_id,
+                screen,
+                "credentials revoked or account disabled",
+            );
+            Err(After::Close)
+        }
+    }
+}
+
+/// A connection that may not edit leaves every session; told `forbidden`
+/// for each, and for `screen` when it was not in that one.
+fn refuse_editing(state: &AppState, conn_id: &str, screen: &str, message: &str) {
+    let member = state
+        .collab
+        .session(screen)
+        .is_some_and(|s| s.member_conns().iter().any(|c| c == conn_id));
+    state.collab.revoke(state, conn_id, "forbidden", message);
+    if !member {
+        state.ws_manager.send_to(
+            conn_id,
+            ServerMessage::DesignError {
+                screen: screen.to_string(),
+                code: "forbidden".into(),
+                message: message.to_string(),
+                reload: false,
+            },
+        );
+    }
+}
+
 pub(super) async fn handle_client_message(
     msg: &ClientMessage,
     conn_id: &str,
     ws_manager: &Arc<crate::ws_manager::WsManager>,
     state: &AppState,
     principal: &WsPrincipal,
+    grant: Option<&Grant>,
 ) -> After {
     let username = principal.name();
     let username = username.as_str();
@@ -535,6 +621,55 @@ pub(super) async fn handle_client_message(
 
         ClientMessage::Auth { .. } => {
             tracing::debug!("WS: ignoring duplicate Auth message");
+        }
+
+        ClientMessage::DesignJoin {
+            screen,
+            protocol,
+            epoch,
+        } => {
+            // Only roles that configure edit screens; the role is read again,
+            // as for a write.
+            state.collab.set_verified(conn_id, u64::MAX);
+            if let Err(after) = collab_access(state, conn_id, screen, principal, grant).await {
+                return after;
+            }
+            state
+                .collab
+                .join(
+                    state,
+                    conn_id,
+                    username,
+                    screen,
+                    *protocol,
+                    epoch.as_deref(),
+                )
+                .await;
+        }
+
+        ClientMessage::DesignSync { screen, data } => {
+            if let Err(after) = collab_access(state, conn_id, screen, principal, grant).await {
+                return after;
+            }
+            state.collab.sync(state, conn_id, screen, data).await;
+        }
+
+        ClientMessage::DesignAwareness { screen, data } => {
+            if let Err(after) = collab_access(state, conn_id, screen, principal, grant).await {
+                return after;
+            }
+            state.collab.awareness(state, conn_id, screen, data);
+        }
+
+        ClientMessage::DesignLeave { screen } => {
+            state.collab.leave(state, conn_id, screen);
+        }
+
+        ClientMessage::DesignFlush { screen } => {
+            if let Err(after) = collab_access(state, conn_id, screen, principal, grant).await {
+                return after;
+            }
+            state.collab.flush_request(state, conn_id, screen).await;
         }
     }
     After::Continue
@@ -860,7 +995,7 @@ mod tests {
     }
 
     async fn dispatch_as(state: &AppState, principal: &WsPrincipal, msg: ClientMessage) -> After {
-        handle_client_message(&msg, "me", &state.ws_manager, state, principal).await
+        handle_client_message(&msg, "me", &state.ws_manager, state, principal, None).await
     }
 
     async fn add_user(state: &AppState, username: &str, role: &str) -> i64 {

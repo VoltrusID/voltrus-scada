@@ -35,6 +35,7 @@ pub fn test_app() -> Router {
         smtp_config: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         config_path: "config.yaml".to_string(),
         ws_manager: Arc::new(crate::ws_manager::WsManager::new()),
+        collab: Default::default(),
         mqtt_broker_state: None,
         network_manager: crate::network::NetworkManager::new(vec![]),
         health_monitor: Arc::new(crate::health::watchdog::HealthMonitor::new(
@@ -169,6 +170,7 @@ pub async fn seeded_admin_app_state() -> AppState {
         smtp_config: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         config_path: "config.yaml".to_string(),
         ws_manager: Arc::new(crate::ws_manager::WsManager::new()),
+        collab: Default::default(),
         mqtt_broker_state: None,
         network_manager: crate::network::NetworkManager::new(vec![]),
         health_monitor: Arc::new(crate::health::watchdog::HealthMonitor::new(
@@ -264,6 +266,7 @@ pub fn test_app_with_license_status(license_status: crate::license::LicenseStatu
         smtp_config: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         config_path: "config.yaml".to_string(),
         ws_manager: Arc::new(crate::ws_manager::WsManager::new()),
+        collab: Default::default(),
         mqtt_broker_state: None,
         network_manager: crate::network::NetworkManager::new(vec![]),
         health_monitor: Arc::new(crate::health::watchdog::HealthMonitor::new(

@@ -28,9 +28,13 @@
 //!   on a screen switch without asking; the console asks, so an operator
 //!   never writes a plant screen by accident. A screen loading meanwhile
 //!   never replaces the edits.
+//! - **Live sessions** ([`live`]): on a server with collaboration the
+//!   editor joins the screen's session; edits, undo and ⌘S go through it
+//!   and the other editors' cursors and selections show on the stage.
 
 mod binding;
 mod inspector;
+mod live;
 mod palette;
 mod panes;
 mod stage;
@@ -56,6 +60,7 @@ use vt_ui::components::{Button, IconButton, Segment, empty_state, segmented};
 use vt_ui::text_input::{InputEvent, TextInput};
 use vt_ui::theme::*;
 
+pub(crate) use self::live::{on_link as on_design_link, on_server as on_design};
 pub(super) use self::stage::paint_grid;
 use super::paint::{Hmi, Tessellations};
 use super::scene::StoreValues;
@@ -480,6 +485,8 @@ pub(crate) struct Editor {
     palette_view: Entity<CachedView>,
     inspector_view: Entity<CachedView>,
     dialog_focus: FocusHandle,
+    /// The live session (docs/collaboration.md), when the server has one.
+    live: Option<live::Live>,
     _subscriptions: Vec<Subscription>,
     _field_subscriptions: Vec<Subscription>,
 }
@@ -734,6 +741,7 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
         palette_view: CachedView::new(palette::render, cx),
         inspector_view: CachedView::new(inspector::render, cx),
         dialog_focus: cx.focus_handle(),
+        live: None,
         _subscriptions: subscriptions,
         _field_subscriptions: Vec::new(),
     };
@@ -743,6 +751,7 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
     state.hover = None;
     state.press = None;
     state.edit = Some(Box::new(editor));
+    live::start(console, window, cx);
     focus_stage(console, window, cx);
     if restored {
         console.show_toast(
@@ -757,11 +766,14 @@ fn enter(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) 
 /// Back to the viewer: a screen with a published copy is read again as
 /// operators see it (the draft just edited is not what they see).
 fn exit(console: &mut Console, window: &mut Window, cx: &mut Context<Console>) {
+    live::leave(console);
     let state = console.state::<State>();
     let screen = state.edit.as_ref().map(|editor| editor.screen.clone());
+    // Others edited it too: the viewer reads it again.
+    let shared = state.edit.as_deref().is_some_and(live::active);
     state.edit = None;
     if let Some(screen) = screen
-        && state.published.contains(&screen)
+        && (shared || state.published.contains(&screen))
     {
         super::forget(console, &screen);
     }
@@ -801,7 +813,8 @@ fn toggle(console: &mut Console, window: &mut Window, cx: &mut Context<Console>)
     cx.notify();
 }
 
-/// Whether leaving waits: with unsaved edits the dialog asks first (and
+/// Whether leaving waits: with unsaved edits (or, in a live session, edits
+/// the server has not written to the draft yet) the dialog asks first (and
 /// runs `leave` once answered); a save in flight holds it too.
 pub(crate) fn holds(
     console: &mut Console,
@@ -816,7 +829,7 @@ pub(crate) fn holds(
         console.show_toast("The screen is being saved", false, cx);
         return true;
     }
-    if !editor.history.dirty() {
+    if !editor.history.dirty() && !live::unflushed(editor) {
         return false;
     }
     editor.asking = Some(leave);
@@ -874,11 +887,16 @@ enum Answer {
 
 fn answer(console: &mut Console, answer: Answer, window: &mut Window, cx: &mut Context<Console>) {
     let leave = edits(console).and_then(|editor| editor.asking.take());
+    // Nothing unsaved in the editor, but the live session has edits the
+    // server has not written yet: Save asks it to, and leaves once it has.
+    let shared =
+        edits_ref(console).is_some_and(|editor| !editor.history.dirty() && live::unflushed(editor));
     console.close_overlay(window, cx);
     let Some(leave) = leave else {
         return;
     };
     match answer {
+        Answer::Save if shared => live::save_and_leave(console, leave, cx),
         Answer::Cancel => {}
         Answer::Discard => {
             if let Some(editor) = edits(console) {
@@ -905,6 +923,26 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
         _ => "leaving edit mode",
     };
     let name = screen_name(console, &editor.screen);
+    let shared = !editor.history.dirty() && live::unflushed(editor);
+    let (title, question, note, discard) = if shared {
+        (
+            "Edits not written yet",
+            format!(
+                "Some of your edits to “{name}” have not reached the draft yet. \
+                 Write them before {doing}?"
+            ),
+            "Leave anyway leaves the edits already sent to the live session; \
+             edits made offline are lost.",
+            "Leave anyway",
+        )
+    } else {
+        (
+            "Unsaved changes",
+            format!("Save your changes to “{name}” before {doing}?"),
+            "Discard puts the screen back as it was last saved.",
+            "Discard",
+        )
+    };
     let focus = editor.dialog_focus.clone();
     let own = focus.clone();
     div()
@@ -930,7 +968,7 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
                 .border_color(theme.border)
                 .text_size(FONT_TITLE)
                 .font_weight(FontWeight::SEMIBOLD)
-                .child("Unsaved changes"),
+                .child(title),
         )
         .child(
             div()
@@ -938,12 +976,12 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
                 .flex_col()
                 .gap(SPACE_4)
                 .p(SPACE_8)
-                .child(format!("Save your changes to “{name}” before {doing}?"))
+                .child(question)
                 .child(
                     div()
                         .text_size(FONT_SMALL)
                         .text_color(theme.fg_dim)
-                        .child("Discard puts the screen back as it was last saved."),
+                        .child(note),
                 ),
         )
         .child(
@@ -963,7 +1001,7 @@ fn dialog(console: &mut Console, _: &mut Window, cx: &mut Context<Console>) -> A
                         })),
                 )
                 .child(
-                    Button::new("mimic-unsaved-discard", "Discard")
+                    Button::new("mimic-unsaved-discard", discard)
                         .danger()
                         .on_click(cx.listener(|console, _, window, cx| {
                             answer(console, Answer::Discard, window, cx);
@@ -1201,7 +1239,9 @@ fn check_remote(console: &mut Console) {
     let Some(editor) = edits(console) else {
         return;
     };
-    if editor.base.is_none()
+    // A session shows others' edits as they come.
+    if live::active(editor)
+        || editor.base.is_none()
         || editor.saving.is_some()
         || editor.reloading.is_some()
         || editor.checking.is_some()
@@ -1568,7 +1608,11 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
         return;
     }
     match cmd {
-        Cmd::Save => save(console, None, cx),
+        Cmd::Save => {
+            if !live::save(console, cx) {
+                save(console, None, cx);
+            }
+        }
         Cmd::Pane(pane) => {
             if let Some(editor) = edits(console) {
                 editor.pane = pane;
@@ -1625,6 +1669,10 @@ fn run(console: &mut Console, cmd: Cmd, window: &mut Window, cx: &mut Context<Co
             changed(console, window, cx);
         }
         Cmd::Undo | Cmd::Redo => {
+            if live::undo(console, cmd == Cmd::Redo) {
+                changed(console, window, cx);
+                return;
+            }
             if let Some(editor) = edits(console) {
                 if cmd == Cmd::Undo {
                     editor.history.undo();
@@ -2478,11 +2526,19 @@ pub(super) fn render(
         })
         .collect();
     let marks = stage::marks(editor, hmi, cache.clone(), drawn.clone());
+    let live_bar = live::bar(editor);
+    let peers = live::peer_marks(editor);
+    let labels = live::cursor_labels(&peers, view_camera);
     let bar = Toolbar {
         dirty: editor.history.dirty(),
         saving: editor.saving.is_some(),
-        can_undo: editor.history.can_undo(),
-        can_redo: editor.history.can_redo(),
+        can_undo: live_bar
+            .as_ref()
+            .map_or(editor.history.can_undo(), |b| b.can_undo),
+        can_redo: live_bar
+            .as_ref()
+            .map_or(editor.history.can_redo(), |b| b.can_redo),
+        live: live_bar,
         tool: editor.tool,
         line_type: editor.line_type,
         grid: editor.grid,
@@ -2583,6 +2639,7 @@ pub(super) fn render(
                 panes::drop_tag(console, tag, window, cx);
             }))
             .child(stage_canvas)
+            .children(labels)
             .when_some(connect_hint, |this, hint| {
                 this.child(
                     div()
@@ -2750,6 +2807,8 @@ fn follow_screen(console: &mut Console, window: &mut Window, cx: &mut Context<Co
 
 /// What the bar shows.
 struct Toolbar {
+    /// In a live session: its status and the other people.
+    live: Option<live::Bar>,
     dirty: bool,
     saving: bool,
     can_undo: bool,
@@ -2805,12 +2864,14 @@ fn toolbar(
         .zoom
         .map_or_else(|| "—".to_owned(), |zoom| format!("{:.0}%", zoom * 100.0));
     let separator = || div().flex_none().w(px(1.0)).h(px(16.0)).bg(theme.border);
-    let status = if bar.saving {
-        "Saving…"
+    let status: String = if let Some(live) = &bar.live {
+        live.status.clone()
+    } else if bar.saving {
+        "Saving…".into()
     } else if bar.dirty {
-        "Unsaved changes"
+        "Unsaved changes".into()
     } else {
-        "Saved"
+        "Saved".into()
     };
     let tool_segments = vec![
         Segment::new(
@@ -2845,11 +2906,16 @@ fn toolbar(
             )
         })
         .collect();
+    let in_session = bar.live.is_some();
     let save = Button::new("mimic-edit-save", "Save")
         .icon(Icon::Download)
         .compact()
-        .tooltip("Save  ⌘S")
-        .disabled(!bar.dirty || bar.saving)
+        .tooltip(if in_session {
+            "Write the session's edits to the draft now  ⌘S"
+        } else {
+            "Save  ⌘S"
+        })
+        .disabled(!in_session && (!bar.dirty || bar.saving))
         .on_click(cx.listener(|console, _, window, cx| run(console, Cmd::Save, window, cx)));
     let save = if bar.dirty { save.primary() } else { save };
     div()
@@ -2949,6 +3015,12 @@ fn toolbar(
                 })
                 .whitespace_nowrap()
                 .child(status),
+        )
+        .when_some(
+            bar.live
+                .as_ref()
+                .map(|live| live::avatars(&live.peers, theme)),
+            |this, avatars| this.child(avatars),
         )
         .child(save)
         .child(
@@ -3750,5 +3822,209 @@ mod tests {
             edits_ref(console).and_then(|e| e.bind.as_ref().map(|b| b.prop))
         });
         assert_eq!(open, Some("label"));
+    }
+
+    // ── Live sessions ──
+
+    use voltrus_collab::wire::{self, Handled};
+    use voltrus_collab::yrs::{Doc, Transact};
+    use voltrus_scada_native::designer::collab;
+    use voltrus_scada_native::runtime::{Command, Link};
+    use voltrus_scada_native::ws_types::{ClientMessage, DesignLimits, ServerMessage};
+
+    /// The server's part of a session: answers the console's frames from
+    /// `doc`; the design frames the console sent.
+    fn serve(h: &mut Harness, doc: &Doc) -> Vec<ClientMessage> {
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            let frames: Vec<ClientMessage> = h
+                .commands()
+                .into_iter()
+                .filter_map(|c| match c {
+                    Command::Design(m) => Some(m),
+                    _ => None,
+                })
+                .collect();
+            if frames.is_empty() {
+                break;
+            }
+            for frame in frames {
+                let answers = match &frame {
+                    ClientMessage::DesignJoin { screen, .. } => vec![
+                        ServerMessage::DesignJoined {
+                            screen: screen.clone(),
+                            epoch: "e1".into(),
+                            resync: false,
+                            user: "admin".into(),
+                            color: "#3366ff".into(),
+                            protocol: 1,
+                            limits: DesignLimits {
+                                max_update: 262_144,
+                                max_rate: 50,
+                                max_doc: 5 << 20,
+                                max_awareness: 4096,
+                                flush_ms: 2000,
+                                idle_ms: 0,
+                            },
+                        },
+                        ServerMessage::DesignSync {
+                            screen: screen.clone(),
+                            data: wire::step1(doc),
+                        },
+                    ],
+                    ClientMessage::DesignSync { screen, data } => {
+                        match wire::handle(doc, "console", wire::decode(data).unwrap()).unwrap() {
+                            Handled::Reply(reply) => vec![ServerMessage::DesignSync {
+                                screen: screen.clone(),
+                                data: reply,
+                            }],
+                            Handled::Applied => Vec::new(),
+                        }
+                    }
+                    _ => Vec::new(),
+                };
+                seen.push(frame);
+                for answer in answers {
+                    h.event(crate::console::Event::Design(answer));
+                }
+            }
+        }
+        seen
+    }
+
+    fn server_doc() -> Doc {
+        let layout = Layout {
+            widgets: vec![tank("a", 200.0), tank("b", 600.0)],
+            connections: Vec::new(),
+        };
+        let (eq, cn) = mimic::to_rows(&layout);
+        let doc = Doc::new();
+        voltrus_collab::document::load(&mut doc.transact_mut(), &collab::collab_rows(&eq, &cn));
+        doc
+    }
+
+    fn join(h: &mut Harness, doc: &Doc) {
+        h.update(|console, _, _| live::on_link(console, &Link::Live));
+        serve(h, doc);
+    }
+
+    fn tick(h: &mut Harness) {
+        std::thread::sleep(collab::BATCH);
+        h.update(|console, _, cx| {
+            live::tick(console, cx);
+        });
+    }
+
+    #[gpui::test]
+    fn a_live_session_shares_edits_and_saves_through_the_server(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        let doc = server_doc();
+        join(&mut h, &doc);
+        assert!(h.update(|console, _, _| edits_ref(console).is_some_and(live::active)));
+        // An edit goes into the server's document; nothing is unsaved.
+        move_a(&mut h, 333.0);
+        tick(&mut h);
+        serve(&mut h, &doc);
+        let server = voltrus_collab::document::read(&doc.transact());
+        assert_eq!(server.widgets["a"].0.x, 333.0);
+        assert!(!dirty(&mut h));
+        // A remote edit shows; the selection stays.
+        {
+            use voltrus_collab::yrs::ReadTxn;
+            let sv = doc.transact().state_vector();
+            let mut txn = doc.transact_mut();
+            let mut b = voltrus_collab::document::read(&txn).widgets["b"].0.clone();
+            b.y = 444.0;
+            voltrus_collab::document::put_widget(&mut txn, "b", Some(&b), None);
+            drop(txn);
+            let update = doc.transact().encode_diff_v1(&sv);
+            let screen = h.update(|console, _, _| active(console));
+            h.event(crate::console::Event::Design(ServerMessage::DesignSync {
+                screen,
+                data: wire::update(update),
+            }));
+        }
+        assert_eq!(widget(&mut h, "b").y, 444.0);
+        assert_eq!(
+            h.update(|console, _, _| edits_ref(console).map(|e| e.selection.clone())),
+            Some(vec!["a".to_string()])
+        );
+        // Undo takes back the console's move only.
+        h.update(|console, window, cx| run(console, Cmd::Undo, window, cx));
+        assert_eq!(widget(&mut h, "a").x, 200.0);
+        assert_eq!(widget(&mut h, "b").y, 444.0);
+        // ⌘S asks the server to write the draft: no PUT.
+        h.update(|console, window, cx| run(console, Cmd::Save, window, cx));
+        let sent = serve(&mut h, &doc);
+        assert!(
+            sent.iter()
+                .any(|m| matches!(m, ClientMessage::DesignFlush { .. }))
+        );
+        assert!(saves(&mut h).is_empty());
+    }
+
+    #[gpui::test]
+    fn leaving_a_session_with_unwritten_edits_asks_and_waits_for_the_write(
+        cx: &mut TestAppContext,
+    ) {
+        let mut h = editing_a(cx);
+        let doc = server_doc();
+        join(&mut h, &doc);
+        // Sent to the session (messages 1 and 2 were the join's), not
+        // written to the draft yet.
+        move_a(&mut h, 333.0);
+        tick(&mut h);
+        serve(&mut h, &doc);
+        assert!(!dirty(&mut h), "nothing unsaved in the editor itself");
+        h.update(|console, window, cx| run(console, Cmd::Toggle, window, cx));
+        h.draw();
+        let asking = h.update(|console, _, _| edits_ref(console).and_then(|e| e.asking.clone()));
+        assert_eq!(asking, Some(Leave::Done), "leaving asks first");
+        // Save: the server is asked to write; the Designer waits for it.
+        h.keys("enter");
+        let sent = serve(&mut h, &doc);
+        assert!(
+            sent.iter()
+                .any(|m| matches!(m, ClientMessage::DesignFlush { .. }))
+        );
+        assert!(saves(&mut h).is_empty(), "no whole-layout save");
+        assert!(h.update(|console, _, _| editing(console)), "waits");
+        let screen = h.update(|console, _, _| active(console));
+        h.event(crate::console::Event::Design(
+            ServerMessage::DesignFlushed {
+                screen,
+                seq: 1,
+                at_ms: 0,
+                users: vec!["admin".into()],
+                acked: Some(3),
+            },
+        ));
+        assert!(
+            !h.update(|console, _, _| editing(console)),
+            "left once written"
+        );
+    }
+
+    #[gpui::test]
+    fn without_collaboration_the_editor_saves_layouts(cx: &mut TestAppContext) {
+        let mut h = editing_a(cx);
+        h.update(|console, _, _| live::on_link(console, &Link::Live));
+        let screen = h.update(|console, _, _| active(console));
+        assert!(
+            h.commands()
+                .iter()
+                .any(|c| matches!(c, Command::Design(ClientMessage::DesignJoin { .. })))
+        );
+        h.event(crate::console::Event::Design(ServerMessage::DesignError {
+            screen,
+            code: "disabled".into(),
+            message: "Collaboration is off".into(),
+            reload: false,
+        }));
+        move_a(&mut h, 300.0);
+        tick(&mut h);
+        assert!(dirty(&mut h), "edits stay local until saved");
+        h.update(|console, window, cx| run(console, Cmd::Save, window, cx));
+        assert_eq!(saves(&mut h).len(), 1, "a whole-layout save");
     }
 }

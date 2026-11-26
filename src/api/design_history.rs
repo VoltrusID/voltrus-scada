@@ -165,6 +165,7 @@ pub async fn screen_history(
     Path(id): Path<String>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    flush_live(&state, &id).await;
     Ok(Json(list_changes(&state, q.filter(Some(id))).await?))
 }
 
@@ -204,6 +205,7 @@ pub async fn screen_blame(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
+    flush_live(&state, &id).await;
     let objects = state.storage.design_tx(move |c| h::blame(c, &id)).await?;
     Ok(Json(json!({"objects": objects})))
 }
@@ -221,10 +223,21 @@ pub async fn screen_status(
     State(state): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<impl IntoResponse, AppError> {
-    let status = state
+    let editors = state
+        .collab
+        .session(&id)
+        .map(|s| s.users())
+        .unwrap_or_default();
+    let mut status = state
         .storage
         .design_tx(move |c| h::screen_status(c, &id))
         .await?;
+    let enabled = state.storage.design_settings().await?.collaboration;
+    status["collaboration"] = json!({
+        "enabled": enabled,
+        "protocol": voltrus_collab::PROTOCOL,
+        "editors": editors,
+    });
     Ok(Json(status))
 }
 
@@ -290,6 +303,15 @@ fn version_error(e: anyhow::Error) -> AppError {
     AppError(e)
 }
 
+/// Before reading a screen's draft or history: write a live session's
+/// pending edits, so what is read is what the editors see
+/// (docs/collaboration.md).
+pub(crate) async fn flush_live(state: &AppState, screen: &str) {
+    if let Err(e) = state.collab.flush(state, screen).await {
+        tracing::warn!("collab: writing screen {screen} before a read failed: {e:#}");
+    }
+}
+
 pub async fn create_version(
     state: &AppState,
     user: &AuthUser,
@@ -297,6 +319,9 @@ pub async fn create_version(
     body: CreateVersion,
 ) -> Result<h::Version, AppError> {
     check_text(body.name.as_deref(), &body.message)?;
+    // A version holds what the editors see: a live session's pending edits
+    // are written first, and none lands while the version is recorded.
+    let _collab = state.collab.before_write(state, screen).await;
     let screen = screen.to_string();
     let username = user.username.clone();
     let v = state
@@ -395,6 +420,7 @@ pub async fn get_state(
     Query(q): Query<StateQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     let at = q.at.unwrap_or_else(|| "draft".into());
+    flush_live(&state, &id).await;
     let found = state
         .storage
         .design_tx(move |c| h::resolve_state(c, &id, &at))
@@ -426,6 +452,7 @@ pub async fn diff(
     to: &str,
     with_yaml: bool,
 ) -> Result<Value, AppError> {
+    flush_live(state, screen).await;
     let (screen, from, to) = (screen.to_string(), from.to_string(), to.to_string());
     let out = state
         .storage
@@ -553,6 +580,9 @@ pub async fn revert(
     };
     let actor = actor.with_operation("revert").with_note(note);
     let screen_id = screen.to_string();
+    // Under the screen's collaboration lock: a live session's edits are
+    // written first and the revert reaches its editors at once.
+    let guard = state.collab.before_write(state, screen).await;
     let outcome = state
         .storage
         .design_tx(move |c| {
@@ -562,8 +592,11 @@ pub async fn revert(
                 h::revert_objects(c, &screen_id, &objects, &base, &actor)
             }
         })
-        .await
-        .map_err(version_error)?;
+        .await;
+    if let Some(g) = guard {
+        g.absorb(state).await;
+    }
+    let outcome = outcome.map_err(version_error)?;
     match outcome {
         RevertOutcome::Done {
             batch,
@@ -907,6 +940,9 @@ pub async fn publish(
         check_requester(user, origin)?;
     }
     let stage = if needs_approval { "request" } else { "publish" };
+    // A live session's pending edits are written first, and nothing writes
+    // the draft until the publish is done (docs/collaboration.md).
+    let _collab = state.collab.before_write(state, screen).await;
 
     // Check the base and read what is signed before asking for a signature,
     // so a stale base never consumes one.
@@ -1426,7 +1462,7 @@ pub async fn get_settings(State(state): State<AppState>) -> Result<impl IntoResp
 #[utoipa::path(
     put,
     path = "/api/v1/settings/design-history",
-    request_body(description = "`{publishing?, approval?: none|required, squash_window_secs? (0-3600), squash_after_days? (0-36500), keep_days? (0-36500), signature?}`"),
+    request_body(description = "`{publishing?, approval?: none|required, squash_window_secs? (0-3600), squash_after_days? (0-36500), keep_days? (0-36500), collaboration?, signature?}`"),
     responses(
         (status = 200, description = "The settings"),
         (status = 202, description = "`{status: pending, request}`: a second admin approves it (POST .../approve)"),
@@ -1518,6 +1554,16 @@ pub async fn put_settings(
             .into_response());
     }
     state.storage.save_design_settings(&s).await?;
+    if old.collaboration && !s.collaboration {
+        state
+            .collab
+            .close_all(
+                &state,
+                "disabled",
+                "live collaboration was turned off; the Designer saves whole layouts again",
+            )
+            .await;
+    }
     state.audit_logger.log(crate::security::AuditEvent {
         action: "design_history_settings".into(),
         username: user.username.clone(),

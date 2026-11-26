@@ -162,6 +162,12 @@ use utoipa::{Modify, OpenApi};
         crate::api::layouts::save_scada_connections,
         crate::api::layouts::get_scada_layout,
         crate::api::layouts::save_scada_layout,
+        // Live collaboration (docs/collaboration.md)
+        crate::api::collab::list_sessions,
+        crate::api::collab::list_comments,
+        crate::api::collab::post_comment,
+        crate::api::collab::patch_comment,
+        crate::api::collab::delete_comment,
         // Data Sources
         crate::api::data_sources::list_data_sources,
         crate::api::data_sources::create_data_source,

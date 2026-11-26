@@ -257,7 +257,12 @@ pub async fn run_import(
             .await;
         let actor = super::design_history::actor_for_origin(auth, opts.origin, "import")
             .with_note(format!("Project import ({mode:?})"));
-        project_yaml::apply_import_as(&state.storage, &doc, mode, &actor, publish).await
+        // Live sessions' edits are written before the import and its rows
+        // merged into them after (docs/collaboration.md).
+        state.collab.flush_all(state).await;
+        let r = project_yaml::apply_import_as(&state.storage, &doc, mode, &actor, publish).await;
+        state.collab.absorb_all(state).await;
+        r
     };
     let plan = result.map_err(|e| match find_invalid(&e) {
         Some(invalid) => ImportError::Invalid(invalid.clone()),

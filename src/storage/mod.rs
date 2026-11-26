@@ -8,6 +8,7 @@ mod camera;
 mod config_snapshots_storage;
 mod cq_commands;
 mod cq_policies;
+pub mod design_comments;
 pub mod design_history;
 mod device_crud;
 mod device_layouts;
@@ -54,6 +55,7 @@ mod template_links;
 #[cfg(test)]
 mod tests;
 mod users;
+pub use design_comments::{Comment, CommentPatch, NewComment};
 pub use design_history::DesignActor;
 pub use login_failures::{
     ACCOUNT_BACKOFF_SECS, ACCOUNT_MAX_FAILURES, FAILURE_WINDOW_SECS, FailureOutcome,
@@ -65,11 +67,12 @@ pub use mobile::{
     PairError,
 };
 pub use settings_audit::AuditChainReport;
+pub(crate) use settings_scada::write_some_rows;
 pub use settings_scada::{LayoutBase, LayoutSave, LayoutView};
 pub use settings_seed::{
     INITIAL_ADMIN_PASSWORD_FILE, initial_admin_password_path, remove_initial_admin_password,
 };
-pub use users::DELETED_USER;
+pub use users::{ACCESS, DELETED_USER, access_changed};
 mod voltrus_plc_storage;
 
 use std::sync::{Arc, Mutex};

@@ -80,6 +80,7 @@ async fn test_login_with_seeded_user() {
         smtp_config: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         config_path: "config.yaml".to_string(),
         ws_manager: Arc::new(crate::ws_manager::WsManager::new()),
+        collab: Default::default(),
         mqtt_broker_state: None,
         network_manager: crate::network::NetworkManager::new(vec![]),
         health_monitor: Arc::new(crate::health::watchdog::HealthMonitor::new(
@@ -158,6 +159,7 @@ async fn test_login_invalid_credentials() {
         smtp_config: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         config_path: "config.yaml".to_string(),
         ws_manager: Arc::new(crate::ws_manager::WsManager::new()),
+        collab: Default::default(),
         mqtt_broker_state: None,
         network_manager: crate::network::NetworkManager::new(vec![]),
         health_monitor: Arc::new(crate::health::watchdog::HealthMonitor::new(
@@ -240,6 +242,7 @@ async fn test_full_auth_flow() {
         smtp_config: std::sync::Arc::new(tokio::sync::RwLock::new(None)),
         config_path: "config.yaml".to_string(),
         ws_manager: Arc::new(crate::ws_manager::WsManager::new()),
+        collab: Default::default(),
         mqtt_broker_state: None,
         network_manager: crate::network::NetworkManager::new(vec![]),
         health_monitor: Arc::new(crate::health::watchdog::HealthMonitor::new(

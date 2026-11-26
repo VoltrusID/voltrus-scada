@@ -1540,6 +1540,23 @@ impl History {
         self.present != self.saved
     }
 
+    /// Whether the last edits started a step since [`Self::rebase`] (not
+    /// only joined the running one).
+    pub fn stepped(&self) -> bool {
+        !self.past.is_empty()
+    }
+
+    /// Start again from `layout` as saved, with no steps to undo or redo,
+    /// keeping the running step's key so a drag still coalesces. In a live
+    /// session the shared document holds the edits and their undo
+    /// ([`crate::designer::collab`]); this only carries the present.
+    pub fn rebase(&mut self, layout: Layout) {
+        self.past.clear();
+        self.future.clear();
+        self.saved = layout.clone();
+        self.present = layout;
+    }
+
     /// The server now has `snapshot` (what was sent; edits made while the
     /// save was on its way stay unsaved).
     pub fn mark_saved(&mut self, snapshot: Layout) {

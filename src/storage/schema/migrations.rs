@@ -719,6 +719,45 @@ pub(super) fn run_migrations(conn: &Connection) {
         "ALTER TABLE design_versions ADD COLUMN connections INTEGER NOT NULL DEFAULT -1",
     );
 
+    // Migration: Designer comments (docs/collaboration.md#comments), threads
+    // pinned to a widget, a connection or a point of a screen.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS design_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            screen_id TEXT NOT NULL,
+            parent_id INTEGER,
+            object_id TEXT,
+            object_type TEXT,
+            x REAL NOT NULL DEFAULT 0,
+            y REAL NOT NULL DEFAULT 0,
+            body TEXT NOT NULL,
+            author TEXT NOT NULL,
+            mentions TEXT NOT NULL DEFAULT '[]',
+            resolved INTEGER NOT NULL DEFAULT 0,
+            resolved_by TEXT,
+            resolved_at_ms INTEGER,
+            created_at_ms INTEGER NOT NULL,
+            updated_at_ms INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_design_comments_screen
+            ON design_comments(screen_id, created_at_ms);",
+    );
+    // Migration: who was notified of a mention in which comment, so an edit
+    // never notifies twice; also the per-author rate of notifications.
+    let _ = conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS design_comment_mentions (
+            comment_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            author TEXT NOT NULL,
+            at_ms INTEGER NOT NULL,
+            PRIMARY KEY (comment_id, username)
+        );
+        CREATE INDEX IF NOT EXISTS idx_design_comment_mentions_author
+            ON design_comment_mentions(author, at_ms);
+        CREATE INDEX IF NOT EXISTS idx_design_comments_author
+            ON design_comments(author, created_at_ms);",
+    );
+
     // Migration: alarms raised by a flow's alarm node used to be stored as
     // type 'high' with value, limit and deadband 0. They are 'event' alarms
     // now (limit evaluation never touches them, acknowledging one resolves

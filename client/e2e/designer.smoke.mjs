@@ -45,6 +45,10 @@ const step = msg => console.log(`· ${msg}`)
 
 const login = await context.request.post(`${BASE}/api/v1/auth/login`, { data: { username: 'admin', password: PASSWORD } })
 assert.equal(login.status(), 200, 'admin login')
+// This run covers the single-user Designer (save, conflicts, versions);
+// e2e/collab.smoke.mjs covers live collaboration, on by default.
+const off = await context.request.put(`${BASE}/api/v1/settings/design-history`, { data: { collaboration: false } })
+assert.equal(off.status(), 200, 'collaboration off')
 // A server older than the faceplate API (v0.52) answers 404; the Designer only lists definitions.
 if (process.env.MOCK_FACEPLATES) await page.route('**/api/v1/faceplates', r => r.fulfill({ json: [] }))
 await page.addInitScript(() => localStorage.setItem('voltrus-theme', 'dark'))

@@ -251,6 +251,10 @@ pub enum Command {
         key: CallKey,
         call: Call,
     },
+    /// A frame of the Designer's live collaboration (`Design*`), sent on
+    /// the socket as it is; dropped while the socket is down (the
+    /// Designer joins again when the link is back).
+    Design(ClientMessage),
 }
 
 /// Passwords stay out of logs.
@@ -309,6 +313,7 @@ impl fmt::Debug for Command {
                 .field("base", base)
                 .field("key", key)
                 .finish_non_exhaustive(),
+            Self::Design(message) => f.debug_tuple("Design").field(message).finish(),
         }
     }
 }
@@ -427,6 +432,8 @@ pub enum Event {
         key: CallKey,
         reply: Reply,
     },
+    /// A frame of the Designer's live collaboration (`Design*`).
+    Design(ServerMessage),
 }
 
 /// Cheap handle for sending commands to the actor.
@@ -1052,6 +1059,11 @@ impl Actor {
                 }
                 if let Some(socket) = self.session.as_ref().and_then(|s| s.socket.as_ref()) {
                     let _ = socket.try_send(ClientMessage::Subscribe { tag_ids: tags });
+                }
+            }
+            Command::Design(message) => {
+                if let Some(socket) = self.session.as_ref().and_then(|s| s.socket.as_ref()) {
+                    let _ = socket.try_send(message);
                 }
             }
             Command::Write { id, value } => self.write(id, value, None),
@@ -1863,6 +1875,14 @@ impl Actor {
             }),
             ServerMessage::AuthOk { .. } | ServerMessage::Pong | ServerMessage::HaStatus { .. } => {
             }
+            design @ (ServerMessage::DesignJoined { .. }
+            | ServerMessage::DesignSync { .. }
+            | ServerMessage::DesignAwareness { .. }
+            | ServerMessage::DesignError { .. }
+            | ServerMessage::DesignRejected { .. }
+            | ServerMessage::DesignFlushed { .. }
+            | ServerMessage::DesignSessions { .. }
+            | ServerMessage::DesignComment { .. }) => self.out.send(Event::Design(design)),
         }
     }
 }

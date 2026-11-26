@@ -269,6 +269,11 @@ impl WsManager {
         self.broadcast_preencoded(&msg);
     }
 
+    /// Whether a connection is open.
+    pub fn has_connection(&self, conn_id: &str) -> bool {
+        self.connections.contains_key(conn_id)
+    }
+
     /// Current number of active connections.
     pub fn connection_count(&self) -> usize {
         self.connections.len()

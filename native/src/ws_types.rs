@@ -65,6 +65,32 @@ pub enum ClientMessage {
         signature: Option<Signature>,
     },
     Ping,
+    /// Join the live editing session of a screen (docs/collaboration.md).
+    DesignJoin {
+        screen: String,
+        protocol: u32,
+        #[serde(default)]
+        epoch: Option<String>,
+    },
+    /// One y-sync v1 message: step 1, step 2 or update.
+    DesignSync {
+        screen: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    /// A y-protocols awareness update: this console's presence.
+    DesignAwareness {
+        screen: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    DesignLeave {
+        screen: String,
+    },
+    /// Write the session's pending edits to the draft now (⌘S).
+    DesignFlush {
+        screen: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,4 +157,89 @@ pub enum ServerMessage {
         peer_id: Option<String>,
         failover_ts: Option<String>,
     },
+    DesignJoined {
+        screen: String,
+        epoch: String,
+        resync: bool,
+        user: String,
+        color: String,
+        protocol: u32,
+        limits: DesignLimits,
+    },
+    DesignSync {
+        screen: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    DesignAwareness {
+        screen: String,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+    DesignError {
+        screen: String,
+        code: String,
+        message: String,
+        reload: bool,
+    },
+    DesignRejected {
+        screen: String,
+        objects: Vec<DesignRejectedObject>,
+    },
+    /// The screen's edits were written to its draft (`seq` the change-log
+    /// head, `users` whose edits it holds: empty for an acknowledgement
+    /// alone). `acked`: how many of this connection's `DesignSync` messages
+    /// since its latest `DesignJoined` the written state covers (missing on
+    /// older servers).
+    DesignFlushed {
+        screen: String,
+        seq: i64,
+        at_ms: i64,
+        users: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        acked: Option<u64>,
+    },
+    DesignSessions {
+        sessions: Vec<DesignSessionInfo>,
+    },
+    DesignComment {
+        screen: String,
+        event: String,
+        comment: serde_json::Value,
+    },
+}
+
+/// The limits a collaboration session enforces, told when joining.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignLimits {
+    pub max_update: usize,
+    pub max_rate: u32,
+    pub max_doc: usize,
+    pub max_awareness: usize,
+    pub flush_ms: u64,
+    /// A member that sends nothing this long is removed (`DesignError`
+    /// `idle`), ms; 0 (an older server) means 120 000.
+    #[serde(default)]
+    pub idle_ms: u64,
+}
+
+/// An object a flush put back, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignRejectedObject {
+    pub object_type: String,
+    pub object_id: String,
+    pub reason: String,
+}
+
+/// The people editing one screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignSessionInfo {
+    pub screen: String,
+    pub users: Vec<DesignUser>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DesignUser {
+    pub user: String,
+    pub color: String,
 }

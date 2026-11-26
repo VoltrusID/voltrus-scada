@@ -51,6 +51,28 @@ export interface AlarmUpdateEvent {
   ts: number;
 }
 
+/** Live collaboration frames from the server (docs/collaboration.md). */
+export interface DesignLimits { max_update: number; max_rate: number; max_doc: number; max_awareness: number; flush_ms: number; idle_ms?: number }
+export interface DesignUser { user: string; color: string }
+export interface DesignSessionInfo { screen: string; users: DesignUser[] }
+export type DesignServerMessage =
+  | { type: 'DesignJoined'; screen: string; epoch: string; resync: boolean; user: string; color: string; protocol: number; limits: DesignLimits }
+  | { type: 'DesignSync'; screen: string; data: Uint8Array }
+  | { type: 'DesignAwareness'; screen: string; data: Uint8Array }
+  | { type: 'DesignError'; screen: string; code: string; message: string; reload: boolean }
+  | { type: 'DesignRejected'; screen: string; objects: { object_type: string; object_id: string; reason: string }[] }
+  | { type: 'DesignFlushed'; screen: string; seq: number; at_ms: number; users: string[]; acked?: number }
+  | { type: 'DesignSessions'; sessions: DesignSessionInfo[] }
+  | { type: 'DesignComment'; screen: string; event: 'created' | 'updated' | 'deleted'; comment: Record<string, unknown> }
+export type DesignClientMessage =
+  | { type: 'DesignJoin'; screen: string; protocol: number; epoch?: string | null }
+  | { type: 'DesignSync'; screen: string; data: Uint8Array }
+  | { type: 'DesignAwareness'; screen: string; data: Uint8Array }
+  | { type: 'DesignLeave'; screen: string }
+  | { type: 'DesignFlush'; screen: string }
+
+type DesignCallback = (msg: DesignServerMessage) => void;
+
 type TagUpdateCallback = (update: TagUpdate) => void;
 type TagBatchCallback = (updates: TagUpdate[]) => void;
 type CommandAckCallback = (ack: CommandAck) => void;
@@ -121,6 +143,7 @@ export class VoltrusWebSocket {
   private deviceStatusCallbacks: DeviceStatusCallback[] = [];
   private disconnectCallbacks: DisconnectCallback[] = [];
   private transportCallbacks: TransportCallback[] = [];
+  private designCallbacks: DesignCallback[] = [];
   private url = '';
   private sseUrl = '';
   private token = '';
@@ -423,6 +446,10 @@ export class VoltrusWebSocket {
       case 'DeviceStatus':
         this.deviceStatusCallbacks.forEach(cb => cb(msg as unknown as DeviceStatus));
         break;
+      default:
+        if (typeof msg.type === 'string' && msg.type.startsWith('Design')) {
+          this.designCallbacks.forEach(cb => cb(msg as unknown as DesignServerMessage));
+        }
     }
   }
 
@@ -479,6 +506,7 @@ export class VoltrusWebSocket {
     this.disconnectCallbacks = [];
     this.transportCallbacks = [];
     this.connectCallbacks = [];
+    this.designCallbacks = [];
   }
 
   isConnected(): boolean {
@@ -502,6 +530,17 @@ export class VoltrusWebSocket {
   onDeviceStatus(cb: DeviceStatusCallback): void { addUnique(this.deviceStatusCallbacks, cb); }
   onDisconnect(cb: DisconnectCallback): void { addUnique(this.disconnectCallbacks, cb); }
   onConnect(cb: () => void): void { addUnique(this.connectCallbacks, cb); }
+  offConnect(cb: () => void): void { this.connectCallbacks = this.connectCallbacks.filter(c => c !== cb); }
+  offDisconnect(cb: DisconnectCallback): void { this.disconnectCallbacks = this.disconnectCallbacks.filter(c => c !== cb); }
+  onDesign(cb: DesignCallback): void { addUnique(this.designCallbacks, cb); }
+  offDesign(cb: DesignCallback): void { this.designCallbacks = this.designCallbacks.filter(c => c !== cb); }
+
+  /** Send a collaboration frame. False when the WebSocket is not open (the SSE fallback cannot carry them). */
+  sendDesign(msg: DesignClientMessage): boolean {
+    if (this.transport !== 'ws' || this.ws?.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(encode(msg));
+    return true;
+  }
   /** Called when the live data switches between the WebSocket and the SSE fallback. */
   onTransportChange(cb: TransportCallback): void { addUnique(this.transportCallbacks, cb); }
 
