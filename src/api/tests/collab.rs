@@ -1288,13 +1288,17 @@ async fn bad_shapes_are_put_back_field_by_field_as_they_arrive() {
         (0.0, Some("Fine"))
     );
 
-    // A stream of bad edits sends its author away.
+    // A stream of bad edits sends its author away. Each edit is made on top
+    // of the put-back before it, as a client does: an edit concurrent with
+    // the put-back of the same field can lose to it (concurrent writes of a
+    // map key are ordered by client id), and then nothing is put back.
     for i in 0..crate::collab::MAX_STRIKES + 1 {
         if !member(&t, "ca") {
             break;
         }
         a.edit(&t, |txn| change(txn, "c", |w| w.width = -1.0 - i as f64))
             .await;
+        a.pump(&t).await;
     }
     a.pump(&t).await;
     assert!(
