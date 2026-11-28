@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "native", "collab"]
+members = [".", "native", "collab", "dissect"]
 exclude = ["enterprise"]
 resolver = "2"
 
@@ -121,6 +121,8 @@ toml = "0.8"
 # Live collaboration in the Designer (docs/collaboration.md): the screen
 # document as a Yjs CRDT, shared with the native console.
 voltrus-collab = { path = "collab" }
+# Protocol traffic decoding for the per-device Traffic view (docs/traffic.md).
+voltrus-dissect = { path = "dissect" }
 # MessagePack `bin` for the collaboration frames (`ws_types`).
 serde_bytes = "0.11"
 

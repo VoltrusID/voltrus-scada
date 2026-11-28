@@ -49,6 +49,7 @@ const READ_TOOLS: &[&str] = &[
     "list_changes",
     "list_versions",
     "diff_versions",
+    "get_device_traffic",
 ];
 
 /// Admin sessions only; API and integration keys are refused.
@@ -2724,4 +2725,46 @@ async fn mcp_version_history_tools() {
         listed["status"]["published"]["name"],
         done["version"]["name"]
     );
+}
+
+#[cfg(feature = "modbus")]
+#[tokio::test]
+async fn get_device_traffic_is_for_operating_roles() {
+    let f = fixture().await;
+    let (s, b) = send_request(
+        &f.app,
+        "POST",
+        "/api/v1/modbus-devices",
+        None,
+        Some(&f.admin_cookie()),
+        Some(json!({"id": "plc-9", "name": "PLC", "ip": "127.0.0.1", "port": 1, "registers": []})),
+    )
+    .await;
+    assert!(s.is_success(), "{b}");
+    let err = tool_err(
+        &f.app,
+        Auth::Bearer(&f.api_key),
+        "get_device_traffic",
+        json!({"device_id": "plc-9"}),
+    )
+    .await;
+    assert!(err.contains("operate the plant"), "{err}");
+    let out = ok(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "get_device_traffic",
+        json!({"device_id": "plc-9", "errors": true}),
+    )
+    .await;
+    assert_eq!(out["capturing"], true);
+    assert_eq!(out["protocol"], "modbus_tcp");
+    assert!(out["note"].as_str().unwrap().contains("Capture started"));
+    let err = tool_err(
+        &f.app,
+        Auth::Bearer(&f.integration_key),
+        "get_device_traffic",
+        json!({"device_id": "nope"}),
+    )
+    .await;
+    assert!(err.contains("no Modbus device"), "{err}");
 }

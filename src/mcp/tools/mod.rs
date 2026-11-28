@@ -28,6 +28,8 @@ mod screens;
 mod system;
 mod tags;
 mod templates;
+#[cfg(feature = "modbus")]
+mod traffic;
 
 /// Which principals may call a tool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,6 +125,8 @@ static REGISTRY: LazyLock<Vec<Tool>> = LazyLock::new(|| {
     tools.extend(equipment::tools());
     tools.extend(history::tools());
     tools.extend(project::tools());
+    #[cfg(feature = "modbus")]
+    tools.extend(traffic::tools());
     tools
 });
 

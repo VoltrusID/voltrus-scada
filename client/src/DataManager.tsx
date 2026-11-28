@@ -283,7 +283,7 @@ export function DataManager({ sensors, onSave, onDelete, onAdd, onDuplicate, onC
             />
           )}
           {tab === 'modbus' && (
-            <ModbusDeviceManager onClose={onClose} embedded isStrictAdmin={isStrictAdmin} />
+            <ModbusDeviceManager onClose={onClose} embedded isStrictAdmin={isStrictAdmin} canOperate={canOperate} />
           )}
           {tab === 'users' && isStrictAdmin && (
             <UserManager onClose={onClose} embedded />

@@ -710,7 +710,9 @@ pub(crate) async fn serve(
     // Shared Modbus connection pool (used by both command queue and direct writes)
     #[cfg(feature = "modbus")]
     let modbus_pool = std::sync::Arc::new(
-        crate::modbus::ModbusPool::new().with_network_manager(network_manager.clone()),
+        crate::modbus::ModbusPool::new()
+            .with_network_manager(network_manager.clone())
+            .with_traffic(cache.traffic().clone()),
     );
 
     // Spawn command queue processor

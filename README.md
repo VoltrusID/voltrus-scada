@@ -110,6 +110,11 @@ from source.
   second confirming call by default, calls are rate limited per key, and
   `mcp.read_only: true` turns every write tool off. See
   [docs/mcp.md](docs/mcp.md).
+* **Protocol traffic:** per-device view of the Modbus TCP requests and
+  responses, decoded with Wireshark's field names, paired and timed, with
+  exceptions explained (02: check the base-0/base-1 offset) and each frame
+  linked to its tags; also over MCP (`get_device_traffic`). Checked against
+  tshark in the tests. See [docs/traffic.md](docs/traffic.md).
 * **AI copilot (optional):** drafts register maps, dashboards, alarm
   thresholds and flows for an engineer to review. Bring your own provider:
   OpenAI, Anthropic, or any OpenAI-compatible server at a base URL you set

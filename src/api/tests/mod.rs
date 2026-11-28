@@ -53,6 +53,8 @@ mod status_codes;
 mod strict_bodies;
 mod system;
 mod tag_tree;
+#[cfg(feature = "modbus")]
+mod traffic;
 mod ui_preferences;
 mod users;
 mod vertical_templates;

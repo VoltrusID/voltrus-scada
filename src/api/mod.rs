@@ -76,6 +76,8 @@ mod tag_tree;
 mod telemetry_delete;
 #[cfg(feature = "modbus")]
 pub(crate) mod template_links;
+#[cfg(feature = "modbus")]
+pub(crate) mod traffic;
 pub(crate) mod ui;
 mod user_notifications;
 mod vertical_templates;
@@ -370,6 +372,19 @@ async fn node_role_middleware(req: Request, next: Next) -> axum::response::Respo
 }
 
 // --- Protocol route helper functions (cfg-gated) ---
+
+/// Protocol traffic (docs/traffic.md). It can carry setpoints and other plant
+/// data, so it is for the roles that operate the plant: operators read it when
+/// troubleshooting a device; viewers and read-only `api` keys may not.
+fn operator_traffic_routes() -> Router<AppState> {
+    let r = Router::new();
+    #[cfg(feature = "modbus")]
+    let r = r.route(
+        "/api/v1/devices/{id}/traffic",
+        get(traffic::get_device_traffic),
+    );
+    r
+}
 
 #[cfg(feature = "modbus")]
 fn modbus_routes() -> Router<AppState> {
@@ -1171,6 +1186,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/oee/downtime", post(oee::create_downtime))
         .route("/api/v1/oee/downtime/{id}/close", put(oee::close_downtime))
         .merge(ext_routes.operate)
+        .merge(operator_traffic_routes())
         .layer(middleware::from_fn(operator_allowed_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
