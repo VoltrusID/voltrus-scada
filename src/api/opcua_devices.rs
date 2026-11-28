@@ -4,15 +4,9 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde_json::json;
 
-use opcua::client::{ClientBuilder, IdentityToken, UARequest, services::Browse};
-use opcua::types::{
-    BrowseDescription, BrowseDescriptionResultMask, BrowseDirection, NodeClass, NodeClassMask,
-    NodeId, UserTokenPolicy,
-};
-
 use crate::api::{AppError, AppState, AuthUser};
 use crate::models::*;
-use crate::opcua::{security_mode_to_opcua, security_policy_to_str};
+use crate::opcua::{PKI_DIR, ServerTarget, browse_objects};
 
 // ── Device CRUD ──
 
@@ -372,8 +366,8 @@ pub async fn remove_node(
 /// POST /api/v1/opcua/devices/{id}/browse
 ///
 /// Connects to the OPC-UA server using the device's stored config and returns
-/// available variable nodes from the ObjectsFolder.
-/// POST /api/v1/opcua/devices/{id}/browse
+/// the objects and variables in the ObjectsFolder. The server certificate is
+/// checked as the poller checks it, and the session is closed afterwards.
 #[utoipa::path(
     post,
     operation_id = "opcua_browse_device",
@@ -383,6 +377,8 @@ pub async fn remove_node(
         (status = 200, body = serde_json::Value),
         (status = 400),
         (status = 403),
+        (status = 404),
+        (status = 500, description = "Connection or browse failed; `error` says why, e.g. an untrusted server certificate and where it was saved"),
     ),
     tag = "Devices",
     security(("api_key" = []), ("cookie_auth" = []))
@@ -396,134 +392,27 @@ pub async fn browse_device(
         return Err(AppError::forbidden("Admin access required"));
     }
 
-    // Load device from DB
     let devices = state.storage.list_opcua_devices().await?;
     let device = devices
         .iter()
         .find(|d| d.id == id)
-        .ok_or_else(|| AppError(anyhow::anyhow!("Device not found")))?;
+        .ok_or_else(|| AppError::not_found("Device not found"))?;
 
-    // Connect to OPC-UA server (temporary connection for browsing)
-    let mut client = ClientBuilder::new()
-        .application_name("Voltrus Browse")
-        .application_uri("urn:voltrus-lite")
-        .trust_server_certs(true)
-        .create_sample_keypair(true)
-        .client()
-        .map_err(|e| AppError(anyhow::anyhow!("Client build errors: {:?}", e)))?;
-
-    let security_policy_str = security_policy_to_str(&device.security_policy);
-    let message_security_mode = security_mode_to_opcua(&device.security_mode);
-
-    let user_token_policy = match (&device.username, &device.password) {
-        (Some(_), Some(_)) => UserTokenPolicy {
-            policy_id: opcua::types::UAString::from("voltrus-credential"),
-            token_type: opcua::types::UserTokenType::UserName,
-            issued_token_type: opcua::types::UAString::null(),
-            issuer_endpoint_url: opcua::types::UAString::null(),
-            security_policy_uri: opcua::types::UAString::null(),
-        },
-        _ => UserTokenPolicy::anonymous(),
-    };
-
-    let endpoint = opcua::types::EndpointDescription::from((
-        device.url.as_str(),
-        security_policy_str,
-        message_security_mode,
-        user_token_policy,
-    ));
-
-    let identity_token = match (&device.username, &device.password) {
-        (Some(user), Some(pass)) => IdentityToken::new_user_name(user.clone(), pass.clone()),
-        _ => IdentityToken::Anonymous,
-    };
-
-    let (session, event_loop) = client
-        .connect_to_matching_endpoint(endpoint, identity_token)
-        .await
-        .map_err(|e| AppError(anyhow::anyhow!("OPC-UA connection failed: {:?}", e)))?;
-
-    let mut event_handle = event_loop.spawn();
-
-    // Wait for connection using the same pattern as opcua.rs
-    let connection_result: Result<(), AppError> = tokio::select! {
-        connected = session.wait_for_connection() => {
-            if connected {
-                Ok(())
-            } else {
-                Err(AppError(anyhow::anyhow!("OPC-UA session failed to connect")))
-            }
-        }
-        event_result = &mut event_handle => {
-            match event_result {
-                Ok(code) => Err(AppError(anyhow::anyhow!(
-                    "OPC-UA event loop ended with status {}", code
-                ))),
-                Err(e) => Err(AppError(anyhow::anyhow!(
-                    "OPC-UA event loop panicked: {}", e
-                ))),
-            }
-        }
-    };
-    connection_result?;
-
-    // Browse the ObjectsFolder using the Browse builder
-    let objects_folder = NodeId::objects_folder_id();
-
-    let browse_desc = BrowseDescription {
-        node_id: objects_folder,
-        browse_direction: BrowseDirection::Forward,
-        reference_type_id: NodeId::null(),
-        include_subtypes: true,
-        node_class_mask: NodeClassMask::OBJECT.bits() | NodeClassMask::VARIABLE.bits(),
-        result_mask: BrowseDescriptionResultMask::RESULT_MASK_NODE_CLASS.bits()
-            | BrowseDescriptionResultMask::RESULT_MASK_BROWSE_NAME.bits()
-            | BrowseDescriptionResultMask::RESULT_MASK_DISPLAY_NAME.bits()
-            | BrowseDescriptionResultMask::RESULT_MASK_TYPE_DEFINITION.bits(),
-    };
-
-    let browse_response = Browse::new(&session)
-        .browse_node(browse_desc)
-        .send(session.channel())
-        .await
-        .map_err(|e| AppError(anyhow::anyhow!("Browse request failed: {:?}", e)))?;
-
-    let mut nodes = Vec::new();
-    if let Some(results) = browse_response.results {
-        for result in &results {
-            if !result.status_code.is_good() {
-                continue;
-            }
-            if let Some(refs) = &result.references {
-                for reference in refs {
-                    // Include Variable nodes and Object nodes (objects may contain sub-variables)
-                    if reference.node_class == NodeClass::Variable
-                        || reference.node_class == NodeClass::Object
-                    {
-                        let node_id_str = reference.node_id.to_string();
-                        let browse_name = reference.browse_name.to_string();
-                        let display_name = reference.display_name.to_string();
-                        let node_class_str = match reference.node_class {
-                            NodeClass::Variable => "Variable",
-                            NodeClass::Object => "Object",
-                            _ => "Unknown",
-                        };
-
-                        nodes.push(json!({
-                            "node_id": node_id_str,
-                            "browse_name": browse_name,
-                            "display_name": display_name,
-                            "node_class": node_class_str,
-                        }));
-                    }
-                }
-            }
-        }
-    }
-
-    // Disconnect gracefully
-    drop(session);
-    drop(event_handle);
+    // A short-lived session with the poller's certificate trust: a secure
+    // endpoint whose certificate is not in pki/trusted is refused, and the
+    // error says where the refused certificate went.
+    let nodes = browse_objects(&ServerTarget::from(device), std::path::Path::new(PKI_DIR)).await?;
+    let nodes: Vec<_> = nodes
+        .into_iter()
+        .map(|n| {
+            json!({
+                "node_id": n.node_id,
+                "browse_name": n.browse_name,
+                "display_name": n.display_name,
+                "node_class": n.node_class,
+            })
+        })
+        .collect();
 
     Ok(Json(json!({
         "nodes": nodes,

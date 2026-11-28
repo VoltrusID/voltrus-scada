@@ -280,6 +280,7 @@ export function OpcUaDeviceManager({ onClose, embedded }: { onClose: () => void;
       {browseDeviceId !== null && (
         <BrowseDialog
           isLoading={browseMut.isPending}
+          error={browseMut.error?.message ?? null}
           results={browseResults}
           selectedNodes={selectedNodes}
           onToggleNode={(nodeId) => {
@@ -369,8 +370,9 @@ function ExpandedNodes({ deviceId, onDeleteNode }: { deviceId: number; onDeleteN
   )
 }
 
-function BrowseDialog({ isLoading, results, selectedNodes, onToggleNode, onAdd, onClose }: {
+function BrowseDialog({ isLoading, error, results, selectedNodes, onToggleNode, onAdd, onClose }: {
   isLoading: boolean
+  error: string | null
   results: BrowseResult[]
   selectedNodes: Set<string>
   onToggleNode: (nodeId: string) => void
@@ -406,6 +408,8 @@ function BrowseDialog({ isLoading, results, selectedNodes, onToggleNode, onAdd, 
 
         {isLoading ? (
           <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)' }}>Browsing server...</div>
+        ) : error ? (
+          <div role="alert" style={{ padding: 16, color: 'var(--crit)', fontSize: 13, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{error}</div>
         ) : results.length === 0 ? (
           <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)' }}>No nodes found on this server.</div>
         ) : (
