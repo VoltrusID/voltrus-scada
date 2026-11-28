@@ -308,8 +308,8 @@ async fn register_map_with_a_6_digit_address_or_unknown_type_is_refused() {
             "6-digit references are not supported",
         ),
         (
-            json!({"name": "v", "address": 40001, "register_type": "uint32"}),
-            "register_type 'uint32' is not supported",
+            json!({"name": "v", "address": 40001, "register_type": "uint8"}),
+            "register_type 'uint8' is not supported",
         ),
         (
             json!({"name": "v", "address": 40001, "register_type": "bool"}),

@@ -67,11 +67,7 @@ pub fn register_width(register_type: &str, area: &str) -> i64 {
     if matches!(area, "coil" | "discrete") {
         return 1;
     }
-    match register_type {
-        "int16" | "uint16" => 1,
-        "float64" => 4,
-        _ => 2,
-    }
+    i64::from(crate::models::register_type_width(register_type))
 }
 
 /// `register name → base + offset` of the roles of `inst` (of type `t`) that

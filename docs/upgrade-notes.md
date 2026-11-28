@@ -6,6 +6,21 @@ page is where such changes are written down. Newest release first.
 
 ## Unreleased
 
+### Modbus 32- and 64-bit integer registers
+
+Modbus registers take three more types: `uint32` (2 registers), `int64` and
+`uint64` (4 registers), in the device's word order like `int32` and
+`float64`. They are accepted everywhere a register type is (REST, MCP,
+project files, device templates, device file import, the AI register mapper).
+Before, an unsigned 32-bit value had to be read as `int32` (wrong above
+2147483647) and a 64-bit counter could not be read at all. Values are still
+64-bit floats inside Voltrus, so a 64-bit integer is exact only up to 2^53
+(9 007 199 254 740 992); larger ones are rounded. A script that relied on
+`uint32` being refused gets it accepted now. The built-in device templates now
+map the simulators' 64-bit counters (`uint64`) instead of leaving them out, and
+the Schneider PM5560 template has the meter's energy registers (see
+[device-templates.md](device-templates.md#schneider-pm5560)).
+
 ### Designer live collaboration
 
 Phase 4 of the Designer ([collaboration.md](collaboration.md)). Several

@@ -153,7 +153,7 @@ mod tests {
     fn enum_fields_reject_unknown_values_naming_the_field_and_the_choices() {
         let errs = entity_errors(
             "modbus_devices",
-            "{id: m1, name: M1, ip: 10.0.0.1, endianness: middle, registers: [{name: a, address: 0, register_type: uint32}]}",
+            "{id: m1, name: M1, ip: 10.0.0.1, endianness: middle, registers: [{name: a, address: 0, register_type: uint8}]}",
         );
         assert_eq!(errs.len(), 2, "{errs:?}");
         assert!(
@@ -163,7 +163,8 @@ mod tests {
         );
         assert!(
             errs[1].contains("registers[0].register_type")
-                && errs[1].contains("int16, uint16, int32, float32, float64"),
+                && errs[1]
+                    .contains("int16, uint16, int32, uint32, int64, uint64, float32, float64"),
             "{errs:?}"
         );
         let ok = entity_errors(

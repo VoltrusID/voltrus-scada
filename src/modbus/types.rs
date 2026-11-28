@@ -1,5 +1,11 @@
 use crate::models::*;
 
+/// The value of a register from its words (as many as `reg_type.width()`).
+///
+/// Values are `f64` from here on (cache, history, alarms), so a 64-bit
+/// integer is exact only up to 2^53 (9 007 199 254 740 992) in magnitude and
+/// rounded to the nearest representable value beyond. An energy counter in Wh
+/// gets there after about a million years at 1 GW.
 pub fn parse_register(words: &[u16], reg_type: &RegisterType, endianness: &Endianness) -> f64 {
     match reg_type {
         RegisterType::Uint16 => words[0] as f64,
@@ -8,6 +14,9 @@ pub fn parse_register(words: &[u16], reg_type: &RegisterType, endianness: &Endia
             let raw = combine_u16(words[0], words[1], endianness);
             raw as i32 as f64
         }
+        RegisterType::Uint32 => combine_u16(words[0], words[1], endianness) as f64,
+        RegisterType::Int64 => combine_u64(words, endianness) as i64 as f64,
+        RegisterType::Uint64 => combine_u64(words, endianness) as f64,
         RegisterType::Float32 => {
             let raw = combine_u16(words[0], words[1], endianness);
             f32::from_bits(raw) as f64
@@ -70,6 +79,9 @@ pub(crate) fn value_to_words(
             let raw = (value as i32) as u32;
             split_u32(raw, endianness)
         }
+        RegisterType::Uint32 => split_u32(value as u32, endianness),
+        RegisterType::Int64 => split_u64(value as i64 as u64, endianness),
+        RegisterType::Uint64 => split_u64(value as u64, endianness),
         RegisterType::Float32 => {
             let raw = (value as f32).to_bits();
             split_u32(raw, endianness)
@@ -107,6 +119,17 @@ pub(crate) fn encode_register(
         }
         Ok(rounded)
     };
+    // `max` is exclusive here: it is the first value past the type's range.
+    let integer64 = |min: f64, max: f64, type_name: &str| -> Result<f64, String> {
+        let rounded = raw.round();
+        if rounded < min || rounded >= max {
+            return Err(format!(
+                "Value {value} is raw {raw} on register '{}', outside the {type_name} range",
+                register.name
+            ));
+        }
+        Ok(rounded)
+    };
     Ok(match register.reg_type {
         RegisterType::Uint16 => vec![integer(0.0, u16::MAX as f64, "uint16")? as u16],
         RegisterType::Int16 => {
@@ -115,6 +138,20 @@ pub(crate) fn encode_register(
         RegisterType::Int32 => {
             let raw = integer(i32::MIN as f64, i32::MAX as f64, "int32")? as i32;
             split_u32(raw as u32, endianness)
+        }
+        RegisterType::Uint32 => {
+            split_u32(integer(0.0, u32::MAX as f64, "uint32")? as u32, endianness)
+        }
+        // The f64 bounds are the nearest values to the integer limits: i64::MAX
+        // and u64::MAX round up to 2^63 and 2^64, which do not fit, so the upper
+        // check is exclusive (an f64 just below them is in range).
+        RegisterType::Int64 => {
+            let raw = integer64(-(2f64.powi(63)), 2f64.powi(63), "int64")?;
+            split_u64(raw as i64 as u64, endianness)
+        }
+        RegisterType::Uint64 => {
+            let raw = integer64(0.0, 2f64.powi(64), "uint64")?;
+            split_u64(raw as u64, endianness)
         }
         RegisterType::Float32 => {
             if raw.abs() > f32::MAX as f64 {

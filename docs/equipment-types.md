@@ -104,8 +104,8 @@ For every role of the type, in order:
    device without a register of that key, a register is added at
    `base + offset` (a device that follows a device template refuses). It may not
    overlap any register of the device in the same area, counting the width of
-   each type (`int16`/`uint16` one register, `int32`/`float32` two, `float64`
-   four; coils and discrete inputs one bit): `P-202` at base 102 next to `P-201`
+   each type (`int16`/`uint16` one register, `int32`/`uint32`/`float32` two,
+   `int64`/`uint64`/`float64` four; coils and discrete inputs one bit): `P-202` at base 102 next to `P-201`
    at base 100 is refused, naming `p201_fault`. When the register exists at
    another address, it is moved to `base + offset` only if it is the instance's
    own (where its previous base and offset put it: the base or an offset

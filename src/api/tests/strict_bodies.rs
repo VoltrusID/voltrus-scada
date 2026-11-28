@@ -155,19 +155,16 @@ async fn modbus_routes_reject_unknown_register_types() {
         Some(
             json!({"id": "m1", "name": "M1", "ip": "127.0.0.1", "registers": [
                 {"name": "a", "address": 0},
-                {"name": "b", "address": 2, "register_type": "uint32"}
+                {"name": "b", "address": 2, "register_type": "uint8"}
             ]}),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     let msg = error_of(&body);
+    assert!(msg.contains("register 2: register_type \"uint8\""), "{msg}");
     assert!(
-        msg.contains("register 2: register_type \"uint32\""),
-        "{msg}"
-    );
-    assert!(
-        msg.contains("int16, uint16, int32, float32, float64"),
+        msg.contains("int16, uint16, int32, uint32, int64, uint64, float32, float64"),
         "{msg}"
     );
 

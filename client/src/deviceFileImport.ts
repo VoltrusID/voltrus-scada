@@ -52,7 +52,7 @@ export interface ParsedDeviceFile<T> {
   errors: string[]
 }
 
-export const MODBUS_TYPES = ['int16', 'uint16', 'int32', 'float32', 'float64']
+export const MODBUS_TYPES = ['int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64', 'float32', 'float64']
 export const MODBUS_AREAS = ['holding', 'input', 'coil', 'discrete']
 /** Register orders of 32- and 64-bit values. The `_dword` ones keep the
  *  float64 layout `little` and `swapped` had up to v0.51

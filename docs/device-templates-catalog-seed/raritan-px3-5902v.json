@@ -10,7 +10,7 @@
   "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
   "quirks": [
     "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0.",
-    "Not mapped: unsigned 64-bit counters (Energy_Total (offset 16, kWh)) because the poller has no uint64 type; their 4 registers each are still counted in the offsets."
+    "64-bit counters, 4 registers each, most significant word first. Values above 2^53 (9.0e15) lose precision."
   ],
   "license": "CC-BY-4.0",
   "port": 502,
@@ -88,6 +88,15 @@
       "register_area": "holding",
       "scale": 1.0,
       "description": "PDU overall power factor"
+    },
+    {
+      "name": "Energy_Total",
+      "offset": 16,
+      "register_type": "uint64",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "kWh",
+      "description": "Cumulative energy"
     },
     {
       "name": "Temperature_Inlet",

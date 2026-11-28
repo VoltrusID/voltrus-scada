@@ -653,13 +653,63 @@ pub enum RegisterType {
     Int16,
     Uint16,
     Int32,
+    Uint32,
+    Int64,
+    Uint64,
     Float32,
     Float64,
 }
 
 impl RegisterType {
     /// The names the Modbus driver reads, as stored in `modbus_registers.register_type`.
-    pub const NAMES: [&'static str; 5] = ["int16", "uint16", "int32", "float32", "float64"];
+    pub const NAMES: [&'static str; 8] = [
+        "int16", "uint16", "int32", "uint32", "int64", "uint64", "float32", "float64",
+    ];
+
+    /// The type a stored name stands for.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "int16" => Self::Int16,
+            "uint16" => Self::Uint16,
+            "int32" => Self::Int32,
+            "uint32" => Self::Uint32,
+            "int64" => Self::Int64,
+            "uint64" => Self::Uint64,
+            "float32" => Self::Float32,
+            "float64" => Self::Float64,
+            _ => return None,
+        })
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Int16 => "int16",
+            Self::Uint16 => "uint16",
+            Self::Int32 => "int32",
+            Self::Uint32 => "uint32",
+            Self::Int64 => "int64",
+            Self::Uint64 => "uint64",
+            Self::Float32 => "float32",
+            Self::Float64 => "float64",
+        }
+    }
+
+    /// 16-bit registers a value of this type spans.
+    pub fn width(&self) -> u16 {
+        match self {
+            Self::Int16 | Self::Uint16 => 1,
+            Self::Int32 | Self::Uint32 | Self::Float32 => 2,
+            Self::Int64 | Self::Uint64 | Self::Float64 => 4,
+        }
+    }
+}
+
+/// 16-bit registers a value of the type named `name` spans; an unknown name
+/// counts as the default `float32`.
+pub fn register_type_width(name: &str) -> u16 {
+    RegisterType::from_name(name)
+        .unwrap_or(RegisterType::Float32)
+        .width()
 }
 
 /// The register areas the Modbus driver reads (`modbus_registers.register_area`).
@@ -667,11 +717,7 @@ pub const REGISTER_AREAS: [&str; 4] = ["holding", "input", "coil", "discrete"];
 
 impl RegisterConfig {
     pub fn register_count(&self) -> u16 {
-        match self.reg_type {
-            RegisterType::Int16 | RegisterType::Uint16 => 1,
-            RegisterType::Int32 | RegisterType::Float32 => 2,
-            RegisterType::Float64 => 4,
-        }
+        self.reg_type.width()
     }
 
     /// The 0-based address sent on the wire. A zero-based register is used as is; otherwise a Modbus

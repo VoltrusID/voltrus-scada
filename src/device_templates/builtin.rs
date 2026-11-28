@@ -73,48 +73,48 @@ fn base(
     }
 }
 
-/// The simulator lays the registers out back to back from holding offset 0:
-/// a Float32 takes 2 registers, high word first; a 64-bit counter takes 4.
-/// The poller has no unsigned 64-bit type, so counters are left out of the
-/// register list and named in the quirks, their words still counted in the offsets.
+/// The simulator lays the registers out back to back from holding offset 0,
+/// unless a register has a fixed address (the real device's): a Float32 takes
+/// 2 registers, high word first; a 64-bit counter takes 4, most significant
+/// word first. Counters in Wh or VARh are scaled to kWh or kvarh.
 fn modbus_template(p: &DeviceProfile) -> DeviceTemplate {
-    let mut registers = Vec::new();
-    let mut skipped: Vec<String> = Vec::new();
-    let mut offset: u32 = 0;
-    for def in &p.registers {
-        if def.is_counter {
-            skipped.push(format!(
-                "{} (offset {offset}, {})",
-                def.name,
-                if def.unit.is_empty() {
-                    "no unit"
-                } else {
-                    def.unit
-                }
-            ));
-            offset += 4;
-            continue;
-        }
-        registers.push(TemplateRegister {
-            name: def.name.to_string(),
-            offset: offset as u16,
-            register_type: "float32".to_string(),
-            register_area: "holding".to_string(),
-            scale: 1.0,
-            unit: def.unit.to_string(),
-            description: def.description.to_string(),
-            writable: false,
-        });
-        offset += 2;
-    }
+    let registers: Vec<TemplateRegister> = p
+        .registers
+        .iter()
+        .zip(p.layout())
+        .map(|(def, offset)| {
+            let (register_type, unit, scale) = if def.is_counter {
+                let (unit, scale) = match def.unit {
+                    "Wh" => ("kWh", 0.001),
+                    "VARh" => ("kvarh", 0.001),
+                    unit => (unit, 1.0),
+                };
+                (if def.signed { "int64" } else { "uint64" }, unit, scale)
+            } else {
+                ("float32", def.unit, 1.0)
+            };
+            TemplateRegister {
+                name: def.name.to_string(),
+                offset: offset as u16,
+                register_type: register_type.to_string(),
+                register_area: "holding".to_string(),
+                scale,
+                unit: unit.to_string(),
+                description: def.description.to_string(),
+                writable: false,
+            }
+        })
+        .collect();
     let mut quirks = vec![
         "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0.".to_string(),
     ];
-    if !skipped.is_empty() {
-        quirks.push(format!(
-            "Not mapped: unsigned 64-bit counters ({}) because the poller has no uint64 type; their 4 registers each are still counted in the offsets.",
-            skipped.join(", ")
-        ));
+    if p.registers.iter().any(|d| d.is_counter) {
+        quirks.push(
+            "64-bit counters, 4 registers each, most significant word first. Values above 2^53 (9.0e15) lose precision.".to_string(),
+        );
+    }
+    if let Some(note) = real_device_note(p) {
+        quirks.push(note.to_string());
     }
     let mut t = base(
         p.manufacturer,
@@ -128,6 +128,17 @@ fn modbus_template(p: &DeviceProfile) -> DeviceTemplate {
     t.endianness = Some("big".to_string());
     t.registers = registers;
     t
+}
+
+/// What a template says about which of its registers match the real device.
+fn real_device_note(p: &DeviceProfile) -> Option<&'static str> {
+    (p.model == "PM5560").then_some(
+        "Only the four energy registers (offsets 3203, 3207, 3219, 3223: INT64 Wh/VARh, read as kWh/kvarh) \
+         follow Schneider's register list (PM556x_PublicModbusRegisterList_10th_August-23.xlsx, \
+         FAQ FA234017; its register numbers are 1-based, offset = register - 1). The float32 \
+         registers from offset 0 are the simulator's layout, not the meter's: on a real PM5560 \
+         remap them from that list (e.g. Current A is register 3000, Voltage A-N 3028).",
+    )
 }
 
 fn bacnet_type_name(code: u16) -> Option<&'static str> {
@@ -217,21 +228,61 @@ mod tests {
             .iter()
             .find(|t| t.template_id == "schneider-electric-pm5560")
             .unwrap();
-        // Float32 pairs from offset 0, counters take 4 words but are not mapped.
         let p = crate::sim_profiles::profile_pm5560();
+        assert_eq!(t.registers.len(), p.registers.len());
+        // Float32 pairs from offset 0, then the energy counters at their fixed
+        // addresses.
         let mut offset = 0u16;
-        let mut i = 0;
-        for def in &p.registers {
+        for (r, def) in t.registers.iter().zip(&p.registers) {
+            assert_eq!(r.name, def.name);
             if def.is_counter {
-                offset += 4;
+                assert_eq!(r.register_type, "int64");
                 continue;
             }
-            assert_eq!(t.registers[i].name, def.name);
-            assert_eq!(t.registers[i].offset, offset);
+            assert_eq!(r.register_type, "float32");
+            assert_eq!(r.offset, offset);
             offset += 2;
-            i += 1;
         }
-        assert_eq!(i, t.registers.len());
-        assert!(t.quirks.iter().any(|q| q.contains("Energy_Import")));
+    }
+
+    /// The energy registers are where Schneider's PM556x register list puts
+    /// them (1-based registers 3204, 3208, 3220, 3224: INT64 in Wh / VARh),
+    /// read as kWh / kvarh.
+    #[test]
+    fn pm5560_energy_registers_follow_the_schneider_list() {
+        let t = builtins()
+            .iter()
+            .find(|t| t.template_id == "schneider-electric-pm5560")
+            .unwrap();
+        let reg = |name: &str| t.registers.iter().find(|r| r.name == name).unwrap();
+        for (name, register, unit) in [
+            ("Active_Energy_Delivered", 3204, "kWh"),
+            ("Active_Energy_Received", 3208, "kWh"),
+            ("Reactive_Energy_Delivered", 3220, "kvarh"),
+            ("Reactive_Energy_Received", 3224, "kvarh"),
+        ] {
+            let r = reg(name);
+            assert_eq!(r.offset, register - 1, "{name}");
+            assert_eq!(r.register_type, "int64", "{name}");
+            assert_eq!(r.scale, 0.001, "{name}");
+            assert_eq!(r.unit, unit, "{name}");
+        }
+        t.clone().normalize_and_validate().unwrap();
+    }
+
+    /// Counters of the other simulators are mapped as uint64 in their place.
+    #[test]
+    fn simulator_counters_are_mapped_as_uint64() {
+        let t = builtins()
+            .iter()
+            .find(|t| t.template_id.starts_with("sma"))
+            .unwrap();
+        let p = crate::sim_profiles::profile_sma_inverter();
+        let counters: Vec<_> = p.registers.iter().filter(|d| d.is_counter).collect();
+        assert!(!counters.is_empty());
+        for def in counters {
+            let r = t.registers.iter().find(|r| r.name == def.name).unwrap();
+            assert_eq!(r.register_type, "uint64", "{}", def.name);
+        }
     }
 }

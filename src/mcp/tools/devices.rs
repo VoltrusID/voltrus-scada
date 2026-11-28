@@ -183,6 +183,9 @@ mod modbus {
         Int16,
         Uint16,
         Int32,
+        Uint32,
+        Int64,
+        Uint64,
         Float32,
         Float64,
     }
@@ -262,7 +265,7 @@ mod modbus {
                             "address": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "Legacy address: 0-based below 30001, or a 5-digit reference (40001 = holding offset 0). Give address or offset."},
                             "offset": {"type": "integer", "minimum": 0, "maximum": 65535, "description": "Explicit 0-based offset inside register_area. Give address or offset."},
                             "zero_based": {"type": "boolean", "default": false, "description": "With address: treat the value as an already 0-based offset."},
-                            "register_type": {"type": "string", "enum": ["int16", "uint16", "int32", "float32", "float64"], "default": "float32"},
+                            "register_type": {"type": "string", "enum": crate::models::RegisterType::NAMES, "default": "float32", "description": "64-bit integers (energy counters) are exact up to 2^53 (9.0e15); beyond that they are rounded."},
                             "register_area": {"type": "string", "enum": ["holding", "input", "coil", "discrete"], "default": "holding"},
                             "scale": {"type": "number", "default": 1.0, "description": "Multiplier applied to the raw value."}
                         },

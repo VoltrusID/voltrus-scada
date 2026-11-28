@@ -293,3 +293,139 @@ fn test_legacy_dword_orders() {
         assert_eq!(parsed.name(), name);
     }
 }
+
+// ── uint32, int64, uint64 ──
+
+#[test]
+fn test_new_integer_types_widths() {
+    assert_eq!(write_reg(RegisterType::Uint32, 1.0).register_count(), 2);
+    assert_eq!(write_reg(RegisterType::Int64, 1.0).register_count(), 4);
+    assert_eq!(write_reg(RegisterType::Uint64, 1.0).register_count(), 4);
+    for name in RegisterType::NAMES {
+        assert_eq!(RegisterType::from_name(name).unwrap().name(), name);
+    }
+    assert_eq!(RegisterType::from_name("uint8"), None);
+}
+
+#[test]
+fn test_uint32_decode() {
+    let p = |w: [u16; 2], e: &Endianness| parse_register(&w, &RegisterType::Uint32, e);
+    assert_eq!(p([0x0000, 0x0000], &Endianness::Big), 0.0);
+    // Above i32::MAX: what int32 read as negative.
+    assert_eq!(p([0x8000, 0x0000], &Endianness::Big), 2_147_483_648.0);
+    assert_eq!(p([0xFFFF, 0xFFFF], &Endianness::Big), 4_294_967_295.0);
+    // 0x12345678 in each order, as int32 lays it out.
+    assert_eq!(p([0x1234, 0x5678], &Endianness::Big), 305_419_896.0);
+    assert_eq!(p([0x5678, 0x1234], &Endianness::Little), 305_419_896.0);
+    assert_eq!(p([0x7856, 0x3412], &Endianness::Swapped), 305_419_896.0);
+    assert_eq!(p([0x5678, 0x1234], &Endianness::LittleDword), 305_419_896.0);
+    assert_eq!(
+        p([0x7856, 0x3412], &Endianness::SwappedDword),
+        305_419_896.0
+    );
+}
+
+/// 0x0123456789ABCDEF in every word order, as float64 lays its bits out:
+/// big ABCDEFGH, little GHEFCDAB, swapped HGFEDCBA, little_dword CDABGHEF,
+/// swapped_dword DCBAHGFE.
+#[test]
+fn test_64bit_integer_word_orders() {
+    let value: u64 = 0x0123_4567_89AB_CDEF;
+    let orders: [(Endianness, [u16; 4]); 5] = [
+        (Endianness::Big, [0x0123, 0x4567, 0x89AB, 0xCDEF]),
+        (Endianness::Little, [0xCDEF, 0x89AB, 0x4567, 0x0123]),
+        (Endianness::Swapped, [0xEFCD, 0xAB89, 0x6745, 0x2301]),
+        (Endianness::LittleDword, [0x4567, 0x0123, 0xCDEF, 0x89AB]),
+        (Endianness::SwappedDword, [0x6745, 0x2301, 0xEFCD, 0xAB89]),
+    ];
+    for (order, words) in orders {
+        // The same layout float64 uses for the same 64 bits.
+        assert_eq!(
+            value_to_words(f64::from_bits(value), &RegisterType::Float64, &order),
+            words.to_vec(),
+            "{order:?}"
+        );
+        assert_eq!(
+            parse_register(&words, &RegisterType::Uint64, &order),
+            value as f64,
+            "{order:?}"
+        );
+        assert_eq!(
+            parse_register(&words, &RegisterType::Int64, &order),
+            value as i64 as f64,
+            "{order:?}"
+        );
+    }
+}
+
+#[test]
+fn test_64bit_integer_boundaries() {
+    let p = |w: [u16; 4], t: RegisterType| parse_register(&w, &t, &Endianness::Big);
+    use RegisterType::{Int64, Uint64};
+    assert_eq!(p([0, 0, 0, 0], Uint64), 0.0);
+    assert_eq!(p([0, 0, 0, 0], Int64), 0.0);
+    assert_eq!(p([0xFFFF; 4], Int64), -1.0);
+    assert_eq!(p([0xFFFF; 4], Uint64), u64::MAX as f64);
+    assert_eq!(p([0x8000, 0, 0, 0], Int64), i64::MIN as f64);
+    assert_eq!(p([0x7FFF, 0xFFFF, 0xFFFF, 0xFFFF], Int64), i64::MAX as f64);
+    // A PM5560 energy counter: 1 587 329 000 Wh (0x5E9C_B7E8).
+    assert_eq!(p([0, 0, 0x5E9C, 0xB7E8], Int64), 1_587_329_000.0);
+    // Exact up to 2^53, rounded to an even neighbour past it.
+    assert_eq!(p([0x0020, 0, 0, 0], Uint64), 9_007_199_254_740_992.0);
+    assert_eq!(
+        p([0x001F, 0xFFFF, 0xFFFF, 0xFFFF], Uint64),
+        9_007_199_254_740_991.0
+    );
+    assert_eq!(p([0x0020, 0, 0, 1], Uint64), 9_007_199_254_740_992.0);
+}
+
+#[test]
+fn test_new_integer_types_round_trip_writes() {
+    for order in [
+        Endianness::Big,
+        Endianness::Little,
+        Endianness::Swapped,
+        Endianness::LittleDword,
+        Endianness::SwappedDword,
+    ] {
+        let u32_reg = write_reg(RegisterType::Uint32, 1.0);
+        for v in [0.0, 1.0, 2_147_483_648.0, 4_294_967_295.0] {
+            assert_eq!(round_trip(v, &u32_reg, &order), v, "uint32 {v} {order:?}");
+        }
+        let i64_reg = write_reg(RegisterType::Int64, 0.001);
+        for v in [0.0, -1.0, 1_587_329.123, -9_007_199_254.741] {
+            // Scaled back from whole Wh: equal up to the f64 rounding of `* 0.001`.
+            let back = round_trip(v, &i64_reg, &order);
+            assert!(
+                (back - v).abs() <= v.abs() * 1e-15,
+                "int64 {v} {order:?}: {back}"
+            );
+        }
+        let u64_reg = write_reg(RegisterType::Uint64, 1.0);
+        for v in [0.0, 1.0, 9_007_199_254_740_992.0, 1.8e19] {
+            assert_eq!(round_trip(v, &u64_reg, &order), v, "uint64 {v} {order:?}");
+        }
+    }
+}
+
+#[test]
+fn test_new_integer_types_refuse_out_of_range_writes() {
+    let enc = |v: f64, t: RegisterType| {
+        super::types::encode_register(v, &write_reg(t, 1.0), &Endianness::Big)
+    };
+    assert!(enc(-1.0, RegisterType::Uint32).is_err());
+    assert!(enc(4_294_967_296.0, RegisterType::Uint32).is_err());
+    assert_eq!(
+        enc(4_294_967_295.0, RegisterType::Uint32).unwrap(),
+        vec![0xFFFF, 0xFFFF]
+    );
+    assert!(enc(-1.0, RegisterType::Uint64).is_err());
+    assert!(enc(18_446_744_073_709_551_616.0, RegisterType::Uint64).is_err());
+    assert!(enc(9_223_372_036_854_775_808.0, RegisterType::Int64).is_err());
+    assert_eq!(
+        enc(-9_223_372_036_854_775_808.0, RegisterType::Int64).unwrap(),
+        vec![0x8000, 0, 0, 0]
+    );
+    assert!(enc(-9_223_372_036_854_777_856.0, RegisterType::Int64).is_err());
+    assert_eq!(enc(-1.0, RegisterType::Int64).unwrap(), vec![0xFFFF; 4]);
+}
