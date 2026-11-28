@@ -42,7 +42,7 @@ default on most distributions; no root needed).
    `--max-items-per-call` sets the MaxMonitoredItemsPerCall it announces and
    enforces (async-opcua's default is 1,000).
 2. The server starts with `VOLTRUS_BENCH_STATS=1` (one log line a second:
-   values delivered to the cache, values dropped, allocations) and
+   values received, values dropped or superseded, allocations) and
    `VOLTRUS_BENCH_LATENCY_TAG=send_time` (logs simulator-to-cache latency each
    time that tag reaches the cache).
 3. The devices are created with one `POST /api/v1/project/import` (N monitored
@@ -60,7 +60,7 @@ default on most distributions; no root needed).
 | `instructions_per_value` | User-space instructions of the whole server process in the window ÷ values delivered. Hardly moves with machine load |
 | instr/change (`table.py`) | The same ÷ changes the simulator made to monitored tags: the number to compare between builds, since a server that coalesces (queue size 1) delivers fewer values for the same changes |
 | `allocs_per_value` | Heap allocations in the window ÷ values delivered (needs `alloc-count`) |
-| `produced_per_s`, `delivered_per_s`, `dropped` | What the simulator changed, what reached the cache, what the client threw away |
+| `produced_per_s`, `delivered_per_s`, `dropped`, `superseded` | What the simulator changed (among monitored tags), what the client received, what it threw away on a full queue (builds before the per-tag feed), and what was replaced by a newer value of the same tag before the cache took it (builds with it) |
 | `cpu_pct_task_clock`, `cpu_pct_noisy` | CPU time of the server in % of one core (perf task clock; /proc utime+stime). Depends on the machine, its clock speed and what else runs |
 | `rss_mib`, `pss_mib` | Memory at the end of the window |
 | `latency_p50_ms`, `latency_p99_ms` | Simulator send time to cache merge of `send_time`, one sample per tick |
