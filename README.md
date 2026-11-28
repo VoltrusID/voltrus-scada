@@ -163,7 +163,7 @@ level, and this table says where each one stands so you can plan around it.
 | Area | Status |
 |---|---|
 | Modbus TCP | Production: batched reads, timeouts, reconnect with backoff; queued writes in the register's type, scale, area and word order, coils included |
-| OPC UA | Reads through subscriptions; writes through the live session in the node's data type. Secure modes need the server certificate in `pki/trusted` |
+| OPC UA | Reads through subscriptions; writes through the live session in the node's data type. Secure modes need the server certificate in `pki/trusted`, for polling and for Browse alike; a refused one is saved to `pki/rejected`, and an administrator moves it to `pki/trusted` to accept it |
 | Siemens S7 | Reads split to the negotiated PDU size; writes in the tag's type (BOOL to REAL, INT/DINT). Tested against the bundled simulator, not yet a real PLC |
 | EtherNet/IP | Reads and writes in the tag's CIP type (BOOL to LREAL), 5 s timeouts. Unconnected messaging only; not yet tested on a real controller |
 | DNP3 | Beta: own IEEE 1815 master (integrity and event polls, unsolicited responses, select-before-operate and direct operate, time sync). Tested only against the bundled outstation simulator |

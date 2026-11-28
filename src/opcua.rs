@@ -49,17 +49,76 @@ pub async fn poll_opcua_device(config: OpcUaDeviceConfig, cache: DeviceCache) {
 /// A session that lasted this long counts as a working connection.
 const STABLE_SESSION: Duration = Duration::from_secs(60);
 
+/// Where the OPC UA client keeps its own certificate and the server
+/// certificates it trusts (`trusted/`) or refused (`rejected/`), relative to
+/// the working directory. The poller and browse share it.
+pub(crate) const PKI_DIR: &str = "pki";
+
+/// One OPC UA server and how to log on to it: what the poller and browse both
+/// connect with, so both apply the same certificate trust.
+pub(crate) struct ServerTarget<'a> {
+    pub url: &'a str,
+    pub security_policy: &'a OpcUaSecurityPolicy,
+    pub security_mode: &'a OpcUaSecurityMode,
+    pub username: Option<&'a str>,
+    pub password: Option<&'a str>,
+}
+
+impl<'a> From<&'a OpcUaDeviceConfig> for ServerTarget<'a> {
+    fn from(config: &'a OpcUaDeviceConfig) -> Self {
+        Self {
+            url: &config.url,
+            security_policy: &config.security_policy,
+            security_mode: &config.security_mode,
+            username: config.username.as_deref(),
+            password: config.password.as_deref(),
+        }
+    }
+}
+
+impl<'a> From<&'a OpcUaDevice> for ServerTarget<'a> {
+    fn from(device: &'a OpcUaDevice) -> Self {
+        Self {
+            url: &device.url,
+            security_policy: &device.security_policy,
+            security_mode: &device.security_mode,
+            username: device.username.as_deref(),
+            password: device.password.as_deref(),
+        }
+    }
+}
+
 /// Owns a connected session and its event loop. However the attempt ends,
 /// an error, the loop ending, or the poller task being aborted, dropping
 /// this closes the session and stops the event loop, so neither outlives
-/// the poller.
-struct SessionGuard {
+/// the poller. [`SessionGuard::close`] does the same and waits for it.
+pub(crate) struct SessionGuard {
     session: Arc<Session>,
     event_loop: tokio::task::JoinHandle<StatusCode>,
+    closed: bool,
+}
+
+/// How long closing a session may take before the event loop is stopped anyway.
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+
+impl SessionGuard {
+    pub(crate) fn session(&self) -> &Arc<Session> {
+        &self.session
+    }
+
+    /// Close the session now and wait (bounded) until the server has been told.
+    pub(crate) async fn close(mut self) {
+        self.closed = true;
+        let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, self.session.disconnect()).await;
+        self.event_loop.abort();
+    }
 }
 
 impl Drop for SessionGuard {
     fn drop(&mut self) {
+        if self.closed {
+            return;
+        }
         let session = self.session.clone();
         let event_loop = self.event_loop.abort_handle();
         match tokio::runtime::Handle::try_current() {
@@ -67,8 +126,7 @@ impl Drop for SessionGuard {
             // after the (bounded) disconnect.
             Ok(rt) => {
                 rt.spawn(async move {
-                    let _ =
-                        tokio::time::timeout(Duration::from_secs(2), session.disconnect()).await;
+                    let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, session.disconnect()).await;
                     event_loop.abort();
                 });
             }
@@ -77,32 +135,93 @@ impl Drop for SessionGuard {
     }
 }
 
-/// Attempts to connect to the OPC-UA server, create a subscription,
-/// and monitor nodes. Returns Ok(()) when the session/event-loop ends
-/// (e.g. connection drop), or Err on setup failure.
-async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCache) -> Result<()> {
-    let device_id = config.id.clone();
+/// Whether a status code says the server's certificate was refused.
+fn is_certificate_error(code: StatusCode) -> bool {
+    let sub = code.sub_code();
+    [
+        StatusCode::BadCertificateUntrusted,
+        StatusCode::BadCertificateInvalid,
+        StatusCode::BadCertificateTimeInvalid,
+        StatusCode::BadCertificateHostNameInvalid,
+        StatusCode::BadCertificateUriInvalid,
+        StatusCode::BadCertificateUseNotAllowed,
+        StatusCode::BadCertificateRevoked,
+        StatusCode::BadCertificateIssuerRevoked,
+        StatusCode::BadCertificateRevocationUnknown,
+        StatusCode::BadCertificatePolicyCheckFailed,
+        StatusCode::BadSecurityChecksFailed,
+    ]
+    .iter()
+    .any(|c| c.sub_code() == sub)
+}
 
-    // --- Build client ---
-    // Without message security the server certificate protects nothing, so any
-    // is accepted. With Sign or SignAndEncrypt the certificate is what proves
-    // the server is the right one: it must already be in `pki/trusted` (under
-    // the working directory). An unknown one is refused and copied to
-    // `pki/rejected`, from where an administrator moves it to `pki/trusted`.
-    let accept_any_server_cert = matches!(config.security_mode, OpcUaSecurityMode::None);
-    let mut client = ClientBuilder::new()
-        .application_name("Voltrus")
+/// The error for a connection that failed with `code` (`detail` says more),
+/// telling an operator what to do when it is the server certificate that was
+/// refused.
+fn connection_error(
+    code: StatusCode,
+    detail: impl std::fmt::Display,
+    secure: bool,
+    pki_dir: &std::path::Path,
+) -> anyhow::Error {
+    let trusted = pki_dir.join("trusted");
+    let rejected = pki_dir.join("rejected");
+    if code.sub_code() == StatusCode::BadCertificateUntrusted.sub_code() {
+        anyhow::anyhow!(
+            "OPC-UA connection refused: the server certificate is not trusted ({detail}). \
+             It was saved to {}; check that it is this server's certificate, move it \
+             to {} and try again",
+            rejected.display(),
+            trusted.display()
+        )
+    } else if is_certificate_error(code) {
+        anyhow::anyhow!(
+            "OPC-UA connection refused: the server certificate failed validation ({detail}). \
+             Check its validity dates, host name and application URI"
+        )
+    } else if secure {
+        anyhow::anyhow!(
+            "OPC-UA connection failed: {detail} (a secure endpoint needs the server \
+             certificate in {}; a refused one is in {})",
+            trusted.display(),
+            rejected.display()
+        )
+    } else {
+        anyhow::anyhow!("OPC-UA connection failed: {detail}")
+    }
+}
+
+/// Connect to an OPC UA server and wait until the session is up.
+///
+/// Without message security the server certificate protects nothing, so any
+/// is accepted. With Sign or SignAndEncrypt the certificate is what proves
+/// the server is the right one: it must already be in `<pki_dir>/trusted`. An
+/// unknown one is refused and copied to `<pki_dir>/rejected`, from where an
+/// administrator moves it to `trusted`.
+///
+/// `single_attempt` gives up after the first failed attempt instead of
+/// retrying with backoff (for a request someone is waiting on).
+pub(crate) async fn connect(
+    target: &ServerTarget<'_>,
+    application_name: &str,
+    pki_dir: &std::path::Path,
+    single_attempt: bool,
+) -> Result<SessionGuard> {
+    let secure = !matches!(target.security_mode, OpcUaSecurityMode::None);
+    let mut builder = ClientBuilder::new()
+        .application_name(application_name)
         .application_uri("urn:voltrus-lite")
-        .trust_server_certs(accept_any_server_cert)
-        .create_sample_keypair(true)
+        .pki_dir(pki_dir)
+        .trust_server_certs(!secure)
+        .create_sample_keypair(true);
+    if single_attempt {
+        builder = builder.session_retry_limit(0);
+    }
+    let mut client = builder
         .client()
         .map_err(|e| anyhow::anyhow!("Client build errors: {:?}", e))?;
 
-    // --- Configure endpoint ---
-    let security_policy_str = security_policy_to_str(&config.security_policy);
-    let message_security_mode = security_mode_to_opcua(&config.security_mode);
-
-    let user_token_policy = match (&config.username, &config.password) {
+    let user_token_policy = match (target.username, target.password) {
         (Some(_), Some(_)) => {
             // UserTokenPolicy doesn't have a user_name() constructor in 0.18.0,
             // so we build it directly for the endpoint description.
@@ -118,39 +237,30 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
     };
 
     let endpoint = opcua::types::EndpointDescription::from((
-        config.url.as_str(),
-        security_policy_str,
-        message_security_mode,
+        target.url,
+        security_policy_to_str(target.security_policy),
+        security_mode_to_opcua(target.security_mode),
         user_token_policy,
     ));
 
-    // --- Identity token ---
-    let identity_token = match (&config.username, &config.password) {
-        (Some(user), Some(pass)) => IdentityToken::new_user_name(user.clone(), pass.clone()),
+    let identity_token = match (target.username, target.password) {
+        (Some(user), Some(pass)) => IdentityToken::new_user_name(user, pass),
         _ => IdentityToken::Anonymous,
     };
 
-    // --- Connect ---
     let (session, event_loop) = client
         .connect_to_matching_endpoint(endpoint, identity_token)
         .await
-        .map_err(|e| {
-            if accept_any_server_cert {
-                anyhow::anyhow!("OPC-UA connection failed: {e}")
-            } else {
-                anyhow::anyhow!(
-                    "OPC-UA connection failed: {e} (a secure endpoint needs the server \
-                     certificate in pki/trusted; a refused one is in pki/rejected)"
-                )
-            }
-        })?;
+        .map_err(|e| connection_error(e.status(), &e, secure, pki_dir))?;
 
     let mut guard = SessionGuard {
         session: session.clone(),
         event_loop: event_loop.spawn(),
+        closed: false,
     };
 
-    // wait_for_connection() returns bool -- false means it failed to connect
+    // The certificate check happens here, when the event loop creates the
+    // session; a refusal ends the loop with the status code.
     tokio::select! {
         connected = session.wait_for_connection() => {
             if !connected {
@@ -158,11 +268,103 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
             }
         }
         event_result = &mut guard.event_loop => {
-            let code = event_result
-                .context("OPC-UA event loop task panicked")?;
-            anyhow::bail!("OPC-UA event loop ended with status {code}");
+            let code = event_result.context("OPC-UA event loop task panicked")?;
+            // The loop has ended: nothing to disconnect.
+            guard.closed = true;
+            return Err(connection_error(code, code, secure, pki_dir));
         }
     }
+    Ok(guard)
+}
+
+/// A node found by [`browse_objects`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BrowsedNode {
+    pub node_id: String,
+    pub browse_name: String,
+    pub display_name: String,
+    pub node_class: &'static str,
+}
+
+/// Connect once (same certificate trust as the poller), list the objects and
+/// variables directly under the Objects folder, and close the session again,
+/// whether the browse worked or not.
+pub(crate) async fn browse_objects(
+    target: &ServerTarget<'_>,
+    pki_dir: &std::path::Path,
+) -> Result<Vec<BrowsedNode>> {
+    let guard = connect(target, "Voltrus Browse", pki_dir, true).await?;
+    let result = browse_objects_folder(guard.session()).await;
+    guard.close().await;
+    result
+}
+
+async fn browse_objects_folder(session: &Session) -> Result<Vec<BrowsedNode>> {
+    use opcua::client::{UARequest, services::Browse};
+    use opcua::types::{
+        BrowseDescription, BrowseDescriptionResultMask, BrowseDirection, NodeClass, NodeClassMask,
+    };
+
+    let browse_desc = BrowseDescription {
+        node_id: NodeId::objects_folder_id(),
+        browse_direction: BrowseDirection::Forward,
+        reference_type_id: NodeId::null(),
+        include_subtypes: true,
+        node_class_mask: NodeClassMask::OBJECT.bits() | NodeClassMask::VARIABLE.bits(),
+        result_mask: BrowseDescriptionResultMask::RESULT_MASK_NODE_CLASS.bits()
+            | BrowseDescriptionResultMask::RESULT_MASK_BROWSE_NAME.bits()
+            | BrowseDescriptionResultMask::RESULT_MASK_DISPLAY_NAME.bits()
+            | BrowseDescriptionResultMask::RESULT_MASK_TYPE_DEFINITION.bits(),
+    };
+
+    let response = Browse::new(session)
+        .browse_node(browse_desc)
+        .send(session.channel())
+        .await
+        .map_err(|e| anyhow::anyhow!("Browse request failed: {e}"))?;
+
+    let mut nodes = Vec::new();
+    for result in response.results.iter().flatten() {
+        if !result.status_code.is_good() {
+            continue;
+        }
+        for reference in result.references.iter().flatten() {
+            // Objects may contain variables further down.
+            let node_class = match reference.node_class {
+                NodeClass::Variable => "Variable",
+                NodeClass::Object => "Object",
+                _ => continue,
+            };
+            // A node on another server cannot be read through this session.
+            if reference.node_id.server_index != 0 {
+                continue;
+            }
+            nodes.push(BrowsedNode {
+                // The plain node id (`ns=2;s=Temp`), as the poller parses it;
+                // the expanded id would carry a `svr=0;` prefix it refuses.
+                node_id: reference.node_id.node_id.to_string(),
+                browse_name: reference.browse_name.to_string(),
+                display_name: reference.display_name.to_string(),
+                node_class,
+            });
+        }
+    }
+    Ok(nodes)
+}
+
+/// Attempts to connect to the OPC-UA server, create a subscription,
+/// and monitor nodes. Returns Ok(()) when the session/event-loop ends
+/// (e.g. connection drop), or Err on setup failure.
+async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCache) -> Result<()> {
+    let device_id = config.id.clone();
+    let mut guard = connect(
+        &ServerTarget::from(config),
+        "Voltrus",
+        std::path::Path::new(PKI_DIR),
+        false,
+    )
+    .await?;
+    let session = guard.session().clone();
 
     tracing::info!("OPC-UA device {} connected to {}", device_id, config.url);
 
@@ -1098,6 +1300,207 @@ mod tests {
         .unwrap_err();
         assert!(err.to_string().contains("no valid node ids"), "{err}");
         assert!(!SESSIONS.lock().unwrap().contains_key(&bad.id));
+    }
+
+    /// Browse trusts server certificates as the poller does: any on an
+    /// unsecured endpoint, only those in `trusted` on a secure one (a refused
+    /// one lands in `rejected` and the error says so). Every browse closes its
+    /// session on the server, whether it worked or not.
+    #[tokio::test]
+    async fn test_browse_trusts_like_the_poller_and_closes_its_session() {
+        use opcua::crypto::SecurityPolicy;
+        use opcua::server::address_space::Variable;
+        use opcua::server::diagnostics::NamespaceMetadata;
+        use opcua::server::node_manager::memory::{SimpleNodeManager, simple_node_manager};
+        use opcua::server::{ANONYMOUS_USER_TOKEN_ID, ServerBuilder};
+        use opcua::types::VariableId;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("opc.tcp://127.0.0.1:{port}");
+        let server_pki = tempfile::tempdir().unwrap();
+        let anonymous = &[ANONYMOUS_USER_TOKEN_ID] as &[&str];
+        let (server, handle) = ServerBuilder::new()
+            .application_name("browse test")
+            .application_uri("urn:voltrus-browse-test")
+            .product_uri("urn:voltrus-browse-test")
+            .host("127.0.0.1")
+            .port(port)
+            .discovery_urls(vec![url.clone()])
+            .create_sample_keypair(true)
+            .pki_dir(server_pki.path())
+            .diagnostics_enabled(true)
+            .add_endpoint(
+                "none",
+                (
+                    "/",
+                    SecurityPolicy::None,
+                    MessageSecurityMode::None,
+                    anonymous,
+                ),
+            )
+            .add_endpoint(
+                "secure",
+                (
+                    "/",
+                    SecurityPolicy::Basic256Sha256,
+                    MessageSecurityMode::SignAndEncrypt,
+                    anonymous,
+                ),
+            )
+            .trust_client_certs(true)
+            .with_node_manager(simple_node_manager(
+                NamespaceMetadata {
+                    namespace_uri: "urn:BrowseTest".to_owned(),
+                    ..Default::default()
+                },
+                "browse-test",
+            ))
+            .build()
+            .unwrap();
+        let manager = handle
+            .node_managers()
+            .get_of_type::<SimpleNodeManager>()
+            .unwrap();
+        let ns = handle.get_namespace_index("urn:BrowseTest").unwrap();
+        manager.address_space().write().add_variables(
+            vec![Variable::new(
+                &NodeId::new(ns, "Temp"),
+                "Temp",
+                "Temp",
+                21.5f64,
+            )],
+            &NodeId::objects_folder_id(),
+        );
+        tokio::spawn(server.run_with(listener));
+
+        let sessions = || {
+            let value = handle
+                .info()
+                .diagnostics
+                .get(VariableId::Server_ServerDiagnostics_ServerDiagnosticsSummary_CurrentSessionCount)
+                .and_then(|v| v.value);
+            match value {
+                Some(Variant::UInt32(n)) => n,
+                other => panic!("no session count: {other:?}"),
+            }
+        };
+        let no_sessions_left = |stage: &'static str, allowed: u32| async move {
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while sessions() > allowed {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{stage}: browse left {} session(s) open on the server",
+                    sessions()
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        };
+
+        let client_pki = tempfile::tempdir().unwrap();
+        let target = |mode: &'static OpcUaSecurityMode| ServerTarget {
+            url: &url,
+            security_policy: match mode {
+                OpcUaSecurityMode::None => &OpcUaSecurityPolicy::None,
+                _ => &OpcUaSecurityPolicy::Basic256Sha256,
+            },
+            security_mode: mode,
+            username: None,
+            password: None,
+        };
+        // The connect and handshake share the runner's threads with ~1000
+        // other tests, so allow them time.
+        let browse = |mode: &'static OpcUaSecurityMode| {
+            let target = target(mode);
+            let pki = client_pki.path().to_path_buf();
+            async move {
+                tokio::time::timeout(Duration::from_secs(60), browse_objects(&target, &pki))
+                    .await
+                    .expect("browse returns instead of hanging")
+            }
+        };
+        let temp = BrowsedNode {
+            node_id: format!("ns={ns};s=Temp"),
+            browse_name: "Temp".into(),
+            display_name: "Temp".into(),
+            node_class: "Variable",
+        };
+
+        // Unsecured: any certificate, nothing to trust.
+        let nodes = browse(&OpcUaSecurityMode::None).await.unwrap();
+        assert!(nodes.contains(&temp), "{nodes:?}");
+        for n in &nodes {
+            NodeId::from_str(&n.node_id).expect("a browsed id is one the poller can monitor");
+        }
+        no_sessions_left("unsecured", 0).await;
+
+        // Secure, server certificate unknown: refused, saved to rejected.
+        let err = browse(&OpcUaSecurityMode::SignAndEncrypt)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not trusted"), "{err}");
+        assert!(err.contains("rejected"), "{err}");
+        let rejected: Vec<_> = std::fs::read_dir(client_pki.path().join("rejected"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(rejected.len(), 1, "{rejected:?}");
+        // The client checks the server certificate in the CreateSession
+        // response, so the server has a session the client then abandons
+        // without activating it (no credentials were sent) and cannot close
+        // over a channel it does not trust: the server expires it. Nothing
+        // else may be left.
+        let abandoned = sessions();
+        assert!(
+            abandoned <= 1,
+            "{abandoned} sessions after a refused browse"
+        );
+
+        // Once an administrator moves it to trusted, browse works.
+        let cert = &rejected[0];
+        std::fs::rename(
+            cert,
+            client_pki
+                .path()
+                .join("trusted")
+                .join(cert.file_name().unwrap()),
+        )
+        .unwrap();
+        let nodes = browse(&OpcUaSecurityMode::SignAndEncrypt).await.unwrap();
+        assert!(nodes.contains(&temp), "{nodes:?}");
+        no_sessions_left("trusted", abandoned).await;
+
+        handle.cancel();
+    }
+
+    #[test]
+    fn test_untrusted_certificate_error_says_what_to_do() {
+        let pki = std::path::Path::new("pki");
+        let msg = connection_error(
+            StatusCode::BadCertificateUntrusted,
+            StatusCode::BadCertificateUntrusted,
+            true,
+            pki,
+        )
+        .to_string();
+        assert!(msg.contains("not trusted"), "{msg}");
+        assert!(
+            msg.contains("pki/rejected") && msg.contains("pki/trusted"),
+            "{msg}"
+        );
+
+        let msg = connection_error(
+            StatusCode::BadCertificateHostNameInvalid,
+            StatusCode::BadCertificateHostNameInvalid,
+            true,
+            pki,
+        )
+        .to_string();
+        assert!(msg.contains("failed validation"), "{msg}");
+
+        let msg = connection_error(StatusCode::BadTimeout, "timed out", false, pki).to_string();
+        assert_eq!(msg, "OPC-UA connection failed: timed out");
     }
 
     #[test]
