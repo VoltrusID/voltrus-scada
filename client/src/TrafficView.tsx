@@ -27,6 +27,13 @@ export function TrafficView({ deviceId, deviceName, onClose }: { deviceId: strin
   const [selectedField, setSelectedField] = useState<TrafficField | null>(null)
   const framesRef = useRef(frames)
   framesRef.current = frames
+  // While live, the list follows the newest frame unless the user scrolled up.
+  const listRef = useRef<HTMLDivElement>(null)
+  const following = useRef(true)
+  useEffect(() => {
+    const el = listRef.current
+    if (el && following.current && !paused) el.scrollTop = el.scrollHeight
+  }, [frames, paused])
 
   // A filter change starts the list again.
   useEffect(() => { setFrames([]); setSelectedSeq(null) }, [filters])
@@ -96,7 +103,8 @@ export function TrafficView({ deviceId, deviceName, onClose }: { deviceId: strin
         <div role={error ? 'alert' : 'status'} style={{ padding: '8px 24px', fontSize: 13, color: error ? 'var(--crit)' : 'var(--muted)' }}>{error ?? meta?.note}</div>
       )}
       <div style={{ flex: 1, minHeight: 0, display: 'flex', gap: 12, padding: 12 }}>
-        <div style={{ flex: '1 1 55%', minWidth: 0, overflow: 'auto', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10 }}>
+        <div ref={listRef} onScroll={e => { const el = e.currentTarget; following.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40 }}
+          style={{ flex: '1 1 55%', minWidth: 0, overflow: 'auto', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10 }}>
           <table style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               <tr><th style={th}>Time</th><th style={th}>Dir</th><th style={th}>Summary</th><th style={th}>Latency</th><th style={th}>Error</th></tr>
