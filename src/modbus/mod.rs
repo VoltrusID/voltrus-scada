@@ -2,6 +2,7 @@ mod batch;
 mod poller;
 pub mod pool;
 mod scanner;
+pub(crate) mod tap;
 pub mod types;
 mod write;
 

@@ -120,7 +120,7 @@ impl PollerManager {
         };
 
         let cache = self.cache.clone();
-        let pool = Arc::new(crate::modbus::ModbusPool::new());
+        let pool = Arc::new(crate::modbus::ModbusPool::new().with_traffic(cache.traffic().clone()));
         let sim_config = self.get_simulation_config(&device_id).await;
         let handle = tokio::spawn(async move {
             crate::modbus::poll_device(config, cache, pool, bind_addr, sim_config).await;

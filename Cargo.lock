@@ -8394,6 +8394,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "voltrus-collab",
+ "voltrus-dissect",
  "windows-service",
  "windows-sys 0.61.2",
  "zip",

@@ -19,6 +19,8 @@ pub struct ModbusPool {
     /// Resolves a device's `network` to the local address writes bind to,
     /// the same way its poller does.
     networks: Option<crate::network::NetworkManager>,
+    /// Where the connections' tee transports record traffic (docs/traffic.md).
+    traffic: Option<crate::traffic::TrafficHub>,
 }
 
 impl ModbusPool {
@@ -27,7 +29,14 @@ impl ModbusPool {
             connections: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             max_idle: Duration::from_secs(60),
             networks: None,
+            traffic: None,
         }
+    }
+
+    /// Record each device's frames into `hub` while someone watches them.
+    pub fn with_traffic(mut self, hub: crate::traffic::TrafficHub) -> Self {
+        self.traffic = Some(hub);
+        self
     }
 
     pub fn with_network_manager(mut self, networks: crate::network::NetworkManager) -> Self {
@@ -50,12 +59,17 @@ impl ModbusPool {
         unit_id: u8,
         bind_addr: Option<std::net::SocketAddr>,
     ) -> anyhow::Result<tokio_modbus::client::Context> {
+        let traffic = self
+            .traffic
+            .as_ref()
+            .map(|hub| (hub.device(device_id), hub.next_conn()));
         self.get_or_connect_with(device_id, addr, async move {
-            anyhow::Ok(if let Some(local) = bind_addr {
-                let stream = crate::network::bind_and_connect(Some(local), addr).await?;
-                tokio_modbus::client::tcp::attach_slave(stream, Slave(unit_id))
-            } else {
-                tcp::connect_slave(addr, Slave(unit_id)).await?
+            let stream = crate::network::bind_and_connect(bind_addr, addr).await?;
+            anyhow::Ok(match traffic {
+                Some((dev, conn)) => {
+                    tcp::attach_slave(super::tap::Tap::new(stream, dev, conn), Slave(unit_id))
+                }
+                None => tcp::attach_slave(stream, Slave(unit_id)),
             })
         })
         .await

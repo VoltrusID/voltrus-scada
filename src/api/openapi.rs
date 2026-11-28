@@ -64,6 +64,7 @@ use utoipa::{Modify, OpenApi};
         crate::api::modbus_devices::replace_registers,
         crate::api::modbus_devices::restart_poller,
         crate::api::modbus_devices::get_poller_statuses,
+        crate::api::traffic::get_device_traffic,
         crate::api::template_links::update_template,
         crate::api::template_links::list_linked_devices,
         crate::api::template_links::link_device,

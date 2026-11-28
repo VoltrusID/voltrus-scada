@@ -21,6 +21,8 @@ pub struct DeviceCache {
     protocols: Arc<RwLock<HashMap<String, String>>>,
     /// device_id → poll interval in ms, for stale detection.
     intervals: Arc<RwLock<HashMap<String, u64>>>,
+    /// Per-device protocol traffic recorded by the driver taps.
+    traffic: crate::traffic::TrafficHub,
 }
 
 /// One cached value with its quality and source time.
@@ -62,7 +64,13 @@ impl DeviceCache {
             storage: None,
             protocols: Arc::new(RwLock::new(HashMap::new())),
             intervals: Arc::new(RwLock::new(HashMap::new())),
+            traffic: crate::traffic::TrafficHub::default(),
         }
+    }
+
+    /// The per-device traffic captures (docs/traffic.md).
+    pub fn traffic(&self) -> &crate::traffic::TrafficHub {
+        &self.traffic
     }
 
     /// Attach a WsManager so that device-status changes are broadcast over WebSocket.

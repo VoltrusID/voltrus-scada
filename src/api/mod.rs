@@ -76,6 +76,8 @@ mod tag_tree;
 mod telemetry_delete;
 #[cfg(feature = "modbus")]
 pub(crate) mod template_links;
+#[cfg(feature = "modbus")]
+pub(crate) mod traffic;
 pub(crate) mod ui;
 mod user_notifications;
 mod vertical_templates;
@@ -1596,6 +1598,13 @@ pub fn create_router(state: AppState) -> Router {
     // Merge protocol-specific demo-allowed routes
     #[cfg(feature = "modbus")]
     let demo_protected = demo_protected.merge(modbus_admin_routes());
+    // Protocol traffic can carry setpoints and other plant data: the roles
+    // that configure devices may read it (docs/traffic.md).
+    #[cfg(feature = "modbus")]
+    let demo_protected = demo_protected.route(
+        "/api/v1/devices/{id}/traffic",
+        get(traffic::get_device_traffic),
+    );
     #[cfg(feature = "opcua")]
     let demo_protected = demo_protected.merge(opcua_admin_routes());
     #[cfg(feature = "s7")]

@@ -84,6 +84,7 @@ pub mod station;
 pub mod storage;
 pub mod system_docs;
 pub mod timeutil;
+pub mod traffic;
 pub mod vertical_templates;
 pub mod voltrus_plc;
 pub mod widget_sdk;
