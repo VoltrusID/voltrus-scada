@@ -57,7 +57,8 @@ default on most distributions; no root needed).
 
 | Field | |
 |---|---|
-| `instructions_per_value` | User-space instructions of the whole server process in the window ÷ values delivered. The number to compare between commits: it hardly moves with machine load |
+| `instructions_per_value` | User-space instructions of the whole server process in the window ÷ values delivered. Hardly moves with machine load |
+| instr/change (`table.py`) | The same ÷ changes the simulator made to monitored tags: the number to compare between builds, since a server that coalesces (queue size 1) delivers fewer values for the same changes |
 | `allocs_per_value` | Heap allocations in the window ÷ values delivered (needs `alloc-count`) |
 | `produced_per_s`, `delivered_per_s`, `dropped` | What the simulator changed, what reached the cache, what the client threw away |
 | `cpu_pct_task_clock`, `cpu_pct_noisy` | CPU time of the server in % of one core (perf task clock; /proc utime+stime). Depends on the machine, its clock speed and what else runs |

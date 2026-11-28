@@ -8,7 +8,8 @@ import sys
 
 COLS = [('label', ''), ('tags', 'N'), ('devices', 'dev'), ('rate_ms', 'ms'), ('change_pct', '%'),
         ('produced_per_s', 'produced/s'), ('delivered_per_s', 'delivered/s'), ('dropped', 'dropped'),
-        ('instructions_per_value', 'instr/value'), ('allocs_per_value', 'allocs/value'),
+        ('instructions_per_change', 'instr/change'), ('instructions_per_value', 'instr/value'),
+        ('allocs_per_value', 'allocs/value'),
         ('cpu_pct_task_clock', 'CPU %'), ('rss_mib', 'RSS MiB'), ('latency_p50_ms', 'p50 ms'),
         ('latency_p99_ms', 'p99 ms'), ('connect_create_s', 'connect s'), ('error', 'error')]
 
@@ -24,6 +25,9 @@ def fmt(v):
 
 
 rows = [json.loads(line) for path in sys.argv[1:] for line in open(path) if line.strip()]
+for r in rows:
+    if r.get('instructions_per_s') and r.get('produced_per_s'):
+        r['instructions_per_change'] = round(r['instructions_per_s'] / r['produced_per_s'])
 rows.sort(key=lambda r: (r.get('tags', 0), r.get('devices', 1), -r.get('rate_ms', 0), r.get('change_pct', 0),
                          r.get('label', '')))
 print('| ' + ' | '.join(h for _, h in COLS) + ' |')
