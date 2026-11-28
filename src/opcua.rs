@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
@@ -21,6 +22,7 @@ use crate::quality::Quality;
 /// Spawned as `tokio::spawn(opcua::poll_opcua_device(config, cache))`.
 /// Runs an infinite loop with exponential backoff on connection failure.
 pub async fn poll_opcua_device(config: OpcUaDeviceConfig, cache: DeviceCache) {
+    bench::start_stats_log();
     let device_id = config.id.clone();
     let mut backoff = Backoff::new();
 
@@ -43,6 +45,51 @@ pub async fn poll_opcua_device(config: OpcUaDeviceConfig, cache: DeviceCache) {
         let delay = backoff.next();
         tracing::info!("OPC-UA device {} retrying in {delay}ms", device_id);
         tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
+}
+
+/// Data changes handed to the cache, all OPC UA devices since start.
+pub static VALUES_DELIVERED: AtomicU64 = AtomicU64::new(0);
+/// Data changes lost because a device's queue to the cache was full.
+pub static VALUES_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Hooks for `scenarios/opcua-bench`, off unless their environment variables
+/// are set.
+mod bench {
+    use super::*;
+
+    /// `VOLTRUS_BENCH_LATENCY_TAG`: the tag (its name in Voltrus) whose value
+    /// is the simulator's send time in Unix ms. Each time it reaches the cache
+    /// the delay is logged as `opcua_bench latency_ms=...`.
+    pub(super) static LATENCY_TAG: LazyLock<Option<String>> =
+        LazyLock::new(|| std::env::var("VOLTRUS_BENCH_LATENCY_TAG").ok());
+
+    pub(super) fn record_latency(sent_ms: f64) {
+        let now = crate::timeutil::now_millis() as f64;
+        tracing::info!("opcua_bench latency_ms={:.1}", now - sent_ms);
+    }
+
+    /// `VOLTRUS_BENCH_STATS=1`: log the counters once a second, as
+    /// `opcua_bench delivered=... dropped=... allocs=...`.
+    pub(super) fn start_stats_log() {
+        static STARTED: std::sync::Once = std::sync::Once::new();
+        if std::env::var_os("VOLTRUS_BENCH_STATS").is_none() {
+            return;
+        }
+        STARTED.call_once(|| {
+            tokio::spawn(async {
+                let mut tick = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    tick.tick().await;
+                    tracing::info!(
+                        "opcua_bench delivered={} dropped={} allocs={}",
+                        VALUES_DELIVERED.load(Ordering::Relaxed),
+                        VALUES_DROPPED.load(Ordering::Relaxed),
+                        crate::alloc_count::allocations().unwrap_or(0)
+                    );
+                }
+            });
+        });
     }
 }
 
@@ -499,11 +546,18 @@ fn create_data_change_callback(
             // Accumulate metrics between drain cycles.
             let mut batch: HashMap<String, f64> = HashMap::new();
             let mut quality: HashMap<String, Quality> = HashMap::new();
+            let latency_tag = bench::LATENCY_TAG.as_deref();
 
             loop {
+                let mut received: u64 = 0;
+                let mut sent_ms = None;
                 // Block until at least one update arrives.
                 match rx.recv().await {
                     Some((name, value, q)) => {
+                        received += 1;
+                        if latency_tag == Some(name.as_str()) {
+                            sent_ms = Some(value);
+                        }
                         quality.insert(name.clone(), q);
                         batch.insert(name, value);
                     }
@@ -514,6 +568,10 @@ fn create_data_change_callback(
                 // collapse multiple updates to the same tag into one
                 // cache write.
                 while let Ok((name, value, q)) = rx.try_recv() {
+                    received += 1;
+                    if latency_tag == Some(name.as_str()) {
+                        sent_ms = Some(value);
+                    }
                     quality.insert(name.clone(), q);
                     batch.insert(name, value);
                 }
@@ -523,6 +581,10 @@ fn create_data_change_callback(
                 // A subscription only reports changes: merge, so the tags
                 // that did not change keep their value.
                 cache.merge_with_quality(&device_id, metrics, quality).await;
+                VALUES_DELIVERED.fetch_add(received, Ordering::Relaxed);
+                if let Some(sent_ms) = sent_ms {
+                    bench::record_latency(sent_ms);
+                }
             }
         });
     }
@@ -540,7 +602,9 @@ fn create_data_change_callback(
 
         // Non-blocking send; if the channel is full the update is dropped
         // (the next publish cycle will deliver a fresher value anyway).
-        let _ = tx.try_send((node_name, value, quality));
+        if tx.try_send((node_name, value, quality)).is_err() {
+            VALUES_DROPPED.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 

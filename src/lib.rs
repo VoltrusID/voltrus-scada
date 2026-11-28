@@ -14,6 +14,7 @@ pub mod ai_copilot;
 pub mod alarm_chatter;
 pub mod alarm_delay;
 pub mod alarm_eval;
+pub mod alloc_count;
 pub mod analytics;
 pub mod api;
 pub mod asset;

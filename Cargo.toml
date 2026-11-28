@@ -68,6 +68,8 @@ dnp3 = []
 ethernet-ip = []
 s7 = []
 scripts = ["dep:rquickjs"]
+# Benchmarks only: count heap allocations (src/alloc_count.rs).
+alloc-count = []
 
 [dependencies]
 tokio = { version = "=1.52.1", features = ["rt-multi-thread", "macros", "net", "sync", "signal", "time", "process"] }

@@ -7,7 +7,7 @@ use opcua::server::ServerBuilder;
 use opcua::server::address_space::Variable;
 use opcua::server::diagnostics::NamespaceMetadata;
 use opcua::server::node_manager::memory::{SimpleNodeManager, simple_node_manager};
-use opcua::types::{BuildInfo, DataValue, DateTime, MessageSecurityMode, NodeId};
+use opcua::types::{BuildInfo, DataValue, DateTime, MessageSecurityMode, NodeId, NumericRange};
 use rand::Rng;
 
 // --- Data Store ---
@@ -83,11 +83,33 @@ impl MeterData {
 
 // --- CLI ---
 
-fn parse_args() -> (String, u16, u64) {
+/// Benchmark mode (`--tags N`): N Double tags instead of the meter, a share
+/// of them changed every tick, and a `SendTime` tag carrying the tick's send
+/// time in Unix milliseconds so a client can measure end-to-end latency.
+#[derive(Clone, Copy)]
+struct Bench {
+    tags: usize,
+    change_pct: f64,
+    /// MaxMonitoredItemsPerCall the server announces and enforces.
+    max_items_per_call: Option<usize>,
+}
+
+struct Args {
+    host: String,
+    port: u16,
+    delay_ms: u64,
+    bench: Option<Bench>,
+}
+
+fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
     let mut host: String = "127.0.0.1".to_string();
     let mut port: u16 = 4840;
     let mut delay_ms: u64 = 0;
+    let mut tags: Option<usize> = None;
+    let mut change_pct = 100.0;
+    let mut max_items_per_call = None;
+    let value = |i: usize| args.get(i + 1).and_then(|v| v.parse::<f64>().ok());
 
     let mut i = 1;
     while i < args.len() {
@@ -109,8 +131,21 @@ fn parse_args() -> (String, u16, u64) {
                     });
                 i += 2;
             }
-            "--delay" => {
+            // `--rate-ms` is the benchmark's name for the tick delay.
+            "--delay" | "--rate-ms" => {
                 delay_ms = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
+                i += 2;
+            }
+            "--tags" => {
+                tags = value(i).map(|n| n as usize).filter(|n| *n > 0);
+                i += 2;
+            }
+            "--change-pct" => {
+                change_pct = value(i).unwrap_or(100.0).clamp(0.0, 100.0);
+                i += 2;
+            }
+            "--max-items-per-call" => {
+                max_items_per_call = value(i).map(|n| n as usize);
                 i += 2;
             }
             _ => {
@@ -118,20 +153,111 @@ fn parse_args() -> (String, u16, u64) {
             }
         }
     }
-    (host, port, delay_ms)
+    Args {
+        host,
+        port,
+        delay_ms,
+        bench: tags.map(|tags| Bench {
+            tags,
+            change_pct,
+            max_items_per_call,
+        }),
+    }
+}
+
+/// Node id of benchmark tag `k`.
+fn bench_node(ns: u16, k: usize) -> NodeId {
+    NodeId::new(ns, format!("Bench.T{k:06}"))
+}
+
+/// Add the benchmark tags and `SendTime` under a `Bench` folder.
+fn add_bench_nodes(manager: &SimpleNodeManager, ns: u16, bench: Bench) {
+    let address_space = manager.address_space();
+    let mut address_space = address_space.write();
+    let folder_id = NodeId::new(ns, "Bench");
+    address_space.add_folder(
+        &folder_id,
+        "Bench",
+        "Benchmark tags",
+        &NodeId::objects_folder_id(),
+    );
+    let mut vars: Vec<Variable> = (0..bench.tags)
+        .map(|k| {
+            let name = format!("T{k:06}");
+            Variable::new(&bench_node(ns, k), name.as_str(), name.as_str(), 0.0f64)
+        })
+        .collect();
+    vars.push(Variable::new(
+        &NodeId::new(ns, "Bench.SendTime"),
+        "SendTime",
+        "Send time (Unix ms)",
+        0.0f64,
+    ));
+    address_space.add_variables(vars, &folder_id);
+}
+
+/// Every tick, change `change_pct` % of the tags (a window that moves on, so
+/// each tag changes in turn) and then `SendTime`, in one notification batch.
+async fn run_bench_ticker(
+    nm: std::sync::Arc<SimpleNodeManager>,
+    subs: std::sync::Arc<opcua::server::SubscriptionCache>,
+    ns: u16,
+    bench: Bench,
+    tick: Duration,
+) {
+    let ids: Vec<NodeId> = (0..bench.tags).map(|k| bench_node(ns, k)).collect();
+    let send_time = NodeId::new(ns, "Bench.SendTime");
+    let per_tick = ((bench.tags as f64 * bench.change_pct / 100.0).ceil() as usize).min(bench.tags);
+    let mut interval = tokio::time::interval(tick);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut start = 0usize;
+    let mut ticks: u64 = 0;
+    let mut produced: u64 = 0;
+    let mut last_log = std::time::Instant::now();
+    loop {
+        interval.tick().await;
+        ticks += 1;
+        let now = DateTime::now();
+        let mut values: Vec<(&NodeId, Option<&NumericRange>, DataValue)> =
+            Vec::with_capacity(per_tick + 1);
+        for j in 0..per_tick {
+            let k = (start + j) % bench.tags;
+            let v = ticks as f64 + k as f64 * 1e-6;
+            values.push((&ids[k], None, DataValue::new_at(v, now)));
+        }
+        start = (start + per_tick) % bench.tags;
+        let sent_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or_default();
+        values.push((&send_time, None, DataValue::new_at(sent_ms, now)));
+        produced += values.len() as u64;
+        if let Err(e) = nm.set_values(&subs, values.into_iter()) {
+            tracing::warn!("bench tick failed: {e:?}");
+        }
+        if last_log.elapsed() >= Duration::from_secs(10) {
+            last_log = std::time::Instant::now();
+            tracing::info!("bench ticks={ticks} produced={produced}");
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
 
-    let (host, port, delay_ms) = parse_args();
+    let Args {
+        host,
+        port,
+        delay_ms,
+        bench,
+    } = parse_args();
 
     let endpoint_path = format!("opc.tcp://{host}:{port}");
     let discovery_url = format!("opc.tcp://{host}:{port}");
     let endpoint_rel_path = "/";
 
-    let (server, handle) = ServerBuilder::new()
+    let mut builder = ServerBuilder::new()
         .application_name("Voltrus OPC-UA Simulator")
         .application_uri("urn:voltrus-lite-opcua-sim")
         .product_uri("urn:voltrus-lite-opcua-sim")
@@ -164,7 +290,19 @@ async fn main() -> Result<()> {
             software_version: "0.20.1".into(),
             build_number: "1".into(),
             build_date: DateTime::now(),
-        })
+        });
+    if let Some(bench) = bench {
+        let limits = builder.limits_mut();
+        // Tens of thousands of items on one subscription, and responses that
+        // carry all of them.
+        limits.subscriptions.max_monitored_items_per_sub = 0;
+        limits.max_message_size = 0;
+        limits.max_chunk_count = 0;
+        if let Some(n) = bench.max_items_per_call {
+            limits.operational.max_monitored_items_per_call = n;
+        }
+    }
+    let (server, handle) = builder
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build server: {e}"))?;
 
@@ -179,6 +317,26 @@ async fn main() -> Result<()> {
         .ok_or_else(|| anyhow::anyhow!("Namespace urn:VoltrusLiteSim not found"))?;
 
     let subscriptions = handle.subscriptions();
+    tracing::info!("namespace urn:VoltrusLiteSim has index {ns}");
+
+    if let Some(bench) = bench {
+        add_bench_nodes(&node_manager, ns, bench);
+        let tick = Duration::from_millis(if delay_ms > 0 { delay_ms } else { 1000 });
+        tokio::spawn(run_bench_ticker(
+            node_manager.clone(),
+            subscriptions.clone(),
+            ns,
+            bench,
+            tick,
+        ));
+        tracing::info!(
+            "OPC-UA benchmark simulator on {host}:{port}: {} tags, {} % changed every {} ms",
+            bench.tags,
+            bench.change_pct,
+            tick.as_millis()
+        );
+        return run_server(server, handle).await;
+    }
 
     // Add nodes to the address space
     {
@@ -378,6 +536,13 @@ async fn main() -> Result<()> {
         tracing::info!("PLC delay simulation: {delay_ms}ms between updates");
     }
 
+    run_server(server, handle).await
+}
+
+async fn run_server(
+    server: opcua::server::Server,
+    handle: opcua::server::ServerHandle,
+) -> Result<()> {
     // Register Ctrl-C handler
     let handle_c = handle.clone();
     tokio::spawn(async move {
