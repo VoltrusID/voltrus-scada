@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "native", "collab"]
+members = [".", "native", "collab", "dissect"]
 exclude = ["enterprise"]
 resolver = "2"
 
