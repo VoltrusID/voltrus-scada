@@ -491,9 +491,12 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
                     requested_parameters: MonitoringParameters {
                         client_handle: (first + j + 1) as u32,
                         sampling_interval: interval_ms as f64,
-                        // The cache keeps the latest value only: older ones
-                        // queued on the server would be sent for nothing.
-                        queue_size: 1,
+                        // Queue size 1 would send fewer values (the cache
+                        // keeps the latest only), but against async-opcua's
+                        // server a tag changing every sampling interval then
+                        // reached us one interval later (p50 ~90 ms instead
+                        // of ~15 ms at 100 ms, docs/footprint.md).
+                        queue_size: 10,
                         discard_oldest: true,
                         filter: opcua::types::ExtensionObject::null(),
                     },
