@@ -160,6 +160,13 @@ impl TriggerConfig {
         }
     }
 
+    /// Whether any trigger can match a device snapshot message whose source
+    /// (the device's protocol) is `source`. Only the Modbus trigger matches
+    /// device messages; keep this in step with [`Self::matches`].
+    pub fn matches_device_source(source: &str) -> bool {
+        source == "modbus"
+    }
+
     pub fn matches(&self, msg: &Message) -> bool {
         match self {
             TriggerConfig::Modbus {
@@ -240,6 +247,26 @@ mod tests {
         m.metadata.insert("source".to_string(), "mqtt".to_string());
         m.metadata.insert("topic".to_string(), topic.to_string());
         m
+    }
+
+    /// A snapshot of a non-Modbus device matches no trigger, so the engine
+    /// does not build its message.
+    #[test]
+    fn only_modbus_device_messages_can_match() {
+        use serde_json::json;
+        assert!(TriggerConfig::matches_device_source("modbus"));
+        let triggers = [
+            json!({"type": "modbus", "device_id": "*"}),
+            json!({"type": "mqtt", "topic": "#"}),
+            json!({"type": "tag_change", "data_source_ids": [1]}),
+        ]
+        .map(|t| TriggerConfig::from_value(t).unwrap());
+        for source in ["opcua", "s7", "ethernet_ip", "dnp3", "bacnet"] {
+            assert!(!TriggerConfig::matches_device_source(source));
+            let mut msg = Message::new(json!({"device_id": "d", "metrics": {"x": 1.0}}));
+            msg.metadata.insert("source".into(), source.into());
+            assert!(triggers.iter().all(|t| !t.matches(&msg)), "{source}");
+        }
     }
 
     #[test]

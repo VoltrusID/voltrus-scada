@@ -9,10 +9,17 @@ use crate::ws_types::ServerMessage;
 
 const SNAPSHOT_CHANNEL_CAPACITY: usize = 256;
 
+/// A source timestamp further ahead of our clock than this is not believed:
+/// the value is stamped with the time it arrived instead.
+const MAX_SOURCE_CLOCK_AHEAD_MS: i64 = 5_000;
+
 #[derive(Debug, Clone)]
 pub struct DeviceCache {
-    devices: Arc<RwLock<HashMap<String, DeviceSnapshot>>>,
-    snapshot_tx: broadcast::Sender<DeviceSnapshot>,
+    /// Each snapshot is shared with the [`Self::subscribe`] receivers that
+    /// have not read it yet, and copied on write only while one still holds
+    /// it: an update does not copy the whole device for every batch.
+    devices: Arc<RwLock<HashMap<String, Arc<DeviceSnapshot>>>>,
+    snapshot_tx: broadcast::Sender<Arc<DeviceSnapshot>>,
     trigger: watch::Sender<bool>,
     ws_manager: Option<Arc<WsManager>>,
     storage: Option<crate::storage::Storage>,
@@ -29,6 +36,16 @@ pub struct Reading {
     pub value: f64,
     pub quality: Quality,
     pub ts_ms: i64,
+}
+
+/// Set `map[key]` to `value`, allocating the key only when it is new.
+fn set_in_place<V>(map: &mut HashMap<String, V>, key: &str, value: V) {
+    match map.get_mut(key) {
+        Some(slot) => *slot = value,
+        None => {
+            map.insert(key.to_owned(), value);
+        }
+    }
 }
 
 /// Mark the good values of `snap` that are older than the stale window.
@@ -87,7 +104,7 @@ impl DeviceCache {
             .insert(device_id.to_string(), protocol.to_string());
         let mut devices = self.devices.write().await;
         if let Some(entry) = devices.get_mut(device_id) {
-            entry.protocol = Some(protocol.to_string());
+            Arc::make_mut(entry).protocol = Some(protocol.to_string());
         }
     }
 
@@ -131,38 +148,7 @@ impl DeviceCache {
         simulated: bool,
         partial: bool,
     ) {
-        let (snapshot, was_offline) = {
-            // Read the registered protocol (if any) before taking the device
-            // write lock — lock order is always protocols → devices.
-            let protocol = self.protocols.read().await.get(device_id).cloned();
-            let mut devices = self.devices.write().await;
-            let ts_ms = crate::timeutil::now_millis();
-
-            let was_offline = devices
-                .get(device_id)
-                .map(|e| e.status == DeviceStatus::Offline)
-                .unwrap_or(true);
-
-            let entry = devices
-                .entry(device_id.to_string())
-                .or_insert_with(|| DeviceSnapshot {
-                    device_id: device_id.to_string(),
-                    status: DeviceStatus::Online,
-                    timestamp: 0,
-                    metrics: HashMap::new(),
-                    simulated,
-                    protocol: None,
-                    ts_ms: 0,
-                    quality: HashMap::new(),
-                    metric_ts_ms: HashMap::new(),
-                });
-            entry.status = DeviceStatus::Online;
-            entry.timestamp = ts_ms / 1000;
-            entry.ts_ms = ts_ms;
-            entry.simulated = simulated;
-            if let Some(p) = protocol {
-                entry.protocol = Some(p);
-            }
+        self.write_device(device_id, simulated, |entry, ts_ms| {
             // A partial update keeps the metrics it does not carry, with their
             // own timestamp and quality (bad after a drop to offline, until the
             // device sends them again).
@@ -184,8 +170,91 @@ impl DeviceCache {
                 entry.metric_ts_ms.insert(name.clone(), ts_ms);
                 entry.metrics.insert(name, value);
             }
+        })
+        .await;
+    }
 
-            (entry.clone(), was_offline)
+    /// Update the given metrics of a device and keep the others, like
+    /// [`Self::merge_with_quality`], for a driver that keeps its tag names and
+    /// reports changes as `(name, value, quality, source time in Unix ms)`.
+    /// Tags already in the cache are updated in place, without allocating.
+    /// The source time, when the device sends one, is the metric's timestamp
+    /// (unless it is ahead of our clock by more than a few seconds).
+    pub async fn merge_readings<'a>(
+        &self,
+        device_id: &str,
+        readings: impl IntoIterator<Item = (&'a str, f64, Quality, Option<i64>)>,
+    ) {
+        self.write_device(device_id, false, |entry, now_ms| {
+            for (name, value, quality, source_ms) in readings {
+                let ts = source_ms
+                    .filter(|t| *t <= now_ms + MAX_SOURCE_CLOCK_AHEAD_MS)
+                    .unwrap_or(now_ms);
+                set_in_place(&mut entry.metrics, name, value);
+                set_in_place(&mut entry.metric_ts_ms, name, ts);
+                if quality.is_good() {
+                    if !entry.quality.is_empty() {
+                        entry.quality.remove(name);
+                    }
+                } else {
+                    set_in_place(&mut entry.quality, name, quality);
+                }
+            }
+        })
+        .await;
+    }
+
+    /// Mark a device online, let `write` change its metrics (given the time
+    /// now in Unix ms), and tell the subscribers.
+    async fn write_device(
+        &self,
+        device_id: &str,
+        simulated: bool,
+        write: impl FnOnce(&mut DeviceSnapshot, i64),
+    ) {
+        let (snapshot, was_offline) = {
+            // Read the registered protocol (if any) before taking the device
+            // write lock — lock order is always protocols → devices.
+            let protocol = self.protocols.read().await.get(device_id).cloned();
+            let mut devices = self.devices.write().await;
+            let ts_ms = crate::timeutil::now_millis();
+
+            let was_offline = devices
+                .get(device_id)
+                .map(|e| e.status == DeviceStatus::Offline)
+                .unwrap_or(true);
+
+            if !devices.contains_key(device_id) {
+                devices.insert(
+                    device_id.to_string(),
+                    Arc::new(DeviceSnapshot {
+                        device_id: device_id.to_string(),
+                        status: DeviceStatus::Online,
+                        timestamp: 0,
+                        metrics: HashMap::new(),
+                        simulated,
+                        protocol: None,
+                        ts_ms: 0,
+                        quality: HashMap::new(),
+                        metric_ts_ms: HashMap::new(),
+                    }),
+                );
+            }
+            let Some(shared) = devices.get_mut(device_id) else {
+                return;
+            };
+            // Copies the snapshot only if a subscriber still holds it.
+            let entry = Arc::make_mut(shared);
+            entry.status = DeviceStatus::Online;
+            entry.timestamp = ts_ms / 1000;
+            entry.ts_ms = ts_ms;
+            entry.simulated = simulated;
+            if let Some(p) = protocol {
+                entry.protocol = Some(p);
+            }
+            write(entry, ts_ms);
+
+            (Arc::clone(shared), was_offline)
         };
 
         // Log device connect on transition to online
@@ -205,7 +274,13 @@ impl DeviceCache {
                 .await;
         }
 
-        let _ = self.snapshot_tx.send(snapshot);
+        // Only a receiver keeps the snapshot shared: without one, the next
+        // update must not have to copy it.
+        if self.snapshot_tx.receiver_count() > 0 {
+            let _ = self.snapshot_tx.send(snapshot);
+        } else {
+            drop(snapshot);
+        }
         let _ = self.trigger.send(true);
 
         // Broadcast device online status via WebSocket
@@ -223,6 +298,7 @@ impl DeviceCache {
             let mut devices = self.devices.write().await;
             let old = devices.get(device_id).map(|e| e.status.clone());
             if let Some(entry) = devices.get_mut(device_id) {
+                let entry = Arc::make_mut(entry);
                 entry.status = status.clone();
                 // The last values stay readable for context, but nothing may
                 // act on them as if they were current.
@@ -292,7 +368,7 @@ impl DeviceCache {
         devices
             .values()
             .map(|snap| {
-                let mut snap = snap.clone();
+                let mut snap = DeviceSnapshot::clone(snap);
                 let interval = intervals.get(&snap.device_id).copied();
                 mark_stale(&mut snap, interval, now_ms);
                 snap
@@ -385,7 +461,10 @@ impl DeviceCache {
         self.devices.write().await.remove(device_id);
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<DeviceSnapshot> {
+    /// Every device update, as the device's whole snapshot after it. Holding
+    /// a received snapshot makes the next update of that device copy it, so
+    /// receivers should drop it once read.
+    pub fn subscribe(&self) -> broadcast::Receiver<Arc<DeviceSnapshot>> {
         self.snapshot_tx.subscribe()
     }
 
@@ -639,5 +718,62 @@ mod tests {
         let snap = &cache.get_all().await[0];
         assert!(!snap.metrics.contains_key("b"));
         assert!(snap.quality.is_empty());
+    }
+
+    #[tokio::test]
+    async fn merge_readings_keeps_other_tags_quality_and_source_time() {
+        let cache = DeviceCache::new();
+        let now = crate::timeutil::now_millis();
+        cache
+            .merge_readings(
+                "ua",
+                [
+                    ("a", 1.0, Quality::Good, Some(now - 60_000)),
+                    ("b", f64::NAN, Quality::BadDeviceError, None),
+                ],
+            )
+            .await;
+        cache
+            .merge_readings(
+                "ua",
+                [
+                    ("b", 2.0, Quality::Good, Some(now)),
+                    // A clock far ahead is not believed.
+                    ("c", 3.0, Quality::Uncertain, Some(now + 3_600_000)),
+                ],
+            )
+            .await;
+        let snap = &cache.get_all().await[0];
+        assert_eq!(snap.status, DeviceStatus::Online);
+        assert_eq!(snap.metrics["a"], 1.0);
+        assert_eq!(snap.metric_ts("a"), now - 60_000, "the source time");
+        assert_eq!(snap.metrics["b"], 2.0);
+        assert_eq!(snap.quality_of("b"), Quality::Good, "good again");
+        assert_eq!(snap.quality_of("c"), Quality::Uncertain);
+        assert!(snap.metric_ts("c") < now + 60_000, "arrival time instead");
+    }
+
+    /// A subscriber gets each update's snapshot as it was; holding it does not
+    /// see later updates (the cache copies on write), and receivers that have
+    /// read it no longer hold it.
+    #[tokio::test]
+    async fn subscribers_get_each_snapshot_as_it_was() {
+        let cache = DeviceCache::new();
+        let mut rx = cache.subscribe();
+        cache
+            .merge_readings("ua", [("a", 1.0, Quality::Good, None)])
+            .await;
+        let first = rx.recv().await.unwrap();
+        cache
+            .merge_readings("ua", [("a", 2.0, Quality::Good, None)])
+            .await;
+        let second = rx.recv().await.unwrap();
+        assert_eq!(first.metrics["a"], 1.0, "held snapshot unchanged");
+        assert_eq!(second.metrics["a"], 2.0);
+        drop(first);
+        // Only the cache and `second` hold the current snapshot now; the
+        // channel let go of it once read.
+        let devices = cache.devices.read().await;
+        assert_eq!(Arc::strong_count(&devices["ua"]), 2);
     }
 }
