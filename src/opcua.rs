@@ -61,11 +61,17 @@ pub static VALUES_SUPERSEDED: AtomicU64 = AtomicU64::new(0);
 const ITEMS_PER_CALL: usize = 1000;
 
 /// Values per publish response asked of the server; it sends the rest in the
-/// next responses. The client refuses to decode an array of more than 1000
-/// elements (async-opcua's default `max_array_length`) and drops the session,
-/// so without this a device with more than 1000 tags changing at once (or
-/// just connecting: every initial value comes at once) never stays connected.
-const MAX_NOTIFICATIONS_PER_PUBLISH: u32 = 1000;
+/// next responses, one round trip each. At 1000, a device of 50,000 tags all
+/// changing every second got 38 % of the changes from async-opcua's server
+/// (which queues 20 notification messages per subscription by default). 5000 Double values with
+/// their source time are ~125 kB, well inside the default 320 kB message
+/// limit. The client must decode arrays that long: see [`MAX_ARRAY_LENGTH`].
+const MAX_NOTIFICATIONS_PER_PUBLISH: u32 = 5000;
+
+/// Longest array the client decodes. async-opcua's default, 1000, made the
+/// session drop on the first publish response with more values (a device
+/// with more than 1000 tags never stayed connected).
+const MAX_ARRAY_LENGTH: usize = MAX_NOTIFICATIONS_PER_PUBLISH as usize;
 
 /// Hooks for `scenarios/opcua-bench`, off unless their environment variables
 /// are set.
@@ -274,7 +280,8 @@ pub(crate) async fn connect(
         .application_uri("urn:voltrus-lite")
         .pki_dir(pki_dir)
         .trust_server_certs(!secure)
-        .create_sample_keypair(true);
+        .create_sample_keypair(true)
+        .max_array_length(MAX_ARRAY_LENGTH);
     if single_attempt {
         builder = builder.session_retry_limit(0);
     }
