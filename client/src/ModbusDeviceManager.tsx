@@ -13,6 +13,7 @@ import { deviceFileKind, parseModbusDeviceFile } from './deviceFileImport'
 import { DeviceTemplatesPanel, SaveAsTemplateDialog } from './components/DeviceTemplatesPanel'
 import { NetworkScanDialog } from './components/NetworkScanDialog'
 import { useRole } from './RoleContext'
+import { TrafficView } from './TrafficView'
 
 export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onClose: () => void; embedded?: boolean; isStrictAdmin?: boolean }) {
   // Viewers and operators see the devices and their status; changing them is configuration.
@@ -43,6 +44,7 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
   const [showTemplates, setShowTemplates] = useState(false)
   const [showNetworkScan, setShowNetworkScan] = useState(false)
   const [templateDevice, setTemplateDevice] = useState<ModbusDevice | undefined>(undefined)
+  const [trafficDevice, setTrafficDevice] = useState<ModbusDevice | undefined>(undefined)
   const [importLines, setImportLines] = useState<string[]>([])
   const [simStates, setSimStates] = useState<Record<string, { simulation_mode: boolean; sim_profile_id: number | null; sim_config: string | null }>>({})
 
@@ -139,7 +141,7 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
               <th style={thStyle}>Status</th>
               <th style={thStyle}>Sim</th>
               <th style={thStyle}>Enabled</th>
-              <th style={{ ...thStyle, width: 180 }}>Actions</th>
+              <th style={{ ...thStyle, width: 230 }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -198,6 +200,7 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
                     <button onClick={() => handleEdit(d)} aria-label={`Edit ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Edit</button>
                     <button onClick={() => handleDup(d)} aria-label={`Duplicate ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Dup</button>
                     <button onClick={() => setTemplateDevice(d)} aria-label={`Save ${d.name || d.id} as template`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Tpl</button>
+                    <button onClick={() => setTrafficDevice(d)} aria-label={`Traffic of ${d.name || d.id}`} title="Decoded requests and responses" style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Traffic</button>
                     <button onClick={() => restartMut.mutate(d.id)} aria-label={`Restart ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 11 }}>Restart</button>
                     <button onClick={() => handleDelete(d.id)} aria-label={`Delete ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)', cursor: 'pointer', fontSize: 11 }}>Del</button>
                   </div>}
@@ -231,6 +234,7 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
         />
       )
     })()}
+    {trafficDevice && <TrafficView deviceId={trafficDevice.id} deviceName={trafficDevice.name || trafficDevice.id} onClose={() => setTrafficDevice(undefined)} />}
     {showNetworkScan && <NetworkScanDialog onClose={() => setShowNetworkScan(false)} />}
     {showTemplates && <DeviceTemplatesPanel protocol="modbus" isAdmin={isStrictAdmin} onClose={() => setShowTemplates(false)} />}
     {templateDevice && <SaveAsTemplateDialog protocol="modbus" deviceId={templateDevice.id} deviceName={templateDevice.name || templateDevice.id} onClose={() => setTemplateDevice(undefined)} onSaved={line => setImportLines([line])} />}
