@@ -91,28 +91,33 @@ def child_pid(ppid):
 
 
 class Log:
-    """Follows a log file from where it was last read."""
+    """Follows a log file; lines are handed out once, in order."""
 
     def __init__(self, path):
-        self.path, self.pos, self.buf = path, 0, ''
+        self.path, self.pos, self.buf, self.queue = path, 0, '', []
 
     def lines(self):
+        """Every line not handed out yet."""
         with open(self.path, errors='ignore') as f:
             f.seek(self.pos)
             chunk = f.read()
             self.pos = f.tell()
         self.buf += chunk
         *done, self.buf = self.buf.split('\n')
-        return done
+        out, self.queue = self.queue + done, []
+        return out
 
     def wait_for(self, regex, timeout, on_line=None):
+        """The next line matching `regex`; the lines after it stay for the next call."""
         end = time.time() + timeout
         while time.time() < end:
-            for line in self.lines():
+            lines = self.lines()
+            for i, line in enumerate(lines):
                 if on_line:
                     on_line(line)
                 m = regex.search(line)
                 if m:
+                    self.queue = lines[i + 1:]
                     return m
             time.sleep(0.02)
         raise SystemExit(f'timed out waiting for {regex.pattern!r} in {self.path}')
