@@ -32,7 +32,8 @@ import urllib.error
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STATS = re.compile(r'opcua_bench delivered=(\d+) dropped=(\d+) allocs=(\d+)')
+# Before the coalescing feed the client dropped values on a full queue; after it, it counts superseded ones.
+STATS = re.compile(r'opcua_bench delivered=(\d+) (?:dropped|superseded)=(\d+) allocs=(\d+)')
 LATENCY = re.compile(r'opcua_bench latency_ms=(-?[\d.]+)')
 CREATED = re.compile(r'OPC-UA device (\S+) created (\d+)/(\d+) monitored items|OPC-UA device (\S+) error: (.*)')
 
@@ -118,12 +119,15 @@ class Log:
 
 
 def project_yaml(url, tags, devices, rate_ms):
+    """N monitored items in all, split over the devices; send_time takes the place of the last data tag on the
+    first device, so a device of 1,000 tags is 1,000 monitored items."""
     per = [tags // devices + (1 if d < tags % devices else 0) for d in range(devices)]
     out, k = ['format: voltrus-project/1', 'opcua_devices:'], 0
     for d, n in enumerate(per):
         out += [f'- name: bench{d}', f'  url: {url}', f'  interval_ms: {rate_ms}', '  enabled: true', '  nodes:']
         if d == 0:
             out.append("  - {node_id: 'ns=NS;s=Bench.SendTime', name: send_time}")
+            n -= 1
         for _ in range(n):
             out.append(f"  - {{node_id: 'ns=NS;s=Bench.T{k:06d}', name: t{k:06d}}}")
             k += 1
@@ -243,13 +247,16 @@ def main():
         hz = os.sysconf('SC_CLK_TCK')
 
         d0, d1 = [int(x) for x in stats0.groups()], [int(x) for x in stats1.groups()]
-        delivered, dropped, allocs = (d1[i] - d0[i] for i in range(3))
-        per_tick = min(a.tags, -(-a.tags * a.change_pct // 100)) + 1
+        delivered, lost, allocs = (d1[i] - d0[i] for i in range(3))
+        dropped, superseded = (lost, 0) if 'dropped=' in stats1.group(0) else (0, lost)
+        # Changes per tick among the monitored tags: all tags but the last one, plus send_time.
+        per_tick = min(a.tags, -(-a.tags * a.change_pct // 100)) * (a.tags - 1) / a.tags + 1
         result.update({
             'measured_s': round(elapsed, 2),
             'produced_per_s': round(per_tick * 1000 / a.rate_ms, 1),
             'delivered_per_s': round(delivered / elapsed, 1),
             'dropped': dropped,
+            'superseded': superseded,
             'allocs_per_value': round(allocs / delivered, 2) if delivered and allocs else None,
             'cpu_pct_noisy': round((p1[0] - p0[0]) / hz / elapsed * 100, 2),
             'rss_mib': round(p1[1], 1),

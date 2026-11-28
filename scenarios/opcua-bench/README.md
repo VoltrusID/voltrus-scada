@@ -45,8 +45,9 @@ default on most distributions; no root needed).
    values delivered to the cache, values dropped, allocations) and
    `VOLTRUS_BENCH_LATENCY_TAG=send_time` (logs simulator-to-cache latency each
    time that tag reaches the cache).
-3. The devices are created with one `POST /api/v1/project/import` (N tags split
-   over `--devices`, `send_time` on the first) and started with
+3. The devices are created with one `POST /api/v1/project/import` (N monitored
+   items split over `--devices`; `send_time` replaces the last data tag on the
+   first device) and started with
    `POST /api/v1/opcua/devices/{id}/start`. `connect_create_s` is the time from
    the start requests to the last "created x/y monitored items" log line.
 4. After `--warmup` seconds the window opens and closes right after two
