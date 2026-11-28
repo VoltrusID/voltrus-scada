@@ -11,7 +11,7 @@ Templates come from three places:
 
 | Source | `source` value | Editable | Where it comes from |
 |---|---|:-:|---|
-| Built-in | `builtin` | no | Generated at startup from the simulator device profiles (SMA STP 60, Schneider PM5560, E+H Promag 10W, ABB AZL402, Emerson Daniel 1000, Raritan PX3, Trane Tracer SC+, JCI FEC). Marked `verified: false`: the register maps come from the simulator, not from a field check. Never stored; cannot be deleted. |
+| Built-in | `builtin` | no | Generated at startup from the simulator device profiles (SMA STP 60, Schneider PM5560, E+H Promag 10W, ABB AZL402, Emerson Daniel 1000, Raritan PX3, Trane Tracer SC+, JCI FEC). Marked `verified: false`: the register maps come from the simulator, not from a field check (the PM5560 energy registers are from the vendor's list, see [Schneider PM5560](#schneider-pm5560)). Never stored; cannot be deleted. |
 | Local | `local` | delete | Saved from a device, or a template file you imported. |
 | Catalog | `catalog:<index url>` | delete | Imported from a public catalog, see [Catalog](#catalog). |
 
@@ -163,7 +163,7 @@ to the `_dword` name of its order (docs/upgrade-notes.md).
 |---|:-:|---|
 | `name` | yes | Unique within the template, at most 128 characters. |
 | `offset` | yes | 0-based offset within `register_area`, 0-65535, as on the wire. Always an offset: the 5-digit references (40001) of the device file are not used in templates. |
-| `register_type` | no | `int16`, `uint16`, `int32`, `float32` (default) or `float64`. |
+| `register_type` | no | `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float32` (default) or `float64`. 32- and 64-bit types follow the template's `endianness`. Values are kept as 64-bit floats, so `int64`/`uint64` are exact up to 2^53 (about 9.0e15) and rounded beyond; an energy counter in Wh stays exact for centuries. |
 | `register_area` | no | `holding` (default), `input`, `coil` or `discrete`. |
 | `scale` | no | Multiplier, default 1. |
 | `unit` | no | Engineering unit, informational. |
@@ -176,6 +176,33 @@ made from the template and a template saved from a device does not have them.
 
 A value that does not fit before offset 65535 (a `float32` at 65535) is
 refused.
+
+#### Schneider PM5560
+
+The built-in PM5560 template comes from the simulator profile, so most of it
+is the simulator's layout: the float32 values from offset 0 (voltages,
+currents, power, frequency, THD, temperature) are **not** where a real
+PM5560 has them. Its four energy registers are taken from Schneider
+Electric's register list and match the meter:
+
+| Register | Offset | Type | Meter unit | Template |
+|---|--:|---|---|---|
+| Active Energy Delivered (Into Load) | 3203 | `int64` | Wh | kWh, scale 0.001 |
+| Active Energy Received (Out of Load) | 3207 | `int64` | Wh | kWh, scale 0.001 |
+| Reactive Energy Delivered | 3219 | `int64` | VARh | kvarh, scale 0.001 |
+| Reactive Energy Received | 3223 | `int64` | VARh | kvarh, scale 0.001 |
+
+Source: `PM556x_PublicModbusRegisterList_10th_August-23.xlsx` (sheet "Register
+List", revision 1.4 of 2022-04-05 for PM5560 firmware 4.1.8), attached to
+Schneider Electric FAQ FA234017, "PowerLogic PM5000 Series Modbus Register
+List" (<https://www.se.com/ww/en/faqs/FA234017/>). The list numbers registers
+from 1: register 3204 is offset 3203 on the wire. All four are holding
+registers (function 03), most significant word first (`big`). The same list
+has the totals (Delivered + Received at 3212/3228, Delivered - Received at
+3216/3232) and apparent energy (3236-3248, VAh). Register addresses can differ
+between firmware versions: check the list for the meter's firmware. The
+simulator (`modbus-sim --role grid-meter`) serves these four counters at the
+same offsets, rising with the simulated load.
 
 ### BACnet templates
 

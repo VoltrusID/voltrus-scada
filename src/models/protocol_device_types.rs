@@ -44,13 +44,8 @@ impl ModbusDevice {
                 .map(|r| RegisterConfig {
                     name: r.name.clone(),
                     address: r.address,
-                    reg_type: match r.register_type.as_str() {
-                        "int16" => RegisterType::Int16,
-                        "uint16" => RegisterType::Uint16,
-                        "int32" => RegisterType::Int32,
-                        "float64" => RegisterType::Float64,
-                        _ => RegisterType::Float32,
-                    },
+                    reg_type: RegisterType::from_name(&r.register_type)
+                        .unwrap_or(RegisterType::Float32),
                     scale: r.scale,
                     register_area: r.register_area.clone(),
                     zero_based: r.zero_based,

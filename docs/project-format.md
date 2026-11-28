@@ -361,14 +361,14 @@ database.
 
 Enumerated fields are checked against their list while the file is parsed, and
 the error names the field and the allowed values, for example
-`modbus_devices[0]: registers[2].register_type: 'uint32' is not one of int16, uint16, int32, float32, float64`.
+`modbus_devices[0]: registers[2].register_type: 'uint8' is not one of int16, uint16, int32, uint32, int64, uint64, float32, float64`.
 Up to v0.52 such a value was stored and read as the default (`float32`) by the
 poller. The checked fields are:
 
 | Field | Allowed values |
 |---|---|
 | `modbus_devices[].endianness`, `device_templates[].endianness` | `big`, `little`, `swapped`, `little_dword`, `swapped_dword` |
-| `register_type` (Modbus devices and templates) | `int16`, `uint16`, `int32`, `float32`, `float64` |
+| `register_type` (Modbus devices and templates) | `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float32`, `float64` |
 | `register_area` (Modbus devices and templates) | `holding`, `input`, `coil`, `discrete` |
 | `device_templates[].protocol` | `modbus`, `bacnet` |
 | `device_templates[].objects[].object_type` | the nine BACnet object types of [device-templates.md](device-templates.md) |
@@ -403,7 +403,7 @@ The create and update routes that take free-form JSON answer `400` with
 not have, or an enumerated value outside its list, instead of ignoring it:
 `POST`/`PUT /api/v1/data-sources`, `POST`/`PUT /api/v1/screens`,
 `POST`/`PUT /api/v1/modbus-devices` and `PUT /api/v1/modbus-devices/{id}/registers`
-(registers are checked one by one: `register 2: register_type "uint32" is not
+(registers are checked one by one: `register 2: register_type "uint8" is not
 one of ...`). The fields `GET` returns are accepted, so a read-modify-write round
 trip works; read-only ones (`id`, `created_at`) are ignored. The MCP tools go
 through these routes and also refuse unknown arguments themselves.

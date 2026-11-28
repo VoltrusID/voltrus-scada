@@ -10,7 +10,8 @@
   "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
   "quirks": [
     "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0.",
-    "Not mapped: unsigned 64-bit counters (Energy_Import (offset 28, kWh), Energy_Export (offset 32, kWh)) because the poller has no uint64 type; their 4 registers each are still counted in the offsets."
+    "64-bit counters, 4 registers each, most significant word first. Values above 2^53 (9.0e15) lose precision.",
+    "Only the four energy registers (offsets 3203, 3207, 3219, 3223: INT64 Wh/VARh, read as kWh/kvarh) follow Schneider's register list (PM556x_PublicModbusRegisterList_10th_August-23.xlsx, FAQ FA234017; its register numbers are 1-based, offset = register - 1). The float32 registers from offset 0 are the simulator's layout, not the meter's: on a real PM5560 remap them from that list (e.g. Current A is register 3000, Voltage A-N 3028)."
   ],
   "license": "CC-BY-4.0",
   "port": 502,
@@ -142,6 +143,42 @@
       "scale": 1.0,
       "unit": "°C",
       "description": "Internal temperature"
+    },
+    {
+      "name": "Active_Energy_Delivered",
+      "offset": 3203,
+      "register_type": "int64",
+      "register_area": "holding",
+      "scale": 0.001,
+      "unit": "kWh",
+      "description": "Active energy delivered (into load), register 3204"
+    },
+    {
+      "name": "Active_Energy_Received",
+      "offset": 3207,
+      "register_type": "int64",
+      "register_area": "holding",
+      "scale": 0.001,
+      "unit": "kWh",
+      "description": "Active energy received (out of load), register 3208"
+    },
+    {
+      "name": "Reactive_Energy_Delivered",
+      "offset": 3219,
+      "register_type": "int64",
+      "register_area": "holding",
+      "scale": 0.001,
+      "unit": "kvarh",
+      "description": "Reactive energy delivered, register 3220"
+    },
+    {
+      "name": "Reactive_Energy_Received",
+      "offset": 3223,
+      "register_type": "int64",
+      "register_area": "holding",
+      "scale": 0.001,
+      "unit": "kvarh",
+      "description": "Reactive energy received, register 3224"
     }
   ]
 }

@@ -46,13 +46,7 @@ impl Storage {
                 ).context("Insert modbus device failed")?;
 
                 for (i, reg) in device.registers.iter().enumerate() {
-                    let reg_type = match reg.reg_type {
-                        crate::models::RegisterType::Int16 => "int16",
-                        crate::models::RegisterType::Uint16 => "uint16",
-                        crate::models::RegisterType::Int32 => "int32",
-                        crate::models::RegisterType::Float32 => "float32",
-                        crate::models::RegisterType::Float64 => "float64",
-                    };
+                    let reg_type = reg.reg_type.name();
                     tx.execute(
                         "INSERT OR IGNORE INTO modbus_registers (device_id, name, address, register_type, register_area, scale, sort_order, zero_based) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                         rusqlite::params![device.id, reg.name, reg.address, reg_type, reg.register_area, reg.scale, i as i64, reg.zero_based],

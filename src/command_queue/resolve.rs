@@ -140,14 +140,9 @@ pub(super) fn modbus_register(
              and the tag's source_config gives no \"type\""
         )
     })?;
-    let reg_type = match type_name.to_lowercase().as_str() {
-        "int16" => RegisterType::Int16,
-        "uint16" => RegisterType::Uint16,
-        "int32" => RegisterType::Int32,
-        "float32" => RegisterType::Float32,
-        "float64" => RegisterType::Float64,
-        other => return Err(format!("Unknown Modbus register type '{other}'")),
-    };
+    let type_name = type_name.to_lowercase();
+    let reg_type = RegisterType::from_name(&type_name)
+        .ok_or_else(|| format!("Unknown Modbus register type '{type_name}'"))?;
     Ok(RegisterConfig {
         name: key.to_string(),
         address,

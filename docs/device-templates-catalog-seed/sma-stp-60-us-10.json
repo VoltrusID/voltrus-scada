@@ -10,7 +10,7 @@
   "verified_notes": "Derived from the Voltrus simulator profile; not checked against a physical device.",
   "quirks": [
     "Float32 values, 2 registers each, high word first (big endianness); holding registers from offset 0.",
-    "Not mapped: unsigned 64-bit counters (Daily_Yield (offset 34, kWh), Total_Yield (offset 38, kWh), Operating_Time (offset 42, h)) because the poller has no uint64 type; their 4 registers each are still counted in the offsets."
+    "64-bit counters, 4 registers each, most significant word first. Values above 2^53 (9.0e15) lose precision."
   ],
   "license": "CC-BY-4.0",
   "port": 502,
@@ -169,6 +169,33 @@
       "scale": 1.0,
       "unit": "W/m²",
       "description": "Plane-of-array irradiance (from sensor)"
+    },
+    {
+      "name": "Daily_Yield",
+      "offset": 34,
+      "register_type": "uint64",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "kWh",
+      "description": "Energy produced today"
+    },
+    {
+      "name": "Total_Yield",
+      "offset": 38,
+      "register_type": "uint64",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "kWh",
+      "description": "Lifetime energy produced"
+    },
+    {
+      "name": "Operating_Time",
+      "offset": 42,
+      "register_type": "uint64",
+      "register_area": "holding",
+      "scale": 1.0,
+      "unit": "h",
+      "description": "Total operating hours"
     }
   ]
 }

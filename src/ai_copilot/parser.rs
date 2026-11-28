@@ -524,12 +524,12 @@ mod tests {
 
     #[test]
     fn register_map_rejects_types_the_driver_lacks() {
-        for t in ["uint32", "bool", "string", "int64"] {
+        for t in ["uint8", "bool", "string", "int128"] {
             let json = format!(r#"[{{"name": "v", "address": 40001, "register_type": "{t}"}}]"#);
             let err = parse_register_map(&json).unwrap_err().to_string();
             assert!(err.contains(&format!("'{t}' is not supported")), "{err}");
             assert!(
-                err.contains("int16, uint16, int32, float32, float64"),
+                err.contains("int16, uint16, int32, uint32, int64, uint64, float32, float64"),
                 "{err}"
             );
         }

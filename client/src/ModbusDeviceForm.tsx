@@ -27,7 +27,7 @@ interface Props {
   onUnlink?: (id: string) => Promise<boolean>
 }
 
-const REG_TYPES = ['float32', 'int32', 'uint16', 'int16']
+const REG_TYPES = ['float32', 'int32', 'uint32', 'uint16', 'int16', 'int64', 'uint64', 'float64']
 const REG_AREAS = ['holding', 'input', 'coil', 'discrete']
 
 export function ModbusDeviceForm({ device, dupDevice, onSave, onClose, onUnlink }: Props) {

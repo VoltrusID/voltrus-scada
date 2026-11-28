@@ -18,7 +18,7 @@ pub const SOURCE_CATALOG_PREFIX: &str = "catalog:";
 /// Slugs that would shadow a fixed route under `/api/v1/device-templates/`.
 const RESERVED_IDS: [&str; 2] = ["catalog", "from-device"];
 
-pub const MODBUS_TYPES: [&str; 5] = ["int16", "uint16", "int32", "float32", "float64"];
+pub const MODBUS_TYPES: [&str; 8] = crate::models::RegisterType::NAMES;
 pub const MODBUS_AREAS: [&str; 4] = ["holding", "input", "coil", "discrete"];
 pub const MODBUS_ENDIANNESS: [&str; 5] = crate::models::Endianness::NAMES;
 pub const BACNET_TYPES: [&str; 9] = [
@@ -146,11 +146,7 @@ pub struct TemplateRegister {
 impl TemplateRegister {
     /// Number of 16-bit registers the value spans.
     pub fn width(&self) -> u32 {
-        match self.register_type.as_str() {
-            "int16" | "uint16" => 1,
-            "float64" => 4,
-            _ => 2,
-        }
+        u32::from(crate::models::register_type_width(&self.register_type))
     }
 }
 

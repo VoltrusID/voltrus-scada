@@ -17,7 +17,7 @@ pub fn register_map_system_prompt() -> String {
 Rules:
 - Extract ONLY register addresses, data types, scaling factors, and units
 - register_area is one of: {areas}
-- register_type is one of: {types}. No other type is supported: for a 32-bit unsigned value use int32 and say so in the description; for a status bit or a coil use uint16
+- register_type is one of: {types}. No other type is supported: use int64 or uint64 for 64-bit integers such as energy counters; for a status bit or a coil use uint16
 - Address each register in ONE of two ways:
   - "address": the 5-digit reference of a holding register (40001-65535, area holding) or an input register (30001-39999, area input), e.g. 40001 for holding register 1
   - "offset": the 0-based offset inside register_area (0-65535). Use offset for coils and discrete inputs, and whenever the datasheet lists 0-based or hexadecimal offsets (convert hex to decimal)
@@ -539,7 +539,7 @@ mod tests {
         let start = p.find("register_type is one of: ").unwrap() + 25;
         let offered: Vec<&str> = p[start..].split('.').next().unwrap().split(", ").collect();
         assert_eq!(offered, RegisterType::NAMES);
-        assert!(!p.contains("uint32") && !p.contains("bool"), "{p}");
+        assert!(!p.contains("use int32"), "{p}");
         let start = p.find("register_area is one of: ").unwrap() + 25;
         let areas: Vec<&str> = p[start..].lines().next().unwrap().split(", ").collect();
         assert_eq!(areas, REGISTER_AREAS);

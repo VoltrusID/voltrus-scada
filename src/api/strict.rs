@@ -191,11 +191,11 @@ mod tests {
     fn modbus_registers_are_checked_one_by_one() {
         let body = json!({"id": "m", "name": "m", "ip": "1.2.3.4", "registers": [
             {"name": "a", "address": 0},
-            {"name": "b", "address": 2, "register_type": "uint32"}
+            {"name": "b", "address": 2, "register_type": "uint8"}
         ]});
         let err = check_modbus_device(&body).unwrap_err().0.to_string();
         assert!(
-            err.contains("register 2: register_type \"uint32\" is not one of int16, uint16, int32, float32, float64"),
+            err.contains("register 2: register_type \"uint8\" is not one of int16, uint16, int32, uint32, int64, uint64, float32, float64"),
             "{err}"
         );
         let err = check_modbus_device(&json!({"endianness": "middle"}))

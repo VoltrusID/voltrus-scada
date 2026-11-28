@@ -102,6 +102,12 @@ pub struct RegisterDef {
     pub is_counter: bool,
     /// Counter increment per tick (used if is_counter). Applied as base + random variation.
     pub counter_rate: f64,
+    /// 0-based holding register the value starts at, as on the real device.
+    /// `None` puts it right after the previous register.
+    pub address: Option<u16>,
+    /// A counter the real device declares as signed 64-bit (`int64`), not
+    /// `uint64`. The simulator serves the same words either way.
+    pub signed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -114,38 +120,60 @@ pub struct DeviceProfile {
     pub registers: Vec<RegisterDef>,
 }
 
+impl RegisterDef {
+    /// 16-bit registers the value takes: 4 for a counter, 2 for a Float32.
+    pub fn width(&self) -> usize {
+        if self.is_counter { 4 } else { 2 }
+    }
+}
+
 impl DeviceProfile {
-    /// Total number of u16 holding registers needed.
-    pub fn num_registers(&self) -> usize {
+    /// The 0-based holding address of each register, in order: its fixed
+    /// `address`, or right after the previous one.
+    pub fn layout(&self) -> Vec<usize> {
+        let mut next = 0usize;
         self.registers
             .iter()
-            .map(|r| if r.is_counter { 4 } else { 2 })
-            .sum()
+            .map(|def| {
+                let at = def.address.map_or(next, usize::from);
+                next = at + def.width();
+                at
+            })
+            .collect()
     }
 
-    /// Initialize all register values into a u16 array.
-    pub fn to_registers(&self, current_values: &[f64]) -> Vec<u16> {
-        let n = self.num_registers();
-        let mut regs = vec![0u16; n];
-        let mut i = 0;
+    /// Size of the register image: up to the end of the highest register.
+    pub fn num_registers(&self) -> usize {
+        self.layout()
+            .iter()
+            .zip(&self.registers)
+            .map(|(at, def)| at + def.width())
+            .max()
+            .unwrap_or(0)
+    }
 
-        for (idx, def) in self.registers.iter().enumerate() {
-            let val = current_values[idx];
+    /// The register image for the current values; addresses no register
+    /// covers read 0. Counters are 64-bit integers, most significant word
+    /// first; the others Float32, high word first.
+    pub fn to_registers(&self, current_values: &[f64]) -> Vec<u16> {
+        let mut regs = vec![0u16; self.num_registers()];
+        for ((def, i), val) in self.registers.iter().zip(self.layout()).zip(current_values) {
             if def.is_counter {
-                let v = val as u64;
-                regs[i] = ((v >> 48) & 0xFFFF) as u16;
-                regs[i + 1] = ((v >> 32) & 0xFFFF) as u16;
-                regs[i + 2] = ((v >> 16) & 0xFFFF) as u16;
-                regs[i + 3] = (v & 0xFFFF) as u16;
-                i += 4;
+                let v = if def.signed {
+                    *val as i64 as u64
+                } else {
+                    *val as u64
+                };
+                regs[i] = (v >> 48) as u16;
+                regs[i + 1] = (v >> 32) as u16;
+                regs[i + 2] = (v >> 16) as u16;
+                regs[i + 3] = v as u16;
             } else {
-                let bits = (val as f32).to_bits();
+                let bits = (*val as f32).to_bits();
                 regs[i] = (bits >> 16) as u16;
                 regs[i + 1] = bits as u16;
-                i += 2;
             }
         }
-
         regs
     }
 
@@ -210,6 +238,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 2.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "DC_Voltage_B",
@@ -221,6 +251,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 2.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "DC_Current_A",
@@ -232,6 +264,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 1.5,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "DC_Current_B",
@@ -243,6 +277,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 1.5,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "DC_Power",
@@ -254,6 +290,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 500.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "AC_Voltage_L1",
@@ -265,6 +303,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.3,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "AC_Voltage_L2",
@@ -276,6 +316,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.3,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "AC_Voltage_L3",
@@ -287,6 +329,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.3,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "AC_Current_L1",
@@ -298,6 +342,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 1.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "AC_Current_L2",
@@ -309,6 +355,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 1.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "AC_Current_L3",
@@ -320,6 +368,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 1.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "AC_Power",
@@ -331,6 +381,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 400.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "AC_Frequency",
@@ -342,6 +394,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.003,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Efficiency",
@@ -353,6 +407,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.1,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "PowerFactor",
@@ -364,6 +420,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.002,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Temperature",
@@ -375,6 +433,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.3,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Irradiance",
@@ -386,6 +446,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 15.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Daily_Yield",
@@ -397,6 +459,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.0,
                 is_counter: true,
                 counter_rate: 56.5 / 3600.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Total_Yield",
@@ -408,6 +472,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.0,
                 is_counter: true,
                 counter_rate: 56.5 / 3600.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Operating_Time",
@@ -419,6 +485,8 @@ pub fn profile_sma_inverter() -> DeviceProfile {
                 drift: 0.0,
                 is_counter: true,
                 counter_rate: 1.0 / 3600.0,
+                address: None,
+                signed: false,
             },
         ],
     }
@@ -443,6 +511,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 0.3,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Voltage_L2N",
@@ -454,6 +524,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 0.3,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Voltage_L3N",
@@ -465,6 +537,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 0.3,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Current_L1",
@@ -476,6 +550,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 1.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Current_L2",
@@ -487,6 +563,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 1.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Current_L3",
@@ -498,6 +576,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 1.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Active_Power",
@@ -509,6 +589,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 500.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Reactive_Power",
@@ -520,6 +602,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 200.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Apparent_Power",
@@ -531,6 +615,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 500.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Power_Factor",
@@ -542,6 +628,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 0.003,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Frequency",
@@ -553,6 +641,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 0.002,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "THD_Voltage",
@@ -564,6 +654,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 0.1,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "THD_Current",
@@ -575,6 +667,8 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 0.2,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Temperature",
@@ -586,30 +680,71 @@ pub fn profile_pm5560() -> DeviceProfile {
                 drift: 0.1,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
-            RegisterDef {
-                name: "Energy_Import",
-                unit: "kWh",
-                description: "Cumulative active energy import",
-                initial: 1587329.0,
-                min: 0.0,
-                max: 999999999.0,
-                drift: 0.0,
-                is_counter: true,
-                counter_rate: 95.0 / 3600.0,
-            },
-            RegisterDef {
-                name: "Energy_Export",
-                unit: "kWh",
-                description: "Cumulative active energy export",
-                initial: 2451.0,
-                min: 0.0,
-                max: 999999999.0,
-                drift: 0.0,
-                is_counter: true,
-                counter_rate: 0.5 / 3600.0,
-            },
+            // Energy counters where the real meter has them: Schneider Electric,
+            // "PM556x_PublicModbusRegisterList_10th_August-23.xlsx" (FAQ
+            // FA234017, register list rev 1.4 of 2022-04-05), sheet "Register
+            // List". Registers there are 1-based (3204 is wire address 3203),
+            // INT64, Wh / VARh.
+            energy_counter(
+                "Active_Energy_Delivered",
+                "Wh",
+                "Active energy delivered (into load), register 3204",
+                3203,
+                1_587_329_000.0,
+                95_000.0 / 3600.0,
+            ),
+            energy_counter(
+                "Active_Energy_Received",
+                "Wh",
+                "Active energy received (out of load), register 3208",
+                3207,
+                2_451_000.0,
+                500.0 / 3600.0,
+            ),
+            energy_counter(
+                "Reactive_Energy_Delivered",
+                "VARh",
+                "Reactive energy delivered, register 3220",
+                3219,
+                412_870_000.0,
+                28_000.0 / 3600.0,
+            ),
+            energy_counter(
+                "Reactive_Energy_Received",
+                "VARh",
+                "Reactive energy received, register 3224",
+                3223,
+                96_455_000.0,
+                12_000.0 / 3600.0,
+            ),
         ],
+    }
+}
+
+/// A signed 64-bit energy counter at a fixed address, rising `rate` per second.
+fn energy_counter(
+    name: &'static str,
+    unit: &'static str,
+    description: &'static str,
+    address: u16,
+    initial: f64,
+    rate: f64,
+) -> RegisterDef {
+    RegisterDef {
+        name,
+        unit,
+        description,
+        initial: initial as f32,
+        min: 0.0,
+        max: f32::MAX,
+        drift: 0.0,
+        is_counter: true,
+        counter_rate: rate,
+        address: Some(address),
+        signed: true,
     }
 }
 
@@ -631,6 +766,8 @@ pub fn profile_eh_flowmeter() -> DeviceProfile {
                 drift: 0.3,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Flow_Velocity",
@@ -642,6 +779,8 @@ pub fn profile_eh_flowmeter() -> DeviceProfile {
                 drift: 0.05,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Volume_Total",
@@ -653,6 +792,8 @@ pub fn profile_eh_flowmeter() -> DeviceProfile {
                 drift: 0.0,
                 is_counter: true,
                 counter_rate: 12.5 / 3600.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Conductivity",
@@ -664,6 +805,8 @@ pub fn profile_eh_flowmeter() -> DeviceProfile {
                 drift: 5.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Temperature",
@@ -675,6 +818,8 @@ pub fn profile_eh_flowmeter() -> DeviceProfile {
                 drift: 0.05,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Pipe_Volume",
@@ -686,6 +831,8 @@ pub fn profile_eh_flowmeter() -> DeviceProfile {
                 drift: 0.2,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Signal_Quality",
@@ -697,6 +844,8 @@ pub fn profile_eh_flowmeter() -> DeviceProfile {
                 drift: 0.1,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
         ],
     }
@@ -720,6 +869,8 @@ pub fn fn_profile_abb_analyzer() -> DeviceProfile {
                 drift: 0.02,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "ORP",
@@ -731,6 +882,8 @@ pub fn fn_profile_abb_analyzer() -> DeviceProfile {
                 drift: 2.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Turbidity",
@@ -742,6 +895,8 @@ pub fn fn_profile_abb_analyzer() -> DeviceProfile {
                 drift: 0.02,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Dissolved_Oxygen",
@@ -753,6 +908,8 @@ pub fn fn_profile_abb_analyzer() -> DeviceProfile {
                 drift: 0.1,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Conductivity",
@@ -764,6 +921,8 @@ pub fn fn_profile_abb_analyzer() -> DeviceProfile {
                 drift: 3.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Chlorine_Free",
@@ -775,6 +934,8 @@ pub fn fn_profile_abb_analyzer() -> DeviceProfile {
                 drift: 0.02,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Temperature",
@@ -786,6 +947,8 @@ pub fn fn_profile_abb_analyzer() -> DeviceProfile {
                 drift: 0.02,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
         ],
     }
@@ -810,6 +973,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 1.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Static_Pressure",
@@ -821,6 +986,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 2.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Temperature",
@@ -832,6 +999,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 0.1,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Flow_Rate",
@@ -843,6 +1012,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 20.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Volume_Today",
@@ -854,6 +1025,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 0.0,
                 is_counter: true,
                 counter_rate: 1250.0 / 3600.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Volume_Total",
@@ -865,6 +1038,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 0.0,
                 is_counter: true,
                 counter_rate: 1.25 / 3600.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Gas_Gravity",
@@ -876,6 +1051,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 0.001,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Heating_Value",
@@ -887,6 +1064,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 1.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "CH4",
@@ -898,6 +1077,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 0.05,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "CO2",
@@ -909,6 +1090,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 0.02,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "H2S",
@@ -920,6 +1103,8 @@ pub fn profile_daniel_flow() -> DeviceProfile {
                 drift: 0.5,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
         ],
     }
@@ -943,6 +1128,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.2,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Voltage_L2",
@@ -954,6 +1141,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.2,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Voltage_L3",
@@ -965,6 +1154,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.2,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Current_L1",
@@ -976,6 +1167,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.2,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Current_L2",
@@ -987,6 +1180,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.2,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Current_L3",
@@ -998,6 +1193,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.2,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Active_Power",
@@ -1009,6 +1206,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 50.0,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Power_Factor",
@@ -1020,6 +1219,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.005,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Energy_Total",
@@ -1031,6 +1232,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.0,
                 is_counter: true,
                 counter_rate: 8.65 / 3600.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Temperature_Inlet",
@@ -1042,6 +1245,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.1,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Temperature_Outlet",
@@ -1053,6 +1258,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.1,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
             RegisterDef {
                 name: "Humidity",
@@ -1064,6 +1271,8 @@ pub fn profile_raritan_pdu() -> DeviceProfile {
                 drift: 0.5,
                 is_counter: false,
                 counter_rate: 0.0,
+                address: None,
+                signed: false,
             },
         ],
     }

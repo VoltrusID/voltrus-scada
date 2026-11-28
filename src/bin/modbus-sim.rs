@@ -49,9 +49,10 @@ impl DeviceState {
     }
 
     fn write_register(&mut self, addr: usize, word: u16) -> bool {
-        let mut reg_offset = 0usize;
+        let layout = self.profile.layout();
         for (idx, def) in self.profile.registers.iter().enumerate() {
-            let width = if def.is_counter { 4 } else { 2 };
+            let reg_offset = layout[idx];
+            let width = def.width();
             if addr >= reg_offset && addr < reg_offset + width {
                 self.regs[addr] = word;
                 if def.is_counter {
@@ -59,7 +60,11 @@ impl DeviceState {
                         | ((self.regs[reg_offset + 1] as u64) << 32)
                         | ((self.regs[reg_offset + 2] as u64) << 16)
                         | (self.regs[reg_offset + 3] as u64);
-                    self.values[idx] = v as f64;
+                    self.values[idx] = if def.signed {
+                        v as i64 as f64
+                    } else {
+                        v as f64
+                    };
                 } else {
                     let bits =
                         ((self.regs[reg_offset] as u32) << 16) | (self.regs[reg_offset + 1] as u32);
@@ -67,7 +72,6 @@ impl DeviceState {
                 }
                 return true;
             }
-            reg_offset += width;
         }
         // Fallback: just write raw register
         self.regs[addr] = word;
@@ -311,11 +315,15 @@ fn parse_args() -> Option<(u16, FaultConfig, DeviceProfile)> {
                 p.description,
                 p.num_registers()
             );
-            for r in &p.registers {
-                let counter_note = if r.is_counter { " [u64 counter]" } else { "" };
+            for (r, at) in p.registers.iter().zip(p.layout()) {
+                let counter_note = match (r.is_counter, r.signed) {
+                    (true, true) => " [i64 counter]",
+                    (true, false) => " [u64 counter]",
+                    _ => "",
+                };
                 println!(
-                    "              addr={:3} {} ({}){}",
-                    r.name, r.unit, r.description, counter_note
+                    "              addr={:<5} {} {} ({}){}",
+                    at, r.name, r.unit, r.description, counter_note
                 );
             }
         }
@@ -445,20 +453,22 @@ async fn main() -> Result<()> {
 
     // Print register map
     tracing::info!("Register map:");
-    let mut reg_addr = 0u16;
-    for r in &profile.registers {
-        let counter_note = if r.is_counter { " [u64]" } else { "" };
+    for (r, reg_addr) in profile.registers.iter().zip(profile.layout()) {
+        let counter_note = match (r.is_counter, r.signed) {
+            (true, true) => " [i64]",
+            (true, false) => " [u64]",
+            _ => "",
+        };
         tracing::info!(
             "  {:4}-{:<4} {:<20} ({}) [{}..{}]{}",
             reg_addr,
-            reg_addr + if r.is_counter { 3 } else { 1 },
+            reg_addr + r.width() - 1,
             r.name,
             r.unit,
             r.min,
             r.max,
             counter_note
         );
-        reg_addr += if r.is_counter { 4 } else { 2 };
     }
 
     let listener = TcpListener::bind(addr).await?;

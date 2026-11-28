@@ -19,7 +19,7 @@
       "version": "1.0.0",
       "verified": false,
       "path": "emerson-daniel-1000.json",
-      "sha256": "ba49b7e1684d3d326ea29d44c2dd385e6afaf187dcf0c6d16eacb519a8826ed5"
+      "sha256": "9db68c0696c287247957d6ad9041d575733097ca219b0545ba2683646dd4c2a5"
     },
     {
       "template_id": "endress-hauser-promag-10w-dn50",
@@ -29,7 +29,7 @@
       "version": "1.0.0",
       "verified": false,
       "path": "endress-hauser-promag-10w-dn50.json",
-      "sha256": "4c76fdc07b999bedb10bee1bff915759f1061d2f1e12d3fcdb9a6c8e06ddb6f0"
+      "sha256": "e12f6ac59f014f52194229a29b74e675799fe535f4d175d45bbe7a9689b4c594"
     },
     {
       "template_id": "johnson-controls-facility-explorer-fec",
@@ -49,7 +49,7 @@
       "version": "1.0.0",
       "verified": false,
       "path": "raritan-px3-5902v.json",
-      "sha256": "9e3a21257eb449c661484f27934ef20bc68308b9d35845390a1d87fdcd41cfab"
+      "sha256": "6f946e7efc2cf30e378bd398ff825c382a751038da543cbe0570c514ebbca113"
     },
     {
       "template_id": "schneider-electric-pm5560",
@@ -59,7 +59,7 @@
       "version": "1.0.0",
       "verified": false,
       "path": "schneider-electric-pm5560.json",
-      "sha256": "9509dc62d1395c0bc5e0d9942b680a4810c798d3a76c33bee0c4a94bc5b7dd67"
+      "sha256": "44a82c111d1c7e7f6194fd47c7f89741b8246a6933f2c35dd0d4f04cb90aee4b"
     },
     {
       "template_id": "sma-stp-60-us-10",
@@ -69,7 +69,7 @@
       "version": "1.0.0",
       "verified": false,
       "path": "sma-stp-60-us-10.json",
-      "sha256": "6d827fbe9b61fe8923884a50a420c8dc5214eb8babf2f0c457f60dea88bbb94e"
+      "sha256": "bd219fcab3eb5081cbe4cad84454bfab010cc48cfc2c7ede52067e98433f2646"
     },
     {
       "template_id": "trane-tracer-sc",
