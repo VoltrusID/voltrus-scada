@@ -238,8 +238,13 @@ impl FlowEngine {
                 match rx.recv().await {
                     Ok(snapshot) => {
                         on_tag_changes(&shared, &snapshot).await;
-                        let msg = device_snapshot_to_message(snapshot);
-                        fire_matching(&shared, &msg).await;
+                        let msg = device_snapshot_to_message(&snapshot);
+                        // Holding the snapshot would make the cache copy it on
+                        // the device's next update.
+                        drop(snapshot);
+                        if let Some(msg) = msg {
+                            fire_matching(&shared, &msg).await;
+                        }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         tracing::warn!("FlowEngine lagged by {} messages", n);
@@ -758,16 +763,19 @@ async fn release_parked(shared: &Shared, now: std::time::Instant) {
     }
 }
 
-fn device_snapshot_to_message(snapshot: crate::models::DeviceSnapshot) -> Message {
-    let mut metadata = HashMap::new();
+/// The message device triggers match on, `None` when no trigger can match a
+/// snapshot from this source (see [`TriggerConfig::matches_device_source`]):
+/// building it puts every metric of the device into JSON.
+fn device_snapshot_to_message(snapshot: &crate::models::DeviceSnapshot) -> Option<Message> {
     // Use the snapshot's real acquisition protocol when known so triggers can
     // discriminate by source; fall back to "modbus" for back-compat with
     // snapshots that predate protocol tagging.
-    let source = snapshot
-        .protocol
-        .clone()
-        .unwrap_or_else(|| "modbus".to_string());
-    metadata.insert("source".to_string(), source);
+    let source = snapshot.protocol.as_deref().unwrap_or("modbus");
+    if !TriggerConfig::matches_device_source(source) {
+        return None;
+    }
+    let mut metadata = HashMap::new();
+    metadata.insert("source".to_string(), source.to_string());
     let payload = serde_json::json!({
         "device_id": snapshot.device_id,
         "status": match snapshot.status {
@@ -780,7 +788,7 @@ fn device_snapshot_to_message(snapshot: crate::models::DeviceSnapshot) -> Messag
     });
     let mut msg = Message::new(payload);
     msg.metadata = metadata;
-    msg
+    Some(msg)
 }
 
 /// Build a flow-engine [`Message`] from a broker MQTT event. Payload bytes are

@@ -1,16 +1,18 @@
 use std::collections::HashMap;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use opcua::client::{ClientBuilder, DataChangeCallback, IdentityToken, MonitoredItem, Session};
-use opcua::types::{
-    AttributeId, DataValue, MessageSecurityMode, MonitoringMode, MonitoringParameters, NodeId,
-    NumericRange, ReadValueId, StatusCode, TimestampsToReturn, UserTokenPolicy, Variant,
-    WriteValue,
+use opcua::client::{
+    ClientBuilder, IdentityToken, MonitoredItemMap, OnSubscriptionNotificationCore, Session,
 };
-use tokio::sync::mpsc;
+use opcua::types::{
+    AttributeId, DataChangeNotification, DataValue, MessageSecurityMode, MonitoringMode,
+    MonitoringParameters, NodeId, NotificationMessage, NumericRange, ReadValueId, StatusCode,
+    TimestampsToReturn, UserTokenPolicy, VariableId, Variant, WriteValue,
+};
 
 use crate::cache::DeviceCache;
 use crate::models::*;
@@ -21,6 +23,7 @@ use crate::quality::Quality;
 /// Spawned as `tokio::spawn(opcua::poll_opcua_device(config, cache))`.
 /// Runs an infinite loop with exponential backoff on connection failure.
 pub async fn poll_opcua_device(config: OpcUaDeviceConfig, cache: DeviceCache) {
+    bench::start_stats_log();
     let device_id = config.id.clone();
     let mut backoff = Backoff::new();
 
@@ -43,6 +46,70 @@ pub async fn poll_opcua_device(config: OpcUaDeviceConfig, cache: DeviceCache) {
         let delay = backoff.next();
         tracing::info!("OPC-UA device {} retrying in {delay}ms", device_id);
         tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
+}
+
+/// Data changes received from servers, all OPC UA devices since start.
+pub static VALUES_DELIVERED: AtomicU64 = AtomicU64::new(0);
+/// Data changes replaced by a newer value of the same tag before the cache
+/// took them (the cache writer was behind). Nothing else is ever dropped.
+pub static VALUES_SUPERSEDED: AtomicU64 = AtomicU64::new(0);
+
+/// Monitored items per CreateMonitoredItems call, unless the server allows
+/// fewer: a common server default, and requests that stay far below the
+/// default message size limit (about 60 bytes per item).
+const ITEMS_PER_CALL: usize = 1000;
+
+/// Values per publish response asked of the server; it sends the rest in the
+/// next responses, one round trip each. At 1000, a device of 50,000 tags all
+/// changing every second got 38 % of the changes from async-opcua's server
+/// (which queues 20 notification messages per subscription by default). 5000 Double values with
+/// their source time are ~125 kB, well inside the default 320 kB message
+/// limit. The client must decode arrays that long: see [`MAX_ARRAY_LENGTH`].
+const MAX_NOTIFICATIONS_PER_PUBLISH: u32 = 5000;
+
+/// Longest array the client decodes. async-opcua's default, 1000, made the
+/// session drop on the first publish response with more values (a device
+/// with more than 1000 tags never stayed connected).
+const MAX_ARRAY_LENGTH: usize = MAX_NOTIFICATIONS_PER_PUBLISH as usize;
+
+/// Hooks for `scenarios/opcua-bench`, off unless their environment variables
+/// are set.
+mod bench {
+    use super::*;
+
+    /// `VOLTRUS_BENCH_LATENCY_TAG`: the tag (its name in Voltrus) whose value
+    /// is the simulator's send time in Unix ms. Each time it reaches the cache
+    /// the delay is logged as `opcua_bench latency_ms=...`.
+    pub(super) static LATENCY_TAG: LazyLock<Option<String>> =
+        LazyLock::new(|| std::env::var("VOLTRUS_BENCH_LATENCY_TAG").ok());
+
+    pub(super) fn record_latency(sent_ms: f64) {
+        let now = crate::timeutil::now_millis() as f64;
+        tracing::info!("opcua_bench latency_ms={:.1}", now - sent_ms);
+    }
+
+    /// `VOLTRUS_BENCH_STATS=1`: log the counters once a second, as
+    /// `opcua_bench delivered=... superseded=... allocs=...`.
+    pub(super) fn start_stats_log() {
+        static STARTED: std::sync::Once = std::sync::Once::new();
+        if std::env::var_os("VOLTRUS_BENCH_STATS").is_none() {
+            return;
+        }
+        STARTED.call_once(|| {
+            tokio::spawn(async {
+                let mut tick = tokio::time::interval(Duration::from_secs(1));
+                loop {
+                    tick.tick().await;
+                    tracing::info!(
+                        "opcua_bench delivered={} superseded={} allocs={}",
+                        VALUES_DELIVERED.load(Ordering::Relaxed),
+                        VALUES_SUPERSEDED.load(Ordering::Relaxed),
+                        crate::alloc_count::allocations().unwrap_or(0)
+                    );
+                }
+            });
+        });
     }
 }
 
@@ -213,7 +280,8 @@ pub(crate) async fn connect(
         .application_uri("urn:voltrus-lite")
         .pki_dir(pki_dir)
         .trust_server_certs(!secure)
-        .create_sample_keypair(true);
+        .create_sample_keypair(true)
+        .max_array_length(MAX_ARRAY_LENGTH);
     if single_attempt {
         builder = builder.session_retry_limit(0);
     }
@@ -371,21 +439,35 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
     // Queued writes go through this session while it lives.
     let _registration = SessionRegistration::register(&device_id, session.clone());
 
+    // --- Tags: tag i is monitored with client handle i + 1 ---
+    let tags: Vec<(NodeId, &OpcUaNodeConfig)> = config
+        .nodes
+        .iter()
+        .filter_map(|node| NodeId::from_str(&node.node_id).ok().map(|id| (id, node)))
+        .collect();
+    if tags.is_empty() {
+        anyhow::bail!("no valid node ids to monitor");
+    }
+    let names: Arc<[String]> = tags.iter().map(|(_, node)| node.name.clone()).collect();
+    let feed = Arc::new(Feed::new(names.len()));
+    tokio::spawn(write_to_cache(
+        device_id.clone(),
+        cache.clone(),
+        feed.clone(),
+        names,
+    ));
+
     // --- Create subscription ---
     let interval_ms = config.interval_ms.max(100);
     let subscription_id = session
         .create_subscription(
             Duration::from_millis(interval_ms),
-            90,   // lifetime_count (3x max_keep_alive_count per OPC-UA spec)
-            30,   // max_keep_alive_count
-            0,    // max_notifications_per_publish
+            90, // lifetime_count (3x max_keep_alive_count per OPC-UA spec)
+            30, // max_keep_alive_count
+            MAX_NOTIFICATIONS_PER_PUBLISH,
             0,    // priority
             true, // publishing_enabled
-            DataChangeCallback::new(create_data_change_callback(
-                device_id.clone(),
-                cache.clone(),
-                &config.nodes,
-            )),
+            Notifier { feed },
         )
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create subscription: {:?}", e))?;
@@ -396,55 +478,54 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
         subscription_id
     );
 
-    // --- Create monitored items ---
-    let items_to_create: Vec<opcua::types::MonitoredItemCreateRequest> = config
-        .nodes
-        .iter()
-        .filter_map(|node| {
-            NodeId::from_str(&node.node_id)
-                .ok()
-                .map(|node_id| (node_id, node.clone()))
-        })
-        .map(|(node_id, _node)| {
-            opcua::types::MonitoredItemCreateRequest {
-                item_to_monitor: ReadValueId {
-                    node_id,
-                    attribute_id: AttributeId::Value as u32,
-                    index_range: NumericRange::None,
-                    data_encoding: opcua::types::QualifiedName::null(),
-                },
-                monitoring_mode: MonitoringMode::Reporting,
-                requested_parameters: MonitoringParameters {
-                    client_handle: 0, // will be assigned by the session
-                    sampling_interval: interval_ms as f64,
-                    queue_size: 10,
-                    discard_oldest: true,
-                    filter: opcua::types::ExtensionObject::null(),
-                },
-            }
-        })
-        .collect();
-
-    if items_to_create.is_empty() {
-        anyhow::bail!("no valid node ids to monitor");
-    }
-
-    let results = session
-        .create_monitored_items(subscription_id, TimestampsToReturn::Source, items_to_create)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create monitored items: {:?}", e))?;
-
+    // --- Create monitored items, in calls the server accepts ---
+    let per_call = items_per_call(&session).await;
     let mut success_count = 0;
-    for (i, result) in results.iter().enumerate() {
-        if result.result.status_code.is_good() {
-            success_count += 1;
-        } else {
-            tracing::warn!(
-                "OPC-UA device {} monitored item {} creation failed: {:?}",
-                device_id,
-                i,
-                result.result.status_code
-            );
+    for (chunk_index, chunk) in tags.chunks(per_call).enumerate() {
+        let first = chunk_index * per_call;
+        let items_to_create: Vec<opcua::types::MonitoredItemCreateRequest> = chunk
+            .iter()
+            .enumerate()
+            .map(
+                |(j, (node_id, _))| opcua::types::MonitoredItemCreateRequest {
+                    item_to_monitor: ReadValueId {
+                        node_id: node_id.clone(),
+                        attribute_id: AttributeId::Value as u32,
+                        index_range: NumericRange::None,
+                        data_encoding: opcua::types::QualifiedName::null(),
+                    },
+                    monitoring_mode: MonitoringMode::Reporting,
+                    requested_parameters: MonitoringParameters {
+                        client_handle: (first + j + 1) as u32,
+                        sampling_interval: interval_ms as f64,
+                        // As before. Queue size 1 let async-opcua's server
+                        // send a third fewer values at 100 ms with no clear
+                        // latency cost (docs/footprint.md), but has not been
+                        // tried against other servers.
+                        queue_size: 10,
+                        discard_oldest: true,
+                        filter: opcua::types::ExtensionObject::null(),
+                    },
+                },
+            )
+            .collect();
+
+        let results = session
+            .create_monitored_items(subscription_id, TimestampsToReturn::Source, items_to_create)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create monitored items: {:?}", e))?;
+
+        for (j, result) in results.iter().enumerate() {
+            if result.result.status_code.is_good() {
+                success_count += 1;
+            } else {
+                tracing::warn!(
+                    "OPC-UA device {} monitored item {} creation failed: {:?}",
+                    device_id,
+                    first + j,
+                    result.result.status_code
+                );
+            }
         }
     }
 
@@ -452,7 +533,7 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
         "OPC-UA device {} created {}/{} monitored items",
         device_id,
         success_count,
-        results.len()
+        tags.len()
     );
 
     cache.set_status(&device_id, DeviceStatus::Online).await;
@@ -463,84 +544,214 @@ async fn try_connect_and_subscribe(config: &OpcUaDeviceConfig, cache: &DeviceCac
     Ok(())
 }
 
-/// Creates a `DataChangeCallback` closure that extracts values from
-/// OPC-UA `DataValue` updates and pushes them into the `DeviceCache`.
-///
-/// Uses an mpsc channel so that high-frequency data changes (100+ tags at
-/// 100 ms) are drained by a single consumer task instead of spawning one
-/// tokio task per value change.
-fn create_data_change_callback(
-    device_id: String,
-    cache: DeviceCache,
-    nodes: &[OpcUaNodeConfig],
-) -> impl FnMut(DataValue, &MonitoredItem) + Send + Sync + 'static {
-    // Build a mapping from node_id string -> node name for lookup
-    let node_id_to_name: Arc<HashMap<String, String>> = Arc::new(
-        nodes
-            .iter()
-            .filter_map(|n| {
-                NodeId::from_str(&n.node_id)
-                    .ok()
-                    .map(|id: NodeId| (id.to_string(), n.name.clone()))
-            })
-            .collect(),
-    );
-
-    // Bounded channel: 1024 slots is generous for a single device.
-    // If the consumer falls behind, the oldest updates are simply dropped
-    // (the next update will overwrite the same metric anyway).
-    let (tx, mut rx) = mpsc::channel::<(String, f64, Quality)>(1024);
-
-    // Single consumer task batches per-value updates into cache writes.
-    {
-        let cache = cache.clone();
-        let device_id = device_id.clone();
-        tokio::spawn(async move {
-            // Accumulate metrics between drain cycles.
-            let mut batch: HashMap<String, f64> = HashMap::new();
-            let mut quality: HashMap<String, Quality> = HashMap::new();
-
-            loop {
-                // Block until at least one update arrives.
-                match rx.recv().await {
-                    Some((name, value, q)) => {
-                        quality.insert(name.clone(), q);
-                        batch.insert(name, value);
-                    }
-                    None => break, // channel closed — subscription gone
-                }
-
-                // Drain everything that is already buffered so we can
-                // collapse multiple updates to the same tag into one
-                // cache write.
-                while let Ok((name, value, q)) = rx.try_recv() {
-                    quality.insert(name.clone(), q);
-                    batch.insert(name, value);
-                }
-
-                let metrics = std::mem::take(&mut batch);
-                let quality = std::mem::take(&mut quality);
-                // A subscription only reports changes: merge, so the tags
-                // that did not change keep their value.
-                cache.merge_with_quality(&device_id, metrics, quality).await;
-            }
+/// How many monitored items to create per call: the server's
+/// MaxMonitoredItemsPerCall when it announces one, at most [`ITEMS_PER_CALL`].
+async fn items_per_call(session: &Session) -> usize {
+    let limit = ReadValueId {
+        node_id: VariableId::Server_ServerCapabilities_OperationLimits_MaxMonitoredItemsPerCall
+            .into(),
+        attribute_id: AttributeId::Value as u32,
+        index_range: NumericRange::None,
+        data_encoding: opcua::types::QualifiedName::null(),
+    };
+    let announced = session
+        .read(&[limit], TimestampsToReturn::Neither, 0.0)
+        .await
+        .ok()
+        .and_then(|values| values.into_iter().next())
+        .and_then(|value| match value.value {
+            Some(Variant::UInt32(n)) if n > 0 => Some(n as usize),
+            _ => None,
         });
+    announced.map_or(ITEMS_PER_CALL, |n| n.min(ITEMS_PER_CALL))
+}
+
+/// One tag's latest change not yet in the cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Change {
+    value: f64,
+    quality: Quality,
+    /// The server's source timestamp in Unix ms.
+    source_ms: Option<i64>,
+}
+
+/// The changes of one device's tags between the subscription callback and the
+/// task that writes them to the cache: at most one per tag, so it is bounded
+/// by the tag count and never drops a tag's latest value. A tag that changes
+/// again before the cache took its last change keeps the newer one (counted in
+/// [`VALUES_SUPERSEDED`]).
+struct Feed {
+    pending: Mutex<Pending>,
+    wake: tokio::sync::Notify,
+    /// The subscription is gone: the writer stops once it has written the rest.
+    closed: AtomicBool,
+}
+
+#[derive(Default)]
+struct Pending {
+    /// By tag index; `Some` while waiting for the cache.
+    slots: Vec<Option<Change>>,
+    /// Tags with a change waiting, in the order they first changed.
+    waiting: Vec<u32>,
+}
+
+impl Pending {
+    /// Store the change of the tag with `client_handle` (index + 1). Returns
+    /// whether it replaced one the cache had not taken yet, `None` for a
+    /// handle that is not ours.
+    fn set(&mut self, client_handle: u32, change: Change) -> Option<bool> {
+        let index = client_handle.checked_sub(1)?;
+        let slot = self.slots.get_mut(index as usize)?;
+        let superseded = slot.replace(change).is_some();
+        if !superseded {
+            self.waiting.push(index);
+        }
+        Some(superseded)
     }
 
-    move |data_value: DataValue, item: &MonitoredItem| {
-        let node_id_str = item.item_to_monitor().node_id.to_string();
-        let node_name = node_id_to_name
-            .get(&node_id_str)
-            .cloned()
-            .unwrap_or_else(|| node_id_str.clone());
+    /// Move every waiting change into `out` as `(tag index, change)`.
+    fn take(&mut self, out: &mut Vec<(u32, Change)>) {
+        for index in self.waiting.drain(..) {
+            if let Some(change) = self.slots.get_mut(index as usize).and_then(Option::take) {
+                out.push((index, change));
+            }
+        }
+    }
+}
 
-        let Some((value, quality)) = reading_of(&data_value) else {
+impl Feed {
+    fn new(tags: usize) -> Self {
+        Self {
+            pending: Mutex::new(Pending {
+                slots: vec![None; tags],
+                waiting: Vec::new(),
+            }),
+            wake: tokio::sync::Notify::new(),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    fn pending(&self) -> std::sync::MutexGuard<'_, Pending> {
+        self.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// The subscription callback: takes each publish response whole and files its
+/// data changes into the device's [`Feed`] by client handle, with no lookup by
+/// node id and no allocation per value.
+struct Notifier {
+    feed: Arc<Feed>,
+}
+
+impl OnSubscriptionNotificationCore for Notifier {
+    fn on_subscription_notification(
+        &mut self,
+        notification: NotificationMessage,
+        _items: MonitoredItemMap<'_>,
+    ) {
+        self.file(notification);
+    }
+}
+
+impl Notifier {
+    fn file(&mut self, notification: NotificationMessage) {
+        let Some(data) = notification.notification_data else {
             return;
         };
+        let (mut received, mut superseded) = (0u64, 0u64);
+        {
+            let mut pending = self.feed.pending();
+            for object in data {
+                let Some(changes) = object.into_inner_as::<DataChangeNotification>() else {
+                    continue;
+                };
+                for item in changes.monitored_items.into_iter().flatten() {
+                    let Some((value, quality)) = reading_of(&item.value) else {
+                        continue;
+                    };
+                    let change = Change {
+                        value,
+                        quality,
+                        source_ms: item
+                            .value
+                            .source_timestamp
+                            .map(|t| t.as_chrono().timestamp_millis()),
+                    };
+                    match pending.set(item.client_handle, change) {
+                        Some(replaced) => {
+                            received += 1;
+                            superseded += u64::from(replaced);
+                        }
+                        None => tracing::debug!(
+                            "OPC-UA data change for unknown client handle {}",
+                            item.client_handle
+                        ),
+                    }
+                }
+            }
+        }
+        if received > 0 {
+            VALUES_DELIVERED.fetch_add(received, Ordering::Relaxed);
+            if superseded > 0 {
+                VALUES_SUPERSEDED.fetch_add(superseded, Ordering::Relaxed);
+            }
+            self.feed.wake.notify_one();
+        }
+    }
+}
 
-        // Non-blocking send; if the channel is full the update is dropped
-        // (the next publish cycle will deliver a fresher value anyway).
-        let _ = tx.try_send((node_name, value, quality));
+impl Drop for Notifier {
+    fn drop(&mut self) {
+        self.feed.closed.store(true, Ordering::Release);
+        self.feed.wake.notify_one();
+    }
+}
+
+/// Writes a device's changes to the cache as they come, one merge for all the
+/// changes waiting, until its subscription is gone.
+async fn write_to_cache(
+    device_id: String,
+    cache: DeviceCache,
+    feed: Arc<Feed>,
+    names: Arc<[String]>,
+) {
+    let latency_tag = bench::LATENCY_TAG
+        .as_deref()
+        .and_then(|tag| names.iter().position(|name| name == tag));
+    let mut batch: Vec<(u32, Change)> = Vec::new();
+    loop {
+        feed.wake.notified().await;
+        // Read before taking: a change filed after this is still taken now or
+        // on the wake-up it sent.
+        let closed = feed.closed.load(Ordering::Acquire);
+        feed.pending().take(&mut batch);
+        if !batch.is_empty() {
+            // A subscription only reports changes: merge, so the tags that
+            // did not change keep their value.
+            cache
+                .merge_readings(
+                    &device_id,
+                    batch.iter().filter_map(|(index, change)| {
+                        let name = names.get(*index as usize)?;
+                        Some((
+                            name.as_str(),
+                            change.value,
+                            change.quality,
+                            change.source_ms,
+                        ))
+                    }),
+                )
+                .await;
+            if let Some(tag) = latency_tag
+                && let Some((_, change)) = batch.iter().find(|(index, _)| *index as usize == tag)
+            {
+                bench::record_latency(change.value);
+            }
+            batch.clear();
+        }
+        if closed {
+            break;
+        }
     }
 }
 
@@ -1527,5 +1738,211 @@ mod tests {
             b.next();
         }
         assert_eq!(b.next(), 30_000);
+    }
+
+    fn change(value: f64) -> Change {
+        Change {
+            value,
+            quality: Quality::Good,
+            source_ms: None,
+        }
+    }
+
+    #[test]
+    fn pending_keeps_the_latest_change_per_tag_in_first_change_order() {
+        let mut pending = Pending {
+            slots: vec![None; 3],
+            waiting: Vec::new(),
+        };
+        assert_eq!(pending.set(3, change(1.0)), Some(false));
+        assert_eq!(pending.set(1, change(2.0)), Some(false));
+        assert_eq!(pending.set(3, change(3.0)), Some(true), "superseded");
+        assert_eq!(pending.set(0, change(9.0)), None, "handles start at 1");
+        assert_eq!(pending.set(4, change(9.0)), None, "not one of ours");
+        let mut out = Vec::new();
+        pending.take(&mut out);
+        assert_eq!(out, vec![(2, change(3.0)), (0, change(2.0))]);
+        out.clear();
+        pending.take(&mut out);
+        assert!(out.is_empty(), "taken changes are gone");
+        assert_eq!(pending.set(3, change(4.0)), Some(false), "a new change");
+    }
+
+    fn notification(items: Vec<(u32, DataValue)>) -> NotificationMessage {
+        let changes = DataChangeNotification {
+            monitored_items: Some(
+                items
+                    .into_iter()
+                    .map(
+                        |(client_handle, value)| opcua::types::MonitoredItemNotification {
+                            client_handle,
+                            value,
+                        },
+                    )
+                    .collect(),
+            ),
+            diagnostic_infos: None,
+        };
+        NotificationMessage {
+            sequence_number: 1,
+            publish_time: opcua::types::DateTime::now(),
+            notification_data: Some(vec![opcua::types::ExtensionObject::from_message(changes)]),
+        }
+    }
+
+    /// Publish responses go through the feed to the cache by client handle,
+    /// with the server's source time; the writer stops with the subscription.
+    #[tokio::test]
+    async fn notifications_reach_the_cache_by_client_handle() {
+        let cache = DeviceCache::new();
+        let names: Arc<[String]> = ["a".to_string(), "b".to_string()].into();
+        let feed = Arc::new(Feed::new(names.len()));
+        let writer = tokio::spawn(write_to_cache(
+            "opcua_t".into(),
+            cache.clone(),
+            feed.clone(),
+            names,
+        ));
+        let mut notifier = Notifier { feed };
+        let source = opcua::types::DateTime::now();
+        let source_ms = source.as_chrono().timestamp_millis() - 60_000;
+        let earlier = opcua::types::DateTime::from(
+            opcua::types::DateTimeUtc::from_timestamp_millis(source_ms).unwrap(),
+        );
+        let items = vec![
+            (2, DataValue::new_at(7.5f64, earlier)),
+            (
+                1,
+                DataValue {
+                    value: Some(Variant::Int32(3)),
+                    status: Some(StatusCode::BadSensorFailure),
+                    ..Default::default()
+                },
+            ),
+            (9, DataValue::new_now(1.0f64)),
+        ];
+        notifier.file(notification(items));
+        drop(notifier);
+        tokio::time::timeout(Duration::from_secs(5), writer)
+            .await
+            .expect("the writer stops once the subscription is gone")
+            .unwrap();
+
+        let b = cache.get_reading("opcua_t", "b").await.unwrap();
+        assert_eq!(b.value, 7.5);
+        assert_eq!(b.ts_ms, source_ms, "the server's source time is kept");
+        let a = cache.get_reading("opcua_t", "a").await.unwrap();
+        assert!(a.value.is_nan());
+        assert_eq!(a.quality, Quality::BadDeviceError);
+    }
+
+    /// More tags than the server takes in one CreateMonitoredItems call
+    /// (async-opcua's default MaxMonitoredItemsPerCall is 1000): created in
+    /// several calls, and every initial value reaches the cache, although
+    /// there are more than one publish response may carry.
+    #[tokio::test]
+    async fn monitored_items_are_created_in_calls_the_server_accepts() {
+        use opcua::crypto::SecurityPolicy;
+        use opcua::server::address_space::Variable;
+        use opcua::server::diagnostics::NamespaceMetadata;
+        use opcua::server::node_manager::memory::{SimpleNodeManager, simple_node_manager};
+        use opcua::server::{ANONYMOUS_USER_TOKEN_ID, ServerBuilder};
+
+        const TAGS: usize = 2500;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("opc.tcp://127.0.0.1:{port}");
+        let pki = tempfile::tempdir().unwrap();
+        let mut builder = ServerBuilder::new()
+            .application_name("chunk test")
+            .application_uri("urn:voltrus-chunk-test")
+            .product_uri("urn:voltrus-chunk-test")
+            .host("127.0.0.1")
+            .port(port)
+            .discovery_urls(vec![url.clone()])
+            .create_sample_keypair(true)
+            .pki_dir(pki.path())
+            .add_endpoint(
+                "none",
+                (
+                    "/",
+                    SecurityPolicy::None,
+                    MessageSecurityMode::None,
+                    &[ANONYMOUS_USER_TOKEN_ID] as &[&str],
+                ),
+            )
+            .trust_client_certs(true)
+            .with_node_manager(simple_node_manager(
+                NamespaceMetadata {
+                    namespace_uri: "urn:ChunkTest".to_owned(),
+                    ..Default::default()
+                },
+                "chunk-test",
+            ));
+        builder
+            .limits_mut()
+            .subscriptions
+            .max_monitored_items_per_sub = 0;
+        let (server, handle) = builder.build().unwrap();
+        let manager = handle
+            .node_managers()
+            .get_of_type::<SimpleNodeManager>()
+            .unwrap();
+        let ns = handle.get_namespace_index("urn:ChunkTest").unwrap();
+        {
+            let address_space = manager.address_space();
+            let mut address_space = address_space.write();
+            let vars = (0..TAGS)
+                .map(|k| {
+                    let name = format!("T{k}");
+                    Variable::new(&NodeId::new(ns, name.as_str()), name.as_str(), "", k as f64)
+                })
+                .collect();
+            address_space.add_variables(vars, &NodeId::objects_folder_id());
+        }
+        tokio::spawn(server.run_with(listener));
+
+        let device_id = format!("opcua_chunk_{port}");
+        let config = OpcUaDeviceConfig {
+            id: device_id.clone(),
+            url,
+            security_policy: OpcUaSecurityPolicy::None,
+            security_mode: OpcUaSecurityMode::None,
+            username: None,
+            password: None,
+            interval_ms: 200,
+            nodes: (0..TAGS)
+                .map(|k| OpcUaNodeConfig {
+                    node_id: format!("ns={ns};s=T{k}"),
+                    name: format!("t{k}"),
+                    display_name: String::new(),
+                    data_type: String::new(),
+                })
+                .collect(),
+        };
+        let cache = DeviceCache::new();
+        let poller = tokio::spawn(poll_opcua_device(config, cache.clone()));
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        loop {
+            let count = cache
+                .get_all()
+                .await
+                .iter()
+                .find(|s| s.device_id == device_id)
+                .map_or(0, |s| s.metrics.len());
+            if count == TAGS {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{count} of {TAGS} tags reached the cache"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            cache.get_device_metric(&device_id, "t2499").await,
+            Some(2499.0)
+        );
+        poller.abort();
     }
 }

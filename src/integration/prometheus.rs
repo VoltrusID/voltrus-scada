@@ -81,6 +81,26 @@ pub async fn render_metrics(cache: &DeviceCache, storage: &Storage) -> String {
         }
     }
 
+    #[cfg(feature = "opcua")]
+    {
+        use std::sync::atomic::Ordering;
+        buf.push('\n');
+        buf.push_str("# HELP voltrus_opcua_values_total OPC UA data changes received\n");
+        buf.push_str("# TYPE voltrus_opcua_values_total counter\n");
+        buf.push_str(&format!(
+            "voltrus_opcua_values_total {}\n",
+            crate::opcua::VALUES_DELIVERED.load(Ordering::Relaxed)
+        ));
+        buf.push_str(
+            "# HELP voltrus_opcua_values_superseded_total OPC UA data changes replaced by a newer value of the same tag before reaching the cache\n",
+        );
+        buf.push_str("# TYPE voltrus_opcua_values_superseded_total counter\n");
+        buf.push_str(&format!(
+            "voltrus_opcua_values_superseded_total {}\n",
+            crate::opcua::VALUES_SUPERSEDED.load(Ordering::Relaxed)
+        ));
+    }
+
     buf
 }
 
