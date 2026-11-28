@@ -105,6 +105,7 @@ saying so.
 | `list_devices` | read | Devices with live status; `id` returns one Modbus device with its registers. |
 | `create_modbus_device` | write | Add a Modbus TCP device with its register map and start polling. |
 | `delete_device` | write | Delete a Modbus device and stop its poller. |
+| `get_device_traffic` | read (configure roles) | A Modbus device's recent requests and responses, decoded with Wireshark field names, paired with latency, errors explained, mapped to tags; filters by function, errors, address range. The first call starts a 10-minute capture. See [traffic.md](traffic.md). |
 | `list_tags` | read | Tags with limits and source config; filter by screen, device, type, text. |
 | `create_tag` | write | Create a tag (limits, source type and config, device, path, alarm delays). |
 | `update_tag` | write | Change any tag field, for example limits. |
