@@ -20,7 +20,7 @@ pub fn tools() -> Vec<Tool> {
             reads bad or zero, a device goes offline or a write is refused. The first call starts \
             a 10-minute capture on that device (nothing is recorded before), so call again after a \
             few poll intervals. `errors: true` lists only problems; `detail: true` adds the field \
-            tree and raw hex. For roles that configure devices (admin, integration keys).",
+            tree and raw hex. For roles that operate the plant (operator, admin, integration keys).",
         access: Access::Read,
         destructive: false,
         input_schema: || {
@@ -60,11 +60,11 @@ fn get_device_traffic(ctx: &Ctx, args: Value) -> ToolFuture<'_> {
             #[serde(default)]
             detail: bool,
         }
-        // Traffic carries plant data such as setpoints: the configuring
-        // roles may read it, as on the REST route.
-        if !crate::api::role_allows_configuration(&ctx.user.role) {
+        // Traffic carries plant data such as setpoints: the operating roles
+        // may read it, as on the REST route.
+        if !crate::api::role_allows_operation(&ctx.user.role) {
             return Err(ToolError::new(
-                "device traffic is for roles that configure devices (admin, integration keys)",
+                "device traffic is for roles that operate the plant (operator, admin, integration keys)",
             ));
         }
         let a: Args = parse_args(args)?;

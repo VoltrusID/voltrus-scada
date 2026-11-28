@@ -373,6 +373,19 @@ async fn node_role_middleware(req: Request, next: Next) -> axum::response::Respo
 
 // --- Protocol route helper functions (cfg-gated) ---
 
+/// Protocol traffic (docs/traffic.md). It can carry setpoints and other plant
+/// data, so it is for the roles that operate the plant: operators read it when
+/// troubleshooting a device; viewers and read-only `api` keys may not.
+fn operator_traffic_routes() -> Router<AppState> {
+    let r = Router::new();
+    #[cfg(feature = "modbus")]
+    let r = r.route(
+        "/api/v1/devices/{id}/traffic",
+        get(traffic::get_device_traffic),
+    );
+    r
+}
+
 #[cfg(feature = "modbus")]
 fn modbus_routes() -> Router<AppState> {
     Router::new()
@@ -1173,6 +1186,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/v1/oee/downtime", post(oee::create_downtime))
         .route("/api/v1/oee/downtime/{id}/close", put(oee::close_downtime))
         .merge(ext_routes.operate)
+        .merge(operator_traffic_routes())
         .layer(middleware::from_fn(operator_allowed_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1598,13 +1612,6 @@ pub fn create_router(state: AppState) -> Router {
     // Merge protocol-specific demo-allowed routes
     #[cfg(feature = "modbus")]
     let demo_protected = demo_protected.merge(modbus_admin_routes());
-    // Protocol traffic can carry setpoints and other plant data: the roles
-    // that configure devices may read it (docs/traffic.md).
-    #[cfg(feature = "modbus")]
-    let demo_protected = demo_protected.route(
-        "/api/v1/devices/{id}/traffic",
-        get(traffic::get_device_traffic),
-    );
     #[cfg(feature = "opcua")]
     let demo_protected = demo_protected.merge(opcua_admin_routes());
     #[cfg(feature = "s7")]

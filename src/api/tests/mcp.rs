@@ -2729,7 +2729,7 @@ async fn mcp_version_history_tools() {
 
 #[cfg(feature = "modbus")]
 #[tokio::test]
-async fn get_device_traffic_is_for_configuring_roles() {
+async fn get_device_traffic_is_for_operating_roles() {
     let f = fixture().await;
     let (s, b) = send_request(
         &f.app,
@@ -2748,7 +2748,7 @@ async fn get_device_traffic_is_for_configuring_roles() {
         json!({"device_id": "plc-9"}),
     )
     .await;
-    assert!(err.contains("configure devices"), "{err}");
+    assert!(err.contains("operate the plant"), "{err}");
     let out = ok(
         &f.app,
         Auth::Bearer(&f.integration_key),

@@ -52,9 +52,9 @@ use the same name as a filter if you open a capture in Wireshark later.
 ## Who can see it
 
 Traffic contains plant data such as setpoints, so it is for the roles that
-configure devices: `admin`, `demo` and `integration` API keys (an integration
-key with `["read"]` permissions is enough). Viewers, operators and read-only
-`api` keys get 403.
+operate the plant: `operator`, `admin`, `demo` and `integration` API keys (an
+integration key with `["read"]` permissions is enough). Viewers and read-only
+`api` keys get 403, and the Traffic button is hidden for them.
 
 ## Capture and memory
 
@@ -126,7 +126,7 @@ has `kind` (`exception`, `malformed`, `no_response`), `code`, `title` and
 
 ## MCP
 
-`get_device_traffic` (read; configuring roles) returns the same data for an
+`get_device_traffic` (read; operating roles) returns the same data for an
 agent: `device_id` plus the filters above, `limit` up to 500 (default 50) and
 `detail` (default false: summaries, pairing, errors and tags, no field tree).
 Its first call starts the capture, so an agent asks again after a few poll

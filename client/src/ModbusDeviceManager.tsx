@@ -15,7 +15,7 @@ import { NetworkScanDialog } from './components/NetworkScanDialog'
 import { useRole } from './RoleContext'
 import { TrafficView } from './TrafficView'
 
-export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onClose: () => void; embedded?: boolean; isStrictAdmin?: boolean }) {
+export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin, canOperate = true }: { onClose: () => void; embedded?: boolean; isStrictAdmin?: boolean; /** Operators and up may read protocol traffic; viewers may not. */ canOperate?: boolean }) {
   // Viewers and operators see the devices and their status; changing them is configuration.
   const { canConfigure } = useRole()
   const { data: devices = [], isLoading } = useModbusDevices()
@@ -200,7 +200,7 @@ export function ModbusDeviceManager({ onClose, embedded, isStrictAdmin }: { onCl
                     <button onClick={() => handleEdit(d)} aria-label={`Edit ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Edit</button>
                     <button onClick={() => handleDup(d)} aria-label={`Duplicate ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Dup</button>
                     <button onClick={() => setTemplateDevice(d)} aria-label={`Save ${d.name || d.id} as template`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Tpl</button>
-                    <button onClick={() => setTrafficDevice(d)} aria-label={`Show traffic of ${d.name || d.id}`} title="Decoded requests and responses" style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Traffic</button>
+                    {canOperate && <button onClick={() => setTrafficDevice(d)} aria-label={`Show traffic of ${d.name || d.id}`} title="Decoded requests and responses" style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--border)', background: 'transparent', color: 'var(--fg)', cursor: 'pointer', fontSize: 11 }}>Traffic</button>}
                     <button onClick={() => restartMut.mutate(d.id)} aria-label={`Restart ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--cyan)', background: 'transparent', color: 'var(--cyan)', cursor: 'pointer', fontSize: 11 }}>Restart</button>
                     <button onClick={() => handleDelete(d.id)} aria-label={`Delete ${d.name || d.id}`} style={{ padding: '4px 8px', borderRadius: 4, border: '1px solid var(--crit)', background: 'transparent', color: 'var(--crit)', cursor: 'pointer', fontSize: 11 }}>Del</button>
                   </div>}

@@ -161,10 +161,15 @@ async fn shows_decoded_paired_frames_with_their_tags() {
 }
 
 #[tokio::test]
-async fn viewers_and_operators_cannot_read_traffic() {
+async fn operators_read_traffic_and_viewers_cannot() {
     let state = seeded_admin_app_state().await;
     let app = crate::api::create_router(state.clone());
-    for role in ["viewer", "operator"] {
+    for (role, expected) in [
+        ("viewer", StatusCode::FORBIDDEN),
+        // An operator troubleshooting a device: the device exists only in the
+        // other test, so getting past the role check means a 404 here.
+        ("operator", StatusCode::NOT_FOUND),
+    ] {
         let hash = crate::api::auth::hash_password("pw-1234567");
         state
             .storage
@@ -176,6 +181,6 @@ async fn viewers_and_operators_cannot_read_traffic() {
             login_cookie(&app, role, "pw-1234567").await
         );
         let (s, _) = traffic(&app, &cookie, "").await;
-        assert_eq!(s, StatusCode::FORBIDDEN, "{role}");
+        assert_eq!(s, expected, "{role}");
     }
 }
